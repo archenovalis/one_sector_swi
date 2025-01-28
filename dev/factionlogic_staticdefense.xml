@@ -1,0 +1,1602 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="FactionLogic_StaticDefense" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../xsd/md.xsd">
+  <cues>
+    <library name="Constants">
+      <actions>
+        <do_all comment="strategy type constants">
+          <set_value name="$StaticDefense_Type_ContainStation" exact="1" />
+          <set_value name="$StaticDefense_Type_EnemyWall" exact="2" />
+          <set_value name="$StaticDefense_Type_GateApproach" exact="3" />
+        </do_all>
+        <do_all comment="deployable type constants">
+          <set_value name="$StaticDefense_DeployableType_Mines" exact="1" />
+          <set_value name="$StaticDefense_DeployableType_Mines_Indiscriminate" exact="2" />
+          <set_value name="$StaticDefense_DeployableType_LaserTowers" exact="3" />
+        </do_all>
+        <do_all comment="deployable status constants">
+          <set_value name="$StaticDefense_Status_Pending" exact="1" />
+          <set_value name="$StaticDefense_Status_Requested" exact="2" />
+          <set_value name="$StaticDefense_Status_Progressing" exact="3" />
+          <set_value name="$StaticDefense_Status_Paused" exact="4" />
+          <set_value name="$StaticDefense_Status_Completed" exact="5" />
+          <set_value name="$StaticDefense_Status_Abandoned" exact="6" />
+        </do_all>
+        <do_all comment="defaults">
+          <debug_text text="'$StaticDefenseManager: %s, $StaticDefenseManager.$Faction: %s'.[@$StaticDefenseManager, @$StaticDefenseManager.$Faction]" chance="@$DebugChance" />
+          <do_if value="@$StaticDefenseManager.exists and $StaticDefenseManager.$Size_LaserTowerNetwork?" comment="if $StaticDefenseManager already exists in the namespace, load vars from that. allows these vars to be changed after instantiation.">
+            <set_value name="$Size_LaserTowerNetwork" exact="$StaticDefenseManager.$Size_LaserTowerNetwork" />
+            <set_value name="$IntervalDist_LaserTowers" exact="$StaticDefenseManager.$IntervalDist_LaserTowers" />
+            <set_value name="$Size_Minefield" exact="$StaticDefenseManager.$Size_Minefield" />
+            <set_value name="$IntervalDist_Mines" exact="$StaticDefenseManager.$IntervalDist_Mines" />
+            <set_value name="$DeployableCount_ForInactiveField" exact="$StaticDefenseManager.$DeployableCount_ForInactiveField" />
+            <set_value name="$Time_PauseOnDanger" exact="$StaticDefenseManager.$Time_PauseOnDanger" />
+            <set_value name="$DangerCount_ToCancelStrategy" exact="$StaticDefenseManager.$DangerCount_ToCancelStrategy" />
+          </do_if>
+          <do_elseif value="not $Size_LaserTowerNetwork?" comment="not yet initialised, so initialise">
+            <!-- <do_if value="@$DebugChance" comment="smaller and less dense for quicker completions">
+              <set_value name="$Size_LaserTowerNetwork" exact="10km" />
+              <set_value name="$IntervalDist_LaserTowers" exact="10km" />
+              <set_value name="$Size_Minefield" exact="10km" />
+              <set_value name="$IntervalDist_Mines" exact="10km" />
+              <set_value name="$DeployableCount_ForInactiveField" exact="1" />
+            </do_if>
+            <do_else> -->
+            <set_value name="$Size_LaserTowerNetwork" exact="5km" />
+            <set_value name="$IntervalDist_LaserTowers" exact="5km" />
+            <set_value name="$Size_Minefield" exact="20km" />
+            <set_value name="$IntervalDist_Mines" exact="10km" />
+            <set_value name="$DeployableCount_ForInactiveField" exact="5" />
+            <!-- </do_else> -->
+            <set_value name="$Time_PauseOnDanger" exact="10min" />
+            <set_value name="$DangerCount_ToCancelStrategy" exact="3" />
+          </do_elseif>
+        </do_all>
+      </actions>
+    </library>
+
+    <library name="StaticDefenseManager" namespace="this" version="6">
+      <params>
+        <param name="FactionManagerCue" />
+        <param name="Faction" />
+        <param name="DebugChance" default="0" />
+      </params>
+      <!--
+        analytics for debugging:
+          signal md.FactionLogic_StaticDefense.Debug_Totals to dump static defense analytics for all factions that use this logic.
+        signal_objects:
+          'StaticDefense_requestStrategy' = ship requests strategy
+            from: order.deploystaticdefensestrategy, to: player.galaxy
+          'StaticDefense_sendStrategy' = faction logic sends strategy to ship
+            from: RequestStrategy, to: ship
+          'StaticDefense_complete' = ship completes static defense deployment
+            from: order.deploystaticdefensestrategy, to: player.galaxy
+          'StaticDefense_stopDeployment' = faction logic commands ship to stop deployment
+            from: PauseStrategy, RemoveStrategy, to: $CombatEngineersAndSaboteurs
+        strategy data:
+          <set_value name="$Strategy" exact="table[]" />
+          <set_value name="$Strategy.$Id" exact="(counter)" />
+          <set_value name="$Strategy.$Type" exact="$StaticDefense_Type" />
+          <set_value name="$Strategy.$DeployableType" exact="$DeployableType" />
+          <set_value name="$Strategy.$MacrosToDeploy" exact="@$MacrosToDeploy" />
+          <set_value name="$Strategy.$Sector" exact="$Sector" />
+          <set_value name="$Strategy.$Position" exact="$StaticDefense_Position" />
+          <set_value name="$Strategy.$Orientation" exact="$StaticDefense_Orientation" />
+          <set_value name="$Strategy.$DefendObject" exact="$DefendObject" />
+          <set_value name="$Strategy.$OtherObject" exact="$StaticDefense_OtherObject" />
+          <set_value name="$Strategy.$PositionsField" exact="@$Positions" />
+          <set_value name="$Strategy.$SuccessCount" exact="0" />
+          <set_value name="$Strategy.$AttemptCount" exact="0" />
+          <set_value name="$Strategy.$TimePaused" exact="0" />
+          <set_value name="$Strategy.$DeployedObjects" exact="null" />
+          <set_value name="$Strategy.$DangerCount" exact="0" />
+      -->
+      <actions>
+        <do_if value="
+          @$FactionManagerCue.$LasertowerNetworkGoal gt 0 or
+          @$FactionManagerCue.$MinefieldGoalPerSector gt 0
+        ">
+          <debug_text text="'instantiate cue. $Faction: %s, $FactionManagerCue.$LasertowerNetworkGoal: %s, $FactionManagerCue.$MinefieldGoalPerSector: %s'.[$Faction, @$FactionManagerCue.$LasertowerNetworkGoal, @$FactionManagerCue.$MinefieldGoalPerSector]" chance="$DebugChance" />
+          <include_actions ref="Constants" />
+          <set_value name="$Strategies_Pending" exact="[]" />
+          <set_value name="$Strategies_LaserTowers_Active" exact="[]" />
+          <set_value name="$Strategies_Minefields_Active" exact="[]" />
+          <create_group groupname="$CombatEngineersAndSaboteurs" />
+          <set_value name="$StrategyByShipId" exact="table[]" />
+          <set_value name="$NextId" exact="1" />
+          <set_value name="$CanDeploySLaserTower" exact="false" comment="determines if laser tower mark 2s are deployable. i.e. some factions have no military ship_m" />
+          <set_value name="$Count_ShipRequestedStrategy" exact="0" />
+          <set_value name="$Count_ShipDestroyed" exact="0" />
+          <set_value name="$Count_ShipReplaced" exact="0" />
+          <set_value name="$Count_ShipDecommisioned" exact="0" />
+        </do_if>
+        <do_else>
+          <debug_text text="'cancel_cue. $Faction: %s, $FactionManagerCue.$LasertowerNetworkGoal: %s, $FactionManagerCue.$MinefieldGoalPerSector: %s'.[$Faction, @$FactionManagerCue.$LasertowerNetworkGoal, @$FactionManagerCue.$MinefieldGoalPerSector]" chance="$DebugChance" />
+          <cancel_cue cue="this" />
+        </do_else>
+      </actions>
+      <patch sinceversion="3" comment="refactor vars">
+        <do_if value="not $StrategyByShipId?">
+          <set_value name="$StrategyByShipId" exact="table[]" />
+        </do_if>
+        <do_if value="not $NextId?">
+          <set_value name="$NextId" exact="1" />
+        </do_if>
+        <do_all counter="$i" exact="$Strategies_Pending.count" reverse="true">
+          <do_if value="(not $Strategies_Pending.{$i}.$StaticDefense_DefendObject?) and (not $Strategies_Pending.{$i}.$StaticDefense_OtherObject?)">
+            <remove_value name="$Strategies_Pending.{$i}" />
+          </do_if>
+          <do_else>
+            <do_if value="not $Strategies_Pending.{$i}.$Id?">
+              <set_value name="$Strategies_Pending.{$i}.$Id" exact="$i" />
+            </do_if>
+            <do_if value="not $Strategies_Pending.{$i}.$Name?">
+              <run_actions ref="GetName" result="$Name">
+                <param name="DeployableType" value="$Strategies_Pending.{$i}.$DeployableType" />
+                <param name="Id" value="$Strategies_Pending.{$i}.$Id" />
+                <param name="IsPreemptiveDefense" value="not @$Strategies_Pending.{$i}.$Station.exists" />
+                <param name="StaticDefense_DefendObject" value="@$Strategies_Pending.{$i}.$StaticDefense_DefendObject" />
+                <param name="StaticDefense_OtherObject" value="@$Strategies_Pending.{$i}.$StaticDefense_OtherObject" />
+              </run_actions>
+              <set_value name="$Strategies_Pending.{$i}.$Name" exact="$Name" />
+            </do_if>
+            <do_if value="not $Strategies_Pending.{$i}.$Status?">
+              <set_value name="$Strategies_Pending.{$i}.$Status" exact="$StaticDefense_Status_Pending" />
+            </do_if>
+          </do_else>
+        </do_all>
+        <do_all counter="$i" exact="$Strategies_LaserTowers_Active.count" reverse="true">
+          <do_if value="(not $Strategies_LaserTowers_Active.{$i}.$StaticDefense_DefendObject?) and (not $Strategies_LaserTowers_Active.{$i}.$StaticDefense_OtherObject?)">
+            <remove_value name="$Strategies_LaserTowers_Active.{$i}" />
+          </do_if>
+          <do_else>
+            <do_if value="not $Strategies_LaserTowers_Active.{$i}.$Id?">
+              <set_value name="$Strategies_LaserTowers_Active.{$i}.$Id" exact="$i" />
+            </do_if>
+            <do_if value="not $Strategies_LaserTowers_Active.{$i}.$Name?">
+              <run_actions ref="GetName" result="$Name">
+                <param name="DeployableType" value="$Strategies_LaserTowers_Active.{$i}.$DeployableType" />
+                <param name="Id" value="$Strategies_LaserTowers_Active.{$i}.$Id" />
+                <param name="IsPreemptiveDefense" value="not $Strategies_LaserTowers_Active.{$i}.$Station.exists" />
+                <param name="StaticDefense_DefendObject" value="$Strategies_LaserTowers_Active.{$i}.$StaticDefense_DefendObject" />
+                <param name="StaticDefense_OtherObject" value="$Strategies_LaserTowers_Active.{$i}.$StaticDefense_OtherObject" />
+              </run_actions>
+              <set_value name="$Strategies_LaserTowers_Active.{$i}.$Name" exact="$Name" />
+            </do_if>
+            <do_if value="not $Strategies_LaserTowers_Active.{$i}.$Status?">
+              <set_value name="$Strategies_LaserTowers_Active.{$i}.$Status" exact="$StaticDefense_Status_Completed" />
+            </do_if>
+          </do_else>
+        </do_all>
+        <do_all counter="$i" exact="$Strategies_Minefields_Active.count" reverse="true">
+          <do_if value="(not $Strategies_Minefields_Active.{$i}.$StaticDefense_DefendObject?) and (not $Strategies_Minefields_Active.{$i}.$StaticDefense_OtherObject?)">
+            <remove_value name="$Strategies_Minefields_Active.{$i}" />
+          </do_if>
+          <do_else>
+            <do_if value="not $Strategies_Minefields_Active.{$i}.$Id?">
+              <set_value name="$Strategies_Minefields_Active.{$i}.$Id" exact="$i" />
+            </do_if>
+            <do_if value="not $Strategies_Minefields_Active.{$i}.$Name?">
+              <run_actions ref="GetName" result="$Name">
+                <param name="DeployableType" value="$Strategies_Minefields_Active.{$i}.$DeployableType" />
+                <param name="Id" value="$Strategies_Minefields_Active.{$i}.$Id" />
+                <param name="IsPreemptiveDefense" value="not $Strategies_Minefields_Active.{$i}.$Station.exists" />
+                <param name="StaticDefense_DefendObject" value="$Strategies_Minefields_Active.{$i}.$StaticDefense_DefendObject" />
+                <param name="StaticDefense_OtherObject" value="$Strategies_Minefields_Active.{$i}.$StaticDefense_OtherObject" />
+              </run_actions>
+              <set_value name="$Strategies_Minefields_Active.{$i}.$Name" exact="$Name" />
+            </do_if>
+            <do_if value="not $Strategies_Minefields_Active.{$i}.$Status?">
+              <set_value name="$Strategies_Minefields_Active.{$i}.$Status" exact="$StaticDefense_Status_Completed" />
+            </do_if>
+          </do_else>
+        </do_all>
+      </patch>
+      <patch sinceversion="4">
+        <set_value name="$CanDeploySLaserTower" exact="false" comment="var used to checkif faction has ship that can deploy laser tower mk 2" />
+      </patch>
+      <patch sinceversion="5">
+        <set_value name="$Count_ShipRequestedStrategy" exact="0" comment="counter for number of times a ship has requested a strategy to deploy" />
+      </patch>
+      <patch sinceversion="6">
+        <set_value name="$Count_ShipDestroyed" exact="0" />
+        <set_value name="$Count_ShipReplaced" exact="0" />
+        <set_value name="$Count_ShipDecommisioned" exact="0" />
+      </patch>
+      <cues>
+        <cue name="Ship_StrategyRequested" namespace="this" instantiate="true">
+          <conditions>
+            <event_object_signalled object="player.galaxy" param="'StaticDefense_requestStrategy'" />
+            <check_value value="event.param2.{1}.trueowner == parent.$Faction" />
+          </conditions>
+          <actions>
+            <set_value name="$StaticDefenseManager" exact="parent" />
+            <set_value name="$StaticDefenseManager.$Count_ShipRequestedStrategy" operation="add" />
+            <include_actions ref="Constants" />
+            <set_value name="$Ship" exact="event.param2.{1}" />
+            <set_value name="$IsMinesOnly" exact="event.param2.{2}" />
+            <do_if value="
+              player.age lt 5min and
+              (not $StaticDefenseManager.$CanDeploySLaserTower)
+            " comment="test if laser tower mk 2 is deployable by the ship until true. if none after 5min, then no job ship capable of deploying ltmk2 has been set-up.">
+              <run_actions ref="GetIsDeployableAllowed" result="$StaticDefenseManager.$CanDeploySLaserTower">
+                <param name="Ship" value="$Ship" />
+                <param name="Macro_Deployable" value="macro.ship_gen_s_lasertower_01_a_macro" />
+                <param name="DebugChance" value="0" />
+              </run_actions>
+            </do_if>
+            <set_value name="$Strategy_Current" exact="@$StaticDefenseManager.$StrategyByShipId.{'$' + $Ship.idcode}" />
+            <set_value name="$Strategy_Nearest" exact="null" />
+            <set_value name="$IsDecommission" exact="false" />
+            <do_if value="$Strategy_Current and @$Strategy_Current.$Status le $StaticDefense_Status_Progressing">
+              <set_value name="$Strategy_Nearest" exact="$Strategy_Current" />
+            </do_if>
+            <do_else>
+              <add_to_group groupname="$StaticDefenseManager.$CombatEngineersAndSaboteurs" object="$Ship" />
+              <do_if value="$StaticDefenseManager.$Strategies_Pending.count">
+                <set_value name="$GateDistance_Nearest" exact="-1" />
+                <do_for_each name="$Strategy" in="$StaticDefenseManager.$Strategies_Pending">
+                  <set_value name="$GateDistance_Test" exact="$Ship.gatedistance.{$Strategy.$Sector}" />
+                  <do_if value="$GateDistance_Test gt -1">
+                    <set_value name="$IsDeployableAllowed" exact="false" />
+                    <do_for_each name="$MacroToDeploy" in="$Strategy.$MacrosToDeploy">
+                      <run_actions ref="GetIsDeployableAllowed" result="$IsDeployableAllowed">
+                        <param name="Ship" value="$Ship" />
+                        <param name="Macro_Deployable" value="$MacroToDeploy" />
+                        <param name="DebugChance" value="0" />
+                      </run_actions>
+                      <do_if value="$IsDeployableAllowed">
+                        <break />
+                      </do_if>
+                    </do_for_each>
+                    <do_if value="
+                      (
+                        $GateDistance_Nearest == -1 or
+                        $GateDistance_Test le $GateDistance_Nearest
+                      ) and
+                      (
+                        (not @$Strategy.$TimePaused) or
+                        player.age - @$Strategy.$TimePaused gt $Time_PauseOnDanger
+                      ) and
+                      $IsDeployableAllowed and
+                      (
+                        (not $IsMinesOnly) or
+                        [$StaticDefense_DeployableType_Mines, $StaticDefense_DeployableType_Mines_Indiscriminate].indexof.{$Strategy.$DeployableType}
+                      )
+                    ">
+                      <set_value name="$GateDistance_Nearest" exact="$GateDistance_Test" />
+                      <set_value name="$Strategy_Nearest" exact="$Strategy" />
+                    </do_if>
+                  </do_if>
+                </do_for_each>
+                <do_if value="$GateDistance_Nearest == -1" comment="no reachable strategies.">
+                  <set_value name="$IsDecommission" exact="true" />
+                </do_if>
+              </do_if>
+              <do_else comment="no strategies pending, so decommission ship">
+                <set_value name="$IsDecommission" exact="true" />
+              </do_else>
+            </do_else>
+            <do_if value="$IsDecommission">
+              <debug_text text="'%s $Ship: %s, %s, ship cannot reach any strategies. (e.g. disconnected sector.) OR there are no more pending strategies.'.[$Ship, $Ship.knownname, $Ship.idcode]" chance="$StaticDefenseManager.$DebugChance" />
+              <set_value name="$Count_ShipDecommisioned" operation="add" />
+              <create_order object="$Ship" id="'RecycleDefault'" default="true" />
+            </do_if>
+            <do_elseif value="$Strategy_Nearest">
+              <do_if value="@$Strategy_Nearest.$Status == $StaticDefense_Status_Pending">
+                <set_value name="$Strategy_Nearest.$Status" exact="$StaticDefense_Status_Requested" />
+              </do_if>
+              <debug_text text="'%s $Ship: %s, %s, $Sector: %s'.[$Ship, $Ship.knownname, $Ship.idcode, @$Strategy_Nearest.$Sector.knownname]" chance="$StaticDefenseManager.$DebugChance" />
+              <debug_text text="'%s signal_objects StaticDefense_sendStrategy'.[$Ship]" chance="$StaticDefenseManager.$DebugChance" />
+              <signal_objects object="$Ship" param="'StaticDefense_sendStrategy'" param2="$Strategy_Nearest" />
+              <set_value name="$StaticDefenseManager.$StrategyByShipId.{'$' + $Ship.idcode}" exact="$Strategy_Nearest" />
+              <do_if value="$StaticDefenseManager.$DebugChance and (not @$Strategy_Nearest.$DebugPosition)">
+                <run_actions ref="md.LIB_Generic.DebugPositions_AddBeacon" result="$Strategy_Nearest.$DebugPosition" chance="$StaticDefenseManager.$DebugChance">
+                  <param name="Id" value="'strategy_id_' + $Strategy_Nearest.$Id" />
+                  <param name="Name" value="'requested: ' + $Strategy_Nearest.$Name" />
+                  <param name="Space" value="$Strategy_Nearest.$Sector" />
+                  <param name="Position" value="$Strategy_Nearest.$Position" />
+                </run_actions>
+                <debug_text text="'%s $Strategy_Nearest.$Name: %s'.[$Ship, $Strategy_Nearest.$Name]" chance="$StaticDefenseManager.$DebugChance" />
+              </do_if>
+            </do_elseif>
+            <do_else>
+              <debug_text text="'%s $Ship: %s, %s, ship cannot deploy any macros in any strategy'.[$Ship, $Ship.knownname, $Ship.idcode]" chance="$StaticDefenseManager.$DebugChance" />
+              <debug_text text="'%s shouldnt be here unless there are no mines to deploy - because mines are deployable by any ship'.[$Ship]" chance="$StaticDefenseManager.$DebugChance" />
+            </do_else>
+            <cancel_cue cue="this" />
+          </actions>
+        </cue>
+
+        <cue name="Ship_StaticDefenseDeployed" namespace="this" instantiate="true">
+          <conditions>
+            <event_object_signalled object="player.galaxy" param="'StaticDefense_deploy'" />
+            <check_value value="event.param2.{1}.trueowner == parent.$Faction" />
+          </conditions>
+          <actions>
+            <set_value name="$StaticDefenseManager" exact="parent" />
+            <include_actions ref="Constants" />
+            <set_value name="$Ship" exact="event.param2.{1}" />
+            <set_value name="$Strategy" exact="event.param2.{2}" />
+            <set_value name="$DeployedObject" exact="event.param2.{3}" />
+            <set_value name="$Strategy.$Status" exact="$StaticDefense_Status_Progressing" />
+            <add_to_group groupname="$Strategy.$DeployedObjects" object="$DeployedObject" />
+            <debug_text text="'%s $Ship: %s, %s, $Sector: %s, $DeployedObjects.count: %s, $DeployedObject: %s'.[$Ship, $Ship.knownname, $Ship.idcode, @$Strategy.$Sector.knownname, @$Strategy.$DeployedObjects.count, @$DeployedObject.knownname]" chance="$StaticDefenseManager.$DebugChance" />
+            <set_value operation="add" name="$Strategy.$SuccessCount" exact="1" />
+            <debug_text text="'%s $SuccessCount: %s ge %s * 0.75 ? %s'.[$Ship, @$Strategy.$SuccessCount, $Strategy.$PositionsField.count, ($Strategy.$SuccessCount ge $Strategy.$PositionsField.count * 0.75)]" chance="$StaticDefenseManager.$DebugChance" />
+            <do_if value="
+              $Strategy.$AttemptCount ge $Strategy.$PositionsField.count or
+              $Strategy.$SuccessCount ge $Strategy.$PositionsField.count * 0.75
+            ">
+              <do_if value="Strategy_Completed.state == cuestate.waiting">
+                <signal_cue_instantly cue="Strategy_Completed" param="[$Ship, $Strategy]" />
+              </do_if>
+            </do_if>
+            <do_if value="@$Strategy.$DebugPosition">
+              <set_object_name object="$Strategy.$DebugPosition" name="'progressing (' + [$Strategy.$AttemptCount, $Strategy.$SuccessCount].max + ' / ' + $Strategy.$PositionsField.count + ' deployed): ' + $Strategy.$Name" />
+            </do_if>
+            <cancel_cue cue="this" />
+          </actions>
+        </cue>
+
+        <cue name="Strategy_Completed" namespace="this">
+          <conditions>
+            <check_any>
+              <event_cue_signalled />
+              <check_all>
+                <event_object_signalled object="player.galaxy" param="'StaticDefense_complete'" />
+                <check_value value="event.param2.{1}.trueowner == parent.$Faction" />
+              </check_all>
+            </check_any>
+          </conditions>
+          <actions>
+            <set_value name="$StaticDefenseManager" exact="parent" />
+            <include_actions ref="Constants" />
+            <do_if value="event.name == 'event_cue_signalled'">
+              <set_value name="$Ship" exact="event.param.{1}" />
+              <set_value name="$Strategy" exact="event.param.{2}" />
+            </do_if>
+            <do_else>
+              <set_value name="$Ship" exact="event.param2.{1}" />
+              <set_value name="$Strategy" exact="event.param2.{2}" />
+            </do_else>
+            <debug_text text="'%s $Ship: %s, %s, $Sector: %s'.[$Ship, $Ship.knownname, $Ship.idcode, $Strategy.$Sector.knownname]" chance="$StaticDefenseManager.$DebugChance" />
+          </actions>
+          <cues>
+            <cue name="Complete_AfterTime" checktime="player.age + 10s" comment="give other ships time to signal completion before its removal">
+              <actions>
+                <set_value name="$Strategy.$Status" exact="$StaticDefense_Status_Completed" />
+                <debug_text text="'%s $Strategy.$DeployableType: %s == $StaticDefenseManager.$StaticDefense_DeployableType_LaserTowers: %s'.[$Ship, $Strategy.$DeployableType, ($Strategy.$DeployableType == $StaticDefenseManager.$StaticDefense_DeployableType_LaserTowers)]" chance="$StaticDefenseManager.$DebugChance" />
+                <do_if value="$Strategy.$DeployableType == $StaticDefenseManager.$StaticDefense_DeployableType_LaserTowers">
+                  <append_to_list name="$StaticDefenseManager.$Strategies_LaserTowers_Active" exact="$Strategy" />
+                </do_if>
+                <do_else>
+                  <append_to_list name="$StaticDefenseManager.$Strategies_Minefields_Active" exact="$Strategy" />
+                </do_else>
+                <debug_text text="'%s $StaticDefenseManager.$Strategies_LaserTowers_Active.count: %s'.[$Ship, $StaticDefenseManager.$Strategies_LaserTowers_Active.count]" chance="$StaticDefenseManager.$DebugChance" />
+                <debug_text text="'%s StaticDefenseManager.$Strategies_Minefields_Active.count: %s'.[$Ship, $StaticDefenseManager.$Strategies_Minefields_Active.count]" chance="$StaticDefenseManager.$DebugChance" />
+                <run_actions ref="RemoveStrategy">
+                  <param name="StaticDefenseManager" value="$StaticDefenseManager" />
+                  <param name="Strategy" value="$Strategy" />
+                </run_actions>
+                <!-- <signal_objects object="player.galaxy" param="'StaticDefense_stopDeployment'" param2="[$StaticDefenseManager.$Faction, $Strategy]" /> -->
+                <do_for_each name="$Ship_inList" in="$StaticDefenseManager.$CombatEngineersAndSaboteurs">
+                  <do_if value="$Ship_inList.isoperational">
+                    <signal_objects object="$Ship_inList" param="'StaticDefense_stopDeployment'" param2="[$StaticDefenseManager.$Faction, $Strategy]" />
+                  </do_if>
+                </do_for_each>
+                <do_if value="@$Strategy.$DebugPosition">
+                  <set_object_name object="$Strategy.$DebugPosition" name="'completed (' + [$Strategy.$AttemptCount, $Strategy.$SuccessCount].max + ' / ' + $Strategy.$PositionsField.count + ' deployed): ' + $Strategy.$Name" />
+                </do_if>
+                <reset_cue cue="parent" />
+                <cancel_cue cue="this" comment="unnecessary. but its just habit to close anything opened" />
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Ship_Destroyed" namespace="this" instantiate="true">
+          <conditions>
+            <event_object_destroyed group="parent.$CombatEngineersAndSaboteurs" />
+          </conditions>
+          <actions>
+            <set_value name="$StaticDefenseManager" exact="parent" />
+            <set_value name="$StaticDefenseManager.$Count_ShipDestroyed" operation="add" />
+            <include_actions ref="Constants" />
+            <set_value name="$Ship" exact="event.object" />
+            <set_value name="$Strategy" exact="@$StaticDefenseManager.$StrategyByShipId.{'$' + $Ship.idcode}" />
+            <debug_text text="'%s $Strategy: %s'.[$Ship, $Strategy]" chance="$StaticDefenseManager.$DebugChance" />
+            <do_if value="$Strategy">
+              <remove_value name="$StaticDefenseManager.$StrategyByShipId.{'$' + $Ship.idcode}" />
+              <debug_text text="'%s $Ship: %s, %s, $Strategy.$Id: %s, $StrategyByShipId.{$Ship.idcode} (post removed): %s'.[$Ship, $Ship.knownname, $Ship.idcode, $Strategy.$Id, @$StaticDefenseManager.$StrategyByShipId.{'$' + $Ship.idcode}]" chance="$StaticDefenseManager.$DebugChance" />
+              <do_if value="Strategy_SetDanger.state == cuestate.waiting">
+                <signal_cue_instantly cue="Strategy_SetDanger" param="[$Ship, $Strategy]" />
+              </do_if>
+            </do_if>
+            <do_if value="$StaticDefenseManager.$Strategies_Pending.count">
+              <set_value name="$StaticDefenseManager.$Count_ShipReplaced" operation="add" />
+              <run_actions ref="CreateJobShips">
+                <param name="StaticDefenseManager" value="$StaticDefenseManager" />
+                <param name="Faction" value="$StaticDefenseManager.$Faction" />
+                <param name="Sector" value="$StaticDefenseManager.$Strategies_Pending.{1}.$Sector" />
+              </run_actions>
+            </do_if>
+            <cancel_cue cue="this" />
+          </actions>
+        </cue>
+
+        <cue name="Strategy_SetDanger" namespace="this">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <actions>
+            <set_value name="$StaticDefenseManager" exact="parent" />
+            <include_actions ref="Constants" />
+            <set_value name="$Ship" exact="event.param.{1}" />
+            <set_value name="$Strategy" exact="event.param.{2}" />
+            <debug_text text="'%s $Ship: %s, %s, $Sector: %s'.[$Ship, $Ship.knownname, $Ship.idcode, $Strategy.$Sector.knownname]" chance="$StaticDefenseManager.$DebugChance" />
+            <set_value operation="add" name="$Strategy.$DangerCount" exact="1" />
+            <debug_text text="'%s $Strategy.$DangerCount: %s'.[$Ship, $Strategy.$DangerCount]" chance="$StaticDefenseManager.$DebugChance" />
+            <do_if value="$Strategy.$DangerCount lt $StaticDefenseManager.$DangerCount_ToCancelStrategy">
+              <set_value name="$Strategy.$Status" exact="$StaticDefense_Status_Paused" />
+              <run_actions ref="PauseStrategy">
+                <param name="StaticDefenseManager" value="$StaticDefenseManager" />
+                <param name="Strategy" value="$Strategy" />
+              </run_actions>
+              <do_if value="@$Strategy.$DebugPosition">
+                <set_object_name object="$Strategy.$DebugPosition" name="'paused (' + [$Strategy.$AttemptCount, $Strategy.$SuccessCount].max + ' / ' + $Strategy.$PositionsField.count + ' deployed): ' + $Strategy.$Name" />
+              </do_if>
+              <cancel_cue cue="this" />
+            </do_if>
+          </actions>
+          <cues>
+            <cue name="Danger_AfterTime" checktime="player.age + 10s" comment="danger signalled $DangerCount_ToCancelStrategy times, cancel this strategy, will leave any static defense">
+              <actions>
+                <set_value name="$Strategy.$Status" exact="$StaticDefense_Status_Abandoned" />
+                <run_actions ref="RemoveStrategy">
+                  <param name="StaticDefenseManager" value="$StaticDefenseManager" />
+                  <param name="Strategy" value="$Strategy" />
+                </run_actions>
+                <do_if value="@$Strategy.$DebugPosition">
+                  <set_object_name object="$Strategy.$DebugPosition" name="'abandoned (' + [$Strategy.$AttemptCount, $Strategy.$SuccessCount].max + ' / ' + $Strategy.$PositionsField.count + ' deployed): ' + $Strategy.$Name" />
+                </do_if>
+                <reset_cue cue="parent" />
+                <cancel_cue cue="this" comment="unnecessary. but its just habit to close anything opened" />
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="DebugSignals_Ships" namespace="this">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <actions>
+            <set_value name="$StaticDefenseManager" exact="parent" />
+            <debug_text text="'$CombatEngineersAndSaboteurs.count: %s'.[$StaticDefenseManager.$CombatEngineersAndSaboteurs.count]" />
+            <do_for_each name="$Ship" in="$StaticDefenseManager.$CombatEngineersAndSaboteurs">
+              <debug_text text="'%s, %s, sector: %s, $Strategy.$Id: %s'.[$Ship.knownname, $Ship.idcode, $Ship.sector.knownname, $StaticDefenseManager.$StrategyByShipId.{'$' + $Ship.idcode}.$Id]" />
+            </do_for_each>
+            <reset_cue cue="this" />
+          </actions>
+        </cue>
+
+        <cue name="DebugSignals_Totals" namespace="this">
+          <conditions>
+            <check_any>
+              <event_cue_signalled />
+              <event_object_signalled object="player.galaxy" param="'StaticDefense_debugTotals'" />
+            </check_any>
+          </conditions>
+          <actions>
+            <set_value name="$StaticDefenseManager" exact="parent" />
+            <debug_text text="'$Faction: %s'.[$StaticDefenseManager.$Faction]" />
+            <debug_text text="'$ClaimedSectors.count: %s (required for $LasertowerNetworkGoal)'.[@$StaticDefenseManager.$FactionManagerCue.$ClaimedSectors.count]" />
+            <debug_text text="'$HomeSectors.count: %s (includes $ClaimedSectors. required for $MinefieldGoalPerSector)'.[@$StaticDefenseManager.$FactionManagerCue.$HomeSectors.count]" />
+            <debug_text text="'$Strategies_Pending.count: %s'.[$StaticDefenseManager.$Strategies_Pending.count]" />
+            <do_for_each name="$Strategy" in="$StaticDefenseManager.$Strategies_Pending">
+              <debug_text text="'    $Sector: %s, $Id: %s, $MacrosToDeploy: %s'.[$Strategy.$Sector.knownname, $Strategy.$Id, $Strategy.$MacrosToDeploy]" />
+            </do_for_each>
+            <debug_text text="'$LasertowerNetworkGoal: %s'.[$StaticDefenseManager.$FactionManagerCue.$LasertowerNetworkGoal]" />
+            <debug_text text="'$Strategies_LaserTowers_Active.count: %s, $LasertowerNetworkGoal: %s'.[$StaticDefenseManager.$Strategies_LaserTowers_Active.count, $StaticDefenseManager.$FactionManagerCue.$LasertowerNetworkGoal]" />
+            <do_for_each name="$Strategy" in="$StaticDefenseManager.$Strategies_LaserTowers_Active">
+              <debug_text text="'    $Sector: %s, $Id: %s, $DeployedObjects.count: %s'.[$Strategy.$Sector.knownname, $Strategy.$Id, $Strategy.$DeployedObjects.count]" />
+            </do_for_each>
+            <debug_text text="'$MinefieldGoalPerSector: %s (* sectors up to 12)'.[$StaticDefenseManager.$FactionManagerCue.$MinefieldGoalPerSector]" />
+            <debug_text text="'$Strategies_Minefields_Active.count: %s, $MinefieldGoalPerSector: %s (* sectors up to 12)'.[$StaticDefenseManager.$Strategies_Minefields_Active.count, $StaticDefenseManager.$FactionManagerCue.$MinefieldGoalPerSector]" />
+            <do_for_each name="$Strategy" in="$StaticDefenseManager.$Strategies_Minefields_Active">
+              <debug_text text="'    $Sector: %s, $Id: %s, $DeployedObjects.count: %s'.[$Strategy.$Sector.knownname, $Strategy.$Id, $Strategy.$DeployedObjects.count]" />
+            </do_for_each>
+            <debug_text text="'$Count_ShipRequestedStrategy: %s'.[$StaticDefenseManager.$Count_ShipRequestedStrategy]" />
+            <debug_text text="'$Count_ShipDestroyed: %s'.[$StaticDefenseManager.$Count_ShipDestroyed]" />
+            <debug_text text="'$Count_ShipReplaced: %s'.[$StaticDefenseManager.$Count_ShipReplaced]" />
+            <debug_text text="'$Count_ShipDecommisioned: %s'.[$StaticDefenseManager.$Count_ShipDecommisioned]" />
+            <debug_text text="'$CombatEngineersAndSaboteurs.count: %s'.[$StaticDefenseManager.$CombatEngineersAndSaboteurs.count]" />
+            <do_for_each name="$Ship" in="$StaticDefenseManager.$CombatEngineersAndSaboteurs">
+              <debug_text text="'    $Class: %s, $Sector: %s, $Strategy: %s'.[$Ship.class, @$Ship.sector.knownname, @$StaticDefenseManager.$StrategyByShipId.{'$' + $Ship.idcode}.$Id]" />
+            </do_for_each>
+            <reset_cue cue="this" />
+          </actions>
+        </cue>
+      </cues>
+    </library>
+
+    <library name="AddStrategy" purpose="run_actions">
+      <params>
+        <param name="StaticDefenseManager" />
+        <param name="Strategy" />
+      </params>
+      <actions>
+        <create_group groupname="$Strategy.$DeployedObjects" />
+        <do_if value="$StaticDefenseManager.$DebugChance">
+          <do_for_each name="$Prop" valuename="$Value" in="$Strategy">
+            <debug_text text="'%s : %s'.[$Prop, $Value]" />
+          </do_for_each>
+        </do_if>
+        <append_to_list name="$StaticDefenseManager.$Strategies_Pending" exact="$Strategy" />
+      </actions>
+    </library>
+
+    <library name="RemoveStrategy" purpose="run_actions"
+      comment="assume job is complete regardless of success count. also, ensure all is active. dangerous mines are deactivated at launch. ">
+      <params>
+        <param name="StaticDefenseManager" />
+        <param name="Strategy" />
+      </params>
+      <actions>
+        <debug_text text="'$Sector: %s'.[$Strategy.$Sector.knownname]" chance="$StaticDefenseManager.$DebugChance" />
+        <debug_text text="'set_object_active $Strategy.$DeployedObjects.count: %s'.[$Strategy.$DeployedObjects.count]" chance="$StaticDefenseManager.$DebugChance" />
+        <do_for_each name="$DeployedObject" in="$Strategy.$DeployedObjects">
+          <set_object_active object="$DeployedObject" />
+        </do_for_each>
+        <set_value name="$removeI" exact="null" />
+        <do_all counter="$i" exact="$StaticDefenseManager.$Strategies_Pending.count" comment="best to loop forward because first jobs are actioned first">
+          <do_if value="$Strategy.$Id == $StaticDefenseManager.$Strategies_Pending.{$i}.$Id">
+            <set_value name="$removeI" exact="$i" />
+            <break />
+          </do_if>
+        </do_all>
+        <do_if value="$removeI">
+          <remove_value name="$StaticDefenseManager.$Strategies_Pending.{$removeI}" />
+        </do_if>
+        <debug_text text="'$StaticDefenseManager.$Strategies_Pending.count: %s'.[$StaticDefenseManager.$Strategies_Pending.count]" chance="$StaticDefenseManager.$DebugChance" />
+      </actions>
+    </library>
+
+    <library name="PauseStrategy" purpose="run_actions"
+      comment="this will put a pause on this job for $Time_PauseOnDanger">
+      <params>
+        <param name="StaticDefenseManager" />
+        <param name="Strategy" />
+      </params>
+      <actions>
+        <set_value name="$Strategy.$TimePaused" exact="player.age" />
+        <debug_text text="'$Sector: %s, $TimePaused: %s'.[$Strategy.$Sector.knownname, $Strategy.$TimePaused]" chance="$StaticDefenseManager.$DebugChance" />
+        <do_for_each name="$Ship_inList" in="$StaticDefenseManager.$CombatEngineersAndSaboteurs">
+          <signal_objects object="$Ship_inList" param="'StaticDefense_stopDeployment'" param2="[$StaticDefenseManager.$Faction, $Strategy]" />
+        </do_for_each>
+      </actions>
+    </library>
+
+    <library name="RemoveInactiveLaserTowerNetworks" purpose="run_actions">
+      <params>
+        <param name="StaticDefenseManager" />
+      </params>
+      <actions>
+        <debug_text text="'$StaticDefenseManager.$Strategies_LaserTowers_Active.count (pre): %s'.[$StaticDefenseManager.$Strategies_LaserTowers_Active.count]" chance="$StaticDefenseManager.$DebugChance" />
+        <do_all counter="$i" exact="@$StaticDefenseManager.$Strategies_LaserTowers_Active.count" reverse="true">
+          <set_value name="$Strategy" exact="$StaticDefenseManager.$Strategies_LaserTowers_Active.{$i}" />
+          <run_actions ref="FindNearbyStaticDefense" result="$StaticDefenses_Nearby">
+            <param name="Space" value="$Strategy.$Sector" />
+            <param name="Position" value="$Strategy.$Position" />
+            <param name="DebugChance" value="$StaticDefenseManager.$DebugChance" />
+          </run_actions>
+          <do_if value="$StaticDefenses_Nearby.count lt $StaticDefenseManager.$DeployableCount_ForInactiveField">
+            <remove_value name="$StaticDefenseManager.$Strategies_LaserTowers_Active.{$i}" />
+          </do_if>
+        </do_all>
+        <debug_text text="'$StaticDefenseManager.$Strategies_LaserTowers_Active.count (post): %s'.[$StaticDefenseManager.$Strategies_LaserTowers_Active.count]" chance="$StaticDefenseManager.$DebugChance" />
+      </actions>
+    </library>
+
+    <library name="GetActiveLaserTowerNetworks" purpose="run_actions">
+      <params>
+        <param name="StaticDefenseManager" />
+      </params>
+      <actions>
+        <run_actions ref="RemoveInactiveLaserTowerNetworks">
+          <param name="StaticDefenseManager" value="$StaticDefenseManager" />
+        </run_actions>
+        <return value="$StaticDefenseManager.$Strategies_LaserTowers_Active" />
+      </actions>
+    </library>
+
+    <library name="RemoveInactiveMinefields" purpose="run_actions">
+      <params>
+        <param name="StaticDefenseManager" />
+      </params>
+      <actions>
+        <debug_text text="'$StaticDefenseManager.$Strategies_Minefields_Active.count (pre): %s'.[$StaticDefenseManager.$Strategies_Minefields_Active.count]" chance="$StaticDefenseManager.$DebugChance" />
+        <do_all counter="$i" exact="@$StaticDefenseManager.$Strategies_Minefields_Active.count" reverse="true">
+          <set_value name="$Strategy" exact="$StaticDefenseManager.$Strategies_Minefields_Active.{$i}" />
+          <run_actions ref="FindNearbyStaticDefense" result="$StaticDefenses_Nearby">
+            <param name="Space" value="$Strategy.$Sector" />
+            <param name="Position" value="$Strategy.$Position" />
+            <param name="DebugChance" value="$StaticDefenseManager.$DebugChance" />
+          </run_actions>
+          <do_if value="$StaticDefenses_Nearby.count lt $StaticDefenseManager.$DeployableCount_ForInactiveField">
+            <remove_value name="$StaticDefenseManager.$Strategies_Minefields_Active.{$i}" />
+          </do_if>
+        </do_all>
+        <debug_text text="'$StaticDefenseManager.$Strategies_Minefields_Active.count (post): %s'.[$StaticDefenseManager.$Strategies_Minefields_Active.count]" chance="$StaticDefenseManager.$DebugChance" />
+      </actions>
+    </library>
+
+    <library name="GetActiveMinefields" purpose="run_actions">
+      <params>
+        <param name="StaticDefenseManager" />
+      </params>
+      <actions>
+        <run_actions ref="RemoveInactiveMinefields">
+          <param name="StaticDefenseManager" value="$StaticDefenseManager" />
+        </run_actions>
+        <return value="$StaticDefenseManager.$Strategies_Minefields_Active" />
+      </actions>
+    </library>
+
+    <library name="GetIsDeployableAllowed" purpose="run_actions">
+      <params>
+        <param name="Ship" />
+        <param name="Macro_Deployable" />
+        <param name="DebugChance" default="0" />
+      </params>
+      <actions>
+        <set_value name="$IsAllowed" exact="false" />
+        <debug_text text="'%s $Ship: %s, %s, $Macro_Deployable: %s, %s, isclass.ship: %s'.[$Ship, $Ship.knownname, $Ship.idcode, $Macro_Deployable, $Macro_Deployable.name, $Macro_Deployable.isclass.ship]" chance="$DebugChance" />
+        <do_if value="$Macro_Deployable.isclass.ship">
+          <find_dockingbay name="$DockingBay" object="$Ship">
+            <match_dock size="$Macro_Deployable.docksize" storage="false" />
+          </find_dockingbay>
+          <debug_text text="'%s $DockingBay: %s'.[$Ship, $DockingBay]" chance="$DebugChance" />
+          <do_if value="$DockingBay">
+            <set_value name="$IsAllowed" exact="true" />
+          </do_if>
+        </do_if>
+        <do_else>
+          <set_value name="$IsAllowed" exact="true" />
+        </do_else>
+        <debug_text text="'%s $IsAllowed: %s'.[$Ship, $IsAllowed]" chance="$DebugChance" />
+        <return value="$IsAllowed" />
+      </actions>
+    </library>
+
+    <!--
+      purpose: get strategy for station based on its safety level.
+      note: review Constants for constants.
+      input:
+        Sector: class.sector
+        Faction: datatype.faction
+        Station (optional): class.station
+        StaticDefenseType_Forced (optional): $StaticDefense_Type_ContainStation | $StaticDefense_Type_EnemyWall | $StaticDefense_Type_GateApproach
+      output:
+        <set_value name="$Strategy" exact="table[]" />
+        <set_value name="$Strategy.$Id" exact="player.age" />
+        <set_value name="$Strategy.$Type" exact="$StaticDefense_Type" />
+        <set_value name="$Strategy.$DeployableType" exact="$DeployableType" />
+        <set_value name="$Strategy.$MacrosToDeploy" exact="@$MacrosToDeploy" />
+        <set_value name="$Strategy.$Sector" exact="$Sector" />
+        <set_value name="$Strategy.$Position" exact="$StaticDefense_Position" />
+        <set_value name="$Strategy.$Orientation" exact="$StaticDefense_Orientation" />
+        <set_value name="$Strategy.$DefendObject" exact="$StaticDefense_DefendObject" />
+        <set_value name="$Strategy.$OtherObject" exact="$StaticDefense_OtherObject" />
+        <set_value name="$Strategy.$PositionsField" exact="@$Positions" />
+        <set_value name="$Strategy.$SuccessCount" exact="0" />
+        <set_value name="$Strategy.$AttemptCount" exact="0" />
+        <set_value name="$Strategy.$TimePaused" exact="0" />
+        <set_value name="$Strategy.$DeployedObjects" exact="null" />
+        <set_value name="$Strategy.$DangerCount" exact="0" />
+      notes:
+        $StaticDefense_Type_ContainStation = if $SafetyLevel_Overwhelmed, encircle the station
+        $StaticDefense_Type_EnemyWall = if $SafetyLevel_Balanced, build wall against an enemy station
+        $StaticDefense_Type_GateApproach = if $SafetyLevel_Safe or no enemy station
+    -->
+    <library name="GetStrategy" purpose="run_actions">
+      <params>
+        <param name="StaticDefenseManager" />
+        <param name="Sector" />
+        <param name="Faction" />
+        <param name="Station" default="null" />
+        <param name="DeployableType" default="null" />
+        <param name="StaticDefenseType_Forced" default="null" />
+        <param name="Size" default="null" />
+        <param name="Interval" default="null" />
+        <param name="MaxSpawnPerIteration" default="3" />
+        <param name="DebugChance" default="null" />
+      </params>
+      <actions>
+        <set_value name="$IsSuccess" exact="false" />
+        <do_if value="@$StaticDefenseManager.$Strategies_Pending.count lt $MaxSpawnPerIteration" comment="test to limit number of pending strategies">
+          <do_if value="not @$StaticDefenseManager.$NextId">
+            <set_value name="$StaticDefenseManager.$NextId" exact="1" />
+          </do_if>
+          <set_value name="$ThisId" exact="@$StaticDefenseManager.$NextId" />
+          <set_value operation="add" name="$StaticDefenseManager.$NextId" exact="1" />
+          <include_actions ref="md.LIB_Generic.StationSafety_Constants" />
+          <include_actions ref="Constants" />
+          <debug_text text="'$StaticDefenseType_Forced: %s'.[$StaticDefenseType_Forced]" chance="$DebugChance" />
+          <run_actions ref="md.LIB_Generic.GetSectorSafety" result="$Safety">
+            <param name="Sector" value="$Sector" />
+            <param name="Faction" value="$Faction" />
+            <param name="Station" value="$Station" />
+          </run_actions>
+          <set_value name="$SafetyLevel" exact="$Safety.$Level" />
+          <set_value name="$Stations_Friend" exact="$Safety.$Stations_Friend" />
+          <set_value name="$Stations_Enemy" exact="$Safety.$Stations_Enemy" />
+          <do_if value="(not $Station) and @$Stations_Friend.count">
+            <set_value name="$Station" exact="$Stations_Friend.random" />
+          </do_if>
+          <debug_text text="'$Station: %s, %s'.[@$Station.knownname, @$Station.idcode]" chance="$DebugChance" />
+          <set_value name="$Gates" exact="[]" comment="get gates in sector" />
+          <do_if value="$Station" comment="sort gates by dist from $station">
+            <find_object name="$Gates" class="[class.gate, class.highwayexitgate]" space="$Sector" multiple="true" active="true" sortbyvalue="
+              (@loop.element.destination.sector.owner.hasrelation.enemy.{$Faction} * -1000000)
+              + ((not @loop.element.destination.sector.owner.hasrelation.enemy.{$Faction}) * 1000000)
+              + (@loop.element.destination.sector.iscontestedby.{$Faction} * -500000)
+              + loop.element.isactive * -1000000
+              + loop.element.distanceto.{$Station}" />
+          </do_if>
+          <do_elseif value="not @$Stations_Friend.count" comment="sort gates by destination with faction">
+            <find_object name="$Gates" class="[class.gate, class.highwayexitgate]" space="$Sector" multiple="true" active="true" sortbyvalue="
+              ((@loop.element.destination.sector.owner == $Faction) * -1000000)
+              + (@loop.element.destination.sector.iscontestedby.{$Faction} * -500000)
+              + ((not @loop.element.destination.sector.owner.hasrelation.neutral.{$Faction}) * -250000)
+              + ((not @loop.element.destination.sector.owner.hasrelation.enemy.{$Faction}) * 1000000)
+              + loop.element.isactive * -1000000
+              + loop.element.distanceto.{$Sector}" />
+          </do_elseif>
+          <do_else comment="shuffle gates">
+            <find_object name="$Gates" class="[class.gate, class.highwayexitgate]" space="$Sector" active="true" multiple="true" />
+            <shuffle_list list="$Gates" />
+          </do_else>
+          <set_value name="$IsPreemptiveDefense" exact="false" />
+          <do_if value="not @$Stations_Friend.count">
+            <set_value name="$IsPreemptiveDefense" exact="true" />
+          </do_if>
+          <include_actions ref="GetDefendObject" comment="get defend object." />
+          <run_actions chance="$DebugChance" ref="md.LIB_Generic.DebugPositions_AddBeacon" result="$DebugBeacon_DefendThis">
+            <param name="Id" value="'defend'" />
+            <param name="Name" value="'defend: DefendObject'" />
+            <param name="Space" value="$StaticDefense_DefendObject" />
+          </run_actions>
+          <include_actions ref="GetTypePositionAndOrientation" comment="get defend type, pos, and orientation" />
+          <do_if value="$StaticDefense_Position" comment="get positions field">
+            <set_value name="$IsSuccess" exact="true" />
+            <run_actions chance="$DebugChance" ref="md.LIB_Generic.DebugPositions_AddBeacon" result="$DebugBeacon_DefendAt">
+              <param name="Id" value="'defend at'" />
+              <param name="Name" value="'defend: defend at'" />
+              <param name="Space" value="$Sector" />
+              <param name="Position" value="$Position_Between" />
+            </run_actions>
+            <include_actions ref="GetMacrosToDeploy" comment="get macros to deploy" />
+            <do_for_each name="$MacroToDeploy" in="$MacrosToDeploy" chance="$DebugChance">
+              <debug_text text="'$MacroToDeploy: %s'.[$MacroToDeploy.name]" />
+            </do_for_each>
+            <do_if value="not $Size">
+              <do_if value="$StaticDefense_Type == $StaticDefense_Type_ContainStation">
+                <set_value name="$Size" exact="$StaticDefense_DefendObject.size * 2" />
+              </do_if>
+              <do_elseif value="$DeployableType == $StaticDefense_DeployableType_LaserTowers">
+                <set_value name="$Size" exact="$Size_LaserTowerNetwork" />
+              </do_elseif>
+              <do_else>
+                <set_value name="$Size" exact="$Size_Minefield" />
+              </do_else>
+            </do_if>
+            <do_if value="not $Interval">
+              <do_if value="$DeployableType == $StaticDefense_DeployableType_LaserTowers">
+                <set_value name="$Interval" exact="$IntervalDist_LaserTowers" />
+              </do_if>
+              <do_else>
+                <set_value name="$Interval" exact="$IntervalDist_Mines" />
+              </do_else>
+            </do_if>
+            <debug_text text="'$Size: %s, $Interval: %s'.[$Size, $Interval]" chance="$DebugChance" />
+            <run_actions ref="GetPositionsField" result="$Positions" comment="get field of positions">
+              <param name="Type" value="$StaticDefense_Type" />
+              <param name="Space" value="$Sector" />
+              <param name="Position" value="$StaticDefense_Position" />
+              <param name="Orientation" value="$StaticDefense_Orientation" />
+              <param name="Size" value="$Size" />
+              <param name="Interval" value="$Interval" />
+              <param name="DebugChance" value="$DebugChance" />
+            </run_actions>
+          </do_if>
+        </do_if>
+        <do_if value="$IsSuccess">
+          <run_actions ref="GetName" result="$Name">
+            <param name="DeployableType" value="$DeployableType" />
+            <param name="Id" value="$ThisId" />
+            <param name="IsPreemptiveDefense" value="$IsPreemptiveDefense" />
+            <param name="StaticDefense_DefendObject" value="$StaticDefense_DefendObject" />
+            <param name="StaticDefense_OtherObject" value="$StaticDefense_OtherObject" />
+          </run_actions>
+          <set_value name="$Strategy" exact="table[]" />
+          <set_value name="$Strategy.$Id" exact="$ThisId" />
+          <set_value name="$Strategy.$Name" exact="$Name" />
+          <set_value name="$Strategy.$Type" exact="$StaticDefense_Type" />
+          <set_value name="$Strategy.$DeployableType" exact="$DeployableType" />
+          <set_value name="$Strategy.$MacrosToDeploy" exact="@$MacrosToDeploy" />
+          <set_value name="$Strategy.$Sector" exact="$Sector" />
+          <set_value name="$Strategy.$Position" exact="$StaticDefense_Position" />
+          <set_value name="$Strategy.$Orientation" exact="$StaticDefense_Orientation" />
+          <set_value name="$Strategy.$DefendObject" exact="$StaticDefense_DefendObject" />
+          <set_value name="$Strategy.$OtherObject" exact="$StaticDefense_OtherObject" />
+          <set_value name="$Strategy.$PositionsField" exact="@$Positions" />
+          <set_value name="$Strategy.$SuccessCount" exact="0" />
+          <set_value name="$Strategy.$AttemptCount" exact="0" />
+          <set_value name="$Strategy.$TimePaused" exact="0" />
+          <set_value name="$Strategy.$DeployedObjects" exact="null" />
+          <set_value name="$Strategy.$DangerCount" exact="0" />
+          <set_value name="$Strategy.$Status" exact="$StaticDefense_Status_Pending" />
+        </do_if>
+        <do_else>
+          <set_value name="$Strategy" exact="null" />
+        </do_else>
+        <debug_text text="'$Strategy: %s'.[$Strategy]" chance="$DebugChance" />
+        <return value="$Strategy" />
+      </actions>
+    </library>
+
+    <library name="GetName" purpose="run_actions">
+      <params>
+        <param name="DeployableType" />
+        <param name="Id" />
+        <param name="IsPreemptiveDefense" />
+        <param name="StaticDefense_DefendObject" />
+        <param name="StaticDefense_OtherObject" />
+      </params>
+      <actions>
+        <include_actions ref="Constants" />
+        <do_if value="$DeployableType == $StaticDefense_DeployableType_LaserTowers">
+          <set_value name="$Name" exact="'id ' + $Id + ' (laser towers): '" />
+        </do_if>
+        <do_else>
+          <set_value name="$Name" exact="'id ' + $Id + ' (mines): '" />
+        </do_else>
+        <do_if value="$IsPreemptiveDefense">
+          <set_value name="$Name" exact="$Name + ' preemptive v '" />
+        </do_if>
+        <set_value name="$Name" exact="$Name + @$StaticDefense_DefendObject.idcode" />
+        <set_value name="$Name" exact="$Name + ' ' + @$StaticDefense_DefendObject.class" />
+        <do_if value="$IsPreemptiveDefense">
+          <set_value name="$Name" exact="$Name + ' at '" />
+        </do_if>
+        <do_else>
+          <set_value name="$Name" exact="$Name + ' v '" />
+        </do_else>
+        <set_value name="$Name" exact="$Name + @$StaticDefense_OtherObject.idcode" />
+        <set_value name="$Name" exact="$Name + ' ' + @$StaticDefense_OtherObject.class" />
+        <return value="$Name" />
+      </actions>
+    </library>
+
+    <!--
+      GetDefendObject:
+      usually the station given, but if preemptive (i.e. no given station), get enemy station so calcs will be against that.
+      or sector, if no enemy station.
+      all calcs for pos will be from this object.
+      input: station or null
+      output: station or sector
+    -->
+    <library name="GetDefendObject">
+      <actions>
+        <set_value name="$StaticDefense_DefendObject" exact="$Station" />
+        <do_if value="$IsPreemptiveDefense and $Stations_Enemy.count"
+          comment="set this to an enemy station, so calcs will be from this to a gate">
+          <set_value name="$StaticDefense_DefendObject" exact="$Stations_Enemy.random" />
+        </do_if>
+        <do_elseif value="(not $StaticDefense_DefendObject)"
+          comment="set this to the sector and its center will be used for pos calcs">
+          <set_value name="$StaticDefense_DefendObject" exact="$Sector" />
+        </do_elseif>
+        <debug_text text="'$StaticDefense_DefendObject: %s, %s, %s, %s'.[@$StaticDefense_DefendObject.knownname, @$StaticDefense_DefendObject.idcode, @$StaticDefense_DefendObject.class, @$StaticDefense_DefendObject.isactive]" chance="$DebugChance" />
+      </actions>
+    </library>
+
+    <!--
+      GetTypePositionAndOrientation:
+      if safety level is overwhelmed, contain station: envelop the given station with static defenses.
+      if safety is balanced, enemy wall: and an enemy station exists, deploy between station and an enemy station.
+        deploy distance is near enemy station. if the same station is given, next deploy distances are: closer and closer to station
+        calc is: deploy pos interval: 80km
+          number of segments: (dist to enemy - deploy pos interval) / deploy pos interval
+          e.g.: dist to enemy = 500km
+          number of segments = (500km - 80km) / 80km = 5.25
+          defend distances as factor of distance from station to defend: 1 - (20km + $i * $DistanceBetweenFields) / ($Distance_ToEnemy)f
+            1st: 1 - (20km + 1 * 80km) / 500km = 0.8 from station to enemy station
+            2nd: 1 - (20km + 2 * 80km) / 500km = 0.64
+            3rd: 1 - (20km + 3 * 80km) / 500km = 0.48
+            4th: 1 - (20km + 4 * 80km) / 500km = 0.32
+            5th: 1 - (20km + 5 * 80km) / 500km = 0.16
+      otherwise, gate approach: deploy between station and a gate.
+        calc is the same to enemy wall
+      input: defend object (station or sector)
+      output: type (enemy wall, contain station, gate approach), pos and orientation of the static defense
+    -->
+    <library name="GetTypePositionAndOrientation">
+      <actions>
+        <debug_text text="'$StaticDefenseManager.state: ' + @$StaticDefenseManager.state + ' $StaticDefenseManager.$Faction: ' + @$StaticDefenseManager.$Faction" chance="@$DebugChance" />
+        <set_value name="$DistanceBetweenFields" exact="80km" />
+        <set_value name="$StaticDefense_Type" exact="null" />
+        <set_value name="$StaticDefense_Position" exact="null" />
+        <set_value name="$StaticDefense_Orientation" exact="null" />
+        <set_value name="$StaticDefense_OtherObject" exact="null" />
+        <create_group groupname="$StaticDefenses_Nearby" />
+        <do_if value="(not $IsPreemptiveDefense) and
+          @$StaticDefense_DefendObject.isclass.station and
+          (
+            $StaticDefenseType_Forced == $StaticDefense_Type_ContainStation or
+            $SafetyLevel == $SafetyLevel_Overwhelmed
+          )"
+          comment="type: contain station">
+          <run_actions chance="$DebugChance" ref="md.LIB_Generic.DebugPositions_AddBeacon" result="$DebugBeacon_FindOthersHere">
+            <param name="Id" value="'defend test'" />
+            <param name="Name" value="'defend: defended already?'" />
+            <param name="Space" value="$StaticDefense_DefendObject" />
+          </run_actions>
+          <run_actions ref="FindNearbyStaticDefense" result="$StaticDefenses_Nearby">
+            <param name="Space" value="$StaticDefense_DefendObject" />
+            <param name="DebugChance" value="$DebugChance" />
+          </run_actions>
+          <do_if value="$StaticDefenses_Nearby.count lt [$StaticDefenseManager.$DeployableCount_ForInactiveField, $DeployableCount_ForInactiveField].min">
+            <set_value name="$StaticDefense_Type" exact="$StaticDefense_Type_ContainStation" />
+            <create_position name="$StaticDefense_Position" space="$Sector" object="$StaticDefense_DefendObject" />
+          </do_if>
+        </do_if>
+        <do_if value="(not $IsPreemptiveDefense) and
+          @$Stations_Enemy.count and
+          (
+            $StaticDefenseType_Forced == $StaticDefense_Type_EnemyWall or
+            ((not $StaticDefense_Type) and $SafetyLevel le $SafetyLevel_Balanced)
+          )"
+          comment="type: enemy wall">
+          <do_for_each name="$Station_Enemy" in="$Stations_Enemy">
+            <set_value name="$DefendDistances" exact="[]" />
+            <set_value name="$Distance_ToEnemy" exact="$StaticDefense_DefendObject.distanceto.{$Station_Enemy}" />
+            <debug_text text="'====$Distance_ToEnemy: %s'.[$Distance_ToEnemy]" chance="$DebugChance" />
+            <set_value name="$Segments" exact="(($Distance_ToEnemy - $DistanceBetweenFields) / $DistanceBetweenFields)f" comment="80km from enemy station to defend object" />
+            <debug_text text="'$Segments: %s'.[$Segments]" chance="$DebugChance" />
+            <do_all counter="$i" exact="($Segments)i">
+              <append_to_list name="$DefendDistances" exact="1 - (20km + $i * $DistanceBetweenFields) / ($Distance_ToEnemy)f" />
+            </do_all>
+            <sort_list list="$DefendDistances" sortdescending="true" comment="start deployment far from defend object then gets closer to defend object" />
+            <debug_text text="'$DefendDistances: %s'.[$DefendDistances]" chance="$DebugChance" />
+            <set_value name="$LoopCount" exact="0" />
+            <set_value name="$StaticDefense_Position" exact="null" />
+            <do_for_each name="$DefendDistance" in="$DefendDistances">
+              <debug_text text="'========$DefendDistance: %s'.[$DefendDistance]" chance="$DebugChance" />
+              <set_value operation="add" name="$LoopCount" exact="1" />
+              <set_value name="$IsSkipIteration" exact="$LoopCount gt 1" />
+              <run_actions ref="FindUnobstructedPositionBetween" result="$Position_Between">
+                <param name="Sector" value="$Sector" />
+                <param name="Faction" value="$Faction" />
+                <param name="DefendObject" value="$StaticDefense_DefendObject" />
+                <param name="OtherObject" value="$Station_Enemy" />
+                <param name="Distance_Factor" value="$DefendDistance" />
+                <param name="IsSkipIteration" value="$IsSkipIteration" />
+              </run_actions>
+              <create_position name="$Position_Between" space="$Sector" object="$StaticDefense_DefendObject" value="$Position_Between"
+                comment="position_between is in $StaticDefense_DefendObject coords, set it to $Sector coords" />
+              <run_actions chance="$DebugChance" ref="md.LIB_Generic.DebugPositions_AddBeacon" result="$DebugBeacon_FindOthersHere">
+                <param name="Id" value="'defend test'" />
+                <param name="Name" value="'defend: defended already?'" />
+                <param name="Space" value="$Sector" />
+                <param name="Position" value="$Position_Between" />
+              </run_actions>
+              <set_value name="$Range" exact="20km" comment="higher densities near gates and enemy stations" />
+              <do_if value="$LoopCount gt 1">
+                <set_value name="$Range" exact="40km" comment="laxed distance tests" />
+              </do_if>
+              <run_actions ref="FindNearbyStrategy" result="$Strategy_Nearby">
+                <param name="StaticDefenseManager" value="$StaticDefenseManager" />
+                <param name="Space" value="$Sector" />
+                <param name="Position" value="$Position_Between" />
+                <param name="Range" value="$Range" />
+              </run_actions>
+              <debug_text text="'$Strategy_Nearby: %s'.[$Strategy_Nearby]" chance="$DebugChance" />
+              <do_if value="not $Strategy_Nearby">
+                <run_actions ref="FindNearbyStaticDefense" result="$StaticDefenses_Nearby">
+                  <param name="Space" value="$Sector" />
+                  <param name="Position" value="$Position_Between" />
+                  <param name="Range" value="$Range" />
+                  <param name="DebugChance" value="$DebugChance" />
+                </run_actions>
+                <debug_text text="'$StaticDefenses_Nearby.count: %s'.[$StaticDefenses_Nearby.count]" chance="$DebugChance" />
+                <do_if value="$StaticDefenses_Nearby.count lt $DeployableCount_ForInactiveField">
+                  <set_value name="$StaticDefense_Type" exact="$StaticDefense_Type_EnemyWall" />
+                  <set_value name="$StaticDefense_Position" exact="$Position_Between" />
+                  <set_value name="$StaticDefense_OtherObject" exact="$Station_Enemy" />
+                  <break />
+                </do_if>
+              </do_if>
+            </do_for_each>
+            <do_if value="$StaticDefense_Position">
+              <break />
+            </do_if>
+          </do_for_each>
+        </do_if>
+        <do_if value="$StaticDefenseType_Forced == $StaticDefense_Type_GateApproach or (not $StaticDefense_Type)"
+          comment="type: gate approach">
+          <do_if value="(not $IsPreemptiveDefense) and @$Stations_Enemy.count"
+            comment="add enemy stations so that gate approach will revert to enemy wall if gates have been defended">
+            <append_list_elements name="$Gates" other="$Stations_Enemy" />
+          </do_if>
+          <!-- <do_elseif value="@$Stations_Friend.count">
+            <append_list_elements name="$Gates" other="$Stations_Friend" />
+          </do_elseif> -->
+          <!-- <do_else comment="center of sector">
+            <append_to_list name="$Gates" exact="$Sector" />
+          </do_else> -->
+          <do_for_each name="$Gate" in="$Gates">
+            <set_value name="$DefendDistances" exact="[]" />
+            <set_value name="$Distance_ToGate" exact="$StaticDefense_DefendObject.distanceto.{$Gate}" />
+            <debug_text text="'====$Distance_ToGate: %s'.[$Distance_ToGate]" chance="$DebugChance" />
+            <set_value name="$Segments" exact="(($Distance_ToGate - ($DistanceBetweenFields * 0.5)) / $DistanceBetweenFields)f" comment="40km from gate to defend object" />
+            <debug_text text="'$Segments: %s'.[$Segments]" chance="$DebugChance" />
+            <do_all counter="$i" exact="($Segments + 1)i">
+              <append_to_list name="$DefendDistances" exact="1 - (20km + $i * $DistanceBetweenFields) / ($Distance_ToGate)f" />
+            </do_all>
+            <sort_list list="$DefendDistances" sortdescending="true" comment="start deployment far from defend object then gets closer to defend object" />
+            <debug_text text="'$DefendDistances: %s'.[$DefendDistances]" chance="$DebugChance" />
+            <set_value name="$DebugBeacons" exact="table[]" chance="$DebugChance" />
+            <set_value name="$LoopCount" exact="0" />
+            <set_value name="$StaticDefense_Position" exact="null" />
+            <do_for_each name="$DefendDistance" in="$DefendDistances">
+              <debug_text text="'========$DefendDistance: %s'.[$DefendDistance]" chance="$DebugChance" />
+              <set_value operation="add" name="$LoopCount" exact="1" />
+              <set_value name="$IsSkipIteration" exact="$LoopCount gt 1" />
+              <run_actions ref="FindUnobstructedPositionBetween" result="$Position_Between">
+                <param name="Sector" value="$Sector" />
+                <param name="Faction" value="$Faction" />
+                <param name="DefendObject" value="$StaticDefense_DefendObject" />
+                <param name="OtherObject" value="$Gate" />
+                <param name="Distance_Factor" value="$DefendDistance" />
+                <param name="IsSkipIteration" value="$IsSkipIteration" />
+              </run_actions>
+              <create_position name="$Position_Between" space="$Sector" object="$StaticDefense_DefendObject" value="$Position_Between"
+                comment="position_between is in $StaticDefense_DefendObject coords, set it to $Sector coords" />
+              <run_actions chance="$DebugChance" ref="md.LIB_Generic.DebugPositions_AddBeacon" result="$DebugBeacons.{'$' + $DefendDistance}">
+                <param name="Id" value="'defend test ' + $DefendDistance" />
+                <param name="Name" value="'defend: defended already (' + $DefendDistance + ')?'" />
+                <param name="Space" value="$Sector" />
+                <param name="Position" value="$Position_Between" />
+              </run_actions>
+              <set_value name="$Range" exact="20km" comment="higher densities near gates and enemy stations" />
+              <do_if value="$LoopCount gt 1">
+                <set_value name="$Range" exact="40km" comment="laxed distance tests" />
+              </do_if>
+              <run_actions ref="FindNearbyStrategy" result="$Strategy_Nearby">
+                <param name="StaticDefenseManager" value="$StaticDefenseManager" />
+                <param name="Space" value="$Sector" />
+                <param name="Position" value="$Position_Between" />
+                <param name="Range" value="$Range" />
+              </run_actions>
+              <debug_text text="'$Strategy_Nearby: %s'.[$Strategy_Nearby]" chance="$DebugChance" />
+              <do_if value="not $Strategy_Nearby">
+                <run_actions ref="FindNearbyStaticDefense" result="$StaticDefenses_Nearby">
+                  <param name="Space" value="$Sector" />
+                  <param name="Position" value="$Position_Between" />
+                  <param name="Range" value="$Range" />
+                  <param name="DebugChance" value="$DebugChance" />
+                </run_actions>
+                <debug_text text="'$StaticDefenses_Nearby.count: %s'.[$StaticDefenses_Nearby.count]" chance="$DebugChance" />
+                <do_if value="$StaticDefenses_Nearby.count lt [$StaticDefenseManager.$DeployableCount_ForInactiveField, $DeployableCount_ForInactiveField].min">
+                  <do_if value="$Gate.isclass.station">
+                    <set_value name="$StaticDefense_Type" exact="$StaticDefense_Type_EnemyWall" />
+                  </do_if>
+                  <do_else>
+                    <set_value name="$StaticDefense_Type" exact="$StaticDefense_Type_GateApproach" />
+                  </do_else>
+                  <set_value name="$StaticDefense_Position" exact="$Position_Between" />
+                  <set_value name="$StaticDefense_OtherObject" exact="$Gate" />
+                  <break />
+                </do_if>
+              </do_if>
+            </do_for_each>
+            <do_if value="$StaticDefense_Position">
+              <break />
+            </do_if>
+          </do_for_each>
+        </do_if>
+        <debug_text text="'$StaticDefense_Type: %s (%s)'.[$StaticDefense_Type, @['contain station', 'enemy wall', 'gate approach'].{$StaticDefense_Type}]" chance="$DebugChance" />
+        <do_if value="not @$Position_Between">
+          <create_position name="$Position_Between" space="$Sector" object="$StaticDefense_DefendObject" />
+        </do_if>
+        <do_if value="$StaticDefense_OtherObject" comment="contain station has no defend against object">
+          <debug_text text="'$StaticDefense_OtherObject: %s, %s, %s, %s'.[@$StaticDefense_OtherObject.knownname, @$StaticDefense_OtherObject.idcode, @$StaticDefense_OtherObject.class, @$StaticDefense_OtherObject.isactive]" chance="$DebugChance" />
+          <create_position name="$PosFrom" space="$Sector" object="$StaticDefense_DefendObject" />
+          <create_position name="$PosTo" space="$Sector" object="$StaticDefense_OtherObject" />
+          <create_orientation name="$StaticDefense_Orientation" orientation="look_at" refposition="$PosTo">
+            <position value="$PosFrom" />
+          </create_orientation>
+          <run_actions chance="$DebugChance" ref="md.LIB_Generic.DebugPositions_AddBeacon" result="$DebugBeacon_DefendAgainst">
+            <param name="Id" value="'defend against'" />
+            <param name="Name" value="'defend: defend against ' + @$StaticDefense_OtherObject.idcode" />
+            <param name="Space" value="$StaticDefense_OtherObject" />
+          </run_actions>
+        </do_if>
+        <do_else>
+          <set_value name="$StaticDefense_Orientation" exact="$StaticDefense_DefendObject.rotation" />
+        </do_else>
+      </actions>
+    </library>
+
+    <library name="GetMacrosToDeploy">
+      <actions>
+        <set_value name="$MacrosToDeploy" exact="[]" />
+        <do_if value="
+          $DeployableType == $StaticDefense_DeployableType_Mines or
+          (
+            $DeployableType == $StaticDefense_DeployableType_Mines_Indiscriminate and
+            @$Faction == $Faction and 
+            $StaticDefense_Type == $StaticDefense_Type_ContainStation
+          )
+        ">
+          <append_to_list name="$MacrosToDeploy" exact="macro.weapon_gen_mine_03_macro" />
+        </do_if>
+        <do_elseif value="$DeployableType == $StaticDefense_DeployableType_Mines_Indiscriminate">
+          <do_any>
+            <append_to_list name="$MacrosToDeploy" exact="macro.weapon_gen_mine_02_macro" />
+            <append_to_list name="$MacrosToDeploy" exact="macro.weapon_gen_mine_01_macro" />
+          </do_any>
+        </do_elseif>
+        <do_elseif value="$DeployableType == $StaticDefense_DeployableType_LaserTowers">
+          <set_value name="$DeployableMacros" exact="[
+            macro.ship_gen_s_lasertower_01_a_macro,
+            macro.ship_gen_xs_lasertower_01_a_macro
+          ]" />
+          <do_if value="not $StaticDefenseManager.$CanDeploySLaserTower">
+            <remove_from_list name="$DeployableMacros" exact="macro.ship_gen_s_lasertower_01_a_macro" />
+          </do_if>
+          <append_to_list name="$MacrosToDeploy" exact="$DeployableMacros.random" />
+        </do_elseif>
+        <do_else comment="randomised deploy pattern. e.g. mine, mine, lasertower, mine, lasertower">
+          <set_value name="$DeployableMacros" exact="[
+            macro.weapon_gen_mine_02_macro,
+            macro.weapon_gen_mine_01_macro,
+            macro.ship_gen_s_lasertower_01_a_macro,
+            macro.ship_gen_xs_lasertower_01_a_macro
+          ]" />
+          <do_if value="not $StaticDefenseManager.$CanDeploySLaserTower">
+            <remove_from_list name="$DeployableMacros" exact="macro.ship_gen_s_lasertower_01_a_macro" />
+          </do_if>
+          <do_all counter="$i" min="1" max="5">
+            <append_to_list name="$MacrosToDeploy" exact="$DeployableMacros.random" />
+          </do_all>
+        </do_else>
+      </actions>
+    </library>
+
+    <library name="FindUnobstructedPositionBetween" purpose="run_actions">
+      <params>
+        <param name="Sector" />
+        <param name="Faction" />
+        <param name="DefendObject" />
+        <param name="OtherObject" />
+        <param name="Distance_Factor" default="null" />
+        <param name="Distance_Absolute" default="null" />
+        <param name="DebugChance" default="0" />
+        <param name="RecursionCount" default="1" />
+        <param name="IsSkipIteration" default="false" />
+      </params>
+      <actions>
+        <debug_text chance="$DebugChance" text="'$DefendObject: %s, %s'.[@$DefendObject.knownname, @$DefendObject.idcode]" />
+        <debug_text chance="$DebugChance" text="'$OtherObject: %s, %s'.[@$OtherObject.knownname, @$OtherObject.idcode]" />
+        <debug_text chance="$DebugChance" text="'$Distance_Factor: %s'.[$Distance_Factor]" />
+        <debug_text chance="$DebugChance" text="'$Distance_Absolute: %s'.[$Distance_Absolute]" />
+        <do_if value="(not $Distance_Factor) and (not $Distance_Absolute)">
+          <set_value name="$Distance_Factor" exact="0.5" />
+        </do_if>
+        <run_actions ref="md.LIB_Generic.GetPositionBetweenObjects" result="$PositionData">
+          <param name="FromObject" value="$DefendObject" />
+          <param name="ToObject" value="$OtherObject" />
+          <param name="Distance01" value="$Distance_Factor" />
+          <param name="Distance_Absolute" value="$Distance_Absolute" />
+          <param name="IsForceEclipticPlane" value="false" />
+        </run_actions>
+        <set_value name="$Position_Between" exact="$PositionData.$position" />
+        <create_position name="$Position_Between_SectorCoords" space="$Sector" object="$DefendObject" value="$Position_Between" />
+        <find_station name="$Stations_Between" space="$Sector" multiple="true"
+          sortbyvalue="loop.element.distanceto.[$Sector, $Position_Between_SectorCoords]"
+          comment="sort by distance from the object (not station). minimises the loop through all possible friendlies in between.">
+          <match_relation_of faction="$Faction" comparison="gt" relation="enemy" />
+          <match_distance object="$OtherObject" min="20km" max="$DefendObject.distanceto.{$OtherObject} - 1km" />
+        </find_station>
+        <set_value name="$Counter" exact="0" />
+        <do_for_each name="$Station_Between" in="$Stations_Between">
+          <do_if value="$Station_Between != $DefendObject">
+            <set_value name="$Counter" exact="$Counter + 1" />
+            <run_actions ref="md.LIB_Generic.Position_GetIsInTheWay" result="$IsInTheWay">
+              <param name="Position1" value="$DefendObject" />
+              <param name="Position2" value="$OtherObject" />
+              <param name="PositionTest" value="$Station_Between" />
+              <param name="DebugChance" value="$DebugChance" />
+            </run_actions>
+            <do_if value="$IsInTheWay and $RecursionCount lt 3 and (not $IsSkipIteration)"
+              comment="station found is in the way, so find the position between that station and the object">
+              <run_actions ref="FindUnobstructedPositionBetween" result="$Position_Between"
+                comment="there should only be this one recursion because of the decreasing distance between the nearest friend-enemy station. i.e. there shouldnt be other enemy station between the nearest friend-enemy station. if there are any, itll be 1 or 2 out of the way from the original point (but not out of the way of this found station.)">
+                <param name="Sector" value="$Sector" />
+                <param name="Faction" value="$Faction" />
+                <param name="DefendObject" value="$Station_Between" />
+                <param name="OtherObject" value="$OtherObject" />
+                <param name="Distance_Factor" value="$Distance_Factor" />
+                <param name="Distance_Absolute" value="$Distance_Absolute" />
+                <param name="DebugChance" value="$DebugChance" />
+                <param name="RecursionCount" value="$RecursionCount + 1" />
+              </run_actions>
+              <run_actions ref="md.LIB_Generic.DebugPositions_AddBeacon" chance="$DebugChance">
+                <param name="Id" value="'possible obstruction ' + $Counter" />
+                <param name="Name" value="'defend: possible obstruction ' + $Counter + ' in the way: ' + $IsInTheWay" />
+                <param name="Space" value="$Station_Between" />
+              </run_actions>
+              <create_position name="$Position_Between" space="$DefendObject" object="$Station_Between" value="$Position_Between"
+                comment="convert position_between back to $DefendObject coords" />
+              <break />
+            </do_if>
+          </do_if>
+        </do_for_each>
+        <return value="$Position_Between" />
+      </actions>
+    </library>
+
+    <library name="FindNearbyStaticDefense" purpose="run_actions">
+      <params>
+        <param name="Space" />
+        <param name="Position" default="null" />
+        <param name="Macros_toFind" default="[
+          macro.ship_gen_s_lasertower_01_a_macro,
+          macro.ship_gen_xs_lasertower_01_a_macro,
+          macro.weapon_gen_mine_01_macro,
+          macro.weapon_gen_mine_02_macro,
+          macro.weapon_gen_mine_03_macro,
+        ]" />
+        <param name="Range" default="40km" />
+        <param name="DebugChance" default="0" />
+      </params>
+      <actions>
+        <do_if value="not $Position">
+          <create_position name="$Position" x="0" y="0" z="0" />
+        </do_if>
+        <do_if value="(not @$Space.isclass.sector) and $Space.sector">
+          <set_value name="$Sector" exact="$Space.sector" />
+        </do_if>
+        <do_else>
+          <set_value name="$Sector" exact="$Space" />
+        </do_else>
+        <create_position name="$Position" space="$Sector" object="$Space" value="$Position" />
+        <find_object groupname="$StaticDefenses" macro="$Macros_toFind" space="$Sector" multiple="true">
+          <match_distance space="$Sector" value="$Position" max="$Range" />
+        </find_object>
+        <return value="$StaticDefenses" />
+      </actions>
+    </library>
+
+    <library name="FindNearbyStrategy" purpose="run_actions">
+      <params>
+        <param name="StaticDefenseManager" />
+        <param name="Space" />
+        <param name="Position" />
+        <param name="Range" default="40km" />
+        <param name="DebugChance" default="0" />
+      </params>
+      <actions>
+        <set_value name="$Strategy_Nearby" exact="null" />
+        <create_position name="$Pos_ToTest" space="$Space" value="$Position" />
+        <do_if value="@$StaticDefenseManager.$Strategies_Pending.count">
+          <do_for_each name="$Strategy" in="$StaticDefenseManager.$Strategies_Pending">
+            <create_position name="$Pos_Strategy" space="$Strategy.$Sector" value="$Strategy.$Position" />
+            <do_if value="$Pos_ToTest.distanceto.{$Pos_Strategy} lt $Range">
+              <set_value name="$Strategy_Nearby" exact="$Strategy" />
+              <break />
+            </do_if>
+          </do_for_each>
+        </do_if>
+        <return value="$Strategy_Nearby" />
+      </actions>
+    </library>
+
+    <library name="CreateJobShips" purpose="run_actions">
+      <params>
+        <param name="StaticDefenseManager" />
+        <param name="Faction" />
+        <param name="Sector" />
+      </params>
+      <actions>
+        <set_value name="$ShipMs" exact="[]" />
+        <set_value name="$ShipSs" exact="[]" />
+        <do_for_each name="$Ship" in="$StaticDefenseManager.$CombatEngineersAndSaboteurs">
+          <do_if value="$Ship.isclass.ship_m">
+            <append_to_list name="$ShipMs" exact="$Ship" />
+          </do_if>
+          <do_elseif value="$Ship.isclass.ship_s">
+            <append_to_list name="$ShipSs" exact="$Ship" />
+          </do_elseif>
+        </do_for_each>
+        <find_station name="$Wharf" wharf="true" space="player.galaxy" checkoperational="true" sortbydistanceto="$Sector" comment="any wharf, to allow for factions that don't have any but have static defense var goals">
+          <match_relation_to faction="$Faction" comparison="ge" relation="neutral" />
+        </find_station>
+        <do_if value="@$Wharf.isoperational">
+          <set_value name="$Sector" exact="$Wharf.sector" />
+          <find_zone name="$Zone" space="$Sector">
+            <match_child class="class.station" checkoperational="true" />
+          </find_zone>
+          <do_if value="$ShipMs.count lt 3">
+            <get_suitable_job result="$Job" faction="$Faction" tags="tag.staticdefense" size="class.ship_m" />
+            <!-- <debug_text text="'$Faction: %s, $Job (ship_m): %s'.[$Faction, $Job]" /> -->
+            <do_if value="not $Job" comment="faction may not have m-class static defense ship">
+              <get_suitable_job result="$Job" faction="$Faction" tags="tag.staticdefense" size="class.ship_s" />
+              <!-- <debug_text text="'$Faction: %s, $Job (no ship_m found): %s'.[$Faction, $Job]" /> -->
+            </do_if>
+            <do_if value="$Job">
+              <do_all counter="$i" exact="3 - $ShipMs.count">
+                <request_job_ship name="$Ship" job="$Job" requester="$Sector" zone="$Zone" />
+                <activate_job_ship_orders ship="$Ship" />
+              </do_all>
+            </do_if>
+          </do_if>
+          <do_if value="$ShipSs.count lt 2">
+            <get_suitable_job result="$Job" faction="$Faction" tags="tag.staticdefense" size="class.ship_s" />
+            <!-- <debug_text text="'$Faction: %s, $Job (ship_s): %s'.[$Faction, $Job]" /> -->
+            <do_if value="$Job">
+              <do_all counter="$i" exact="2 - $ShipSs.count">
+                <request_job_ship name="$Ship" job="$Job" requester="$Sector" zone="$Zone" />
+                <activate_job_ship_orders ship="$Ship" />
+              </do_all>
+            </do_if>
+          </do_if>
+        </do_if>
+      </actions>
+    </library>
+
+    <!--
+      GetPositionsField:
+      get the list of positions that describe the field type for the static defense strategy.
+      input types:
+        enemy wall = rectangle
+        contain = sphere
+        gate approach = rectangle
+      output: list of positions
+    -->
+    <library name="GetPositionsField" purpose="run_actions">
+      <params>
+        <param name="Type" />
+        <param name="Space" />
+        <param name="Position" />
+        <param name="Orientation" />
+        <param name="Size" />
+        <param name="Interval" />
+        <param name="DebugChance" default="null" />
+      </params>
+      <actions>
+        <include_actions ref="Constants" />
+        <do_if value="(not @$Space.isclass.sector) and $Space.sector">
+          <set_value name="$Sector" exact="$Space.sector" />
+        </do_if>
+        <do_else>
+          <set_value name="$Sector" exact="$Space" />
+        </do_else>
+        <create_position name="$Position" space="$Sector" object="$Space" value="$Position" />
+        <do_if value="$Type == $StaticDefense_Type_EnemyWall">
+          <run_actions ref="md.LIB_Generic.Shape_GetPositions" result="$Positions">
+            <param name="Shape" value="'wall'" />
+            <param name="Position" value="$Position" />
+            <param name="Orientation" value="$Orientation" />
+            <param name="Size" value="$Size" />
+            <param name="Interval" value="$Interval" />
+          </run_actions>
+        </do_if>
+        <do_elseif value="$Type == $StaticDefense_Type_ContainStation">
+          <run_actions ref="md.LIB_Generic.Shape_GetPositions" result="$Positions">
+            <param name="Shape" value="'sphere'" />
+            <param name="Position" value="$Position" />
+            <param name="Size" value="$Size" />
+            <param name="Interval" value="$Interval" />
+          </run_actions>
+        </do_elseif>
+        <do_elseif value="$Type == $StaticDefense_Type_GateApproach">
+          <run_actions ref="md.LIB_Generic.Shape_GetPositions" result="$Positions">
+            <param name="Shape" value="'wall'" />
+            <param name="Position" value="$Position" />
+            <param name="Orientation" value="$Orientation" />
+            <param name="Size" value="$Size" />
+            <param name="Interval" value="$Interval" />
+          </run_actions>
+        </do_elseif>
+        <!--  <do_if value="$DebugChance">
+          <do_all counter="$i" exact="$Positions.count">
+            <set_value name="$Pos" exact="$Positions.{$i}" />
+            <run_actions ref="md.LIB_Generic.DebugPositions_AddBeacon">
+              <param name="Id" value="'static defense zzz: ' + (@md.LIB_Generic.DebugPositions.$Beacons.keys.count + $i)" />
+              <param name="Name" value="'static defense zzz: ' + (@md.LIB_Generic.DebugPositions.$Beacons.keys.count + $i)" />
+              <param name="Space" value="$Space" />
+              <param name="Position" value="$Pos" />
+            </run_actions>
+          </do_all>
+        </do_if> -->
+        <return value="$Positions" />
+      </actions>
+    </library>
+
+    <cue name="Debug_StrategyManager" namespace="this">
+      <actions>
+        <include_actions ref="Constants" />
+      </actions>
+    </cue>
+
+    <cue name="Debug_GetStrategy" namespace="this" comment="creates a static defense strategy in the player's sector. steps: 1. signal Debug_GetStrategy. 2. signal Debug_AI.">
+      <conditions>
+        <event_cue_signalled />
+      </conditions>
+      <actions>
+        <debug_text text="event.name" />
+        <set_value name="$Sector" exact="player.sector" />
+        <find_station_by_true_owner name="$Stations" space="$Sector" faction="$Sector.owner" multiple="true">
+          <match_any>
+            <match canbuildships="true" />
+            <match headquarters="true" />
+            <match tradestation="true" />
+            <match piratebase="true" />
+            <match equipmentdock="true" />
+            <match defencestation="true" />
+          </match_any>
+        </find_station_by_true_owner>
+        <shuffle_list list="$Stations" />
+        <set_value name="$Station" exact="$Stations.random" />
+        <debug_text text="'$Station: %s'.[$Station]" />
+        <include_actions ref="Constants" />
+        <run_actions ref="GetStrategy" result="$Strategy">
+          <param name="StaticDefenseManager" value="Debug_StrategyManager" />
+          <param name="Sector" value="$Sector" />
+          <param name="Faction" value="$Sector.owner" />
+          <param name="Station" value="$Station" />
+          <param name="DeployableType" value="$StaticDefense_DeployableType_LaserTowers" />
+          <param name="StaticDefenseType_Forced" value="null" />
+          <!-- StaticDefenseType_Forced (optional): $StaticDefense_Type_ContainStation | $StaticDefense_Type_EnemyWall | $StaticDefense_Type_GateApproach -->
+          <param name="DebugChance" value="100" />
+        </run_actions>
+        <debug_text text="'$Strategy.$Id: %s'.[@$Strategy.$Id]" />
+        <debug_text text="'$Strategy.$PositionsField.count: %s'.[@$Strategy.$PositionsField.count]" />
+        <do_if value="@$Strategy.$PositionsField.count">
+          <do_if value="not @md.LIB_Generic.DebugPositions.$Beacons">
+            <set_value name="md.LIB_Generic.DebugPositions.$Beacons" exact="table[] " />
+          </do_if>
+          <set_value name="$i" exact="0" />
+          <do_for_each name="$Pos" in="$Strategy.$PositionsField">
+            <debug_text text="'$Pos: %s'.[$Pos]" />
+            <set_value operation="add" name="$i" exact="1" />
+            <create_object name="$StaticDefense" sector="$Strategy.$Sector" macro="$Strategy.$MacrosToDeploy.{1}" owner="faction.player">
+              <position value="$Pos" />
+            </create_object>
+            <set_value name="md.LIB_Generic.DebugPositions.$Beacons.{'$' + $Strategy.$Id + '_' + $i}" exact="$StaticDefense" />
+          </do_for_each>
+        </do_if>
+        <set_value name="md.$Debug_StaticDefenseStrategy" exact="$Strategy" />
+        <reset_cue cue="this" />
+      </actions>
+    </cue>
+
+    <cue name="Debug_GetStrategy_Mines" namespace="this">
+      <conditions>
+        <event_cue_signalled />
+      </conditions>
+      <actions>
+        <debug_text text="event.name" />
+        <set_value name="$Sector" exact="player.sector" />
+        <include_actions ref="Constants" />
+        <run_actions ref="GetStrategy" result="$Strategy">
+          <param name="StaticDefenseManager" value="Debug_StrategyManager" />
+          <param name="Sector" value="$Sector" />
+          <param name="Faction" value="$Sector.owner" />
+          <param name="DeployableType" value="$StaticDefense_DeployableType_LaserTowers" />
+          <param name="DebugChance" value="100" />
+        </run_actions>
+        <debug_text text="'$Strategy.$Id: %s'.[@$Strategy.$Id]" />
+        <debug_text text="'$Strategy.$PositionsField.count: %s'.[@$Strategy.$PositionsField.count]" />
+        <do_if value="@$Strategy.$PositionsField.count">
+          <do_if value="not @md.LIB_Generic.DebugPositions.$Beacons">
+            <set_value name="md.LIB_Generic.DebugPositions.$Beacons" exact="table[] " />
+          </do_if>
+          <set_value name="$i" exact="0" />
+          <do_for_each name="$Pos" in="$Strategy.$PositionsField">
+            <set_value operation="add" name="$i" exact="1" />
+            <create_object name="$StaticDefense" sector="$Strategy.$Sector" macro="$Strategy.$MacrosToDeploy.{1}" owner="faction.player">
+              <position value="$Pos" />
+            </create_object>
+            <set_value name="md.LIB_Generic.DebugPositions.$Beacons.{'$' + $Strategy.$Id + '_' + $i}" exact="$StaticDefense" />
+          </do_for_each>
+        </do_if>
+        <set_value name="md.$Debug_StaticDefenseStrategy" exact="$Strategy" />
+        <reset_cue cue="this" />
+      </actions>
+    </cue>
+
+    <cue name="Debug_RemoveDebugBeacons" namespace="this">
+      <conditions>
+        <event_cue_signalled />
+      </conditions>
+      <actions>
+        <debug_text text="event.name" />
+        <signal_cue cue="md.LIB_Generic.DebugPositions_DestroyAllBeacons" />
+        <reset_cue cue="this" />
+      </actions>
+    </cue>
+
+    <cue name="Debug_AI" namespace="this">
+      <conditions>
+        <event_cue_signalled />
+      </conditions>
+      <actions>
+        <debug_text text="event.name" />
+        <do_all counter="$i" exact="5">
+          <!-- <find_ship_by_true_owner name="$Ship_StaticDefense" space="player.sector" faction="faction.player" class="class.ship_m" primarypurpose="purpose.fight" /> -->
+          <do_if value="not @$Ship_StaticDefense">
+            <find_ship_by_true_owner name="$Ship_StaticDefense" space="player.galaxy" faction="player.sector.owner" class="class.ship_m" primarypurpose="purpose.fight" />
+            <set_owner object="$Ship_StaticDefense" faction="faction.player" overridenpc="true" />
+          </do_if>
+          <debug_text text="'$Ship_StaticDefense: %s'.[$Ship_StaticDefense]" />
+          <do_if value="player.ship.distanceto.{$Ship_StaticDefense} gt 10km">
+            <get_safe_pos result="$SafePos" zone="player.ship.zone" object="player.ship" radius="$Ship_StaticDefense.size" />
+            <warp object="$Ship_StaticDefense" zone="player.ship.zone">
+              <position value="$SafePos" />
+            </warp>
+          </do_if>
+          <cancel_all_orders object="$Ship_StaticDefense" />
+          <create_order name="$Order_StaticDefense" object="$Ship_StaticDefense" id="'DeployStaticDefenseStrategy'" immediate="true">
+            <param name="staticdefensestrategy" value="md.$Debug_StaticDefenseStrategy" />
+          </create_order>
+          <debug_text text="'$Order_StaticDefense: %s'.[$Order_StaticDefense]" />
+          <set_value name="$Ship_StaticDefense" exact="null" />
+        </do_all>
+        <reset_cue cue="this" />
+      </actions>
+    </cue>
+
+    <cue name="Debug_Jobs" namespace="this">
+      <conditions>
+        <event_cue_signalled />
+      </conditions>
+      <actions>
+        <set_value name="$Faction" exact="faction.argon" />
+        <!-- <find_station name="$Wharf" wharf="true">
+          <match_relation_to faction="$Faction" comparison="ge" relation="neutral" />
+        </find_station>
+        <debug_text text="'$Wharf: ' + @$Wharf.knownname" /> -->
+        <get_suitable_job result="$Job" faction="$Faction" tags="tag.staticdefense" size="class.ship_m" />
+        <debug_text text="'$Job: ' + @$Job" />
+        <get_suitable_job result="$Job" faction="$Faction" tags="tag.staticdefense" size="class.ship_s" />
+        <debug_text text="'$Job: ' + @$Job" />
+        <!-- <request_job_ship name="$Ship" job="$Job" requester="$Wharf" />
+        <debug_text text="'$Ship: ' + @$Ship.knownname + ' exists: ' + @$Ship.exists" />
+        <activate_job_ship_orders ship="$Ship" /> -->
+
+        <!-- <find_waiting_job_ship name="$ShipsWaiting" owner="$Faction" hasbuildingtask="false" multiple="true" append="true">
+          <match_parent negate="true" class="class.component" comment="Only interested in the disconnected ships"/>
+        </find_waiting_job_ship>
+        <debug_text text="'$ShipsWaiting.count: ' + @$ShipsWaiting.count" />
+        <find_requested_job_ship name="$ShipsRequested" requester="$Wharf" multiple="true" />
+        <debug_text text="'$ShipsRequested.count: ' + @$ShipsRequested.count" /> -->
+        <reset_cue cue="this" />
+      </actions>
+    </cue>
+
+    <cue name="Debug_Totals" namespace="this">
+      <conditions>
+        <event_cue_signalled />
+      </conditions>
+      <actions>
+        <signal_objects object="player.galaxy" param="'StaticDefense_debugTotals'" />
+        <reset_cue cue="this" />
+      </actions>
+    </cue>
+  </cues>
+</mdscript>
