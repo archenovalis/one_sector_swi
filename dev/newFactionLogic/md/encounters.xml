@@ -1,0 +1,1282 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="Encounters" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+    <!--***Signal cues***-->
+
+    <!--event.param Encounter position relative to the player (usually just straight in front e.g. [0,0,60km]) - the encounter itself can modify this-->
+    <cue name="NewEncounterPosition" instantiate="true">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <set_value name="Manager.$EncounterInstances" exact="0"/>
+        <set_value name="Manager.$NextCheckTime" min="player.age + 120s" max="player.age + 180s"/>
+      </actions>
+    </cue>
+
+    <cue name="Manager" namespace="this" version="3">
+      <actions>
+        <set_value name="$EncounterInstances" exact="0"/>
+        <set_value name="$NextCheckTime" min="player.age + 20s" max="player.age + 40s"/>
+        <set_value name="$DebugChance" exact="0" />
+
+        <!--List to be populated by other sources to exclude certain sectors-->
+        <set_value name="$IgnoredSectors" exact="[]"/>
+      </actions>
+      <patch sinceversion="2">
+        <create_group groupname="$IgnoredSectors"/>
+      </patch>
+      <patch sinceversion="3">
+        <!--Change $IgnoredSectors from a group to a list so we can refcount-->
+        <set_value name="$IgnoredSectors" exact="$IgnoredSectors.list"/>
+      </patch>
+      <cues>
+
+        <cue name="NewEncounterShipActivated" instantiate="true">
+          <conditions>
+            <event_job_ship_activated/>
+            <check_value value="event.param.isoperational and event.param.isencountership"/>
+          </conditions>
+          <actions>
+            <set_value name="$NewShip" exact="event.param"/>
+            <include_actions ref="SelectEncounterManagement"/>
+            <remove_value name="$NewShip"/>
+          </actions>
+        </cue>
+
+        <library name="SelectEncounterManagement">
+          <actions>
+            <do_if value="$NewShip">
+              <do_if value="$NewShip.encounterid == 'lone_plunderer'">
+                <signal_cue_instantly cue="Lone_Plunderer" param="$NewShip"/>
+              </do_if>
+              <do_elseif value="$NewShip.encounterid == 'resource_scout'">
+                <signal_cue_instantly cue="Resource_Scout_Low" param="$NewShip"/>
+              </do_elseif>
+              <do_elseif value="$NewShip.encounterid == 'lone_miner'">
+                <signal_cue_instantly cue="Lone_Miner" param="$NewShip"/>
+              </do_elseif>
+              <do_elseif value="$NewShip.encounterid == 'mining_group_small'">
+                <signal_cue_instantly cue="Mining_Group_Small" param="$NewShip"/>
+              </do_elseif>
+              <do_elseif value="$NewShip.encounterid == 'mining_group_large'">
+                <signal_cue_instantly cue="Mining_Group_Large" param="$NewShip"/>
+              </do_elseif>
+              <do_elseif value="$NewShip.encounterid == 'xenon_s_lone'">
+                <signal_cue_instantly cue="Xenon_S_Lone" param="$NewShip"/>
+              </do_elseif>
+              <do_elseif value="$NewShip.encounterid == 'xenon_s_group'">
+                <signal_cue_instantly cue="Xenon_S_Group" param="$NewShip"/>
+              </do_elseif>
+              <do_elseif value="$NewShip.encounterid == 'khaak_s_lone'">
+                <signal_cue_instantly cue="Khaak_S_Lone" param="$NewShip"/>
+              </do_elseif>
+              <do_elseif value="$NewShip.encounterid == 'khaak_s_group'">
+                <signal_cue_instantly cue="Khaak_S_Group" param="$NewShip"/>
+              </do_elseif>
+            </do_if>
+          </actions>
+        </library>
+
+        <library name="Standard_WarpShips">
+          <actions>
+            <set_value name="$X" min="event.param.x - 20km" max="event.param.x + 20km"/>
+            <set_value name="$Y" min="event.param.y - 5km"  max="event.param.y + 5km"/>
+            <set_value name="$Z" exact="event.param.z"/>
+            <create_position name="$WarpPosition" object="player.ship" x="$X" y="$Y" z="$Z" space="player.sector"/>
+
+            <debug_text text="'Warping ' + $LeadShip.knownname + ' ' + $LeadShip + ' and subordinates to ' + $WarpPosition" chance="$DebugChance"/>
+            <cancel_all_orders object="$LeadShip"/>
+            <warp object="$LeadShip" sector="player.sector">
+              <safepos value="$WarpPosition"/>
+            </warp>
+            <set_value name="$Subordinates" exact="$LeadShip.subordinates"/>
+            <do_all exact="$Subordinates.count" counter="$i">
+              <set_value name="$Subordinate" exact="$Subordinates.{$i}"/>
+              <do_if value="($Subordinate.sector == $LeadShip.sector or $Subordinate.distanceto.{$LeadShip} lt 50km) and $Subordinate.parent.isclass.space and $LeadShip.order.state != orderstate.critical">
+                <append_to_list name="$WarpedSubordinates" exact="$Subordinate"/>
+                <cancel_all_orders object="$Subordinates.{$i}"/>
+                <warp object="$Subordinates.{$i}" sector="player.sector">
+                  <safepos value="$WarpPosition"/>
+                </warp>
+              </do_if>
+            </do_all>
+          </actions>
+        </library>
+
+        <library name="ShipCleanup">
+          <actions>
+            <do_if value="not $LeadShip.isoperational">
+              <debug_text text="'%s %s %s is no longer operational. Cleaning up instance.'.[@$LeadShip.idcode, @$LeadShip.knownname, @$LeadShip]" chance="$DebugChance"/>
+              <set_value name="$cleanup"/>
+            </do_if>
+            <do_elseif value="$LeadShip.trueowner == faction.ownerless">
+              <debug_text text="'%s %s %s is now ownerless. Cleaning up instance.'.[@$LeadShip.idcode, @$LeadShip.knownname, @$LeadShip]" chance="$DebugChance"/>
+              <set_value name="$cleanup"/>
+            </do_elseif>
+            <do_elseif value="$LeadShip.trueowner == faction.player">
+              <debug_text text="'%s %s %s currently belongs to the player. Cleaning up instance.'.[@$LeadShip.idcode, @$LeadShip.knownname, @$LeadShip]" chance="$DebugChance"/>
+              <set_value name="$cleanup"/>
+            </do_elseif>
+            <do_else>
+              <debug_text text="'%s %s %s is valid. Continuing to track.'.[@$LeadShip.idcode, @$LeadShip.knownname, @$LeadShip]" chance="$DebugChance"/>
+            </do_else>
+
+            <do_if value="$cleanup?">
+              <do_if value="$LeadShip.isoperational">
+                <cancel_all_orders object="$LeadShip"/>
+              </do_if>
+              <cancel_cue cue="parent"/>
+            </do_if>
+          </actions>
+        </library>
+
+        <!--Note: This is needed as we require global.$PlayerContainerGroup to be initialised but we can't listen for md.Setup.Start to be signalled from this cue level-->
+        <cue name="PlayerChangedZone_Wrapper" checkinterval="1s">
+          <conditions>
+            <cue_is_complete cue="md.Setup.Start"/>
+          </conditions>
+          <cues>
+            <cue name="PlayerChangedZone_v2" instantiate="true" namespace="this">
+              <conditions>
+                <event_object_changed_zone group="global.$PlayerContainerGroup"/>
+                <check_age min="Manager.$NextCheckTime"/>
+                <check_value value="event.param2 and event.param.sector == event.param2.sector and Manager.$IgnoredSectors.indexof.{event.param.sector} == 0"/>
+                <check_value value="event.object.isclass.ship"/>
+                <check_value value="player.sector and (event.object.distanceto.[player.sector, player.sector.coreposition] gt (player.sector.coresize / 2))"/>
+              </conditions>
+              <actions>
+                <set_value name="$playership" exact="event.object"/>
+                <set_value name="$DebugChance" exact="Manager.$DebugChance"/>
+              </actions>
+              <delay min="0.5s" max="1s"/>
+              <actions>
+                <!-- only if player is still on $playership after the delay. -->
+                <do_if value="($playership == player.container) and $playership.sector">
+                  <set_value name="$ForwardDistance" exact="$playership.maxradarrange + 5km + ($playership.speed * 3)"/>
+                  <set_value name="$ForwardDistance" min="$ForwardDistance" max="$ForwardDistance + 10km"/>
+
+                  <set_value name="$EncounterPosition" exact="position.[0m, 0m, $ForwardDistance]"/>
+
+                  <create_position name="$EncounterSectorPosition" object="$playership" z="$ForwardDistance" space="$playership.sector"/>
+                  <debug_text text="'checking encounter position at ' + $EncounterSectorPosition + ' which is ' + $playership.distanceto.{[$playership.sector, $EncounterSectorPosition]} + ' away'" chance="$DebugChance"/>
+
+                  <!--TODO @Owen check against distance to core bounds-->
+                  <!-- check to see if $playership is facing outside core bounds after delay. -->
+                  <do_if value="$EncounterSectorPosition.distanceto.{$playership.sector.coreposition} gt ($playership.sector.coresize / 2)">
+                    <!--check that the encounter position is not within the live view of player property-->
+                    <!--TODO @Owen refine. take radar ranges into account-->
+                    <find_object name="$NearbyObject" owner="faction.player" space="$playership.sector" checkoperational="false">
+                      <match_distance space="$playership.sector" value="$EncounterSectorPosition" max="40km"/>
+                    </find_object>
+                    <do_if value="not $NearbyObject">
+                      <signal_cue_instantly cue="NewEncounterPosition" param="$EncounterPosition" check="false"/>
+                    </do_if>
+                  </do_if>
+                </do_if>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+      </cues>
+    </cue>
+
+    <!--*** Encounter behaviours ***-->
+
+    <cue name="Lone_Plunderer" instantiate="true" namespace="this" version="2">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <set_value name="$DebugChance" exact="Manager.$DebugChance"/>
+
+        <set_value name="$LeadShip" exact="event.param"/>
+        <debug_text text="'new ship ' + $LeadShip + ', jobid: ' + $LeadShip.job + ', encounterid: ' + $LeadShip.encounterid" chance="$DebugChance"/>
+        <set_value name="$WarpedSubordinates" exact="[]"/>
+      </actions>
+      <patch sinceversion="2">
+        <set_value name="$V150_patch"/>
+      </patch>
+      <cues>
+        <cue name="Cleanup_Lone_Plunderer" instantiate="true">
+          <conditions>
+            <check_any>
+              <event_object_destroyed object="$LeadShip"/>
+              <event_object_abandoned object="$LeadShip"/>
+              <check_all>
+                <!-- remember that this event is fired AFTER ownership is changed. so ownership checks apply to the new owner. -->
+                <event_object_changed_owner object="$LeadShip"/>
+                <check_value value="not $LeadShip.coverowner"/>
+              </check_all>
+            </check_any>
+          </conditions>
+          <delay min="1s" max="2s"/>
+          <actions>
+            <debug_text text="'Event %s triggered for %s %s %s. Checking to cleanup instance.'.[event.name, @$LeadShip.idcode, @$LeadShip.knownname, @$LeadShip]" chance="$DebugChance"/>
+            <include_actions ref="ShipCleanup"/>
+          </actions>
+        </cue>
+        <cue name="V1_50__Patch_Cleanup_Lone_Plunderer" onfail="cancel">
+          <conditions>
+            <check_value value="$V150_patch?"/>
+          </conditions>
+          <delay min="5s" max="10s"/>
+          <actions>
+            <include_actions ref="ShipCleanup"/>
+          </actions>
+        </cue>
+
+        <!--TODO @Owen put the majority of this into a library-->
+        <cue name="Lone_Plunderer_New_Encounter_Check" instantiate="true">
+          <conditions>
+            <event_cue_signalled cue="NewEncounterPosition"/>
+          </conditions>
+          <delay min="1ms" max="50ms"/>
+          <actions>
+            <set_value name="$EncounterChance" exact="6" comment="Chance out of 100"/>
+            <debug_text text="'checking if ' + $LeadShip + ' ' + $LeadShip.knownname + ' should warp to encounter position ' + event.param" chance="$DebugChance"/>
+
+            <clear_list list="$WarpedSubordinates"/>
+            <set_value name="$TriggerEncounter" exact="false"/>
+
+            <!--Check if the lead is capable of warping-->
+            <!--TODO @Owen check other things such as is it being observed-->
+            <do_if value="Manager.$EncounterInstances lt 5" chance="$EncounterChance">
+              <!--Semi-HACK @Owen @Matthias - Do not warp docked ships as the flight controller may not be correctly updated and the dock remains the flight context. May also cause other problems e.g. dock connections? -->
+              <do_if value="$LeadShip.parent.isclass.zone">
+                <!--Ship is far enough away to allow warping and is not in a critical state-->
+                <do_if value="($LeadShip.sector != player.sector or $LeadShip.distanceto.{player.entity} gt 200km) and $LeadShip.order.state != orderstate.critical">
+                  <!--Player is not in a Xenon sector-->
+                  <do_if value="player.sector.owner != faction.xenon">
+                    <!--Have these ships appear more in low security sectors-->
+                    <do_if value="true" chance="(1.0f - (player.sector.security / 2)) * 100">
+                      <set_value name="$TriggerEncounter" exact="true"/>
+                    </do_if>
+                  </do_if>
+                </do_if>
+              </do_if>
+            </do_if>
+
+            <do_if value="$TriggerEncounter">
+              <include_actions ref="Standard_WarpShips"/>
+
+              <set_value name="Manager.$EncounterInstances" operation="add"/>
+            </do_if>
+            <do_else>
+              <cancel_cue cue="this"/>
+            </do_else>
+          </actions>
+          <cues>
+            <cue name="Lone_Plunderer_New_Encounter_Check_Wait">
+              <conditions>
+                <event_cue_completed cue="Lone_Plunderer_New_Encounter_Check"/>
+              </conditions>
+              <cues>
+                <cue name="Lone_Plunderer_New_Encounter_Warped">
+                  <delay exact="1ms"/>
+                  <actions>
+                    <debug_text text="'starting encounter with lone_plunderer: %s %s %s'.[$LeadShip.idcode, $LeadShip.knownname, $LeadShip]" chance="$DebugChance"/>
+                    <do_if value="player.ship" chance="5">
+                      <!-- small chance that bandits just attack -->
+                      <set_value name="$boostandattack"/>
+                    </do_if>
+                    <do_elseif value="@$LeadShip.order.id == 'Plunder'">
+                      <!-- NB: plunderers will ignore you if you're not carrying any cargo. -->
+                      <edit_order_param order="$LeadShip.order" param="'space'" value="player.sector"/>
+                      <edit_order_param order="$LeadShip.order" param="'range_internal'" value="null"/>
+                      <edit_order_param order="$LeadShip.order" param="'deepspace'" value="false"/>
+                      <edit_order_param order="$LeadShip.order" param="'debugchance'" value="$DebugChance"/>
+                      <signal_objects object="$LeadShip" param="'exploration_stayput'" delay="500ms"/>
+                      <debug_text text="'updating order. should restart the order script.\ntargetzone: %s %s, space: %s %s, current zone: %s\nrange_internal: %s'.[@$LeadShip.order.$targetzone.class, @$LeadShip.order.$targetzone, $LeadShip.order.$space.class, $LeadShip.order.$space, $LeadShip.zone, $LeadShip.order.$range_internal]" chance="$DebugChance"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$boostandattack"/>
+                      <debug_text text="'LeadShip: %s %s %s is not running the plunder order. current order: %s. attacking anyway.'.[$LeadShip.idcode, $LeadShip.knownname, $LeadShip, $LeadShip.order.id]" chance="$DebugChance"/>
+                    </do_else>
+
+                    <do_if value="$boostandattack?">
+                      <remove_value name="$boostandattack"/>
+                      <add_relation_boost object="$LeadShip" otherobject="player.ship" value="$LeadShip.owner.relation.kill.max" decay="1" delay="10min" silent="true"/>
+                      <create_order object="$LeadShip" id="'Attack'" immediate="true">
+                        <param name="primarytarget" value="player.ship"/>
+                        <param name="pursuetargets" value="true"/>
+                        <!--<param name="allowothertargets" value="false"/>-->
+                        <param name="debugchance" value="$DebugChance"/>
+                      </create_order>
+                      <debug_text text="'bandit %s %s %s set to attack %s %s %s.'.[$LeadShip.idcode, $LeadShip.knownname, $LeadShip, player.ship.idcode, player.ship.knownname, player.ship]" chance="$DebugChance"/>
+                    </do_if>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Lone_Plunderer_Lead_Destroyed">
+          <conditions>
+            <event_object_destroyed object="$LeadShip"/>
+          </conditions>
+          <actions>
+            <cancel_cue cue="namespace"/>
+          </actions>
+        </cue>
+      </cues>
+    </cue>
+
+    <cue name="Resource_Scout_Low" instantiate="true" namespace="this" version="2">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <set_value name="$DebugChance" exact="Manager.$DebugChance"/>
+
+        <set_value name="$LeadShip" exact="event.param"/>
+        <!--<assert value="$LeadShip.warebasket.count" text="'Resource scout encounter ship has an empty ware basket [Owen]'"/>-->
+        <debug_text text="'new ship ' + $LeadShip" chance="$DebugChance"/>
+        <set_value name="$WarpedSubordinates" exact="[]"/>
+      </actions>
+      <patch sinceversion="2">
+        <set_value name="$V150_patch"/>
+      </patch>
+      <cues>
+        <cue name="Cleanup_Resource_Scout" instantiate="true">
+          <conditions>
+            <check_any>
+              <event_object_destroyed object="$LeadShip"/>
+              <event_object_abandoned object="$LeadShip"/>
+              <check_all>
+                <!-- remember that this event is fired AFTER ownership is changed. so ownership checks apply to the new owner. -->
+                <event_object_changed_owner object="$LeadShip"/>
+                <check_value value="not $LeadShip.coverowner"/>
+              </check_all>
+            </check_any>
+          </conditions>
+          <delay min="1s" max="2s"/>
+          <actions>
+            <debug_text text="'Event %s triggered for %s %s %s. Checking to cleanup instance.'.[event.name, @$LeadShip.idcode, @$LeadShip.knownname, @$LeadShip]" chance="$DebugChance"/>
+            <include_actions ref="ShipCleanup"/>
+          </actions>
+        </cue>
+        <cue name="V1_50__Patch_Cleanup_Resource_Scout_Low" onfail="cancel">
+          <conditions>
+            <check_value value="$V150_patch?"/>
+          </conditions>
+          <delay min="5s" max="10s"/>
+          <actions>
+            <include_actions ref="ShipCleanup"/>
+          </actions>
+        </cue>
+
+        <!--TODO @Owen put the majority of this into a library-->
+        <cue name="Resource_Scout_Low_New_Encounter_Check" instantiate="true">
+          <conditions>
+            <event_cue_signalled cue="NewEncounterPosition"/>
+          </conditions>
+          <delay min="1ms" max="50ms"/>
+          <actions>
+            <set_value name="$EncounterChance" exact="5" comment="Chance out of 100"/>
+            <debug_text text="'checking if ' + $LeadShip + ' ' + $LeadShip.knownname + ' should warp to encounter position ' + event.param" chance="$DebugChance"/>
+
+            <clear_list list="$WarpedSubordinates"/>
+            <set_value name="$TriggerEncounter" exact="false"/>
+            <!--TODO @Owen check if this faction should be operating in this sector-->
+
+            <!--Check if the lead is capable of warping-->
+            <!--TODO @Owen check other things such as is it being observed-->
+            <do_if value="Manager.$EncounterInstances lt 5" chance="$EncounterChance">
+              <!--Semi-HACK @Owen @Matthias - Do not warp docked ships as the flight controller may not be correctly updated and the dock remains the flight context. May also cause other problems e.g. dock connections? -->
+              <do_if value="$LeadShip.parent.isclass.zone">
+                <!--Ship is far enough away to allow warping and is not in a critical state-->
+                <do_if value="($LeadShip.sector != player.sector or $LeadShip.distanceto.{player.entity} gt 200km) and $LeadShip.order.state != orderstate.critical">
+                  <!--Player is not in a Xenon sector-->
+                  <do_if value="player.sector.owner != faction.xenon">
+                    <find_closest_resource refobject="player.ship" sector="$ResourceSector" ware="$LeadShip.warebasket.list" position="$ResourcePos" distance="$ResourceDist">
+                      <refposition object="player.ship" value="event.param"/>
+                    </find_closest_resource>
+                    <do_if value="$ResourceDist lt 25km">
+                      <set_value name="$TriggerEncounter" exact="true"/>
+                      <break/>
+                    </do_if>
+                  </do_if>
+                </do_if>
+              </do_if>
+            </do_if>
+
+            <do_if value="$TriggerEncounter">
+              <include_actions ref="Standard_WarpShips"/>
+
+              <set_value name="Manager.$EncounterInstances" operation="add"/>
+            </do_if>
+            <do_else>
+              <cancel_cue cue="this"/>
+            </do_else>
+          </actions>
+          <cues>
+            <cue name="Resource_Scout_Low_New_Encounter_Check_Wait">
+              <conditions>
+                <event_cue_completed cue="Resource_Scout_Low_New_Encounter_Check"/>
+              </conditions>
+              <cues>
+                <cue name="Resource_Scout_Low_New_Encounter_Warped">
+                  <delay exact="1ms"/>
+                  <actions>
+                    <!-- at this point $LeadShip's orders were just cleared and it should have just restarted its default order. -->
+                    <debug_text text="'%s %s %s current order: %s'.[$LeadShip.idcode, $LeadShip.knownname, $LeadShip, $LeadShip.order.id]" chance="$DebugChance"/>
+                    <do_if value="$LeadShip.order.id == 'MiningRoutine' and $LeadShip.order.$resourcescout">
+                      <!-- this will restart the order -->
+                      <edit_order_param order="$LeadShip.order" param="'range'" value="$LeadShip.sector"/>
+                    </do_if>
+                    <do_else>
+                      <debug_text text="'Resource_Scout_Low: %s %s %s is not running MiningRoutine. current order ID: %s. creating new immediate order.'.[$LeadShip.idcode, $LeadShip.knownname, $LeadShip, $LeadShip.order.id]" chance="$DebugChance"/>
+                      <create_order id="'MiningRoutine'" object="$LeadShip" immediate="true">
+                        <param name="range" value="$LeadShip.sector"/>
+                        <param name="deepspace" value="true"/>
+                        <param name="resourcescout" value="true"/>
+                      </create_order>
+                    </do_else>
+                    <do_all exact="$WarpedSubordinates.count" counter="$i">
+                      <activate_job_ship_orders ship="$WarpedSubordinates.{$i}"/>
+                    </do_all>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Resource_Scout_Low_Lead_Destroyed">
+          <conditions>
+            <event_object_destroyed object="$LeadShip"/>
+          </conditions>
+          <actions>
+            <cancel_cue cue="namespace"/>
+          </actions>
+        </cue>
+      </cues>
+    </cue>
+
+    <cue name="Lone_Miner" instantiate="true" namespace="this" version="2">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <set_value name="$DebugChance" exact="Manager.$DebugChance"/>
+
+        <set_value name="$LeadShip" exact="event.param"/>
+        <!--<assert value="$LeadShip.warebasket.count" text="'Resource scout encounter ship has an empty ware basket [Owen]'"/>-->
+        <debug_text text="'new ship ' + $LeadShip" chance="$DebugChance"/>
+        <set_value name="$WarpedSubordinates" exact="[]"/>
+      </actions>
+      <patch sinceversion="2">
+        <set_value name="$V150_patch"/>
+      </patch>
+      <cues>
+        <cue name="Cleanup_Lone_Miner" instantiate="true">
+          <conditions>
+            <check_any>
+              <event_object_destroyed object="$LeadShip"/>
+              <event_object_abandoned object="$LeadShip"/>
+              <check_all>
+                <!-- remember that this event is fired AFTER ownership is changed. so ownership checks apply to the new owner. -->
+                <event_object_changed_owner object="$LeadShip"/>
+                <check_value value="not $LeadShip.coverowner"/>
+              </check_all>
+            </check_any>
+          </conditions>
+          <delay min="1s" max="2s"/>
+          <actions>
+            <debug_text text="'Event %s triggered for %s %s %s. Checking to cleanup instance.'.[event.name, @$LeadShip.idcode, @$LeadShip.knownname, @$LeadShip]" chance="$DebugChance"/>
+            <include_actions ref="ShipCleanup"/>
+          </actions>
+        </cue>
+        <cue name="V1_50__Patch_Cleanup_Lone_Miner" onfail="cancel">
+          <conditions>
+            <check_value value="$V150_patch?"/>
+          </conditions>
+          <delay min="5s" max="10s"/>
+          <actions>
+            <include_actions ref="ShipCleanup"/>
+          </actions>
+        </cue>
+
+        <!--TODO @Owen put the majority of this into a library-->
+        <cue name="Lone_Miner_New_Encounter_Check" instantiate="true">
+          <conditions>
+            <event_cue_signalled cue="NewEncounterPosition"/>
+          </conditions>
+          <delay min="1ms" max="50ms"/>
+          <actions>
+            <set_value name="$EncounterChance" exact="5" comment="Chance out of 100"/>
+            <debug_text text="'checking if ' + $LeadShip + ' ' + $LeadShip.knownname + ' should warp to encounter position ' + event.param" chance="$DebugChance"/>
+
+            <clear_list list="$WarpedSubordinates"/>
+            <set_value name="$TriggerEncounter" exact="false"/>
+
+            <!--Check if the lead is capable of warping-->
+            <!--TODO @Owen check other things such as is it being observed-->
+            <do_if value="Manager.$EncounterInstances lt 5" chance="$EncounterChance">
+              <!--Semi-HACK @Owen @Matthias - Do not warp docked ships as the flight controller may not be correctly updated and the dock remains the flight context. May also cause other problems e.g. dock connections? -->
+              <do_if value="$LeadShip.parent.isclass.zone">
+                <!--Ship is far enough away to allow warping and is not in a critical state-->
+                <do_if value="($LeadShip.sector != player.sector or $LeadShip.distanceto.{player.entity} gt 200km) and $LeadShip.order.state != orderstate.critical">
+                  <!--Player is not in a Xenon sector-->
+                  <do_if value="player.sector.owner != faction.xenon">
+                    <find_closest_resource refobject="player.ship" sector="$ResourceSector" ware="$LeadShip.warebasket.list" position="$ResourcePos" distance="$ResourceDist">
+                      <refposition object="player.ship" value="event.param"/>
+                    </find_closest_resource>
+                    <do_if value="$ResourceDist lt 25km">
+                      <set_value name="$TriggerEncounter" exact="true"/>
+                      <break/>
+                    </do_if>
+                  </do_if>
+                </do_if>
+              </do_if>
+            </do_if>
+
+            <do_if value="$TriggerEncounter">
+              <include_actions ref="Standard_WarpShips"/>
+
+              <set_value name="Manager.$EncounterInstances" operation="add"/>
+            </do_if>
+            <do_else>
+              <cancel_cue cue="this"/>
+            </do_else>
+          </actions>
+          <cues>
+            <cue name="Lone_Miner_New_Encounter_Check_Wait">
+              <conditions>
+                <event_cue_completed cue="Lone_Miner_New_Encounter_Check"/>
+              </conditions>
+              <cues>
+                <cue name="Lone_Miner_New_Encounter_Warped">
+                  <delay exact="1ms"/>
+                  <actions>
+                    <activate_job_ship_orders ship="$LeadShip"/>
+                    <do_all exact="$WarpedSubordinates.count" counter="$i">
+                      <activate_job_ship_orders ship="$WarpedSubordinates.{$i}"/>
+                    </do_all>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Lone_Miner_Lead_Destroyed">
+          <conditions>
+            <event_object_destroyed object="$LeadShip"/>
+          </conditions>
+          <actions>
+            <cancel_cue cue="namespace"/>
+          </actions>
+        </cue>
+      </cues>
+    </cue>
+
+    <cue name="Mining_Group_Small" instantiate="true" namespace="this" version="2">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <set_value name="$DebugChance" exact="Manager.$DebugChance"/>
+
+        <set_value name="$LeadShip" exact="event.param"/>
+        <!--<assert value="$LeadShip.warebasket.count" text="'Resource scout encounter ship has an empty ware basket [Owen]'"/>-->
+        <debug_text text="'new ship ' + $LeadShip" chance="$DebugChance"/>
+        <set_value name="$WarpedSubordinates" exact="[]"/>
+      </actions>
+      <patch sinceversion="2">
+        <set_value name="$V150_patch"/>
+      </patch>
+      <cues>
+        <cue name="Cleanup_Mining_Group_Small" instantiate="true">
+          <conditions>
+            <check_any>
+              <event_object_destroyed object="$LeadShip"/>
+              <event_object_abandoned object="$LeadShip"/>
+              <check_all>
+                <!-- remember that this event is fired AFTER ownership is changed. so ownership checks apply to the new owner. -->
+                <event_object_changed_owner object="$LeadShip"/>
+                <check_value value="not $LeadShip.coverowner"/>
+              </check_all>
+            </check_any>
+          </conditions>
+          <delay min="1s" max="2s"/>
+          <actions>
+            <debug_text text="'Event %s triggered for %s %s %s. Checking to cleanup instance.'.[event.name, @$LeadShip.idcode, @$LeadShip.knownname, @$LeadShip]" chance="$DebugChance"/>
+            <include_actions ref="ShipCleanup"/>
+          </actions>
+        </cue>
+        <cue name="V1_50__Patch_Cleanup_Mining_Group_Small" onfail="cancel">
+          <conditions>
+            <check_value value="$V150_patch?"/>
+          </conditions>
+          <delay min="5s" max="10s"/>
+          <actions>
+            <include_actions ref="ShipCleanup"/>
+          </actions>
+        </cue>
+
+        <!--TODO @Owen put the majority of this into a library-->
+        <cue name="Mining_Group_Small_New_Encounter_Check" instantiate="true">
+          <conditions>
+            <event_cue_signalled cue="NewEncounterPosition"/>
+          </conditions>
+          <delay min="1ms" max="50ms"/>
+          <actions>
+            <set_value name="$EncounterChance" exact="4" comment="Chance out of 100"/>
+            <debug_text text="'checking if ' + $LeadShip + ' ' + $LeadShip.knownname + ' should warp to encounter position ' + event.param" chance="$DebugChance"/>
+
+            <clear_list list="$WarpedSubordinates"/>
+            <set_value name="$TriggerEncounter" exact="false"/>
+
+            <!--Check if the lead is capable of warping-->
+            <!--TODO @Owen check other things such as is it being observed or if the miner is not an enemy of the owning faction-->
+            <do_if value="Manager.$EncounterInstances lt 5" chance="$EncounterChance">
+              <!--Semi-HACK @Owen @Matthias - Do not warp docked ships as the flight controller may not be correctly updated and the dock remains the flight context. May also cause other problems e.g. dock connections? -->
+              <do_if value="$LeadShip.parent.isclass.zone">
+                <!--Ship is far enough away to allow warping and is not in a critical state-->
+                <do_if value="($LeadShip.sector != player.sector or $LeadShip.distanceto.{player.entity} gt 200km) and $LeadShip.order.state != orderstate.critical">
+                  <!--Player is not in a Xenon sector-->
+                  <do_if value="player.sector.owner != faction.xenon">
+                    <find_closest_resource refobject="player.ship" sector="$ResourceSector" ware="$LeadShip.warebasket.list" position="$ResourcePos" distance="$ResourceDist">
+                      <refposition object="player.ship" value="event.param"/>
+                    </find_closest_resource>
+                    <do_if value="$ResourceDist lt 25km">
+                      <set_value name="$TriggerEncounter" exact="true"/>
+                      <break/>
+                    </do_if>
+                  </do_if>
+                </do_if>
+              </do_if>
+            </do_if>
+
+            <do_if value="$TriggerEncounter">
+              <include_actions ref="Standard_WarpShips"/>
+
+              <set_value name="Manager.$EncounterInstances" operation="add"/>
+            </do_if>
+            <do_else>
+              <cancel_cue cue="this"/>
+            </do_else>
+          </actions>
+          <cues>
+            <cue name="Mining_Group_Small_New_Encounter_Check_Wait">
+              <conditions>
+                <event_cue_completed cue="Mining_Group_Small_New_Encounter_Check"/>
+              </conditions>
+              <cues>
+                <cue name="Mining_Group_Small_New_Encounter_Warped">
+                  <delay exact="1ms"/>
+                  <actions>
+                    <activate_job_ship_orders ship="$LeadShip"/>
+                    <do_all exact="$WarpedSubordinates.count" counter="$i">
+                      <activate_job_ship_orders ship="$WarpedSubordinates.{$i}"/>
+                    </do_all>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Mining_Group_Small_Lead_Destroyed">
+          <conditions>
+            <event_object_destroyed object="$LeadShip"/>
+          </conditions>
+          <actions>
+            <cancel_cue cue="namespace"/>
+          </actions>
+        </cue>
+      </cues>
+    </cue>
+
+    <cue name="Mining_Group_Large" instantiate="true" namespace="this" version="2">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <set_value name="$DebugChance" exact="Manager.$DebugChance"/>
+
+        <set_value name="$LeadShip" exact="event.param"/>
+        <!--<assert value="$LeadShip.warebasket.count" text="'Resource scout encounter ship has an empty ware basket [Owen]'"/>-->
+        <debug_text text="'new ship ' + $LeadShip" chance="$DebugChance"/>
+        <set_value name="$WarpedSubordinates" exact="[]"/>
+      </actions>
+      <patch sinceversion="2">
+        <set_value name="$V150_patch"/>
+      </patch>
+      <cues>
+        <cue name="Cleanup_Mining_Group_Large" instantiate="true">
+          <conditions>
+            <check_any>
+              <event_object_destroyed object="$LeadShip"/>
+              <event_object_abandoned object="$LeadShip"/>
+              <check_all>
+                <!-- remember that this event is fired AFTER ownership is changed. so ownership checks apply to the new owner. -->
+                <event_object_changed_owner object="$LeadShip"/>
+                <check_value value="not $LeadShip.coverowner"/>
+              </check_all>
+            </check_any>
+          </conditions>
+          <delay min="1s" max="2s"/>
+          <actions>
+            <debug_text text="'Event %s triggered for %s %s %s. Checking to cleanup instance.'.[event.name, @$LeadShip.idcode, @$LeadShip.knownname, @$LeadShip]" chance="$DebugChance"/>
+            <include_actions ref="ShipCleanup"/>
+          </actions>
+        </cue>
+        <cue name="V1_50__Patch_Cleanup_Mining_Group_Large" onfail="cancel">
+          <conditions>
+            <check_value value="$V150_patch?"/>
+          </conditions>
+          <delay min="5s" max="10s"/>
+          <actions>
+            <include_actions ref="ShipCleanup"/>
+          </actions>
+        </cue>
+
+        <!--TODO @Owen put the majority of this into a library-->
+        <cue name="Mining_Group_Large_New_Encounter_Check" instantiate="true">
+          <conditions>
+            <event_cue_signalled cue="NewEncounterPosition"/>
+          </conditions>
+          <delay min="1ms" max="50ms"/>
+          <actions>
+            <set_value name="$EncounterChance" exact="3" comment="Chance out of 100"/>
+            <debug_text text="'checking if ' + $LeadShip + ' ' + $LeadShip.knownname + ' should warp to encounter position ' + event.param" chance="$DebugChance"/>
+
+            <clear_list list="$WarpedSubordinates"/>
+            <set_value name="$TriggerEncounter" exact="false"/>
+
+            <!--Check if the lead is capable of warping-->
+            <!--TODO @Owen check other things such as is it being observed-->
+            <do_if value="Manager.$EncounterInstances lt 5" chance="$EncounterChance">
+              <!--Semi-HACK @Owen @Matthias - Do not warp docked ships as the flight controller may not be correctly updated and the dock remains the flight context. May also cause other problems e.g. dock connections? -->
+              <do_if value="$LeadShip.parent.isclass.zone">
+                <!--Ship is far enough away to allow warping and is not in a critical state-->
+                <do_if value="($LeadShip.sector != player.sector or $LeadShip.distanceto.{player.entity} gt 200km) and $LeadShip.order.state != orderstate.critical">
+                  <!--Player is not in a Xenon sector-->
+                  <do_if value="player.sector.owner != faction.xenon">
+                    <find_closest_resource refobject="player.ship" sector="$ResourceSector" ware="$LeadShip.warebasket.list" position="$ResourcePos" distance="$ResourceDist">
+                      <refposition object="player.ship" value="event.param"/>
+                    </find_closest_resource>
+                    <do_if value="$ResourceDist lt 25km">
+                      <set_value name="$TriggerEncounter" exact="true"/>
+                      <break/>
+                    </do_if>
+                  </do_if>
+                </do_if>
+              </do_if>
+            </do_if>
+
+            <do_if value="$TriggerEncounter">
+              <include_actions ref="Standard_WarpShips"/>
+
+              <set_value name="Manager.$EncounterInstances" operation="add"/>
+            </do_if>
+            <do_else>
+              <cancel_cue cue="this"/>
+            </do_else>
+          </actions>
+          <cues>
+            <cue name="Mining_Group_Large_New_Encounter_Check_Wait">
+              <conditions>
+                <event_cue_completed cue="Mining_Group_Large_New_Encounter_Check"/>
+              </conditions>
+              <cues>
+                <cue name="Mining_Group_Large_New_Encounter_Warped">
+                  <delay exact="1ms"/>
+                  <actions>
+                    <activate_job_ship_orders ship="$LeadShip"/>
+                    <do_all exact="$WarpedSubordinates.count" counter="$i">
+                      <activate_job_ship_orders ship="$WarpedSubordinates.{$i}"/>
+                    </do_all>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Mining_Group_Large_Lead_Destroyed">
+          <conditions>
+            <event_object_destroyed object="$LeadShip"/>
+          </conditions>
+          <actions>
+            <cancel_cue cue="namespace"/>
+          </actions>
+        </cue>
+      </cues>
+    </cue>
+
+    <cue name="Xenon_S_Lone" instantiate="true" namespace="this" version="2">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <set_value name="$DebugChance" exact="Manager.$DebugChance"/>
+
+        <set_value name="$LeadShip" exact="event.param"/>
+        <debug_text text="'new ship ' + $LeadShip" chance="$DebugChance"/>
+        <set_value name="$WarpedSubordinates" exact="[]"/>
+      </actions>
+      <patch sinceversion="2">
+        <set_value name="$V150_patch"/>
+      </patch>
+      <cues>
+        <cue name="Cleanup_Xenon_S_Lone" instantiate="true">
+          <conditions>
+            <check_any>
+              <event_object_destroyed object="$LeadShip"/>
+              <event_object_abandoned object="$LeadShip"/>
+              <check_all>
+                <!-- remember that this event is fired AFTER ownership is changed. so ownership checks apply to the new owner. -->
+                <event_object_changed_owner object="$LeadShip"/>
+                <check_value value="not $LeadShip.coverowner"/>
+              </check_all>
+            </check_any>
+          </conditions>
+          <delay min="1s" max="2s"/>
+          <actions>
+            <debug_text text="'Event %s triggered for %s %s %s. Checking to cleanup instance.'.[event.name, @$LeadShip.idcode, @$LeadShip.knownname, @$LeadShip]" chance="$DebugChance"/>
+            <include_actions ref="ShipCleanup"/>
+          </actions>
+        </cue>
+        <cue name="V1_50__Patch_Cleanup_Xenon_S_Lone" onfail="cancel">
+          <conditions>
+            <check_value value="$V150_patch?"/>
+          </conditions>
+          <delay min="5s" max="10s"/>
+          <actions>
+            <include_actions ref="ShipCleanup"/>
+          </actions>
+        </cue>
+
+        <!--TODO @Owen put the majority of this into a library-->
+        <cue name="Xenon_S_Lone_New_Encounter_Check" instantiate="true">
+          <conditions>
+            <event_cue_signalled cue="NewEncounterPosition"/>
+          </conditions>
+          <delay min="1ms" max="50ms"/>
+          <actions>
+            <set_value name="$EncounterChance" exact="6" comment="Chance out of 100"/>
+            <debug_text text="'checking if ' + $LeadShip + ' ' + $LeadShip.knownname + ' should warp to encounter position ' + event.param" chance="$DebugChance"/>
+
+            <clear_list list="$WarpedSubordinates"/>
+            <set_value name="$TriggerEncounter" exact="false"/>
+
+            <!--Check if the lead is capable of warping-->
+            <!--TODO @Owen check other things such as is it being observed-->
+            <do_if value="Manager.$EncounterInstances lt 5" chance="$EncounterChance">
+              <!--Semi-HACK @Owen @Matthias - Do not warp docked ships as the flight controller may not be correctly updated and the dock remains the flight context. May also cause other problems e.g. dock connections? -->
+              <do_if value="$LeadShip.parent.isclass.zone">
+                <!--Ship is far enough away to allow warping and is not in a critical state-->
+                <do_if value="($LeadShip.sector != player.sector or $LeadShip.distanceto.{player.entity} gt 200km) and $LeadShip.order.state != orderstate.critical">
+                  <!--Have these ships appear more in low security sectors-->
+                  <do_if value="true" chance="(1.0f - (player.sector.security / 2)) * 100">
+                    <set_value name="$TriggerEncounter" exact="true"/>
+                  </do_if>
+                </do_if>
+              </do_if>
+            </do_if>
+
+            <do_if value="$TriggerEncounter">
+              <include_actions ref="Standard_WarpShips"/>
+
+              <set_value name="Manager.$EncounterInstances" operation="add"/>
+            </do_if>
+            <do_else>
+              <cancel_cue cue="this"/>
+            </do_else>
+          </actions>
+          <cues>
+            <cue name="Xenon_S_Lone_New_Encounter_Check_Wait">
+              <conditions>
+                <event_cue_completed cue="Xenon_S_Lone_New_Encounter_Check"/>
+              </conditions>
+              <cues>
+                <cue name="Xenon_S_Lone_New_Encounter_Warped">
+                  <delay exact="1ms"/>
+                  <actions>
+                    <do_any>
+                      <create_order object="$LeadShip" id="'Attack'">
+                        <param name="primarytarget" value="player.ship"/>
+                        <param name="pursuetargets" value="true"/>
+                      </create_order>
+                      <activate_job_ship_orders ship="$LeadShip"/>
+                    </do_any>
+                    <do_all exact="$WarpedSubordinates.count" counter="$i">
+                      <activate_job_ship_orders ship="$WarpedSubordinates.{$i}"/>
+                    </do_all>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Xenon_S_Lone_Lead_Destroyed">
+          <conditions>
+            <event_object_destroyed object="$LeadShip"/>
+          </conditions>
+          <actions>
+            <cancel_cue cue="namespace"/>
+          </actions>
+        </cue>
+      </cues>
+    </cue>
+
+    <cue name="Xenon_S_Group" instantiate="true" namespace="this" version="2">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <set_value name="$DebugChance" exact="Manager.$DebugChance"/>
+
+        <set_value name="$LeadShip" exact="event.param"/>
+        <debug_text text="'new ship ' + $LeadShip" chance="$DebugChance"/>
+        <set_value name="$WarpedSubordinates" exact="[]"/>
+      </actions>
+      <patch sinceversion="2">
+        <set_value name="$V150_patch"/>
+      </patch>
+      <cues>
+        <cue name="Cleanup_Xenon_S_Group" instantiate="true">
+          <conditions>
+            <check_any>
+              <event_object_destroyed object="$LeadShip"/>
+              <event_object_abandoned object="$LeadShip"/>
+              <check_all>
+                <!-- remember that this event is fired AFTER ownership is changed. so ownership checks apply to the new owner. -->
+                <event_object_changed_owner object="$LeadShip"/>
+                <check_value value="not $LeadShip.coverowner"/>
+              </check_all>
+            </check_any>
+          </conditions>
+          <delay min="1s" max="2s"/>
+          <actions>
+            <debug_text text="'Event %s triggered for %s %s %s. Checking to cleanup instance.'.[event.name, @$LeadShip.idcode, @$LeadShip.knownname, @$LeadShip]" chance="$DebugChance"/>
+            <include_actions ref="ShipCleanup"/>
+          </actions>
+        </cue>
+        <cue name="V1_50__Patch_Cleanup_Xenon_S_Group" onfail="cancel">
+          <conditions>
+            <check_value value="$V150_patch?"/>
+          </conditions>
+          <delay min="5s" max="10s"/>
+          <actions>
+            <include_actions ref="ShipCleanup"/>
+          </actions>
+        </cue>
+
+        <!--TODO @Owen put the majority of this into a library-->
+        <cue name="Xenon_S_Group_New_Encounter_Check" instantiate="true">
+          <conditions>
+            <event_cue_signalled cue="NewEncounterPosition"/>
+          </conditions>
+          <delay min="1ms" max="50ms"/>
+          <actions>
+            <set_value name="$EncounterChance" exact="3" comment="Chance out of 100"/>
+            <debug_text text="'checking if ' + $LeadShip + ' ' + $LeadShip.knownname + ' should warp to encounter position ' + event.param" chance="$DebugChance"/>
+
+            <clear_list list="$WarpedSubordinates"/>
+            <set_value name="$TriggerEncounter" exact="false"/>
+
+            <!--Check if the lead is capable of warping-->
+            <!--TODO @Owen check other things such as is it being observed-->
+            <do_if value="Manager.$EncounterInstances lt 5" chance="$EncounterChance">
+              <!--Semi-HACK @Owen @Matthias - Do not warp docked ships as the flight controller may not be correctly updated and the dock remains the flight context. May also cause other problems e.g. dock connections? -->
+              <do_if value="$LeadShip.parent.isclass.zone">
+                <!--Ship is far enough away to allow warping and is not in a critical state-->
+                <do_if value="($LeadShip.sector != player.sector or $LeadShip.distanceto.{player.entity} gt 200km) and $LeadShip.order.state != orderstate.critical">
+                  <!--Have these ships appear more in low security sectors-->
+                  <do_if value="true" chance="(1.0f - (player.sector.security / 2)) * 100">
+                    <set_value name="$TriggerEncounter" exact="true"/>
+                  </do_if>
+                </do_if>
+              </do_if>
+            </do_if>
+
+            <do_if value="$TriggerEncounter">
+              <include_actions ref="Standard_WarpShips"/>
+
+              <set_value name="Manager.$EncounterInstances" operation="add"/>
+            </do_if>
+            <do_else>
+              <cancel_cue cue="this"/>
+            </do_else>
+          </actions>
+          <cues>
+            <cue name="Xenon_S_Group_New_Encounter_Check_Wait">
+              <conditions>
+                <event_cue_completed cue="Xenon_S_Group_New_Encounter_Check"/>
+              </conditions>
+              <cues>
+                <cue name="Xenon_S_Group_New_Encounter_Warped">
+                  <delay exact="1ms"/>
+                  <actions>
+                    <do_any>
+                      <create_order object="$LeadShip" id="'Attack'">
+                        <param name="primarytarget" value="player.ship"/>
+                        <param name="pursuetargets" value="true"/>
+                      </create_order>
+                      <activate_job_ship_orders ship="$LeadShip"/>
+                    </do_any>
+                    <do_all exact="$WarpedSubordinates.count" counter="$i">
+                      <activate_job_ship_orders ship="$WarpedSubordinates.{$i}"/>
+                    </do_all>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Xenon_S_Group_Lead_Destroyed">
+          <conditions>
+            <event_object_destroyed object="$LeadShip"/>
+          </conditions>
+          <actions>
+            <cancel_cue cue="namespace"/>
+          </actions>
+        </cue>
+      </cues>
+    </cue>
+
+    <cue name="Khaak_S_Lone" instantiate="true" namespace="this" version="2">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <set_value name="$DebugChance" exact="Manager.$DebugChance"/>
+
+        <set_value name="$LeadShip" exact="event.param"/>
+        <debug_text text="'new ship ' + $LeadShip" chance="$DebugChance"/>
+        <set_value name="$WarpedSubordinates" exact="[]"/>
+      </actions>
+      <patch sinceversion="2">
+        <set_value name="$V150_patch"/>
+      </patch>
+      <cues>
+        <cue name="Cleanup_Khaak_S_Lone" instantiate="true">
+          <conditions>
+            <check_any>
+              <event_object_destroyed object="$LeadShip"/>
+              <event_object_abandoned object="$LeadShip"/>
+              <check_all>
+                <!-- remember that this event is fired AFTER ownership is changed. so ownership checks apply to the new owner. -->
+                <event_object_changed_owner object="$LeadShip"/>
+                <check_value value="not $LeadShip.coverowner"/>
+              </check_all>
+            </check_any>
+          </conditions>
+          <delay min="1s" max="2s"/>
+          <actions>
+            <debug_text text="'Event %s triggered for %s %s %s. Checking to cleanup instance.'.[event.name, @$LeadShip.idcode, @$LeadShip.knownname, @$LeadShip]" chance="$DebugChance"/>
+            <include_actions ref="ShipCleanup"/>
+          </actions>
+        </cue>
+        <cue name="V1_50__Patch_Cleanup_Khaak_S_Lone" onfail="cancel">
+          <conditions>
+            <check_value value="$V150_patch?"/>
+          </conditions>
+          <delay min="5s" max="10s"/>
+          <actions>
+            <include_actions ref="ShipCleanup"/>
+          </actions>
+        </cue>
+
+        <!--TODO @Owen put the majority of this into a library-->
+        <cue name="Khaak_S_Lone_New_Encounter_Check" instantiate="true">
+          <conditions>
+            <event_cue_signalled cue="NewEncounterPosition"/>
+          </conditions>
+          <delay min="1ms" max="50ms"/>
+          <actions>
+            <set_value name="$EncounterChance" exact="3" comment="Chance out of 100"/>
+            <debug_text text="'checking if ' + $LeadShip + ' ' + $LeadShip.knownname + ' should warp to encounter position ' + event.param" chance="$DebugChance"/>
+
+            <clear_list list="$WarpedSubordinates"/>
+            <set_value name="$TriggerEncounter" exact="false"/>
+
+            <!--Check if the lead is capable of warping-->
+            <!--TODO @Owen check other things such as is it being observed-->
+            <do_if value="Manager.$EncounterInstances lt 5" chance="$EncounterChance">
+              <!--Semi-HACK @Owen @Matthias - Do not warp docked ships as the flight controller may not be correctly updated and the dock remains the flight context. May also cause other problems e.g. dock connections? -->
+              <do_if value="$LeadShip.parent.isclass.zone">
+                <!--Ship is far enough away to allow warping and is not in a critical state-->
+                <do_if value="($LeadShip.sector != player.sector or $LeadShip.distanceto.{player.entity} gt 200km) and $LeadShip.order.state != orderstate.critical">
+                  <!--Have these ships appear more in low security sectors-->
+                  <do_if value="true" chance="(1.0f - (player.sector.security / 2)) * 100">
+                    <set_value name="$TriggerEncounter" exact="true"/>
+                  </do_if>
+                </do_if>
+              </do_if>
+            </do_if>
+
+            <do_if value="$TriggerEncounter">
+              <include_actions ref="Standard_WarpShips"/>
+
+              <set_value name="Manager.$EncounterInstances" operation="add"/>
+            </do_if>
+            <do_else>
+              <cancel_cue cue="this"/>
+            </do_else>
+          </actions>
+          <cues>
+            <cue name="Khaak_S_Lone_New_Encounter_Check_Wait">
+              <conditions>
+                <event_cue_completed cue="Khaak_S_Lone_New_Encounter_Check"/>
+              </conditions>
+              <cues>
+                <cue name="Khaak_S_Lone_New_Encounter_Warped">
+                  <delay exact="1ms"/>
+                  <actions>
+                    <do_any>
+                      <create_order object="$LeadShip" id="'Attack'">
+                        <param name="primarytarget" value="player.ship"/>
+                        <param name="pursuetargets" value="true"/>
+                      </create_order>
+                      <activate_job_ship_orders ship="$LeadShip"/>
+                    </do_any>
+                    <do_all exact="$WarpedSubordinates.count" counter="$i">
+                      <activate_job_ship_orders ship="$WarpedSubordinates.{$i}"/>
+                    </do_all>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Khaak_S_Lone_Lead_Destroyed">
+          <conditions>
+            <event_object_destroyed object="$LeadShip"/>
+          </conditions>
+          <actions>
+            <cancel_cue cue="namespace"/>
+          </actions>
+        </cue>
+      </cues>
+    </cue>
+
+    <cue name="Khaak_S_Group" instantiate="true" namespace="this" version="2">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <set_value name="$DebugChance" exact="Manager.$DebugChance"/>
+
+        <set_value name="$LeadShip" exact="event.param"/>
+        <debug_text text="'new ship ' + $LeadShip" chance="$DebugChance"/>
+        <set_value name="$WarpedSubordinates" exact="[]"/>
+      </actions>
+      <patch sinceversion="2">
+        <set_value name="$V150_patch"/>
+      </patch>
+      <cues>
+        <cue name="Cleanup_Khaak_S_Group" instantiate="true">
+          <conditions>
+            <check_any>
+              <event_object_destroyed object="$LeadShip"/>
+              <event_object_abandoned object="$LeadShip"/>
+              <check_all>
+                <!-- remember that this event is fired AFTER ownership is changed. so ownership checks apply to the new owner. -->
+                <event_object_changed_owner object="$LeadShip"/>
+                <check_value value="not $LeadShip.coverowner"/>
+              </check_all>
+            </check_any>
+          </conditions>
+          <delay min="1s" max="2s"/>
+          <actions>
+            <debug_text text="'Event %s triggered for %s %s %s. Checking to cleanup instance.'.[event.name, @$LeadShip.idcode, @$LeadShip.knownname, @$LeadShip]" chance="$DebugChance"/>
+            <include_actions ref="ShipCleanup"/>
+          </actions>
+        </cue>
+        <cue name="V1_50__Patch_Cleanup_Khaak_S_Group" onfail="cancel">
+          <conditions>
+            <check_value value="$V150_patch?"/>
+          </conditions>
+          <delay min="5s" max="10s"/>
+          <actions>
+            <include_actions ref="ShipCleanup"/>
+          </actions>
+        </cue>
+
+        <!--TODO @Owen put the majority of this into a library-->
+        <cue name="Khaak_S_Group_New_Encounter_Check" instantiate="true">
+          <conditions>
+            <event_cue_signalled cue="NewEncounterPosition"/>
+          </conditions>
+          <delay min="1ms" max="50ms"/>
+          <actions>
+            <set_value name="$EncounterChance" exact="1" comment="Chance out of 100"/>
+            <debug_text text="'checking if ' + $LeadShip + ' ' + $LeadShip.knownname + ' should warp to encounter position ' + event.param" chance="$DebugChance"/>
+
+            <clear_list list="$WarpedSubordinates"/>
+            <set_value name="$TriggerEncounter" exact="false"/>
+
+            <!--Check if the lead is capable of warping-->
+            <!--TODO @Owen check other things such as is it being observed-->
+            <do_if value="Manager.$EncounterInstances lt 5" chance="$EncounterChance">
+              <!--Semi-HACK @Owen @Matthias - Do not warp docked ships as the flight controller may not be correctly updated and the dock remains the flight context. May also cause other problems e.g. dock connections? -->
+              <do_if value="$LeadShip.parent.isclass.zone">
+                <!--Ship is far enough away to allow warping and is not in a critical state-->
+                <do_if value="($LeadShip.sector != player.sector or $LeadShip.distanceto.{player.entity} gt 200km) and $LeadShip.order.state != orderstate.critical">
+                  <!--Have these ships appear more in low security sectors-->
+                  <do_if value="true" chance="(1.0f - (player.sector.security / 2)) * 100">
+                    <set_value name="$TriggerEncounter" exact="true"/>
+                  </do_if>
+                </do_if>
+              </do_if>
+            </do_if>
+
+            <do_if value="$TriggerEncounter">
+              <include_actions ref="Standard_WarpShips"/>
+
+              <set_value name="Manager.$EncounterInstances" operation="add"/>
+            </do_if>
+            <do_else>
+              <cancel_cue cue="this"/>
+            </do_else>
+          </actions>
+          <cues>
+            <cue name="Khaak_S_Group_New_Encounter_Check_Wait">
+              <conditions>
+                <event_cue_completed cue="Khaak_S_Group_New_Encounter_Check"/>
+              </conditions>
+              <cues>
+                <cue name="Khaak_S_Group_New_Encounter_Warped">
+                  <delay exact="1ms"/>
+                  <actions>
+                    <do_any>
+                      <create_order object="$LeadShip" id="'Attack'">
+                        <param name="primarytarget" value="player.ship"/>
+                        <param name="pursuetargets" value="true"/>
+                      </create_order>
+                      <activate_job_ship_orders ship="$LeadShip"/>
+                    </do_any>
+                    <do_all exact="$WarpedSubordinates.count" counter="$i">
+                      <activate_job_ship_orders ship="$WarpedSubordinates.{$i}"/>
+                    </do_all>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Khaak_S_Group_Lead_Destroyed">
+          <conditions>
+            <event_object_destroyed object="$LeadShip"/>
+          </conditions>
+          <actions>
+            <cancel_cue cue="namespace"/>
+          </actions>
+        </cue>
+      </cues>
+    </cue>
+
+  </cues>
+</mdscript>

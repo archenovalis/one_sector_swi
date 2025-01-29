@@ -1,0 +1,834 @@
+<?xml version="1.0" encoding="utf-8"?>
+<aiscript name="order.trade.middleman" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" version="10">
+  <order id="Middleman" name="{1041, 181}" description="{1041, 182}" category="trade" allowinloop="false">
+    <params>
+      <param name="warebasket" required="true" default="if @this.ship.warebasket.count then this.ship.warebasket.list else null" type="list" text="{1041, 10146}" comment="Wares">
+        <input_param name="type" value="'ware'"/>
+        <input_param name="cancarry" value="this.ship"/>
+      </param>
+      <!-- if anchorspace is null, trader will trade untethered to wherever the next trade is as long as it's within range. with range less than whole galaxy, tradespaces will shift. -->
+      <param name="anchorspace" default="if this.ship.jobmainsector then this.ship.jobmainsector else null" type="sector" advanced="true" text="{1041, 10005}" comment="Anchor space. Center of min/max buy/sell ranges. If not set, range is essentially infinite, and middleman is allowed to wander to wherever next trade is."/>
+      <param name="range" default="32" type="number" advanced="true" text="{1041, 10063}" comment="Maximum trading range. Maximum range used for both buying and selling. If no anchorspace is set, range is evaluated from this.ship per step, so absolute range is essentially infinite.">
+        <input_param name="startvalue" value="32"/>
+        <input_param name="min" value="1"/>
+        <input_param name="max" value="32"/>
+        <input_param name="step" value="1"/>
+      </param>
+      <!-- below only really works with an anchorspace.
+      at the moment, we have 33 clusters. so a range of 32 should cover everything. -->
+      <!-- NB: be careful when implementing min/max buy/sell. at the moment, we only use one range, so we only have to sort ranges when anchor position changes.
+            if we have different buy and sell spaces, spaces would have to be evaluated three times per full cycle:
+              1. when determining spaces to buy from,
+              2. for the spot check for if there is a market for a ware at all,
+              3. for determining spaces to sell to. -->
+      <!--<param name="minbuy" default="-1" type="number" advanced="true" text="{1041, 10066}" comment="Min gate distance to buy. Buy range supported if $minbuy and $maxbuy are provided">
+        <input_param name="startvalue" value="0"/>
+        <input_param name="min" value="0"/>
+        <input_param name="max" value="32"/>
+        <input_param name="step" value="1"/>
+      </param>
+      <param name="maxbuy" default="-1" type="number" advanced="true" text="{1041, 10054}" comment="Max gate distance to buy. Buy range supported if $minbuy and $maxbuy are provided">
+        <input_param name="startvalue" value="0"/>
+        <input_param name="min" value="0"/>
+        <input_param name="max" value="32"/>
+        <input_param name="step" value="1"/>
+      </param>
+      <param name="minsell" default="-1" type="number" advanced="true" text="{1041, 10068}" comment="Min gate distance to sell. Sell range supported if $minsell and $maxsell are provided">
+        <input_param name="startvalue" value="0"/>
+        <input_param name="min" value="0"/>
+        <input_param name="max" value="32"/>
+        <input_param name="step" value="1"/>
+      </param>
+      <param name="maxsell" default="-1" type="number" advanced="true" text="{1041, 10057}" comment="Max gate distance to sell. Sell range supported if $minsell and $maxsell are provided">
+        <input_param name="startvalue" value="0"/>
+        <input_param name="min" value="0"/>
+        <input_param name="max" value="32"/>
+        <input_param name="step" value="1"/>
+      </param>-->
+      <param name="tradeware" default="null" type="internal" text="{1041, 10087}" comment="Product"/>
+      <param name="relprice_purchase" default="null" type="internal" text="{1041, 10088}" comment="Purchased at relative price"/>
+      <param name="supplier" default="null" type="internal" text="10125" comment="Supplier"/>
+
+      <param name="duration" default="0s" type="time" infinitevalue="0s" advanced="true" text="{1041, 10034}" comment="Duration">
+        <input_param name="startvalue" value="0s"/>
+        <input_param name="min" value="0s"/>
+        <input_param name="max" value="24h"/>
+        <input_param name="step" value="1min"/>
+        <patch value="[($endtime - player.age), 1s].max" condition="@$endtime gt 0s" sinceversion="4"/>
+        <patch value="0s" condition="(@$endtime lt 1s) and ($duration == null)" sinceversion="4"/>
+      </param>
+      <param name="endtime" default="0s" type="internal" comment="Absolute game time in seconds, after which order will end. Overrides duration. For internal use. Do not use with default orders.">
+        <patch value="0s" condition="@$endtime lt 1s" sinceversion="9"/>
+      </param>
+
+      <param name="aggressiveness" default="1.0" type="internal" comment="Multiplier applied to current buy amounts per ware per sector, for purpose of choosing which ware to bring to market. Unbound. Recommend defining as a float from 0.1 to 10.0.">
+        <patch value="1.0" sinceversion="10"/>
+      </param>
+      <param name="holdbuyprice" default="false" type="internal" comment="Does not entertain buy offers for less than relprice at which current ware was bought at.">
+        <patch value="false" sinceversion="10"/>
+      </param>
+      <param name="debugchance" type="bool" default="0" advanced="true" text="{1041, 10086}" comment="Print debug output">
+        <input_param name="truevalue" value="100"/>
+      </param>
+      <param name="debugchance2" type="bool" default="0" advanced="true" text="{1041, 10142}" comment="Verbose debug output">
+        <input_param name="truevalue" value="100"/>
+      </param>
+    </params>
+    <skill min="40"/>
+    <requires>
+      <match shiptype="shiptype.lasertower" negate="true"/>
+      <match class="class.spacesuit" negate="true"/>
+    </requires>
+  </order>
+  <interrupts>
+    <handler ref="SectorChangeHandler"/>
+    <handler ref="AttackHandler"/>
+    <handler ref="MissileLockHandler"/>
+    <handler ref="ScannedHandler"/>
+    <handler ref="InspectedHandler"/>
+    <handler ref="FoundAbandonedHandler"/>
+    <handler ref="FoundLockboxHandler"/>
+    <handler ref="ResupplyHandler"/>
+    <handler ref="TideHandler"/>
+  </interrupts>
+  <init>
+    <set_value name="$time_start" exact="player.age"/>
+    <do_if value="this.assignedcontrolled.order.id == 'Middleman'">
+      <set_value name="$thisorder" exact="this.assignedcontrolled.order"/>
+    </do_if>
+
+    <set_command command="command.freetrade"/>
+    <set_command_action commandaction="commandaction.searchingtrades"/>
+
+    <do_if value="$endtime">
+      <set_value name="$duration" exact="$endtime - player.age" comment="can be negative"/>
+    </do_if>
+
+    <include_interrupt_actions ref="GetBlacklistgroup"/>
+  </init>
+  <patch sinceversion="1">
+    <do_if value="(this.ship.job != '')">
+      <!-- refresh warebasket as it may have had items added/removed -->
+      <set_value name="$warebasket" exact="this.ship.warebasket.list"/>
+    </do_if>
+  </patch>
+  <patch sinceversion="3">
+    <include_interrupt_actions ref="GetBlacklistgroup"/>
+  </patch>
+  <patch sinceversion="4">
+    <set_value name="$time_start" exact="player.age"/>
+    <set_value name="$newduration" exact="$duration"/>
+    <do_if value="($endtime gt 0s) and not $duration">
+      <set_value name="$newduration" exact="[$endtime - player.age, 1s].max"/>
+    </do_if>
+    <do_elseif value="$duration == null">
+      <set_value name="$newduration" exact="0s"/>
+    </do_elseif>
+
+    <debug_text text="'PATCH: duration changed from %ss to %ss.'.[$duration, $newduration]" filter="savegame"/>
+    <set_value name="$duration" exact="$newduration"/>
+    <do_if value="this.assignedcontrolled.order.id == 'Middleman'">
+      <!-- NB: if this is not the current order, variables will be correctly set when the script starts/restarts. -->
+      <set_value name="$thisorder" exact="this.assignedcontrolled.order"/>
+    </do_if>
+    <remove_value name="$newduration"/>
+    <remove_value name="$endtime"/>
+    <remove_value name="$end"/>
+  </patch>
+  <patch sinceversion="6">
+    <do_if value="$tradespaces.count">
+      <set_value name="$table_gatedistances" exact="table[]"/>
+      <do_all exact="$tradespaces.count" counter="$_i">
+        <set_value name="$table_gatedistances.{$tradespaces.{$_i}}" exact="$anchor.gatedistance.{$tradespaces.{$_i}}"/>
+      </do_all>
+    </do_if>
+  </patch>
+  <patch sinceversion="8" early="true">
+    <do_if value="$evaltradevalue? and @$sortedoffers.count">
+      <set_value name="$evaltradeofferamount" exact="$sortedoffers.{1}.offeramount.{this.assignedcontrolled}"/>
+    </do_if>
+    <do_if value="$tradeoffer?">
+      <set_value name="$tradeofferamount" exact="if $tradeoffer.available then $tradeoffer.offeramount.{this.assignedcontrolled} else 0"/>
+    </do_if>
+    <do_if value="$sortedoffers? and $j?">
+      <do_if value="$j le $sortedoffers.count">
+        <set_value name="$checkoffer" exact="$sortedoffers.{$j}"/>
+        <set_value name="$checkofferamount" exact="$checkoffer.offeramount.{this.assignedcontrolled}"/>
+      </do_if>
+      <do_else>
+        <set_value name="$checkoffer" exact="null"/>
+        <set_value name="$checkofferamount" exact="0"/>
+      </do_else>
+    </do_if>
+  </patch>
+  <patch sinceversion="9">
+    <do_if value="$endtime? and ($endtime lt 1s)">
+      <debug_text text="'endtime patched from %ss to 0s.'.[$endtime]" filter="savegame" chance="($endtime != 0s) * 100"/>
+      <set_value name="$endtime" exact="0s"/>
+      <do_if value="@$thisorder.exists">
+        <edit_order_param order="$thisorder" param="'endtime'" value="0s"/>
+      </do_if>
+    </do_if>
+  </patch>
+  <patch sinceversion="10">
+    <set_value name="$holdbuyprice" exact="false"/>
+    <set_value name="$aggressiveness" exact="1.0"/>
+    <do_if value="this.ship.job == 'scavenger_condensate_trader_s'">
+      <set_value name="$holdbuyprice" exact="true"/>
+      <set_value name="$aggressiveness" exact="10.0"/>
+    </do_if>
+  </patch>
+  <attention min="unknown">
+    <actions>
+      <!-- TODO: add handling for when we cannot sell what we currently have. two cases:
+            if there is space for other wares,
+              we could market something else, then go back to selling what we have later.
+            if we have no space for more wares,
+              sell what we have at a loss then start over from the beginning?
+                if we go with this, check that they don't do something stupid like sell what they have for firesale prices then buy the same thing.
+                unless that's fine?
+                  if a market's so saturated with a product such that prices are low but it's still the most profitable product, shouldn't we keep marketing that product? -->
+
+      <!-- not currently implemented. -->
+      <!--<do_if value="this.assignedcontrolled.subordinates.count">
+        <do_for_each name="$subordinate" in="this.assignedcontrolled.subordinates">
+          <do_if value="$subordinate.assignment == assignment.trade and @$subordinate.defaultorder.$warebasket">
+            <do_if value="$subordinate.defaultorder.$warebasket != $warebasket">
+              <debug_text text="'%s %s %s updating warebasket of %s %s %s'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, @$subordinate.idcode, @$subordinate.knownname, $subordinate]" chance="$debugchance"/>
+              <edit_order_param order="$subordinate.defaultorder" param="'warebasket'" value="$warebasket"/>
+            </do_if>
+          </do_if>
+        </do_for_each>
+      </do_if>-->
+
+      <do_if value="@this.assignedcontrolled.commander.isclass.station">
+        <debug_text text="'Ship %1 (%2, %3) is running Middleman while assigned to station %4 (%5, %6) in %7! This is not supported. Unassigning from commander.'.[this.ship.knownname, this.ship.idcode, this.ship, this.assignedcontrolled.commander.knownname, this.assignedcontrolled.commander.idcode, this.assignedcontrolled.commander, this.assignedcontrolled.commander.sector.knownname]" filter="error"/>
+        <remove_object_commander object="this.assignedcontrolled"/>
+      </do_if>
+
+      <label name="start"/>
+
+      <do_if value="this.assignedcontrolled.isonlineobject and not this.isplayerowned">
+        <debug_text text="'Venture ship %s %s %s ordered to trade. num wares in basket: %s.'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, @$warebasket.count]" chance="$debugchance"/>
+        <do_if value="not @$warebasket.count">
+          <debug_text text="'no warebasket defined. populating ware basket with cargo in hold. adding %s wares to the warebasket.'.[this.assignedcontrolled.cargo.count]" chance="$debugchance"/>
+          <set_value name="$warebasket" exact="this.assignedcontrolled.cargo.list.clone"/>
+        </do_if>
+
+        <set_value name="$isvalidventure" exact="false"/>
+        <!-- allow non-container wares because the player might have sent a mining ship with ore or other mineables to sell -->
+        <do_if value="@$warebasket.count">
+          <!--<do_if value="@$warebasket.count and (this.assignedcontrolled.cargo.capacity.container or this.assignedcontrolled.cargo.capacity.universal)">-->
+          <do_all exact="$warebasket.count" counter="$i">
+            <do_if value="this.assignedcontrolled.cargo.{$warebasket.{$i}}.max">
+              <set_value name="$isvalidventure" exact="true"/>
+              <debug_text text="'Venture ship %s %s %s can trade ware %s.'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, $warebasket.{$i}]" chance="$debugchance"/>
+              <break/>
+            </do_if>
+          </do_all>
+        </do_if>
+        <do_else>
+          <debug_text text="'Venture ship %s %s %s either does not have a ware basket.'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled]" chance="$debugchance"/>
+        </do_else>
+
+        <do_if value="not $isvalidventure">
+          <debug_text text="'Venture ship %s %s %s was ordered to trade but cannot. Getting new orders.'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, this.assignedcontrolled.defaultorder.id]" chance="$debugchance"/>
+          <cancel_all_orders object="this.assignedcontrolled"/>
+          <run_script name="'lib.request.orders'" sinceversion="2">
+            <param name="object" value="this.assignedcontrolled"/>
+            <param name="debugchance" value="$debugchance"/>
+          </run_script>
+        </do_if>
+      </do_if>
+
+      <do_if value="this.ship.isplayerowned and not this.$time_lasttradeend?" chance="$debugchance">
+        <set_value name="this.$time_lasttradeend" exact="player.age"/>
+        <debug_text text="player.age + ': player ship %s %s %s starting trade run.'.[this.ship.idcode, this.ship.knownname, this.ship]" chance="$debugchance"/>
+      </do_if>
+
+      <do_if value="not $warebasket.count and not this.ship.jobexpired and this.ship.job != 'dummy_job'">
+        <debug_text text="'No warebasket! %1'.[$warebasket]" filter="error"/>
+      </do_if>
+
+      <do_if value="player.age gt @$next_resupply_check" chance="30">
+        <debug_text text="'%1 (%2) ready to resupply.'.[this.ship.knownname, this.ship]" chance="$debugchance"/>
+        <signal_objects object="this.ship" param="'resupply'" param2="[false]" param3="$debugchance" comment="param2 = [urgent?, resupplystationID], param3 = $debugchance"/>
+        <set_value name="$next_resupply_check" exact="player.age + 30min"/>
+      </do_if>
+
+      <set_value name="$anchor" exact="this.ship"/>
+      <do_if value="$anchorspace">
+        <set_value name="$anchor" exact="$anchorspace"/>
+      </do_if>
+
+      <debug_text text="player.age + ': middleman system initializing. anchor: %s %s. range: %s sectors. ware basket:'.[$anchor.class, $anchor.knownname, $range]" chance="$debugchance"/>
+      <do_all exact="$warebasket.count" counter="$i" chance="$debugchance2">
+        <debug_text text="$warebasket.{$i}.name"/>
+      </do_all>
+
+      <label name="evaluate_tradespaces"/>
+
+      <!-- ideally, we always evaluate distance relative to wherever we happen to be.
+            which means we only have to resort spaces if anchor can move. -->
+      <!-- NB: if this script runs a 2nd+ time and we're still selling, we go straight here so tradespaces wouldn't have been initialized yet. -->
+      <!-- NB: if range is -1 and anchorspace is not set, this script WILL NOT WORK because it will not have any spaces to work with. -->
+      <!--  set of clusters depends on proximity to anchor,
+            but sorting is always according to proximity to the ship. -->
+      <do_if value="not @$tradespaces.count or $anchor.isclass.ship">
+        <!-- 3.30: $tradespaces now contains sectors, not clusters. -->
+        <run_script name="'lib.find.sectors.inrange'" result="$table_gatedistances" sinceversion="7">
+          <param name="refobject" value="$anchor"/>
+          <param name="maxgatedistance" value="$range"/>
+          <param name="returndistancetable" value="true"/>
+          <param name="usesectordistance" value="not this.isplayerowned"/>
+          <param name="debugchance" value="$debugchance"/>
+        </run_script>
+        <!-- If $range <= 0 also include the range space -->
+        <do_if value="$anchorspace and ($range le 0) and not $table_gatedistances.{$anchorspace}?">
+          <set_value name="$table_gatedistances.{$anchorspace}" exact="0"/>
+        </do_if>
+
+        <do_if value="this.hascontext.{$anchor}">
+          <!--this has the context of $anchor so we can use the library result table directly-->
+          <set_value name="$tradespaces" exact="$table_gatedistances.keys.sorted"/>
+        </do_if>
+        <do_else>
+          <!-- NB: $tradespaces sorted according to distance to this.assignedcontrolled.
+              $table_gatedistances, used to evaluate trade value, contains distance to $anchor.
+              should tend to pull the ship towards the anchor, if one is defined. -->
+          <!--clone the table because we're looking to change the distance values for all relevant sectors-->
+          <set_value name="$table_sectors" exact="$table_gatedistances.clone"/>
+          <set_value name="$assignedcontrolled" exact="this.assignedcontrolled"/>
+          <do_for_each name="$sec" in="$table_gatedistances">
+            <set_value name="$table_sectors.{$sec}" exact="$assignedcontrolled.gatedistance.{$sec}"/>
+          </do_for_each>
+          <remove_value name="$assignedcontrolled"/>
+          <set_value name="$tradespaces" exact="$table_sectors.keys.sorted"/>
+          <remove_value name="$table_sectors"/>
+        </do_else>
+      </do_if>
+      <do_else>
+        <set_value name="$table_sectors" exact="table[]"/>
+        <set_value name="$assignedcontrolled" exact="this.assignedcontrolled"/>
+        <do_for_each name="$sec" in="$tradespaces">
+          <set_value name="$table_sectors.{$sec}" exact="$sec.gatedistance.{$assignedcontrolled}"/>
+        </do_for_each>
+        <set_value name="$tradespaces" exact="$table_sectors.keys.sorted"/>
+        <remove_value name="$table_sectors"/>
+        <remove_value name="$assignedcontrolled"/>
+      </do_else>
+
+      <!--<do_if value="$label_return?">
+        <resume label="$label_return"/>
+      </do_if>-->
+
+      <label name="nowwhat"/>
+
+      <!-- Idle for a while -->
+      <run_script name="'move.idle'">
+        <param name="Min" value="17s"/>
+        <param name="Max" value="71s"/>
+      </run_script>
+
+      <do_if value="this.assignedcontrolled.iscapitalship and not this.assignedcontrolled.units.{unitcategory.transport}.count">
+        <do_if value="not this.isplayerowned">
+          <debug_text text="'%s %s %s about to do Middleman with no transport drones. trying to get some.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled]" chance="$debugchance"/>
+          <signal_objects object="this.assignedcontrolled" param="'resupply'" param2="[true]" param3="$debugchance" comment="param2 = [urgent?, resupplystationID], param3 = $debugchance"/>
+          <wait exact="1s" sinceversion="5"/>
+          <!-- NB: if we're still here, interrupt.restock couldn't find any places to buy transport drones. idle and try again later. -->
+          <debug_text text="'unable to get transport drones. idling and trying again later.'" chance="$debugchance"/>
+          <resume label="nowwhat"/>
+        </do_if>
+        <do_else>
+          <!-- valid if everything player wants this to trade with have transport drones. -->
+          <debug_text text="'WARNING: player-owned ship %s %s %s is about to go trading with no transport drones. assuming player knows what they are doing, but trades may fail.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled]" chance="$debugchance"/>
+        </do_else>
+      </do_if>
+
+      <!-- alternate implementation of selling off cargo already in hold. more efficient IF there is something to sell, but if not, needlessly goes over the warebasket.
+            consider if stuff between this and current implementation (<do_if value="this.ship.cargo.{$tempware}">) becomes more extensive. -->
+      <!--<shuffle_list list="$warebasket"/>
+      <do_all exact="$warebasket.count" counter="$i">
+        <do_if value="this.ship.cargo.{$warebasket.{$i}}.exists">
+          <set_value name="$tradeware" exact="$warebasket.{$i}"/>
+          <debug_text text="'we still have %s in the cargo hold. attempting to sell off cargo.'.[$tradeware.name]" chance="$debugchance"/>
+          <resume label="sell"/>
+        </do_if>
+      </do_all>-->
+
+      <!-- $sellcargo set if all wares in basket are filtered out and we are not player-owned. -->
+      <do_if value="$sellcargo?">
+        <do_if value="this.assignedcontrolled.cargo.count">
+          <debug_text text="'cannot trade due to cargo hold being full. selling cargo. ignoring basket.'" chance="$debugchance"/>
+          <set_value name="$locvolume" exact="0"/>
+          <do_all exact="this.assignedcontrolled.cargo.count" counter="$i">
+            <set_value name="$locware" exact="this.assignedcontrolled.cargo.{$i}"/>
+            <do_if value="(this.assignedcontrolled.cargo.{$locware}.count * $locware.volume) gt $locvolume">
+              <set_value name="$tradeware" exact="$locware"/>
+              <set_value name="$locvolume" exact="this.assignedcontrolled.cargo.{$locware}.count * $locware.volume"/>
+              <debug_text text="'selling %s with total volume %s'.[$tradeware, $locvolume]" chance="$debugchance"/>
+            </do_if>
+          </do_all>
+          <remove_value name="$locware"/>
+          <remove_value name="$locvolume"/>
+        </do_if>
+        <do_else>
+          <debug_text text="'instructed to sell cargo but we have no cargo'" filter="error"/>
+        </do_else>
+        <remove_value name="$sellcargo"/>
+      </do_if>
+
+      <!-- if we have anything to sell, sell. otherwise, buy.
+            danger could be handled here. danger: what if we can't sell $ware and never will due to a change in the universe? -->
+      <do_if value="$tradeware and this.ship.cargo.{$tradeware}.exists">
+        <do_if value="(@$triedtosell != $tradeware) or ($warebasket.count == 1)">
+          <do_if value="(typeof $relprice_purchase == datatype.null)">
+            <debug_text text="'we have to sell off wares but $relprice_purchase is not set. setting to minimum price.'" chance="$debugchance"/>
+            <set_value name="$relprice_purchase" exact="-1.0"/>
+          </do_if>
+          <do_if value="$warebasket.count gt 1 and ($relprice_purchase le -0.8)">
+            <debug_text text="'we can trade more wares and relprice is already at minimum adjustment. marking this ware to drop and pick a new product if we still cannot sell it.'" chance="$debugchance"/>
+            <set_value name="$triedtosell" exact="$tradeware"/>
+          </do_if>
+          <debug_text text="'selling %s.'.[$tradeware]" chance="$debugchance2"/>
+          <resume label="sell"/>
+        </do_if>
+        <do_else>
+          <debug_text text="player.age + ': unable to sell %s. dropping or destroying cargo.'.[$triedtosell]" chance="$debugchance"/>
+          <do_if value="this.attention lt attention.visible">
+            <drop_cargo object="this.assignedcontrolled" ware="$triedtosell" exact="this.assignedcontrolled.cargo.{$triedtosell}.count"/>
+          </do_if>
+          <do_else>
+            <remove_cargo object="this.assignedcontrolled" ware="$triedtosell" exact="this.assignedcontrolled.cargo.{$triedtosell}.count"/>
+          </do_else>
+          <!-- keep var $triedtosell to keep from buying it in the next round. clear when new product is selected. -->
+        </do_else>
+      </do_if>
+      <do_else>
+        <debug_text text="'picking a new product to bring to market.'" chance="$debugchance2"/>
+        <!--<resume label="decide_product"/>-->
+      </do_else>
+
+      <label name="decide_product"/>
+
+      <shuffle_list list="$warebasket"/>
+
+      <!-- we buy from stations with sell offers. -->
+      <!-- TODO: review: we may have to move the buy section to beyond this section and look for a fresh sell offer there. had to introduce waits for deciding product so the sell offer could be invalid. -->
+      <label name="buy"/>
+
+      <!--<do_if value="$sortcenter != this.sector">
+        <set_value name="$label_return" exact="buy"/>
+        <resume label="evaluate_tradespaces"/>
+      </do_if>
+      <do_else>
+        <remove_value name="$label_return"/>
+      </do_else>-->
+
+      <set_value name="$tradeware" exact="null"/>
+      <set_value name="$filteredwarebasket" exact="[]"/>
+
+      <!-- Prefilter wares we cannot carry -->
+      <do_all exact="$warebasket.count" counter="$i">
+        <do_if value="$triedtosell? and $warebasket.{$i} == $triedtosell">
+          <debug_text text="'unsuccessfully sold %s in the last run. skipping ware for now.'.[$triedtosell]" chance="$debugchance"/>
+          <continue/>
+        </do_if>
+
+        <set_value name="$tempware" exact="$warebasket.{$i}"/>
+
+        <do_if value="this.ship.cargo.{$tempware}.max">
+          <do_if value="this.ship.cargo.{$tempware}.free gt (this.ship.cargo.{$tempware}.max / 10)">
+            <append_to_list name="$filteredwarebasket" exact="$tempware"/>
+            <debug_text text="'has space for ' + $tempware.name + '. can buy more'" chance="$debugchance2"/>
+          </do_if>
+          <do_else>
+            <!-- if we are running low on space and have any $tempware in the cargo hold, try to sell it off first. -->
+            <do_if value="this.ship.cargo.{$tempware}.exists">
+              <set_value name="$tradeware" exact="$tempware"/>
+              <debug_text text="'we still have %s in the cargo hold. attempting to sell off cargo.'.[$tradeware.name]" chance="$debugchance"/>
+              <resume label="sell"/>
+            </do_if>
+            <debug_text text="'has no space for ' + $tempware.name + '. do not look to buy more'" chance="$debugchance2"/>
+          </do_else>
+        </do_if>
+        <do_else>
+          <debug_text text="'%1 (job %2) can NOT transport %3 (Wrong $warebasket?). Do not try to buy'.[this.ship.knownname, this.ship.job, $tempware.name]" filter="error"/>
+        </do_else>
+      </do_all>
+      <remove_value name="$tempware"/>
+
+      <set_value name="$tradeoffer" exact="null"/>
+      <set_value name="$relprice_purchase" exact="null"/>
+      <set_value name="$supplier" exact="null"/>
+      <set_value name="$amount" exact="null"/>
+      <set_value name="$table_selloffers" exact="table[]"/>
+
+      <!-- assemble a list of the cheapest (relprice) wares per sector. distance is not relevant at this point. -->
+      <!-- TODO: review. possibly prohibitive. look through all trade spaces to find absolute lowest price.
+            without the additional search for the lowest price, ships fairly early get stuck with goods they're not willing to sell because they bought it for too much. -->
+      <do_if value="$filteredwarebasket.count">
+        <do_all exact="$tradespaces.count" counter="$i">
+          <!-- $tempoffer has to be compared against offers found in different spaces so it has to be valid for this to make sense. -->
+          <wait min="(16 - this.skill.piloting)s" max="(17 - this.skill.piloting)s" comment="to spread out performance drain"/>
+
+          <debug_text text="'looking for sell offers in %s'.[$tradespaces.{$i}.knownname]" chance="$debugchance2"/>
+          <find_sell_offer result="$selloffers" tradepartner="this.ship" space="$tradespaces.{$i}" wares="$filteredwarebasket" multiple="true">
+            <match_seller tradesknownto="this.owner">
+              <match_use_blacklist group="$blacklistgroup" type="blacklisttype.objectactivity" object="this.ship"/>
+            </match_seller>
+          </find_sell_offer>
+          <debug_text text="'found %s trades'.[$selloffers.count]" chance="$debugchance2"/>
+          <do_all exact="$selloffers.count" counter="$sellofferindex" chance="$debugchance2">
+            <set_value name="$locoffer" exact="$selloffers.{$sellofferindex}"/>
+            <debug_text text="'ware: %s, relprice: %s, seller: %s %s in sector %s %s, %s sectors away.'.[$locoffer.ware, $locoffer.relativeprice, $locoffer.owner.knownname, $locoffer.owner, $locoffer.owner.sector.knownname, $locoffer.owner.sector, $tradespaces.{$i}.gatedistance.{this.ship}]"/>
+            <remove_value name="$locoffer"/>
+          </do_all>
+          <!-- shuffle list so that offers with the same relprice are still in a random order and not in the consistent order that the stations were found in -->
+          <shuffle_list list="$selloffers"/>
+          <sort_trades name="$sortedoffers" tradelist="$selloffers" sorter="relativeprice"/>
+          <remove_value name="$selloffers"/>
+
+          <do_if value="@$tradeoffer.available">
+            <do_if value="$sortedoffers.count and $sortedoffers.{1} != $tradeoffer">
+              <!-- relativeprice is now some fraction from -1 to 1, 0 being the mean within its traded range.
+                so if we're buying, we shift the whole range down and multiply by amount (we want big amounts of cheap wares),
+                  then flip the sign so that bigger number == better.
+                  shifting by 2 because a relprice of 0 will negate amount, thus making all trades of max relprice, regardless of amount, equally attractive.
+                  multiply by ware volume to normalize wares with differing volume to counteract the tendency to implicitly prefer small-volume wares since we can fit more wares with smaller volume.
+                to increase weight of relativeprice, shift further to the left. DO NOT shift higher than - 2 unless you're selling (in which case, shift up and drop the switch to negative). -->
+              <!-- some time has passed since we initially evaluated tradevalue. update tradevalue so we compare evaltradevalue with the current tradevalue of the trade offer we had earlier chosen. -->
+              <set_value name="$tradevalue" exact="[$tradeofferamount, this.ship.cargo.{$tradeware}.free].min * $tradeware.volume * -($tradeoffer.relativeprice - 2)"/>
+              <set_value name="$evaltradeofferamount" exact="$sortedoffers.{1}.offeramount.{this.assignedcontrolled}"/>
+              <set_value name="$evaltradevalue" exact="[$evaltradeofferamount, this.ship.cargo.{$sortedoffers.{1}.ware}.free].min * $sortedoffers.{1}.ware.volume * -($sortedoffers.{1}.relativeprice - 2)"/>
+              <do_if value="$evaltradevalue gt $tradevalue">
+                <debug_text text="'switching suppliers\nfrom %s %s with tradevalue: %s, relprice: %s, amount: %s, volume: %s\nto %s %s with tradevalue: %s, relprice: %s, amount: %s, volume: %s.'.[$tradeoffer.owner.idcode, $tradeoffer.owner.knownname, $tradevalue, $tradeoffer.relativeprice, [$tradeofferamount, this.ship.cargo.{$tradeware}.free].min, $tradeware.volume, $sortedoffers.{1}.owner.idcode, $sortedoffers.{1}.owner.knownname, $evaltradevalue, $sortedoffers.{1}.relativeprice, [$evaltradeofferamount, this.ship.cargo.{$sortedoffers.{1}.ware}.free].min, $sortedoffers.{1}.ware.volume]" chance="$debugchance2"/>
+                <set_value name="$tradeoffer" exact="$sortedoffers.{1}"/>
+                <set_value name="$tradeofferamount" exact="$evaltradeofferamount"/>
+                <set_value name="$tradeware" exact="$tradeoffer.ware"/>
+                <set_value name="$supplier" exact="$tradeoffer.owner"/>
+                <set_value name="$tradevalue" exact="$evaltradevalue"/>
+              </do_if>
+            </do_if>
+          </do_if>
+          <do_else>
+            <do_all exact="$sortedoffers.count" counter="$j">
+              <set_value name="$checkoffer" exact="$sortedoffers.{$j}"/>
+              <do_if value="not $checkoffer.available or not $checkoffer.offeramount.{this.assignedcontrolled}">
+                <continue/>
+              </do_if>
+              <set_value name="$offerware" exact="$checkoffer.ware"/>
+
+              <debug_text text="'offer for %s. price: %s. relprice: %s. amount: %s.'.[$offerware, $checkoffer.unitprice, $checkoffer.relativeprice, $checkoffer.offeramount.{this.assignedcontrolled}]" chance="$debugchance2"/>
+              <!-- quick check for buy offers in the vicinity. we don't expect to actually use this buy offer, just using it to figure out what to buy. -->
+              <set_value name="$buyoffers" exact="[]"/>
+              <do_all exact="$tradespaces.count" counter="$k">
+                <wait min="200ms" max="3s" comment="to spread out performance drain"/>
+
+                <do_if value="not $checkoffer.exists or not $checkoffer.available">
+                  <continue/>
+                </do_if>
+                <!-- we're looping with a wait so the offer amount might have changed between iterations -->
+                <set_value name="$checkofferamount" exact="$checkoffer.offeramount.{this.assignedcontrolled}"/>
+                <do_if value="not $checkofferamount">
+                  <continue/>
+                </do_if>
+
+                <do_if value="$buyoffers?">
+                  <clear_list list="$buyoffers"/>
+                </do_if>
+                <do_else>
+                  <set_value name="$buyoffers" exact="[]"/>
+                </do_else>
+                <do_if value="not $offerware?">
+                  <set_value name="$offerware" exact="$checkoffer.ware"/>
+                </do_if>
+
+                <debug_text text="'looking for buy offers in %s. minimum relprice: %s. gate distance: %s.'.[$tradespaces.{$k}.knownname, (($checkoffer.relativeprice + 2) * (1.0 + ([$table_gatedistances.{$tradespaces.{$k}} + 1, 1].max * 0.01))) - 2, $table_gatedistances.{$tradespaces.{$k}}]" chance="$debugchance2"/>
+                <find_buy_offer result="$buyoffers" tradepartner="this.assignedcontrolled" space="$tradespaces.{$k}" wares="$offerware" multiple="true">
+                  <match_buyer tradesknownto="this.owner">
+                    <match_use_blacklist group="$blacklistgroup" type="blacklisttype.objectactivity" object="this.assignedcontrolled"/>
+                  </match_buyer>
+                </find_buy_offer>
+                <do_if value="$buyoffers.count">
+                  <set_value name="$assignedcontrolled" exact="this.assignedcontrolled"/>
+                  <set_value name="$freewareamount" exact="$assignedcontrolled.cargo.{$offerware}.free"/>
+                  <set_value name="$freewarevolume" exact="$freewareamount * $offerware.volume"/>
+                  <set_value name="$potentialevalamount" exact="0"/>
+                  <do_for_each name="$buyoffer" in="$buyoffers">
+                    <set_value name="$potentialevalamount" exact="$buyoffer.offervolume.{this.assignedcontrolled}" operation="add"/>
+                  </do_for_each>
+                  <!-- +0.5 to properly round up if above x.5 -->
+                  <set_value name="$potentialevalamount" exact="($potentialevalamount * $aggressiveness + 0.5)i"/>
+                  <do_if value="$potentialevalamount lt ([$freewareamount, (if @$tempoffer.available then $tempoffer.offeramount.{this.assignedcontrolled} else $checkofferamount)].min * $offerware.volume)">
+                    <!--Can't possibly fulfill evalamount with the available trades. Don't continue evaluating them-->
+                    <debug_text text="player.age + ': sum of buy offers for %1 in %2 is %3 which is below purchase amount %4, skipping this space'.[$offerware, $tradespaces.{$k}.knownname, $potentialevalamount / $offerware.volume, [$freewareamount, (if @$tempoffer.available then $tempoffer.offeramount.{this.assignedcontrolled} else $checkofferamount)].min]" chance="$debugchance"/>
+                    <remove_value name="$potentialevalamount"/>
+                    <continue/>
+                  </do_if>
+                  <remove_value name="$potentialevalamount"/>
+                  <remove_value name="$evalamount"/>
+                  <sort_trades name="$buyoffers" tradelist="$buyoffers" sorter="amount"/>
+                  <set_value name="$factoryrelpricefloor" exact="(($checkoffer.relativeprice + 2) * (1.0 + ([$table_gatedistances.{$tradespaces.{$k}} + 1, 1].max * 0.01))) - 2"/>
+                  <do_for_each name="$buyoffer" in="$buyoffers" reverse="true">
+                    <do_if value="not $buyoffer.owner.tradewares.{$offerware}.exists">
+                      <do_if value="$assignedcontrolled.isjobship">
+                        <set_value name="$preferredclient" exact="$buyoffer.owner.canbuildships or $buyoffer.owner.isclass.buildstorage"/>
+                        <do_if value="($preferredclient and $buyoffer.relativeprice ge $checkoffer.relativeprice) or (not $preferredclient and $buyoffer.relativeprice ge $factoryrelpricefloor)">
+                          <do_if value="$buyoffer.cantradewith.{$assignedcontrolled} and $buyoffer.owner.dockingallowed.{$assignedcontrolled}">
+                            <set_value name="$evalamount" exact="@$evalamount + $buyoffer.offervolume.{this.assignedcontrolled}"/>
+                            <do_if value="$evalamount ge $freewarevolume">
+                              <break/>
+                            </do_if>
+                          </do_if>
+                        </do_if>
+                      </do_if>
+                      <do_elseif value="$buyoffer.relativeprice ge $factoryrelpricefloor">
+                        <do_if value="$buyoffer.cantradewith.{$assignedcontrolled} and $buyoffer.owner.dockingallowed.{$assignedcontrolled}">
+                          <set_value name="$evalamount" exact="@$evalamount + $buyoffer.offervolume.{this.assignedcontrolled}"/>
+                          <do_if value="$evalamount ge $freewarevolume">
+                            <break/>
+                          </do_if>
+                        </do_if>
+                      </do_elseif>
+                    </do_if>
+                  </do_for_each>
+
+                  <do_if value="not @$tempoffer.available and $checkoffer.available and $checkofferamount">
+                    <!-- NB: before this more detailed decision-making, this used to be the offer we now use. save it to fall back on if decision-making comes up empty. -->
+                    <set_value name="$tempoffer" exact="$checkoffer"/>
+                  </do_if>
+
+                  <do_if value="$evalamount? and @$tempoffer.available">
+                    <do_if value="$evalamount ge ([this.ship.cargo.{$tempoffer.ware}.free, $tempoffer.offeramount.{this.assignedcontrolled}].min * $tempoffer.ware.volume)">
+                      <set_value name="$tradeoffer" exact="$checkoffer"/>
+                      <set_value name="$tradeofferamount" exact="$tradeoffer.offeramount.{this.assignedcontrolled}"/>
+                      <set_value name="$tradeware" exact="$tradeoffer.ware"/>
+                      <set_value name="$supplier" exact="$tradeoffer.owner"/>
+                      <set_value name="$tradevalue" exact="[$tradeofferamount, this.ship.cargo.{$tradeware}.free].min * $tradeware.volume * -($tradeoffer.relativeprice - 2)"/>
+                      <debug_text text="'found %s %s selling %s with value %s.'.[$supplier.knownname, $supplier, $tradeware, $tradevalue]" chance="$debugchance"/>
+                      <break/>
+                    </do_if>
+                    <do_else>
+                      <debug_text text="player.age + ': sum of evaluated buy offers for %1 in %2 is %3 which is below purchase amount %4, skipping this space'.[$tempoffer.ware, $tradespaces.{$k}.knownname, $evalamount / $tempoffer.ware.volume, [this.ship.cargo.{$tempoffer.ware}.free, $tempoffer.offeramount.{this.assignedcontrolled}].min]" chance="$debugchance"/>
+                    </do_else>
+                  </do_if>
+                </do_if>
+              </do_all>
+              <do_if value="@$tradeoffer.available">
+                <break/>
+              </do_if>
+            </do_all>
+            <remove_value name="$checkoffer"/>
+            <remove_value name="$checkofferamount"/>
+          </do_else>
+          <do_if value="@$tradeoffer.available and $tradeoffer.relativeprice le -0.9">
+            <!-- for a relativeprice <= -0.9 we calculate a 0-100% chance to accept this offer, with 100% at -1 -->
+            <set_value name="$acceptchance" exact="($tradeoffer.relativeprice + 0.9) * -1000"/>
+          </do_if>
+          <do_if value="@$tradeoffer.available" chance="@$acceptchance">
+            <debug_text text="'trade offer found is already at relprice %s (chance %s). buying %s at %s %s.'.[$tradeoffer.relativeprice, $acceptchance, $tradeware, $supplier.knownname, $supplier]" chance="$debugchance"/>
+            <remove_value name="$acceptchance"/>
+            <break/>
+          </do_if>
+          <do_else>
+            <debug_text text="'either no trade offer found or trade offer relprice is not below -0.9 (available: %1, chance: %2). checking next sector.'.[@$tradeoffer.available, @$acceptchance]" chance="$debugchance"/>
+          </do_else>
+          <remove_value name="$acceptchance"/>
+        </do_all>
+      </do_if>
+      <do_else>
+        <do_if value="this.assignedcontrolled.isonlineobject and not $isvalidventure?">
+          <debug_text text="'uninitialized venture ship %s %s %s reinitializing'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled]" chance="$debugchance"/>
+          <!-- catch existing venture ships with invalid setups and reinitialize -->
+          <resume label="start"/>
+        </do_if>
+        <do_elseif value="not this.ship.jobexpired and this.ship.job != 'dummy_job'">
+          <do_if value="not this.isplayerowned">
+            <!-- this was an error, but can now normally happen for NPC-owned ships since they could have been commandeered to temporarily trade other wares. -->
+            <debug_text text="'all wares in warebasket filtered out.'" chance="$debugchance"/>
+            <!-- we don't know why player-owned ships might have wares that they're not supposed to trade so leave them alone in the player-owned case. player would have to sort them out.
+                  if we belong to an NPC faction, we could have been temporarily commandeered to trade something else so we have to deal with wares in cargo that aren't in our basket. -->
+            <set_value name="$sellcargo"/>
+          </do_if>
+        </do_elseif>
+        <resume label="nowwhat"/>
+      </do_else>
+      <remove_value name="$tradevalue"/>
+      <remove_value name="$evaltradeofferamount"/>
+      <remove_value name="$evaltradevalue"/>
+      <remove_value name="$sortedoffers"/>
+      <remove_value name="$buyoffers"/>
+
+      <do_if value="@$tradeoffer.available">
+        <set_value name="$tradeofferamount" exact="$tradeoffer.offeramount.{this.assignedcontrolled}"/>
+      </do_if>
+      <do_elseif value="@$tempoffer.available">
+        <debug_text text="'no ideal products found. falling back on ' + $tempoffer.ware" chance="$debugchance"/>
+        <set_value name="$tradeoffer" exact="$tempoffer"/>
+        <set_value name="$tradeofferamount" exact="$tradeoffer.offeramount.{this.assignedcontrolled}"/>
+        <set_value name="$tradeware" exact="$tradeoffer.ware"/>
+        <set_value name="$supplier" exact="$tradeoffer.owner"/>
+        <set_value name="$tradevalue" exact="[$tradeofferamount, this.ship.cargo.{$tradeware}.free].min * $tradeware.volume * -($tradeoffer.relativeprice - 2) "/>
+      </do_elseif>
+      <remove_value name="$tempoffer"/>
+
+      <do_if value="@$tradeoffer.available and $tradeofferamount">
+        <set_value name="$relprice_purchase" exact="$tradeoffer.relativeprice"/>
+
+        <!-- limit the amount to what the station has for sale, or how much we can carry, whichever is lower. -->
+        <clamp_trade_amount result="$amount" trade="$tradeoffer" amount="$tradeofferamount" buyer="this.ship" seller="$tradeoffer.seller"/>
+        <remove_value name="$tradeofferamount"/>
+        <do_if value="not $amount">
+          <debug_text text="'amount clamped to 0.'" chance="$debugchance"/>
+          <resume label="nowwhat"/>
+        </do_if>
+        <debug_text text="player.age + ': BUYING %4 %5\nat %1 %2 (%3)\nin %s, %s,\n%s sectors away,\nfor relprice: %s.'.[$tradeoffer.owner.idcode, $tradeoffer.owner.knownname, $tradeoffer.owner, $amount, $tradeware, $tradeoffer.owner.sector.knownname, $tradeoffer.owner.cluster.knownname, this.ship.gatedistance.{$tradeoffer.owner}, $relprice_purchase]" chance="$debugchance"/>
+        <remove_value name="$triedtosell"/>
+        <resume label="execute"/>
+      </do_if>
+      <do_else>
+        <debug_text text="player.age + ': no wares found to be profitable in this space at this time. idling.'" chance="$debugchance"/>
+        <remove_value name="$tradeofferamount"/>
+        <resume label="nowwhat"/>
+      </do_else>
+
+      <!-- we sell to stations with buy offers. -->
+      <label name="sell"/>
+
+      <!--<do_if value="$sortcenter != this.sector">
+        <set_value name="$label_return" exact="sell"/>
+        <resume label="evaluate_tradespaces"/>
+      </do_if>
+      <do_else>
+        <remove_value name="$label_return"/>
+      </do_else>-->
+
+      <set_value name="$tradeoffer" exact="null"/>
+      <set_value name="$amount" exact="null"/>
+
+      <do_all exact="$tradespaces.count" counter="$i">
+        <wait exact="(16 - this.skill.piloting)s" comment="to spread out performance drain"/>
+
+        <set_value name="$gatedistance" exact="$table_gatedistances.{$tradespaces.{$i}}"/>
+        <set_value name="$mintradevalue" exact="[([($relprice_purchase + 1) * 1.2, 2].min * (1.0 + ([$gatedistance + 1, 1].max * 0.01))) - 1, 1.0].min"/>
+        <debug_text text="'minimum acceptable trade value for %s in %s %s is %s. we got it for relprice %s.'.[$tradeware, $tradespaces.{$i}.class, $tradespaces.{$i}.knownname, $mintradevalue, $relprice_purchase]" chance="$debugchance2"/>
+        <do_if value="this.assignedcontrolled.isjobship">
+          <!-- look at shipyards/wharfs first with a reduced relativeprice threshold -->
+          <find_buy_offer result="$buyoffer" tradepartner="this.assignedcontrolled" space="$tradespaces.{$i}" wares="$tradeware">
+            <match_buyer tradesknownto="this.owner" canbuildships="true">
+              <match_use_blacklist group="$blacklistgroup" type="blacklisttype.objectactivity" object="this.assignedcontrolled"/>
+            </match_buyer>
+            <relativeprice min="[$mintradevalue - 0.1, -2.0].max" tradepartner="if this.assignedcontrolled.isplayerowned then this.assignedcontrolled else null"/>
+          </find_buy_offer>
+          <do_if value="@$buyoffer.offeramount.{this.assignedcontrolled}" chance="$debugchance">
+            <debug_text text="'middleman %s %s %s supplying %s %s to shipyard %s %s %s'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, [$buyoffer.offeramount.{this.assignedcontrolled}, this.assignedcontrolled.cargo.{$buyoffer.ware}.count].min, $buyoffer.ware, $buyoffer.buyer.idcode, $buyoffer.buyer.knownname, $buyoffer.buyer]" />
+          </do_if>
+        </do_if>
+        <set_value name="$buyofferamount" exact="if @$buyoffer.available then $buyoffer.offeramount.{this.assignedcontrolled} else 0"/>
+        <do_if value="not $buyofferamount">
+          <find_buy_offer result="$buyoffer" tradepartner="this.assignedcontrolled" space="$tradespaces.{$i}" wares="$tradeware">
+            <match_buyer tradesknownto="this.owner">
+              <match_use_blacklist group="$blacklistgroup" type="blacklisttype.objectactivity" object="this.assignedcontrolled"/>
+            </match_buyer>
+            <relativeprice min="$mintradevalue" tradepartner="if this.assignedcontrolled.isplayerowned then this.assignedcontrolled else null"/>
+          </find_buy_offer>
+          <set_value name="$buyofferamount" exact="if $buyoffer.available then $buyoffer.offeramount.{this.assignedcontrolled} else 0"/>
+          <do_if value="$buyofferamount" chance="$debugchance">
+            <debug_text text="'no interesting shipyard offers found. middleman %s %s %s supplying %s %s to %s %s %s'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, [$buyofferamount, this.assignedcontrolled.cargo.{$buyoffer.ware}.count].min, $buyoffer.ware, $buyoffer.buyer.idcode, $buyoffer.buyer.knownname, $buyoffer.buyer]"/>
+          </do_if>
+        </do_if>
+
+        <do_if value="$buyoffer and $buyofferamount and $buyoffer.owner != $supplier">
+          <set_value name="$tradeoffer" exact="$buyoffer"/>
+          <set_value name="$tradeofferamount" exact="$buyofferamount"/>
+          <break/>
+        </do_if>
+      </do_all>
+
+      <do_if value="@$tradeoffer.available and $tradeoffer.offeramount.{this.assignedcontrolled}">
+        <!-- limit the amount to what the station wants, or how much we can carry, whichever is lower. -->
+        <set_value name="$amount" exact="[this.ship.cargo.{$tradeware}.count, $tradeoffer.offeramount.{this.assignedcontrolled}].min"/>
+        <debug_text text="player.age + ': SELLING %4 %5\nto %1 %2 (%3)\nin %s, %s, %s sectors away,\nfor relprice: %s.\ngot it for relprice: %s'.[$tradeoffer.owner.idcode, $tradeoffer.owner.knownname, $tradeoffer.owner, $amount, $tradeware, $tradeoffer.owner.sector.knownname, $tradeoffer.owner.cluster.knownname, this.ship.gatedistance.{$tradeoffer.owner}, $tradeoffer.relativeprice, $relprice_purchase]" chance="$debugchance"/>
+        <remove_value name="$triedtosell"/>
+        <resume label="execute"/>
+      </do_if>
+      <do_else>
+        <!-- if this has to be addressed, we could:
+              change time,      (already done)
+              increase range,   (trivial)
+              drop prices,      (already done)
+              switch products,  (scripty)
+              or shift spaces.  (desirability depends on whether or not we go with default anchors. untethering is trivial: just clear anchorspace and reinitialize.) -->
+        <do_if value="$relprice_purchase gt -0.8">
+          <debug_text text="player.age + ': no one interested in %s for relprice %s in this area at the moment. dropping prices. idling.'.[$tradeware, $relprice_purchase]" chance="$debugchance"/>
+          <do_if value="not $holdbuyprice">
+            <set_value name="$relprice_purchase" operation="subtract" exact="0.05"/>
+          </do_if>
+        </do_if>
+        <do_else>
+          <debug_text text="'%s %s (%s) has wares already near minimum price. not budging further. ware: %s. relprice: %s'.[this.ship.idcode, this.ship.knownname, this.ship, $tradeware, $relprice_purchase]" chance="$debugchance"/>
+        </do_else>
+        <resume label="nowwhat"/>
+      </do_else>
+
+      <label name="execute"/>
+
+      <do_if value="@$thisorder.exists">
+        <set_order_syncpoint_reached order="$thisorder"/>
+      </do_if>
+
+      <!-- TODO: if available for player use, add player feedback here. -->
+      <debug_text text="player.age + ': Moving to trade %1 %2 at %3 in %4, %5. Gate distance: %6'.[$amount, $tradeware, $tradeoffer.owner.knownname, $tradeoffer.owner.sector.knownname, $tradeoffer.owner.cluster.knownname, $anchor.gatedistance.{$tradeoffer.owner}]" chance="$debugchance"/>
+
+      <set_value name="$isdefaultorder" exact="this.ship.order == this.ship.defaultorder"/>
+      <do_if value="not $isdefaultorder and ($duration and ((player.age - $time_start) gt $duration)) or this.assignedcontrolled.jobexpired">
+        <resume label="finish"/>
+      </do_if>
+
+      <do_if value="$tradeoffer.available">
+        <do_if value="@$thisorder.exists">
+          <debug_text text="'updating parameters'" chance="$debugchance"/>
+          <edit_order_param order="$thisorder" param="'warebasket'" value="$warebasket"/>
+          <edit_order_param order="$thisorder" param="'anchorspace'" value="$anchorspace"/>
+          <edit_order_param order="$thisorder" param="'range'" value="$range"/>
+
+          <edit_order_param order="$thisorder" param="'tradeware'" value="$tradeware"/>
+          <edit_order_param order="$thisorder" param="'relprice_purchase'" value="$relprice_purchase"/>
+          <edit_order_param order="$thisorder" param="'supplier'" value="$supplier"/>
+
+          <edit_order_param order="$thisorder" param="'debugchance'" value="$debugchance"/>
+          <edit_order_param order="$thisorder" param="'debugchance2'" value="$debugchance2"/>
+        </do_if>
+        <debug_text text="'adding trade order'" chance="$debugchance"/>
+        <create_trade_order name="$tradeorder" object="this.assignedcontrolled" tradeoffer="$tradeoffer" amount="$amount" immediate="true" internal="true"/>
+      </do_if>
+      <do_else>
+        <debug_text text="'we waited too long. trade offer is no longer available. now what?'" chance="$debugchance"/>
+        <resume label="nowwhat"/>
+      </do_else>
+
+      <wait min="17ms" max="131ms"/>
+
+      <resume label="nowwhat"/>
+
+      <label name="finish"/>
+
+      <!-- check if this is a jobship at the end of its lifetime -->
+      <do_if value="this.assignedcontrolled.jobexpired">
+        <debug_text text="'%1 doing job %2 has expired, die!'.[this.assignedcontrolled.knownname, this.assignedcontrolled.job]" chance="$debugchance"/>
+        <create_order object="this.assignedcontrolled" id="'MoveDie'" immediate="true">
+          <param name="byhighway" value="not this.assignedcontrolled.isclass.[class.ship_l, class.ship_xl]"/>
+        </create_order>
+      </do_if>
+
+    </actions>
+  </attention>
+  <on_abort>
+    <do_if value="$duration and @$tradeorder.exists and @$thisorder.exists">
+      <!-- do not reduce duration to 0s since that would make the order infinite. -->
+      <debug_text text="'on_abort: updating duration from %s to %s'.[$duration, $duration - [(player.age - $time_start), $duration - 1s].min]" chance="$debugchance"/>
+      <edit_order_param order="$thisorder" param="'duration'" value="[$duration - (player.age - $time_start), 1s].max"/>
+    </do_if>
+  </on_abort>
+</aiscript>

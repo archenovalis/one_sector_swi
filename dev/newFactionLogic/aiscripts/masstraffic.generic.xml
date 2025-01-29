@@ -1,0 +1,187 @@
+<?xml version="1.0" encoding="iso-8859-1" ?>
+<aiscript name="masstraffic.generic" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd">
+  <!--
+
+  Generic Mass Traffic Agent Script
+  by Michael
+  
+  -->
+  <interrupts>
+    <handler ref="MassTrafficAttackHandler" />
+    <handler ref="ScannedHandler" />
+    <handler ref="TargetInvalidHandler" />
+  </interrupts>
+  <attention min="nearby">
+    <actions>
+      <set_value name="$debugchance" exact="0" />
+
+      <set_value name="this.$lastsignal" exact="0" />
+
+      <label name="start" />
+
+      <!-- Initial stand by command action -->
+      <set_command_action commandaction="commandaction.flying" />
+
+      <set_value name="$target" exact="null" />
+      <wait>
+        <interrupt>
+          <conditions>
+            <check_any>
+              <check_all>
+                <event_object_signalled object="this.ship" param="'attack'" />
+              </check_all>
+              <check_all>
+                <event_gravidar_has_scanned object="this.ship" />
+                <check_value value="player.occupiedship" />
+                <check_value value="this.ship.distanceto.{player.entity}" max="250m" />
+                <check_any>
+                  <check_value value="this.hasrelation.kill.{player.entity.owner}" />
+                  <check_all>
+                    <check_value value="this.zone.owner" />
+                    <check_value value="this.zone.owner.hasrelation.kill.{player.entity.owner}" />
+                    <check_value value="this.hasrelation.friend.{this.zone.owner}" />
+                  </check_all>
+                </check_any>
+              </check_all>
+            </check_any>
+          </conditions>
+          <actions>
+
+            <do_if value="event.name == 'event_object_signalled'">
+              <set_value name="$victim" exact="event.param3" />
+              <set_value name="$target" exact="event.param2" />
+              <do_if value="this.hasrelation.friend.{$victim} and not this.hasrelation.friend.{$target}">
+                <do_if value="this.ship.dps.all gt 0f">
+                  <resume label="attack" />
+                </do_if>
+              </do_if>
+            </do_if>
+            <do_if value="(this.ship.dps.all gt 0f) and (event.name == 'event_gravidar_has_scanned')" chance="50">
+              <debug_text text="'attack'" chance="$debugchance" />
+              <set_value name="$target" exact="player.occupiedship" comment="existence already checked in event_gravidar_has_scanned interrupt condition" />
+              <resume label="attack" />
+            </do_if>
+            <do_elseif value="true" chance="70">
+              <debug_text text="'evade'" chance="$debugchance" />
+              <resume label="evade" />
+            </do_elseif>
+            <do_else>
+              <debug_text text="'flee'" chance="$debugchance" />
+              <resume label="flee" />
+            </do_else>
+          </actions>
+        </interrupt>
+      </wait>
+      <resume label="start" />
+
+      <label name="attack" />
+      <start_attack object="this.ship" target="$target" />
+      <run_script name="'order.fight.attack.object'">
+        <param name="primarytarget" value="$target" />
+        <param name="allowothertargets" value="false" />
+      </run_script>
+      <stop_attack object="this.ship" target="$target" />
+      <resume label="returntomasstraffic" />
+
+      <label name="flee" />
+      <run_script name="'masstraffic.flee'" />
+      <resume label="returntomasstraffic" />
+
+      <label name="evade" />
+      <find_pos_in_mass_traffic_at_time name="$mtpos" object="this.ship" time="player.age + 20s" zone="this.ship.zone" />
+      <set_flight_behaviour object="this.ship" flightbehaviour="flightbehaviour.parallelpath" />
+      <move_to object="this.ship" destination="this.ship.zone" forcesteering="true">
+        <position value="$mtpos" />
+        <interrupt_after_time time="15s" />
+      </move_to>
+
+      <label name="returntomasstraffic"/>
+      <do_if value="this.ship.ismasstraffic" >
+        <debug_text text="'Return to masstraffic...'" chance="$debugchance" />
+        <set_flight_behaviour object="this.ship" flightbehaviour="flightbehaviour.closetoobject" />
+        <set_flight_control_model object="this.ship" flightcontrolmodel="flightcontrolmodel.steering" />
+        <return_to_masstraffic object="this.ship" />
+        <resume label="start" />
+      </do_if>
+
+      <debug_text text="'Fallback, self-destructing...'" />
+      <destroy_object object="this.ship" explosion="false" />
+    </actions>
+  </attention>
+  <attention min="visible">
+    <actions>
+      <set_value name="$debugchance" exact="0" />
+
+      <set_value name="this.$lastsignal" exact="0" />
+
+      <label name="start" />
+
+      <set_value name="$evade" exact="0" />
+
+      <!-- Initial stand by command action -->
+      <set_command_action commandaction="commandaction.flying" />
+
+      <wait>
+        <interrupt>
+          <conditions>
+            <event_object_signalled object="this.ship" param="'attack'" />
+          </conditions>
+          <!-- <actions>
+            <debug_text text="'%1(%2) has been signaled with \'%3\', \'%4\''.[this.ship.knownname, this.ship, event.param, event.param2]" />
+          </actions> -->
+        </interrupt>
+      </wait>
+
+      <wait min="500ms" max="3s" />
+
+      <!-- TODO check some abort conditions, maybe we can return to masstraffic already, we should only be in here if the 5 minutes from above have passed without this going into low-attention again -->
+      <resume label="start" />
+
+      <!-- ##################################################### -->
+      <!-- FLEE to the NavMesh -->
+      <!-- ##################################################### -->
+      <label name="attack" />
+      <label name="flee" />
+      <run_script name="'masstraffic.flee'" />
+
+      <resume label="returntomasstraffic" />
+
+      <!-- ##################################################### -->
+      <!-- EVADE a potential attack -->
+      <!-- ##################################################### -->
+      <label name="evade" />
+      <wait min="15s" max="45s" />
+
+
+      <!-- ##################################################### -->
+      <!-- RETURN TO MASS TRAFFIC -->
+      <!-- ##################################################### -->
+      <label name="returntomasstraffic"/>
+      <do_if value="this.ship.ismasstraffic" >
+        <debug_text text="'Return to masstraffic...'" chance="$debugchance" />
+        <set_flight_behaviour object="this.ship" flightbehaviour="flightbehaviour.closetoobject" />
+        <return_to_masstraffic object="this.ship" />
+        <resume label="start" />
+      </do_if>
+
+      <debug_text text="'Fallback, self-destructing...'" />
+      <destroy_object object="this.ship" explosion="false" />
+
+    </actions>
+  </attention>
+  <attention min="unknown">
+    <actions>
+      <set_value name="$debugchance" exact="0" />
+      <label name="start" />
+      <label name="attack" />
+      <label name="flee" />
+      <label name="evade" />
+      <label name="returntomasstraffic"/>
+      <wait min="5s" max="10s" />
+      <do_if value="this.ship.exists">
+        <debug_text text="'Generic mass traffic ship self-destructing (OOS)'" chance="$debugchance" />
+        <destroy_object object="this.ship" explosion="false" />
+      </do_if>
+    </actions>
+  </attention>
+</aiscript>

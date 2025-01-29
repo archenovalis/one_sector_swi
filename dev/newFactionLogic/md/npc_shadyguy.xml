@@ -1,0 +1,317 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="NPC_ShadyGuy" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+    <cue name="GameStarted" version="6">
+      <conditions>
+        <event_cue_signalled cue="md.Setup.GameStart" />
+      </conditions>
+      <actions>
+        <set_value name="$DebugChance" exact="0" comment="TODO: Make sure to turn this off before committing" />
+        <debug_text text="'Stations have been generated - starting to plan spawning of black marketeers'" chance="$DebugChance" />
+
+        <!-- ShadyGuyMap: $ShadyGuy = station on which the shadyguy should be instantiated -->
+        <set_value name="md.$ShadyGuyMap" exact="table[]" />
+        <create_group groupname="$TrackedStationGroup" comment="A group tracking the stations used for placing shady guys" />
+        <set_value name="$MatchProductsList" exact="[ware.majadust, ware.spacefuel, ware.spaceweed]"/>
+        <set_value name="$MatchOwnerList" exact="[faction.player, faction.xenon, faction.khaak, faction.ownerless, faction.civilian]"/>
+      </actions>
+      <patch sinceversion="2" state="complete">
+        <!-- Set up new shady guy MD handlers -->
+        <set_value name="$Patch_ShadyguysList" exact="md.$ShadyGuyMap.keys.list"/>
+        <do_all exact="$Patch_ShadyguysList.count" counter="$i">
+          <set_value name="$Patch_ShadyGuy" exact="$Patch_ShadyguysList.{$i}" />
+          <do_if value="$Patch_ShadyGuy.exists">
+            <debug_text text="'Triggering new shady guy handler for ' + $Patch_ShadyGuy + ' ' + $Patch_ShadyGuy.knownname" filter="savegame" />
+            <signal_cue_instantly cue="md.NPC_Itemtrader.OnPlatformPopulation_Itemtrader" param="[$Patch_ShadyGuy]" />
+          </do_if>
+        </do_all>
+        <remove_value name="$Patch_ShadyGuy" />
+        <remove_value name="$Patch_ShadyguysList"/>
+      </patch>
+      <patch sinceversion="3" state="complete">
+        <!-- Set up missing handlers (for shady guys that were created by TrackedStationDestroyed after version 2) -->
+        <set_value name="$Patch_ShadyguysList" exact="md.$ShadyGuyMap.keys.list"/>
+        <do_all exact="$Patch_ShadyguysList.count" counter="$i">
+          <set_value name="$Patch_ShadyGuy" exact="$Patch_ShadyguysList.{$i}" />
+          <do_if value="$Patch_ShadyGuy.isclass.npc and $Patch_ShadyGuy.parent == null and @md.$ShadyGuyMap.{$Patch_ShadyGuy}.assignedcontrolentity.{controlpost.shadyguy} == $Patch_ShadyGuy">
+            <!-- NOTE: Restoring the NPC is only possible because previously the cleanup of shady guys as cue actors was missing, so they were kept alive in memory -->
+            <debug_text text="'Restoring shady guy that was erroneously removed from gamegraph: %s [%s] on %s [%s]'.[$Patch_ShadyGuy.knownname, $Patch_ShadyGuy, md.$ShadyGuyMap.{$Patch_ShadyGuy}.knownname, md.$ShadyGuyMap.{$Patch_ShadyGuy}]" filter="savegame" />
+            <add_actor_to_room actor="$Patch_ShadyGuy" object="md.$ShadyGuyMap.{$Patch_ShadyGuy}.controlroom" />
+            <!-- Minor hack: Use mission signal to instantiate shady guy (but no other already instantiated NPCs) -->
+            <do_if value="$Patch_ShadyGuy.attention" min="attention.nearby">
+              <debug_text text="'Triggering instantiation of nearby shady guy %s [%s]'.[$Patch_ShadyGuy.knownname, $Patch_ShadyGuy]" filter="savegame" />
+              <signal_objects object="$Patch_ShadyGuy.station" param="'npc_instantiation__mission'" delay="100ms"/>
+            </do_if>
+          </do_if>
+          <do_if value="$Patch_ShadyGuy.exists and not $Patch_ShadyGuy.customhandler">
+            <debug_text text="'Triggering previously missing shady guy handler for ' + $Patch_ShadyGuy + ' ' + $Patch_ShadyGuy.knownname" filter="savegame" />
+            <signal_cue_instantly cue="md.NPC_Itemtrader.OnPlatformPopulation_Itemtrader" param="[$Patch_ShadyGuy]" />
+          </do_if>
+        </do_all>
+        <remove_value name="$Patch_ShadyGuy" />
+        <remove_value name="$Patch_ShadyguysList"/>
+        <!-- Clean up all cue actors, fixing a minor memory leak. The association of $ShadyGuy with this cue is supposed to be temporary. -->
+        <remove_all_cue_actors cue="this" />
+      </patch>
+      <patch sinceversion="4">
+        <debug_text text="'checking shady guys'" filter="savegame"/>
+        <do_for_each name="$Shadyguy" in="md.$ShadyGuyMap">
+          <do_if value="$Shadyguy.tradesvisible">
+            <debug_text text="'Unlock friend in low places'" filter="savegame"/>
+            <unlock_achievement name="BLACK_MARKET"/>
+            <break/>
+          </do_if>
+        </do_for_each>
+      </patch>
+      <patch sinceversion="5">
+        <do_for_each name="$Shadyguy" valuename="$Shadyguystation" in="md.$ShadyGuyMap" reverse="true">
+          <do_if value="$Shadyguy.isplayerowned and $Shadyguy.controlpost != controlpost.shadyguy">
+            <debug_text text="$Shadyguy + ' ' + $Shadyguy.knownname + ' from station ' + $Shadyguystation + ' ' + $Shadyguystation.knownname + ' is player owned and will become an ordinary hired NPC'"/>
+            <set_entity_traits entity="$Shadyguy" customhandler="false" />
+            <set_stock_reference entity="$Shadyguy" stock="''"/>
+            <remove_value name="md.$ShadyGuyMap.{$Shadyguy}"/>
+          </do_if>
+        </do_for_each>
+      </patch>
+      <patch sinceversion="6">
+        <do_if value="not $MatchProductsList?">
+          <set_value name="$MatchProductsList" exact="[]"/>
+        </do_if>
+        <append_list_elements name="$MatchProductsList" other="[ware.majadust, ware.spacefuel, ware.spaceweed]"/>
+        <do_if value="not $MatchOwnerList?">
+          <set_value name="$MatchOwnerList" exact="[]"/>
+        </do_if>
+        <append_list_elements name="$MatchOwnerList" other="[faction.player, faction.xenon, faction.khaak, faction.ownerless, faction.civilian]"/>
+      </patch>
+      <cues>
+        <!--Add shady guys to all sectors at gamestart-->
+        <cue name="Init" onfail="cancel">
+          <conditions>
+            <check_value value="md.$ShadyGuyMap.keys.count == 0"/>
+          </conditions>
+          <actions>
+            <find_sector name="$Sectors" space="player.galaxy" multiple="true">
+              <match owner="faction.xenon" negate="true" />
+            </find_sector>
+            <debug_text text="$Sectors.count + ' sectors found'" chance="$DebugChance" />
+            <signal_cue_instantly cue="EvaluateSectors" param="$Sectors"/>
+            <remove_value name="$Sectors"/>
+
+            <do_if value="$DebugChance" min="100">
+              <do_all exact="$TrackedStationGroup.count" counter="$StationCounter">
+                <set_value name="$TestStation" exact="$TrackedStationGroup.{$StationCounter}" />
+                <set_value name="$TestShadyGuy" exact="$TestStation.controlentity.{controlpost.shadyguy}" />
+                <set_value name="$TestUnlocked" exact="$TestShadyGuy.tradesvisible" />
+                <debug_text text="'Shady Guy: ' + $TestShadyGuy.name + ' is aboard ' + $TestStation.knownname + ' in ' + $TestStation.sector.knownname + '. Unlocked status is: ' + $TestUnlocked" />
+              </do_all>
+            </do_if>
+          </actions>
+        </cue>
+
+        <!--TODO @Owen occasional checks for populating sectors which may now need shady guys-->
+
+        <!--event.param == $Sectors
+        If a shady guy already exists on a possible station, this sector will be treated as already processed and ignored.
+        Can be signalled by DLCs to initialise their sectors-->
+        <cue name="EvaluateSectors" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <set_value name="$PotentialSectors" exact="event.param"/>
+            <do_for_each name="$SelectedSector" in="$PotentialSectors">
+              <debug_text text="'Planning black marketeer spawning for ' + $SelectedSector.knownname + ' ({' + $SelectedSector + '})'" chance="$DebugChance" />
+
+              <!-- Find all of the stations in the sector, filtering out ones that produce the wares the shady guy will buy -->
+              <find_station name="$PossibleStations" piratebase="false" space="$SelectedSector" multiple="true">
+                <match_products wares="$MatchProductsList" negate="true" />
+                <match owner="$MatchOwnerList" negate="true" />
+                <!--TODO @Owen add an exclude group-->
+                <match macro="macro.station_pla_headquarters_base_01_macro" negate="true"/>
+              </find_station>
+              <debug_text text="$PossibleStations.count + ' stations found'" chance="$DebugChance" />
+
+              <set_value name="this.$SectorHasShadyGuy" exact="false"/>
+              <do_for_each name="$Station" in="$PossibleStations" counter="$StationCounter" reverse="true">
+                <debug_text text="'$Station is ' + $Station.knownname + ' ({' + $Station + '})'" chance="$DebugChance" />
+
+                <!-- Check to see whether station already has a shady guy or is known-->
+                <do_if value="$TrackedStationGroup.indexof.{$Station} != 0 or $Station.shadyguy">
+                  <debug_text text="'Station already has a shady guy or is a tracked station. Aborting sector.'" chance="$DebugChance" />
+                  <set_value name="this.$SectorHasShadyGuy" exact="true"/>
+                  <break/>
+                </do_if>
+              </do_for_each>
+              <do_if value="not this.$SectorHasShadyGuy">
+                <debug_text text="'After filtering, ' + $PossibleStations.count + ' stations remain'" chance="$DebugChance" />
+
+                <do_if value="$PossibleStations.count">
+                  <set_value name="$NumShadyGuys" min="1" max="$PossibleStations.count" profile="increasing" scale="2" />
+                  <debug_text text="$SelectedSector.knownname + ' will receive ' + $NumShadyGuys + ' black marketeer(s)'" chance="$DebugChance" />
+
+                  <shuffle_list list="$PossibleStations"/>
+                  <do_all exact="$PossibleStations.count - $NumShadyGuys">
+                    <remove_value name="$PossibleStations.{$PossibleStations.count}"/>
+                  </do_all>
+
+                  <signal_cue_instantly cue="AddShadyGuys" param="table[$stations = $PossibleStations]"/>
+                  <debug_text text="''" chance="$DebugChance" comment="Used to make debug text more readable, remember to edit as appropriate" />
+                </do_if>
+              </do_if>
+            </do_for_each>
+
+            <remove_value name="$PotentialSectors"/>
+            <remove_value name="$PossibleStations"/>
+          </actions>
+        </cue>
+
+        <library name="GetShadyGuyOwner" purpose="run_actions">
+          <params>
+            <param name="Station"/>
+          </params>
+          <actions>
+            <set_value name="$Owner" exact="null"/>
+            <do_if value="not $Station.exists">
+              <return value="null"/>
+            </do_if>
+            <!--DLC patch marker-->
+            <do_elseif value="@$ShadyGuyPatchMarker">
+            </do_elseif>
+            <!--DLC patch marker-->
+            <do_elseif value="@$ShadyGuyPatchMarkerBoron" comment="No Boron Shady Guys">
+            </do_elseif>
+            <do_else>
+              <!--default case-->
+              <do_any>
+                <set_value name="$Owner" exact="faction.scaleplate"     weight="70" />
+                <set_value name="$Owner" exact="faction.hatikvah"       weight="25" />
+                <set_value name="$Owner" exact="$Station.owner"         weight="5" />
+              </do_any>
+            </do_else>
+
+            <return value="$Owner"/>
+          </actions>
+        </library>
+
+        <!--event.param = Table with keys:
+        $stations = list of stations
+        $defintion = character definition (optional)-->
+        <cue name="AddShadyGuys" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+            <check_value value="typeof event.param == datatype.table and event.param.$stations?"/>
+          </conditions>
+          <actions>
+            <do_for_each name="$SelectedStation" in="event.param.$stations">
+              
+              <!-- Get suitable owner of shady guy -->
+              <run_actions ref="GetShadyGuyOwner" result="$ShadyGuyOwner">
+                <param name="Station" value="$SelectedStation"/>
+              </run_actions>
+
+              <!-- Add a new shady guy -->
+              <!-- Note: cue actor assignment is only temporary since this is an instance -->
+              <do_if value="event.param.$definition?">
+                <create_cue_actor name="$ShadyGuy" cue="this" ref="event.param.$definition">
+                  <owner exact="$ShadyGuyOwner" />
+                </create_cue_actor>
+              </do_if>
+              <do_else>
+                <create_cue_actor name="$ShadyGuy" cue="this">
+                  <select tags="tag.shadyguy" faction="$ShadyGuyOwner"/>
+                  <owner exact="$ShadyGuyOwner" />
+                </create_cue_actor>
+              </do_else>
+              <assign_control_entity actor="$ShadyGuy" object="$SelectedStation" post="controlpost.shadyguy"/>
+              <debug_text text="'Shady Guy ' + $ShadyGuy.name + ' ({' + $ShadyGuy + '}) created'" chance="$DebugChance" />
+              <add_actor_to_room actor="$ShadyGuy" object="$SelectedStation.controlroom" result="$ShadyGuyPlaced" />
+
+              <do_if value="$ShadyGuyPlaced">
+                <!-- Add shady guy to the map, with a reference station they have been added to -->
+                <set_value name="md.$ShadyGuyMap.{$ShadyGuy}" exact="$SelectedStation" />
+                <!-- Also add the station to the tracked station group for later independent use (tracking whether or not it has been destroyed, tracking whether or not it is already used for a shady dealer) -->
+                <add_to_group groupname="$TrackedStationGroup" object="$SelectedStation" />
+                <signal_cue_instantly cue="md.NPC_Itemtrader.OnPlatformPopulation_Itemtrader" param="[$ShadyGuy]" />
+              </do_if>
+              <do_else>
+                <debug_text text="'$ShadyGuy ' + $ShadyGuy.name + ' ({' + $ShadyGuy + '}) could not be placed in control room of ' + $SelectedStation.knownname + ' ({' + $SelectedStation + '})'" filter="error" />
+              </do_else>
+            </do_for_each>
+          </actions>
+        </cue>
+
+        <!-- Track whether or not a station in the $TrackedStationGroup has been destroyed to move / replace shady guy -->
+        <cue name="TrackedStationDestroyed" instantiate="true">
+          <conditions>
+            <event_object_destroyed group="$TrackedStationGroup" />
+          </conditions>
+          <actions>
+            <set_value name="this.$DestroyedStation" exact="event.object" />
+            <set_value name="this.$DestroyedStationSector" exact="this.$DestroyedStation.sector" />
+            <debug_text text="this.$DestroyedStation.knownname + ' ({' + this.$DestroyedStation + '}) has been destroyed in ' + this.$DestroyedStationSector.knownname" chance="$DebugChance" />
+          </actions>
+          <!--Hack: 3.0 We have to delay this so cue AddShadyGuys can become waiting. Stations removed in patch code may trigger the event too early.-->
+          <delay exact="1ms"/>
+          <actions>
+            <do_all exact="md.$ShadyGuyMap.keys.count" counter="$ShadyGuyCounter">
+              <do_if value="md.$ShadyGuyMap.{md.$ShadyGuyMap.keys.{$ShadyGuyCounter}}" exact="this.$DestroyedStation">
+                <set_value name="$ShadyGuy" exact="md.$ShadyGuyMap.keys.{$ShadyGuyCounter}" />
+                <debug_text text="'Shady guy to be removed: ' + $ShadyGuy.name + ' ({' + $ShadyGuy + '})'" chance="$DebugChance" />
+                <!-- Remove old NPC -->
+                <remove_value name="md.$ShadyGuyMap.{$ShadyGuy}" />
+                <destroy_object object="$ShadyGuy" />
+                <break />
+              </do_if>
+            </do_all>
+
+            <!-- Find another station in the same sector on which to place the (potentially different) shady guy -->
+            <find_station name="$PossibleStations" piratebase="false" space="this.$DestroyedStationSector" excluded="$TrackedStationGroup" multiple="true">
+              <match_products wares="$MatchProductsList" negate="true" />
+              <match owner="$MatchOwnerList" negate="true" />
+            </find_station>
+            <debug_text text="$PossibleStations.count + ' stations found'" chance="$DebugChance" />
+            <do_for_each name="$Station" in="$PossibleStations" counter="$StationCounter" reverse="true">
+              <debug_text text="'$Station is ' + $Station.knownname + ' ({' + $Station + '})'" chance="$DebugChance" />
+
+              <!--TODO @Owen find_ hascontrolentity="controlpost.shadyguy"-->
+              <!-- Check to see whether station already has a shady guy -->
+              <do_if value="$Station.shadyguy">
+                <debug_text text="'Station already has a shady guy'" chance="$DebugChance" />
+                <remove_value name="$PossibleStations.{$StationCounter}" />
+              </do_if>
+            </do_for_each>
+            <debug_text text="'After filtering, ' + $PossibleStations.count + ' stations remain'" chance="$DebugChance" />
+
+            <!-- select station -->
+            <do_if value="$PossibleStations.count">
+              <shuffle_list list="$PossibleStations"/>
+              <debug_text text="'$SelectedStation: ' + $PossibleStations.{1}.knownname + ' ({' + $PossibleStations.{1} + '})'" chance="$DebugChance" />
+              <signal_cue_instantly cue="AddShadyGuys" param="table[$stations = [$PossibleStations.{1}]]"/>
+            </do_if>
+            <do_else>
+              <debug_text text="'No suitable stations on which to place shady guy. This is a valid case - shady guy will not be placed'" chance="$DebugChance" />
+            </do_else>
+          </actions>
+        </cue>
+        
+        <cue name="ShadyGuy_DEBUG" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <debug_text text="'Tracked Stations #%s'.[$TrackedStationGroup.count]"/>
+            <do_for_each name="this.$TrackedStation" in="$TrackedStationGroup">
+              <debug_text text="'- trackedstation=%s(%s) sector=%s'.[this.$TrackedStation, this.$TrackedStation.knownname, this.$TrackedStation.sector.knownname]"/>
+            </do_for_each>
+            <debug_text text="'Shady Guys #%s: '.[md.$ShadyGuyMap.keys.count]"/>
+            <do_for_each name="this.$ShadyGuy" in="md.$ShadyGuyMap">
+              <debug_text text="'- shadyguy=%s(%s) sector=%s station=%s'.[this.$ShadyGuy, this.$ShadyGuy.knownname, this.$ShadyGuy.sector.knownname, this.$ShadyGuy.station.knownname]"/>
+            </do_for_each>
+          </actions>
+        </cue>
+
+        <!-- TODO (@Lorraine): Nice-to-have: every now and then, move a shady guy to a new station and relock them -->
+      </cues>
+    </cue>
+  </cues>
+</mdscript>

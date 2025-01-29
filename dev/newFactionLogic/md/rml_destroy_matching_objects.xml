@@ -1,0 +1,407 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_Destroy_Matching_Objects" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--
+    $feedbackvalue:
+    -101: EndSignalCue or MissionCue not defined
+    -100: Undefined failure. Defaulted to -100
+    1: Player destroyed enough objects
+    2: No valid targets found, timeout (success).
+    -->
+
+    <library name="DestroyMatchingObjects">
+      <params>
+        <param name="EndSignalCue"/>
+        <param name="MissionCue"/>
+        <param name="StartStep" default="1" comment="Briefing step to start the mission on"/>
+        <param name="UpdateBriefing" default="true" comment="Update the briefing objective step when the objective is updated"/>
+
+        <param name="EndAmount" default="1" comment="How many objects need to be destroyed? Negative numbers mean the mission will not end itself, the caller has to end it."/>
+        <param name="SignalCue_Kill" default="null" comment="Signalled cue for when there has been a successful kill. Signalled instantly. event.param = killed object"/>
+
+        <!--Objectives-->
+        <param name="Objective" default="objective.destroy"/>
+        <param name="ObjectiveText" default="null"/>
+        <param name="Guidance" default="true" comment="Enabled by default, disable to switch off guidance to specific targets"/>
+        <param name="CutsceneList" default="[]" comment="Macro list. Objects which can directly be placed in zones will be created in a presentation cluster"/>
+        <param name="CutsceneDelay" default="2s" comment="Delay between each cutscene"/>
+        <param name="CutsceneRepeat" default="false" comment="Repeat the cutscenes?"/>
+
+        <!--Filters-->
+        <param name="TargetObject" default="null" comment="Pass in an object to filter for components on this object (e.g. turrets on a station), null to look within x km distance with the below filters"/>
+        
+        <param name="Filter_Location" default="null"/>
+        <param name="Filter_Distance" default="null"/>
+        
+        <param name="Filter_Classes" default="[]"/>
+        <param name="Filter_Macros" default="[]"/>
+        <param name="Filter_Owner" default="[]"/>
+        <param name="Filter_NPC_Race" default="[]" comment="Race of the controlentity"/>
+        
+        <param name="DebugChance" default="0"/>
+      </params>
+      <actions>
+        <debug_text text="'DestroyMatchingObjects'" chance="$DebugChance"/>
+        <set_value name="$feedbackvalue" exact="0"/>
+        <create_list name="$ErrorList"/>
+
+        <do_if value="not $EndSignalCue or not $MissionCue">
+          <append_to_list name="$ErrorList" exact="-101"/>
+        </do_if>
+
+        <do_if value="not $ObjectiveText">
+          <set_value name="$ObjectiveText" exact="''" />
+        </do_if>
+
+        <set_value name="$PlayerFlyTo" exact="false"/>
+        <do_if value="$Filter_Location">
+          <do_if value="$Filter_Location.exists">
+            <set_value name="$PlayerFlyTo" exact="true"/>
+
+            <do_if value="not $Filter_Distance">
+              <do_if value="$Filter_Location.isclass.zone">
+                <set_value name="$Filter_Distance" exact="50km"/>
+              </do_if>
+              <do_elseif value="$Filter_Location.isclass.space">
+                <set_value name="$Filter_Distance" exact="0"/>
+              </do_elseif>
+              <do_elseif value="$Filter_Location.isclass.object">
+                <!--taken care of in FlyTo RML-->
+              </do_elseif>
+              <do_else>
+                <set_value name="$Filter_Distance" exact="5km"/>
+              </do_else>
+            </do_if>
+          </do_if>
+        </do_if>
+      </actions>
+      <cues>
+
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="1"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup"/>
+          </actions>
+        </cue>
+
+        <cue name="StartMission" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" exact="0"/>
+          </conditions>
+          <actions>
+            <set_value name="$AtLocation" exact="false"/>
+            <create_group groupname="$KillTargets"/>
+            <set_value name="$LastKilled" exact="null"/>
+            <set_value name="$KilledAmount" exact="0"/>
+          </actions>
+          <cues>
+
+            <cue name="PlayerAtLocation" checkinterval="10s">
+              <conditions>
+                <check_value value="$PlayerFlyTo and $Filter_Location"/>
+                <check_value value="player.entity.distanceto.{$Filter_Location} le $Filter_Distance"/>
+              </conditions>
+              <actions>
+                <debug_text text="'at location'"/>
+                <set_value name="$AtLocation" exact="true"/>
+                <signal_cue_instantly cue="SetDestroyObjective" param="true"/>
+              </actions>
+            </cue>
+
+            <cue name="PlayerNotAtLocation" checkinterval="10s">
+              <conditions>
+                <check_value value="$PlayerFlyTo and $Filter_Location"/>
+                <check_value value="not (player.entity.distanceto.{$Filter_Location} le $Filter_Distance)"/>
+              </conditions>
+              <actions>
+                <debug_text text="'left location'"/>
+                <set_value name="$AtLocation" exact="false"/>
+                <signal_cue_instantly cue="SetDestroyObjective" param="true"/>
+              </actions>
+            </cue>                
+                
+            <cue name="FindTargets_once">
+              <actions>
+                <signal_cue cue="FindTargets"/>
+              </actions>
+            </cue>
+
+            <!--We have to maintain a list of targets as some information is lost after a kill such as who was piloting-->
+            <cue name="FindTargets" instantiate="true">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <clear_group group="$KillTargets"/>
+                  
+                <do_if value="$TargetObject">
+                  <find_object_component groupname="$KillTargets" class="$Filter_Classes" owner="$Filter_Owner" object="$TargetObject" multiple="true" state="componentstate.operational"/>
+                </do_if>
+                <do_else>
+                  <!-- Note, this currently does not support distant player owned ships killing a target (because player needs to be present) -->
+                  <find_object groupname="$KillTargets" class="$Filter_Classes" owner="$Filter_Owner" space="player.sector" multiple="true">
+                    <match_distance object="player.ship" max="15km" comment="player.ship is intended"/>
+                  </find_object>
+                </do_else>
+
+                <do_all exact="$KillTargets.count" counter="$Counter" reverse="true">
+                  <set_value name="$CurrentObject" exact="$KillTargets.{$Counter}"/>
+
+                  <!--Filter_Macros-->
+                  <do_if value="$Filter_Macros.count" min="1">
+                    <!--TODO @Owen Should use .ismacro?-->
+                    <do_if value="$CurrentObject.macro" list="$Filter_Macros" negate="true">
+                      <remove_from_group group="$KillTargets" object="$CurrentObject"/>
+                      <continue/>
+                    </do_if>
+                  </do_if>
+
+                  <!--Take the commander entity-->
+                  <do_if value="$Filter_NPC_Race.count" min="1">
+                    <set_value name="$Valid" exact="false"/>
+                    <do_if value="$CurrentObject.isclass.controllable">
+                      <do_if value="$CurrentObject.controlentity.default.exists">
+                        <do_if value="$CurrentObject.controlentity.default.race" list="$Filter_NPC_Race">
+                          <set_value name="$Valid" exact="true"/>
+                        </do_if>
+                      </do_if>
+                    </do_if>
+
+                    <do_if value="not $Valid">
+                      <remove_from_group group="$KillTargets" object="$CurrentObject"/>
+                      <continue/>
+                    </do_if>
+                  </do_if>
+                </do_all>
+
+                <do_if value="$KillTargets.count gt 0">
+                  <!-- only keep as much as we need -->
+                  <do_while value="$KillTargets.count gt $EndAmount">
+                    <remove_from_group group="$KillTargets" object="$KillTargets.random"/>
+                  </do_while>
+                  
+                  <!-- This might also happen if the mission states to destroy 5 targets, but there are only 4 -->
+                  <debug_text text="'Found ' + $KillTargets.count + ' targets'" chance="$DebugChance"/>
+                  <do_if value="$KillTargets.count lt $EndAmount">
+                    <!-- Just update the EndAmount to the number of existing targets -->
+                    <set_value name="$EndAmount" exact="$KillTargets.count"/>
+                  </do_if>
+                </do_if>
+                <do_else>
+                  <!-- No targets, end mission with success -->
+                  <debug_text text="'No targets found'" chance="$DebugChance"/>
+                  <set_value name="$feedbackvalue" exact="2"/>
+                  <signal_cue cue="Cleanup"/>
+                </do_else>
+                
+              </actions>
+            </cue>
+
+            <cue name="DestroyedObject" instantiate="true">
+              <conditions>
+                <check_any>
+                  <check_all>
+                    <event_object_destroyed group="$KillTargets"/>
+                    <check_value value="event.param.owner?"/>
+                    <check_value value="event.param.owner" exact="faction.player"/>
+                  </check_all>
+
+                  <check_all>
+                    <!--Fallback case if matching target was not found via $KillTargets-->
+                    <event_player_killed_object/>
+
+                    <!--*NOTE* We can't filter Filter_NPC_Race after this event as entity data is gone. That's why we build the $KillTargets group too-->
+                    <check_value value="$Filter_NPC_Race.count" exact="0"/>
+
+                    <!--check $Filter_Classes-->
+                    <check_any>
+                      <check_value value="$Filter_Classes.count" exact="0"/>
+                      <check_any exact="$Filter_Classes.count" counter="$Counter">
+                        <check_value value="event.param.isclass.{$Filter_Classes.{$Counter}}"/>
+                      </check_any>
+                    </check_any>
+                    <!--check $Filter_Macros-->
+                    <check_any>
+                      <check_value value="$Filter_Macros.count" exact="0"/>
+                      <check_value value="event.param.macro" list="$Filter_Macros"/>
+                    </check_any>
+                    <!--check $Filter_Owner-->
+                    <check_any>
+                      <check_value value="$Filter_Owner.count" exact="0"/>
+                      <check_value value="event.param.owner" list="$Filter_Owner"/>
+                    </check_any>
+                  </check_all>
+                </check_any>
+
+              </conditions>
+              <actions>
+                <debug_text text="'Something was killed via: ' + event.name" chance="$DebugChance"/>
+                <do_if value="event.name == 'event_object_destroyed'">
+                  <set_value name="$Killed" exact="event.object"/>
+                </do_if>
+                <do_elseif value="event.name == 'event_player_killed_object'">
+                  <set_value name="$Killed" exact="event.param"/>
+                </do_elseif>
+
+                <!--This cue can fire twice for the same object-->
+                <do_if value="$Killed != $LastKilled">
+                  <set_value name="$LastKilled" exact="$Killed"/>
+                  <set_value name="$KilledAmount" operation="add"/>
+                  <do_if value="$EndAmount" min="1">
+                    <do_if value="$KilledAmount" min="$EndAmount">
+                      <set_value name="$feedbackvalue" exact="1"/>
+                    </do_if>
+                    <do_elseif value="$KillTargets.count == 0">
+                      <!-- refresh targetlist when it's empty, in case something else killed one or more of the targets -->
+                      <signal_cue cue="FindTargets"/>
+                    </do_elseif>
+                  </do_if>
+
+                  <do_if value="$SignalCue_Kill">
+                    <signal_cue_instantly cue="$SignalCue_Kill" param="$Killed"/>
+                  </do_if>
+
+                  <do_if value="$feedbackvalue" exact="0" negate="true">
+                    <signal_cue cue="Cleanup"/>
+                  </do_if>
+                </do_if>
+              </actions>
+            </cue>
+
+
+            <cue name="SetDestroyObjective" instantiate="true">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <debug_text text="'SetDestroyObjective silent=' + event.param"/>
+                <set_value name="$CutsceneIndex" exact="1"/>
+
+
+                <do_if value="$Guidance and $AtLocation">
+                  <do_if value="$EndAmount == 1">
+                    <do_if value="$Guidance">
+                    <set_objective cue="$MissionCue" action="$Objective" group="$KillTargets" text="$ObjectiveText" silent="event.param"/>
+                  </do_if>
+                  <do_else>
+                    <set_objective cue="$MissionCue" action="$Objective" text="$ObjectiveText" silent="event.param"/>
+                  </do_else>
+                  </do_if>
+                  <do_else>
+                    <do_if value="$Guidance">
+                      <set_objective cue="$MissionCue" action="$Objective" group="$KillTargets" text="$ObjectiveText" silent="event.param">
+                        <progress progress="$KilledAmount" max="$EndAmount" text="{30004,1800}"/>
+                      </set_objective>
+                    </do_if>
+                    <do_else>
+                      <set_objective cue="$MissionCue" action="$Objective" text="$ObjectiveText" silent="event.param">
+                        <progress progress="$KilledAmount" max="$EndAmount" text="{30004,1800}"/>
+                      </set_objective>
+                    </do_else>
+                  </do_else>
+                </do_if>
+                <do_elseif value="$Filter_Location and $Filter_Location.isclass.component">
+                  <do_if value="$ObjectiveText">
+                    <set_objective cue="$MissionCue" action="$Objective" text="$ObjectiveText" object="$Filter_Location" silent="event.param"/>
+                  </do_if>
+                  <do_else>
+                    <set_objective cue="$MissionCue" action="$Objective" object="$Filter_Location" silent="event.param"/>
+                  </do_else>
+                </do_elseif>
+                <do_else>
+                  <do_if value="$ObjectiveText">
+                    <set_objective cue="$MissionCue" action="$Objective" text="$ObjectiveText" silent="event.param"/>
+                  </do_if>
+                  <do_else>
+                    <set_objective cue="$MissionCue" action="$Objective" silent="event.param"/>
+                  </do_else>
+                </do_else>
+
+              </actions>
+              <cues>
+                <cue name="ObjectiveCutscenes" onfail="cancel">
+                  <conditions>
+                    <check_value value="$CutsceneList.count" min="1"/>
+                  </conditions>
+                  <actions>
+                    <do_if value="$CutsceneIndex" min="$CutsceneList.count">
+                      <set_value name="$CutsceneIndex" exact="1"/>
+                      <do_if value="not $CutsceneRepeat">
+                        <cancel_cue cue="ObjectiveCutscenes"/>
+                      </do_if>
+                    </do_if>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+            
+          </cues>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <!--TODO remove_objective-->
+
+            <do_if value="$feedbackvalue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'ERROR: Feedback value is 0 and no error values were set. Defaulting to -100'"/>
+                <set_value name="$feedbackvalue" exact="-100"/>
+              </do_if>
+              <do_else>
+                <set_value name="$feedbackvalue" exact="$ErrorList.{1}"/>
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+                    <do_if value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'EndSignalCue or MissionCue not defined'"/>
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-100">
+                      <set_value name="$FeedbackText" exact="'Undefined failure. Defaulted to -100'"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                    </do_else>
+
+                    <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+
+              <do_if value="$feedbackvalue" exact="1">
+                <set_value name="$FeedbackText" exact="'Player destroyed enough objects'"/>
+              </do_if>
+              <do_elseif value="$feedbackvalue" exact="2">
+                <set_value name="$FeedbackText" exact="'No targets found (timeout)'"/>
+              </do_elseif>
+
+              <do_if value="$feedbackvalue" min="1">
+                <debug_text text="'Mission Successful. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_if>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission Failed. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+            <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$feedbackvalue"/>
+            <signal_cue cue="$EndSignalCue"/>
+            <cancel_cue cue="DestroyMatchingObjects"/>
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

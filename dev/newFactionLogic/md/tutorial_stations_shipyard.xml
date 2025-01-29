@@ -1,0 +1,1174 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="Tutorial_stations_shipyard" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+    <cue name="Start" namespace="this">
+      <conditions>
+        <event_cue_signalled cue="md.Setup.Start" />
+      </conditions>
+      <actions>
+        <do_if value="not md.$TutorialRegister?">
+          <set_value name="md.$TutorialRegister" exact="[]" />
+        </do_if>
+        <append_to_list name="md.$TutorialRegister" exact="Start" />
+
+        <!-- only for patching (due to renaming Tutorial_stations_shipyard file) -->
+        <do_all exact="md.$TutorialRegister.count" counter="$tri" reverse="true">
+          <do_if value="not md.$TutorialRegister.{$tri}.exists">
+            <remove_value name="md.$TutorialRegister.{$tri}"/>
+          </do_if>
+        </do_all>
+
+      </actions>
+      <cues>
+        <cue name="PlayerDied">
+          <conditions>
+            <event_object_destroyed object="player.entity" />
+          </conditions>
+          <actions>
+            <cancel_cue cue="Start" />
+          </actions>
+        </cue>
+
+        <cue name="Trigger" checkinterval="5s" version="2">
+          <conditions>
+            <check_value value="not md.$SurpressTutorials?" />
+            <check_value value="player.computer" />
+          </conditions>
+          <actions>
+            <set_value name="$DebugChance" exact="0"/>
+            <set_value name="$MissionName" exact="'15) ' + readtext.{30183}.{1}" />
+            <set_value name="$Guide" exact="player.computer" />
+            <create_offer cue="Start" actor="$Guide" name="$MissionName" description="readtext.{30183}.{2}" difficulty="level.trivial" faction="faction.player" type="missiontype.tutorial">
+              <briefing>
+                <objective step="1" action="objective.custom" customaction="{30183,20}"/>
+                <objective step="2" action="objective.custom" customaction="{30183,21}"/>
+                <objective step="3" action="objective.custom" customaction="{30183,22}"/>
+                <objective step="4" action="objective.custom" customaction="{30183,26}"/>
+                <objective step="5" action="objective.custom" customaction="{30183,27}"/>
+                <objective step="6" action="objective.custom" customaction="{30183,28}"/>
+              </briefing>
+            </create_offer>
+          </actions>
+          <patch sinceversion="2">
+            <do_if value="Start.hasmissionoffer">
+              <set_value name="$MissionName" exact="'15) ' + readtext.{30183}.{1}" />
+              <update_offer cue="Start" name="$MissionName"/>
+            </do_if>
+          </patch>
+          <cues>
+            <cue name="Offer">
+              <cues>
+                <cue name="ConversationStarted" instantiate="true">
+                  <conditions>
+                    <event_conversation_started actor="$Guide" conversation="mission" convparam="Start" />
+                  </conditions>
+                  <actions>
+                    <remove_help all="true" />
+                    <open_conversation_menu menu="MissionBriefingMenu" param="[0, 0, Start, true]" />
+                  </actions>
+                  <cues>
+                    <cue name="ConversationNextSection" instantiate="true">
+                      <conditions>
+                        <event_conversation_next_section actor="$Guide" choiceparam="Start" />
+                      </conditions>
+                      <actions>
+                        <!-- Accept case -->
+                        <do_if value="event.param == 'c_mission_accept'">
+                          <signal_cue cue="Tutorial" />
+                        </do_if>
+                      </actions>
+                    </cue>
+
+                    <cue name="ConversationFinished">
+                      <conditions>
+                        <event_conversation_finished actor="$Guide" />
+                      </conditions>
+                      <actions>
+                        <cancel_cue cue="ConversationStarted" />
+                      </actions>
+                    </cue>
+
+                    <cue name="AcceptMission">
+                      <conditions>
+                        <event_object_signalled object="$Guide" param="'accept'" />
+                      </conditions>
+                      <actions>
+                        <signal_cue cue="Tutorial" />
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="Tutorial">
+              <conditions>
+                <check_any>
+                  <event_cue_signalled />
+                  <event_object_signalled object="player.entity" param="'start'" param2="Start" />
+                </check_any>
+              </conditions>
+              <actions>
+                <debug_text text="'Tutorial can begin'" chance="$DebugChance" />
+                <cancel_cue cue="Offer" />
+                <signal_cue_instantly cue="md.Tutorials.NewTutorialTriggered" param="Start" />
+                <set_value name="$TutorialStartTime" exact="player.age" />
+                <create_mission cue="Start" offercue="Start" />
+                <cancel_conversation actor="$Guide" />
+                <remove_offer cue="Start" />
+                <remove_help all="true" />
+                <set_value name="$StartDelay" exact="2s"/>
+                <remove_help all="true"/>
+
+                <find_station name="$PlayerStations" space="player.galaxy" multiple="true" owner="faction.player"/>
+
+                <set_value name="$RequiredFunds" exact="500000000Cr / 1Cr"/>
+                <do_if value="(player.money / 1Cr) lt $RequiredFunds and not $PlayerStations.count">
+                  <show_help line="18001" duration="7s" position="1" force="true" comment="This tutorial requires you having a station and at least 500m credits."/>
+                  <show_notification text="{1015,413}" sound="notification_warning" comment="Tutorial aborted: no stations owned."/>
+                  <show_notification text="{1015,414}" sound="notification_warning" comment="Tutorial aborted: insufficient credits"/>
+                  <remove_mission cue="Start" type="aborted" />
+                  <signal_cue cue="Cleanup" />
+                </do_if>
+                <do_elseif value="(player.money / 1Cr) lt $RequiredFunds">
+                  <show_help line="18001" duration="7s" position="1" force="true" comment="This tutorial requires you having a station and at least 500000000 credits."/>
+                  <show_notification text="{1015,414}" sound="notification_warning" comment="Tutorial aborted: insufficient credits."/>
+                  <remove_mission cue="Start" type="aborted" />
+                  <signal_cue cue="Cleanup" />
+                </do_elseif>
+                <do_elseif value="$PlayerStations.count == 0">
+                  <show_help line="1026" duration="7s" position="1" force="true" comment="This tutorial requires you already owning a station."/>
+                  <show_notification text="{1015,413}" sound="notification_warning" comment="Tutorial aborted: no stations owned"/>
+                  <remove_mission cue="Start" type="aborted" />
+                  <signal_cue cue="Cleanup" />
+                </do_elseif>
+                <do_else>
+                  <show_help line="1001" duration="7s" position="1" force="true" width="140" comment="You can abort this tutorial in the Active Missions menu " />
+                </do_else>
+              </actions>
+              <cues>
+
+                <cue name="Abort">
+                  <conditions>
+                    <event_mission_aborted cue="Start" />
+                  </conditions>
+                  <actions>
+                    <remove_help all="true"/>
+                    <remove_mission cue="Start" type="aborted" />
+                    <signal_cue cue="Cleanup" />
+                  </actions>
+                </cue>
+
+                <cue name="Abort_OtherTutorialStarted">
+                  <conditions>
+                    <event_cue_signalled cue="md.Tutorials.NewTutorialTriggered" />
+                    <check_value value="event.param != Start" />
+                  </conditions>
+                  <actions>
+                    <remove_help all="true"/>
+                    <show_notification text="{1015,400}" sound="notification_warning" comment="Tutorial aborted" />
+                    <remove_mission cue="Start" type="aborted"/>
+                    <signal_cue cue="Cleanup" />
+                  </actions>
+                </cue>
+
+                <cue name="Tutorial_Init">
+                  <delay exact="$StartDelay"/>
+                  <actions>
+                    <!--Create a list of tutorial cues to trigger in what order, and what briefing step they point to-->
+                    <set_value name="$SignalList" exact="[
+                                [Tutorial_SeekAlly, 1],
+                                [Tutorial_Blueprint, 2],
+                                [Tutorial_Build, 3],
+                                [Tutorial_Shiptrader, 4],
+                                [Tutorial_LSO, 5],
+                                [Tutorial_Final, 6],
+                    ]"/>
+
+                    <set_value name="$Index" exact="0"/>
+                    <signal_cue cue="Tutorial_TriggerNext"/>
+
+                  </actions>
+                </cue>
+
+                <cue name="Tutorial_TriggerNext" instantiate="true">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <set_value name="$Index" operation="add"/>
+                    <do_if value="$Index gt $SignalList.count">
+                      <remove_help all="true"/>
+                      <debug_text text="'Shipyard tutorial has been completed'" chance="$DebugChance" />
+                      <show_help line="1002" position="1" force="true" comment="Tutorial Completed!" />
+                      <show_help line="1003" position="1" force="true" comment="Press $INPUT_ACTION_HELP$ to try other tutorials."/>
+                      <remove_mission cue="Start" type="tutorialcompleted" />
+                      <signal_cue cue="Cleanup" />
+                    </do_if>
+                    <do_else>
+                      <signal_cue cue="$SignalList.{$Index}.{1}"/>
+                      <set_value name="$CurrentStep" exact="$SignalList.{$Index}.{2}"/>
+                      <set_objective_from_briefing cue="Start" step="$CurrentStep"/>
+                    </do_else>
+                  </actions>
+                </cue>
+
+                <cue name="Tutorial_SeekAlly">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <!-- figure out with which of the major faction the player is ally-->
+                    <set_value name="$MajorFactions" exact="[faction.argon, faction.teladi, faction.holyorder, faction.paranid, faction.ministry, faction.antigone]"/>
+                    <create_list name="$AllyWith"/>
+                    <do_all exact="$MajorFactions.count" counter="$fi">
+                      <do_if value="faction.player.haslicence.ceremonyally.{$MajorFactions.{$fi}}">
+                        <append_to_list name="$AllyWith" exact="$MajorFactions.{$fi}"/>
+                      </do_if>
+                    </do_all>
+                  </actions>
+                  <cues>
+
+                    <cue name="Tutorial_SeekAlly_Seek" onfail="cancel">
+                      <conditions>
+                        <check_value value="$AllyWith.count == 0"/>
+                      </conditions>
+                      <delay exact="1ms"/>
+                      <cues>
+
+                        <cue name="Tutorial_SeekAlly_Rehint" checkinterval="120s" instantiate="true">
+                          <actions>
+                            <show_help line="18100" duration="7s" position="1" force="true" comment="Gain enough reputation with one of the major factions in order to become their ally."/>
+                          </actions>
+                        </cue>
+
+                        <cue name="Tutorial_SeekAlly_Wait">
+                          <conditions>
+                            <event_player_licence_added licence="ceremonyally" comment="gained in promotion ceremony for reputatution 20"/>
+                          </conditions>
+                          <actions>
+                            <remove_help all="true" />
+                            <signal_cue cue="Tutorial_TriggerNext"/>
+                            <cancel_cue cue="Tutorial_SeekAlly"/>
+                          </actions>
+                        </cue>
+                      </cues>
+                    </cue>
+
+                    <cue name="Tutorial_SeekAlly_Skip" onfail="cancel" comment="already ally, skip this part">
+                      <conditions>
+                        <check_value value="$AllyWith.count"/>
+                      </conditions>
+                      <delay exact="1ms"/>
+                      <actions>
+                        <remove_help all="true" />
+                        <signal_cue cue="Tutorial_TriggerNext"/>
+                        <cancel_cue cue="Tutorial_SeekAlly"/>
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+
+
+                <cue name="Tutorial_Blueprint">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <!-- figure out which stations player can build -->
+                    <set_value name="$BlueprintWharf" exact="player.blueprints.{ware.module_gen_build_dockarea_m_01}.any.exists"/>
+                    <set_value name="$BlueprintShipyard" exact="player.blueprints.{ware.module_gen_build_l_01}.any.exists or player.blueprints.{ware.module_gen_build_xl_01}.any.exists"/>
+                    <set_value name="$BlueprintEquipdock" exact="player.blueprints.{ware.module_gen_equip_dockarea_m_01}.any.exists or player.blueprints.{ware.module_gen_equip_l_01}.any.exists or player.blueprints.{ware.module_gen_equip_xl_01}.any.exists"/>
+                    <debug_text text="'BlueprintWharf: ' + $BlueprintWharf + ' BlueprintShipYard: ' + $BlueprintShipyard + ' BlueprintEqDock ' + $BlueprintEquipdock" chance="$DebugChance"/>
+                  </actions>
+                  <cues>
+
+                    <cue name="Tutorial_Blueprint_acquire" onfail="cancel">
+                      <conditions>
+                        <check_value value="not ($BlueprintWharf or $BlueprintShipyard or $BlueprintEquipdock)"/>
+                      </conditions>
+                      <actions>
+                        <set_value name="$HasBlueprints" exact="false"/>
+                        <show_help_multi log="true" position="1" force="true" allowclose="false" width="220">
+                          <text line="18140" comment="Buy blueprints for one or more of the build modules from the faction representative."/>
+                          <text line="18150" comment="To construct a warf, purchase '{20103,61301}'."/>
+                          <text line="18151" comment="To construct a shipyard, purchase '{20103,60301}' or '{20103,60401}'."/>
+                        </show_help_multi>
+                      </actions>
+                      <cues>
+
+                        <!--cue name="Tutorial_Blueprint_acquire_hintdone">
+                          <conditions>
+                            <event_ui_triggered screen="'hintclosed'" control="'18140'"/>
+                          </conditions>
+                          <actions>
+                          </actions>
+                        </cue-->
+
+                        <cue name="Tutorial_Blueprint_acquire_menu" instantiate="true">
+                          <conditions>
+                            <event_ui_triggered screen="'BlueprintOrLicenceTraderMenu'" control="''"/>
+                            <check_value value="(typeof event.param3 == datatype.list) and (event.param3.count == 4) and (event.param3.{4} == 'blueprint')" comment="see NPC_FactionRepresentative.xml / cFactionRepresentative_blueprints" />
+                          </conditions>
+                          <actions>
+                            <set_value name="$FactionRep" exact="event.param3.{3}"/>
+                            <set_value name="$PurchaseCounter" exact="0"/>
+                            <!-- give some guidance on what is required (Hilight the + button and required wares) -->
+                            <show_help_overlay id="'trader_purchase_module'" highlightonly="true" />
+                            <show_help_overlay id="'trader_purchase_module_gen_build_dockarea_m_01'" highlightonly="true" />
+                            <show_help_overlay id="'trader_purchase_module_gen_build_l_01'" highlightonly="true" />
+                            <show_help_overlay id="'trader_purchase_module_gen_build_xl_01'" highlightonly="true" />
+                          </actions>
+                          <cues>
+                            <cue name="Tutorial_Blueprint_selected" instantiate="true">
+                              <conditions>
+                                <check_any>
+                                  <event_ui_triggered screen="'BlueprintOrLicenceTraderMenu'" control="'trader_purchase_module_gen_build_l_01'"/>
+                                  <event_ui_triggered screen="'BlueprintOrLicenceTraderMenu'" control="'trader_purchase_module_gen_build_dockarea_m_01'"/>
+                                  <event_ui_triggered screen="'BlueprintOrLicenceTraderMenu'" control="'trader_purchase_module_gen_build_xl_01'"/>
+                                </check_any>
+                              </conditions>
+                              <actions>
+                                <do_if value="event.param3 == true" comment="selected">
+                                  <set_value name="$PurchaseCounter" operation="add"/>
+                                  <show_help_overlay id="'trader_purchase_confirm'" highlightonly="true" />
+                                </do_if>
+                                <do_else comment="deselected">
+                                  <set_value name="$PurchaseCounter" operation="subtract"/>
+                                  <do_if value="$PurchaseCounter == 0">
+                                    <remove_help_overlay id="'trader_purchase_confirm'" />
+                                  </do_if>
+                                </do_else>
+                              </actions>
+                            </cue>
+
+                            <cue name="Tutorial_Blueprint_acquire_menu_closed">
+                              <conditions>
+                                <event_ui_triggered screen="'BlueprintOrLicenceTraderMenu'" control="'menu_close'"/>
+                              </conditions>
+                              <actions>
+                                <remove_value name="$FactionRep"/>
+                                <remove_help_overlay id="'trader_purchase_module'"/>
+                                <remove_help_overlay id="'trader_purchase_equipment'"/>
+                                <remove_help_overlay id="'trader_purchase_ship'"/>
+                                <remove_help_overlay id="'trader_purchase_module_gen_build_dockarea_m_01'"/>
+                                <remove_help_overlay id="'trader_purchase_module_gen_build_l_01'"/>
+                                <remove_help_overlay id="'trader_purchase_module_gen_build_xl_01'"/>
+                                <remove_help_overlay id="'trader_purchase_confirm'" />
+                              </actions>
+                            </cue>
+                          </cues>
+                        </cue>
+
+                        <cue name="Tutorial_Blueprint_Debug" instantiate="true" >
+                          <conditions>
+                            <event_cue_signalled/>
+                          </conditions>
+                          <actions>
+                            <add_blueprints wares="[ware.module_gen_build_dockarea_m_01, ware.module_gen_build_l_01, ware.module_gen_build_xl_01]"/>
+                          </actions>
+                        </cue>
+
+                        <cue name="Tutorial_Blueprint_Rehint" checktime="player.age + 120s"  checkinterval="120s" instantiate="true" >
+                          <conditions>
+                            <check_value value="not @$FactionRep"/>
+                            <check_value value="$HasBlueprints == false"/>
+                          </conditions>
+                          <actions>
+                            <show_help line="18162" duration="7s" position="1" force="true" comment="Purchase '{20103,61301}', '{20103,60301}' or '{20103,60401}'."/>
+                          </actions>
+                        </cue>
+
+                        <cue name="Tutorial_Blueprints_Purchase_Conv" instantiate="true">
+                          <conditions>
+                            <event_conversation_started />
+                            <check_value value="event.object.type == entitytype.factionrepresentative" comment="talking to faction-rep (sells blueprints)"/>
+                            <check_value value="not $HasBlueprints" comment="didn't purchase yet"/>
+                          </conditions>
+                          <actions>
+                            <show_help line="18163" duration="7s" position="1" force="true" comment="Select '{1002,7001}' to purchase BLUEPRINTS for your shipyard or wharf."/>
+                          </actions>
+                        </cue>
+
+                        <cue name="Tutorial_Blueprint_WaitWharf">
+                          <conditions>
+                            <event_player_blueprint_added ware="ware.module_gen_build_dockarea_m_01" comment="S/L wharf"/>
+                          </conditions>
+                          <actions>
+                            <set_value name="$HasBlueprints" exact="true"/>
+                            <show_help line="18170" duration="7s" position="1" force="true" comment="You have acquired the blueprints required to build a wharf."/>
+                            <signal_cue cue="Tutorial_Blueprint_Wait"/>
+                          </actions>
+                        </cue>
+
+                        <cue name="Tutorial_Blueprint_WaitShipyard">
+                          <conditions>
+                            <check_any>
+                              <event_player_blueprint_added ware="ware.module_gen_build_l_01" comment="L shipyard"/>
+                              <event_player_blueprint_added ware="ware.module_gen_build_xl_01" comment="XL shipyard"/>
+                            </check_any>
+                          </conditions>
+                          <actions>
+                            <set_value name="$HasBlueprints" exact="true"/>
+                            <show_help line="18171" duration="7s" position="1" force="true" comment="You have acquired the blueprints required to build a shipyard."/>
+                            <signal_cue cue="Tutorial_Blueprint_Wait"/>
+                          </actions>
+                        </cue>
+
+                        <cue name="Tutorial_Blueprint_Wait">
+                          <conditions>
+                            <event_cue_signalled/>
+                          </conditions>
+                          <delay exact="1ms"/>
+                          <actions>
+                            <show_help line="18180" duration="7s" position="1" force="true" comment="Consider purchasing additional blueprints for constructing ships and ship equipment."/>
+                          </actions>
+                          <cues>
+                            <cue name="Tutorial_Blueprint_Wait_Delayed">
+                              <delay exact="10s"/>
+                              <actions>
+                                <remove_help all="true" />
+                                <signal_cue cue="Tutorial_TriggerNext"/>
+                                <cancel_cue cue="Tutorial_Blueprint"/>
+                              </actions>
+                            </cue>
+                          </cues>
+                        </cue>
+                      </cues>
+                    </cue>
+
+                    <cue name="Tutorial_Blueprint_Skip" onfail="cancel">
+                      <conditions>
+                        <check_value value="$BlueprintWharf or $BlueprintShipyard or $BlueprintEquipdock"/>
+                      </conditions>
+                      <delay exact="1ms"/>
+                      <actions>
+                        <remove_help all="true" />
+                        <signal_cue cue="Tutorial_TriggerNext"/>
+                        <cancel_cue cue="Tutorial_Blueprint"/>
+                      </actions>
+                    </cue>
+
+                  </cues>
+                </cue>
+
+                <!-- result: $Station, "$stationmatches" being "true" or "false" -->
+                <library name="VerifyMatchingStation">
+                  <actions>
+                    <!-- Shipyward/Wharf - for a wharf, the buildmodule includes dockarea (so no need to check for that) -->
+                    <!-- buildmodule contains 1 or more 'class.buildprocessor'-->
+                    <set_value name="$StationSpecs" exact="table[
+                      $containedclasses = [
+                          [1, class.buildmodule,     'BuildModule',    'BuildModule'], 
+                          [1, class.dockarea,        'Dockarea',       'Dock Areas'], 
+                          [1, class.pier,            'Pier',           'Pier'], 
+                      ],
+                      $containerstorage = 1000,
+                    ]"/>
+
+                    <!-- Check if player has a station matching criteria, canbuildships=true will search for shipyards and wharfs -->
+                    <set_value name="$stationmatches" exact="false"/>
+                    <find_station name="$PlayerStations" space="player.cluster" multiple="true" owner="faction.player" canbuildships="true" comment="first look near player"/>
+                    <do_if value="not $PlayerStations.count">
+                      <find_station name="$PlayerStations" space="player.galaxy" multiple="true" owner="faction.player" canbuildships="true" comment="fallback, look in entire galaxy"/>
+                    </do_if>
+
+                    <debug_text text="'Checking ' + $PlayerStations.count + ' player-stations'" chance="$DebugChance"/>
+                    <do_all exact="$PlayerStations.count" counter="$si">
+                      <set_value name="$Station" exact="$PlayerStations.{$si}"/>
+                      <run_actions ref="md.LIB_Generic.CheckStationMatches" result="$stationmatches">
+                        <param name="Station" value="$Station"/>
+                        <param name="StationSpecs" value="$StationSpecs"/>
+                        <param name="DebugChance" value="$DebugChance"/>
+                      </run_actions>
+                      <do_if value="$stationmatches">
+                        <debug_text text="'Found station matching criteria'" chance="$DebugChance"/>
+                        <break/>
+                      </do_if>
+                    </do_all>
+                  </actions>
+                </library>
+
+                <cue name="Tutorial_Build">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <include_actions ref="VerifyMatchingStation"/>
+                    <do_if value="$stationmatches">
+                      <signal_cue cue="Tutorial_TriggerNext"/>
+                      <cancel_cue cue="Tutorial_Build"/>
+                    </do_if>
+                    <do_else>
+                      <show_help line="18200" duration="7s" position="1" force="true" log="true" comment="Build a station with a pier, container storage and a wharf or shipyard buildmodule."/>
+                    </do_else>
+                  </actions>
+                  <cues>
+
+                    <cue name="Tutorial_Build_Rehint" checkinterval="120s" instantiate="true">
+                      <actions>
+                        <show_help line="18200" duration="7s" position="1" force="true" comment="Build a station with a pier, container storage and a wharf or shipyard buildmodule."/>
+                      </actions>
+                    </cue>
+
+                    <cue name="Tutorial_Build_StationConfigOpen">
+                      <conditions>
+                        <event_ui_triggered screen="'StationConfigurationMenu'" control="''"/>
+                      </conditions>
+                      <actions>
+                        <set_value name="$thestation" exact="event.param3.{3}"/>
+                        <debug_text text="'Opened Construction for ' + $thestation.knownname"/>
+                        <find_object_component name="$BuildModules" class="class.buildmodule" object="$thestation" multiple="true" comment="produces ships"/>
+                        <find_object_component name="$StorageModules" class="class.storage" object="$thestation" multiple="true"/>
+                        <find_object_component name="$PierModules" class="class.pier" object="$thestation" multiple="true"/>
+
+                        <create_group groupname="$ContainerModules" comment="subset of storage modules"/>
+                        <do_all exact="$StorageModules.count" counter="$i">
+                          <do_if value="$StorageModules.{$i}.waretransport.indexof.{waretransport.container}">
+                            <add_to_group groupname="$ContainerModules" object="$StorageModules.{$i}"/>
+                          </do_if>
+                        </do_all>
+
+                        <!-- productions -->
+                        <do_if value="$PierModules.count == 0">
+                          <show_help_overlay id="'stationbuildst_dock'" highlightonly="true" />
+                          <do_all exact="8" counter="$i">
+                            <show_help_overlay id="'stationbuildst_dock_pier' + $i" highlightonly="true" />
+                          </do_all>
+                        </do_if>
+
+                        <do_if value="$BuildModules.count == 0">
+                          <show_help_overlay id="'stationbuildst_buildmodule'" highlightonly="true" />
+                          <do_all exact="8" counter="$i">
+                            <show_help_overlay id="'stationbuildst_build_wharf' + $i" highlightonly="true" />
+                          </do_all>
+                          <do_all exact="8" counter="$i">
+                            <show_help_overlay id="'stationbuildst_build_shipyard' + $i" highlightonly="true" />
+                          </do_all>
+                        </do_if>
+
+                        <do_if value="$ContainerModules.count == 0">
+                          <show_help_overlay id="'stationbuildst_storage'" highlightonly="true" />
+                          <do_all exact="8" counter="$i">
+                            <show_help_overlay id="'stationbuildst_storage_container' + $i" highlightonly="true" />
+                          </do_all>
+                        </do_if>
+                      </actions>
+                      <cues>
+                        <cue name="Tutorial_Build_StationConfigClosed">
+                          <conditions>
+                            <event_ui_triggered screen="'StationConfigurationMenu'" control="'menu_close'"/>
+                          </conditions>
+                          <actions>
+                            <!-- tabs -->
+                            <remove_help_overlay id="'stationbuildst_buildmodule'"/>
+                            <remove_help_overlay id="'stationbuildst_dock'"/>
+                            <remove_help_overlay id="'stationbuildst_storage'"/>
+                            <!-- productions -->
+                            <do_all exact="8" counter="$i">
+                              <remove_help_overlay id="'stationbuildst_pier' + $i"/>
+                            </do_all>
+                            <do_all exact="8" counter="$i">
+                              <remove_help_overlay id="'buildmodule_wharf' + $i"/>
+                            </do_all>
+                            <do_all exact="8" counter="$i">
+                              <remove_help_overlay id="'buildmodule_shipyard' + $i"/>
+                            </do_all>
+                            <do_all exact="8" counter="$i">
+                              <remove_help_overlay id="'stationbuildst_storage_container' + $i"/>
+                            </do_all>
+                            <reset_cue cue="Tutorial_Build_StationConfigOpen"/>
+                          </actions>
+                        </cue>
+                      </cues>
+                    </cue>
+
+                    <cue name="Tutorial_Build_Check" instantiate="true">
+                      <conditions>
+                        <event_player_build_finished/>
+                      </conditions>
+                      <actions>
+                        <include_actions ref="VerifyMatchingStation"/>
+                        <do_if value="$stationmatches">
+                          <do_if value="$Station.isshipyard">
+                            <show_help line="18210" duration="7s" position="1" force="true" comment="You have completed your shipyard."/>
+                          </do_if>
+                          <do_elseif value="$Station.iswharf">
+                            <show_help line="18211" duration="7s" position="1" force="true" comment="You have completed your wharf."/>
+                          </do_elseif>
+                          <show_help line="18201" duration="7s" position="1" force="true" log="true" comment="Make sure your shipyard or wharf has a habitation module, to provide a crew for the ships you build."/>
+                          <signal_cue cue="Tutorial_Build_Completed"/>
+                          <cancel_cue cue="Tutorial_Build_Check"/>
+                        </do_if>
+                      </actions>
+                    </cue>
+
+                    <cue name="Tutorial_Build_Completed">
+                      <conditions>
+                        <event_cue_signalled/>
+                      </conditions>
+                      <delay exact="10s"/>
+                      <actions>
+                        <remove_help all="true" />
+                        <signal_cue cue="Tutorial_TriggerNext"/>
+                        <cancel_cue cue="Tutorial_Build"/>
+                      </actions>
+                    </cue>
+
+                  </cues>
+                </cue>
+
+                <cue name="Tutorial_Shiptrader">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+
+                    <do_if value="$Station.shiptrader">
+                      <signal_cue cue="Tutorial_TriggerNext"/>
+                      <cancel_cue cue="Tutorial_Shiptrader"/>
+                    </do_if>
+                    <do_else>
+                      <remove_help all="true" />
+                      <show_help line="18300" duration="7s" position="1" force="true" log="true" comment="Shipyards and wharfs need a shiptrader for operation."/>
+                    </do_else>
+                  </actions>
+                  <cues>
+
+                    <cue name="Tutorial_Shiptrader_Rehint" checkinterval="120s" instantiate="true">
+                      <conditions>
+                        <check_value value="not player.isinconversation" comment="avoid triggering while player is talking"/>
+                        <check_value value="not @$DockedShip"/>
+                      </conditions>
+                      <actions>
+                        <show_help line="18301" duration="7s" position="1" force="true" comment="Bring an employee to your station and assign him to the 'ship trader' role."/>
+                      </actions>
+                    </cue>
+
+                    <!-- 
+                      1. Player is docked, with an npc onboard
+                      2. Talk to NPC
+                      3. Assign to station
+                      4. Role = shiptrader
+                      5. Click Assign (that should trigger the Tutorial_Shiptrader_assigned-cue)
+                    -->
+
+                    <cue name="Tutorial_Shiptrade_docked" instantiate="true">
+                      <conditions>
+                        <event_object_docked_at container="$Station"/>
+                        <check_value value="event.param.owner == faction.player"/>
+                        <check_value value="not player.isinconversation" comment="avoid triggering while player is already talking"/>
+                      </conditions>
+                      <delay exact="1ms" comment="avoid 'Failed to perform slide change to slide'"/>
+                      <actions>
+                        <set_value name="$DockedShip" exact="event.param"/>
+                        <remove_help all="true" />
+                        <debug_text text="'player-owned ship docked at station'" chance="$DebugChance"/>
+
+                        <!-- check if any player-owned npc's onboard -->
+                        <set_value name="$FoundNPC" exact="$DockedShip.people.count != 0"/>
+                        <do_if value="$FoundNPC == 0" comment="fallback">
+                          <find_object_component name="$playernpcs" class="class.npc" object="$DockedShip" multiple="true"/>
+                          <do_all exact="$playernpcs.count" counter="$npci">
+                            <do_if value="$playernpcs.{$npci}.owner == faction.player">
+                              <set_value name="$FoundNPC" exact="true"/>
+                              <signal_cue cue="Tutorial_Shiptrade_talknpc_delayed" comment="general hint to talk to actual npc"/>
+                              <break/>
+                            </do_if>
+                          </do_all>
+                        </do_if>
+                        <do_else>
+                          <signal_cue cue="Tutorial_Shiptrade_talkcrew" comment="guide player to talking to crew (in the 'back' of the ship)"/>
+                        </do_else>
+
+                        <!-- hints on arrival of player-owned NPC at the wharf/shipyard -->
+                        <do_if value="$FoundNPC" comment="player-owned NPC arrived at wharf/shipyard">
+                          <do_if value="$Station.isshipyard">
+                            <show_help line="18310" duration="7s" position="4" force="true" comment="An NPC arrived at your shipyard, talk to him transfer him to the station."/>
+                          </do_if>
+                          <do_elseif value="$Station.iswharf">
+                            <show_help line="18311" duration="7s" position="4" force="true" comment="An NPC arrived at your wharf, talk to him transfer him to the station."/>
+                          </do_elseif>
+                        </do_if>
+                        <do_else>
+                          <debug_text text="'No player-owned npc onboard'" chance="$DebugChance"/>
+                        </do_else>
+                      </actions>
+                    </cue>
+
+                    <cue name="Tutorial_Shiptrade_talknpc_delayed">
+                      <delay exact="10s"/>
+                      <actions>
+                        <signal_cue cue="Tutorial_Shiptrade_talknpc"/>
+                      </actions>
+                    </cue>
+
+                    <cue name="Tutorial_Shiptrade_talknpc">
+                      <conditions>
+                        <event_cue_signalled/>
+                      </conditions>
+                      <actions>
+                      </actions>
+                      <cues>
+                        <cue name="Tutorial_Shiptrade_talknpc_rehint" checkinterval="20s" instantiate="true">
+                          <conditions>
+                            <check_value value="(not player.isinfullscreenmenu) and ($FoundNPC)"/>
+                            <check_value value="not $Station.controlentity.{controlpost.shiptrader}" comment="only if no shiptrader yet"/>
+                          </conditions>
+                          <actions>
+                            <do_if value="$Station.isshipyard">
+                              <show_help line="18312" duration="7s" position="4" force="true" comment="Talk to an employee on your shipyard and assign the 'Ship Trader' role"/>
+                            </do_if>
+                            <do_elseif value="$Station.iswharf">
+                              <show_help line="18313" duration="7s" position="4" force="true" comment="Talk to an employee on your wharf and assign the 'Ship Trader' role."/>
+                            </do_elseif>
+                          </actions>
+                        </cue>
+                      </cues>
+                    </cue>
+
+                    <cue name="Tutorial_Shiptrade_talkcrew">
+                      <conditions>
+                        <event_cue_signalled/>
+                      </conditions>
+                      <actions>
+                        <show_help_overlay id="'map_sidebar_information'" highlightonly="true" />
+                      </actions>
+                      <cues>
+
+                        <cue name="Tutorial_Shiptrade_MapRehint" checkinterval="20s" instantiate="true">
+                          <conditions>
+                            <check_value value="not @$MapOpen"/>
+                          </conditions>
+                          <actions>
+                            <show_help line="5001" duration="10s" position="4" force="true" comment="Press $INPUT_ACTION_OPEN_MAP$ to open the MAP menu."/>
+                          </actions>
+                        </cue>
+
+                        <cue name="Tutorial_Shiptrade_OpenMap">
+                          <conditions>
+                            <event_ui_triggered screen="'MapMenu'" control="''"/>
+                          </conditions>
+                          <actions>
+                            <set_value name="$MapOpen" exact="true"/>
+                            <show_help_overlay id="'map_sidebar_information'" highlightonly="true"  />
+                          </actions>
+                          <cues>
+
+                            <cue name="Tutorial_Shiptrade_CloseMap">
+                              <conditions>
+                                <event_ui_triggered screen="'MapMenu'" control="''"/>
+                              </conditions>
+                              <actions>
+                                <remove_value name="$MapOpen"         comment="is the map open?"/>
+                                <remove_value name="$MapTabOpen"      comment="which map 'main'-tab is open?" />
+                                <remove_value name="$MapInfoTabOpen"  comment="which map info-subtab is open?"/>
+                                <remove_help_overlay id="'map_sidebar_information'"/>
+                                <reset_cue cue="Tutorial_Shiptrade_OpenMap"/>
+                              </actions>
+                            </cue>
+
+                            <cue name="Tutorial_Shiptrade_InfoRehint_v2" checkinterval="20s" instantiate="true">
+                              <conditions>
+                                <check_value value="(not @$MapInfoTabOpen) or (@$MapInfoTabOpen and $MapInfoTabOpen != 'crewinfomenu_open')"/>
+                              </conditions>
+                              <actions>
+                                <show_help line="18316" duration="10s" position="1" force="true" comment="Find your employee in the CREW tab of your ships INFORMATION menu"/>
+                              </actions>
+                            </cue>
+
+                            <cue name="Tutorial_Shiptrade_ChangeTab_Other">
+                              <conditions>
+                                <check_any>
+                                  <!-- change in vertical tabs -->
+                                  <event_ui_triggered screen="'MapMenu'" control="'objectlist'"/>
+                                  <event_ui_triggered screen="'MapMenu'" control="'propertyowned'"/>
+                                  <event_ui_triggered screen="'MapMenu'" control="'missionoffer'"/>
+                                  <event_ui_triggered screen="'MapMenu'" control="'mission'"/>
+                                  <event_ui_triggered screen="'MapMenu'" control="'plots'"/>
+                                  <event_ui_triggered screen="'MapMenu'" control="'cheats'"/>
+                                </check_any>
+                              </conditions>
+                              <actions>
+                                <set_value name="$MapTabOpen" exact="event.param2"/>
+                                <remove_value name="$MapInfoTabOpen"/>
+                                <remove_help all="true"/>
+                                <remove_help_overlay id="'mapst_ao_info_crew'"/>
+                                <show_help_overlay id="'map_sidebar_information'" highlightonly="true" />
+                                <reset_cue cue="Tutorial_Shiptrade_ChangeTab_Info"/>
+                              </actions>
+                            </cue>
+
+                            <cue name="Tutorial_Shiptrade_ChangeTab_Info">
+                              <conditions>
+                                <event_ui_triggered screen="'MapMenu'" control="'info'"/>
+                              </conditions>
+                              <actions>
+                                <set_value name="$MapTabOpen" exact="event.param2"/>
+                                <remove_help_overlay id="'map_sidebar_information'" />
+                                <show_help_overlay id="'mapst_ao_info_crew'" highlightonly="true" />
+                                <reset_cue cue="Tutorial_Shiptrade_ChangeTab_Other"/>
+                              </actions>
+                              <cues>
+
+                                <cue name="Tutorial_Shiptrade_ChangeInfoTab_CrewInfo">
+                                  <conditions>
+                                    <event_ui_triggered screen="'MapMenu'" control="'crewinfomenu_open'"/>
+                                    <!--check_value value="component.{event.param3} == player.ship or component.{event.param3} == $Station"/-->
+                                  </conditions>
+                                  <actions>
+                                    <remove_help all="true"/>
+                                    <remove_help_overlay id="'mapst_ao_info_crew'" />
+                                    <reset_cue cue="Tutorial_Shiptrade_ChangeInfoTab_Other"/>
+                                    <set_value name="$MapInfoTabOpen" exact="event.param2"/>
+                                  </actions>
+                                  <cues>
+                                    <cue name="Tutorial_Shiptrade_CommRehint_v2" checkinterval="20s" instantiate="true">
+                                      <actions>
+                                        <show_help line="18317" duration="10s" position="1" force="true" comment="Select COMM from the context menu to talk to your employee."/>
+                                      </actions>
+                                    </cue>
+                                  </cues>
+                                </cue>
+
+                                <cue name="Tutorial_Shiptrade_ChangeInfoTab_Other">
+                                  <conditions>
+                                    <check_any>
+                                      <!-- change in horizontal tabs -->
+                                      <event_ui_triggered screen="'MapMenu'" control="'objectlist'"/>
+                                      <event_ui_triggered screen="'MapMenu'" control="'objectinfo'"/>
+                                      <event_ui_triggered screen="'MapMenu'" control="'loadoutinfomenu_open'"/>
+                                      <event_ui_triggered screen="'MapMenu'" control="'orderqueue'"/>
+                                      <event_ui_triggered screen="'MapMenu'" control="'orderqueue_advanced'"/>
+                                      <event_ui_triggered screen="'MapMenu'" control="'standingorders'"/>
+                                      <event_ui_triggered screen="'MapMenu'" control="'mapst_ao_info_crew'"/>
+                                    </check_any>
+                                  </conditions>
+                                  <actions>
+                                    <set_value name="$MapInfoTabOpen" exact="event.param2"/>
+                                    <remove_help all="true"/>
+                                    <show_help_overlay id="'mapst_ao_info_crew'" highlightonly="true" />
+                                    <reset_cue cue="Tutorial_Shiptrade_ChangeInfoTab_CrewInfo"/>
+                                  </actions>
+                                </cue>
+
+                              </cues>
+                            </cue>
+
+                          </cues>
+                        </cue>
+
+                      </cues>
+                    </cue>
+
+                    <cue name="Tutorial_Shiptrade_conv" instantiate="true" comment="started conversation with npc on correct station?">
+                      <conditions>
+                        <event_conversation_started />
+                        <check_value value="not $Station.controlentity.{controlpost.shiptrader}" comment="only if no shiptrader yet"/>
+                        <check_any>
+                          <check_all>
+                            <check_value value="typeof event.object == datatype.component" comment="normal conversation"/>
+                            <check_value value="event.object.owner == faction.player and event.object.station == $Station" comment="player talking to an actual npc"/>
+                          </check_all>
+                          <check_all>
+                            <set_value name="$locobject" exact="event.object.{1}"/>
+                            <set_value name="$npctemplate" exact="event.object.{2}"/>
+                            <check_value value="typeof event.object != datatype.component" comment="Comm person in the backroom"/>
+                            <check_value value="$DockedShip.people.{event.object.{2}}.exists" comment=".{1} = npctemplate location-object, .{2} = npctemplate"/>
+                          </check_all>
+                        </check_any>
+                      </conditions>
+                      <actions>
+                        <debug_text text="'Talking to employee'"/>
+                        <cancel_cue cue="Tutorial_Shiptrade_talkcrew"/>
+                        <show_help line="18320" duration="7s" position="1" force="true" comment="To assign this NPC to be a shiptrader, select '{1002,3008}'(work somewhere else for me)."/>
+                      </actions>
+                      <cues>
+
+                        <cue name="Tutorial_Shiptrade_hire" comment="menu hints">
+                          <conditions>
+                            <event_ui_triggered screen="'MapMenu'" control="'menu_hiremode'"/>
+                          </conditions>
+                          <actions>
+                            <show_help line="if player.input.controller then 18333 else 18330" duration="7s" position="1" force="true" comment="Right-click your station and 'select' to select the workplace. / Press $INPUT_STATE_WIDGET_INTERACT$ on your station and press SELECT to select the workplace."/>
+                            <set_value name="$workplace_done" exact="false"/>
+                            <set_value name="$role_done" exact="false"/>
+                            <set_value name="$assign_done" exact="false"/>
+                          </actions>
+                          <cues>
+
+                            <cue name="Tutorial_Shiptrader_hire_cancel">
+                              <conditions>
+                                <event_ui_triggered screen="'MapMenu'" control="'hire_cancel'"/>
+                              </conditions>
+                              <actions>
+                                <set_value name="$role_done" exact="false"/>
+                                <set_value name="$workplace_done" exact="false"/>
+                                <remove_help_overlay id="'assign_staff_hire_ok'"/>
+                                <remove_help_overlay id="'assign_staff_role'"/>
+
+                                <remove_help all="true"/>
+                              </actions>
+                              <delay exact="1s"/>
+                              <actions>
+                                <do_if value="$Station.isshipyard">
+                                  <show_help line="18312" duration="7s" position="4" force="true" comment="Talk to an employee on your shipyard and assign the 'ship trader' role"/>
+                                </do_if>
+                                <do_elseif value="$Station.iswharf">
+                                  <show_help line="18313" duration="7s" position="4" force="true" comment="Talk to an employee on your wharf and assign the 'ship trader' role"/>
+                                </do_elseif>
+                                <cancel_cue cue="Tutorial_Shiptrade_conv"/>
+                              </actions>
+                            </cue>
+
+                            <cue name="Tutorial_Shiptrade_workplace_rehint" checkinterval="20s" instantiate="true">
+                              <conditions>
+                                <check_value value="$workplace_done == false"/>
+                              </conditions>
+                              <actions>
+                                <show_help line="if player.input.controller then 18333 else 18330" duration="7s" position="1" force="true" comment="Right-click your station and 'select' to select the workplace. / Press $INPUT_STATE_WIDGET_INTERACT$ on your station and press SELECT to select the workplace."/>
+                              </actions>
+                            </cue>
+
+                            <cue name="Tutorial_Shiptrader_workplace">
+                              <conditions>
+                                <event_ui_triggered screen="'MapMenu'" control="'selectactive'"/>
+                              </conditions>
+                              <actions>
+                                <debug_text text="'workplace selected, change role'" chance="$DebugChance"/>
+                                <set_value name="$workplace_done" exact="true"/>
+                                <remove_help all="true" />
+                                <show_help line="18331" duration="7s" position="1" force="true" comment="Change the role to 'Ship Trader'."/>
+                                <show_help_overlay id="'assign_staff_role'" highlightonly="true" />
+                              </actions>
+                              <cues>
+
+                                <cue name="Tutorial_Shiptrade_role_rehint" checkinterval="20s" instantiate="true">
+                                  <conditions>
+                                    <check_value value="$role_done == false"/>
+                                  </conditions>
+                                  <actions>
+                                    <show_help line="18331" duration="7s" position="1" force="true" comment="Change the role to 'Ship Trader'."/>
+                                  </actions>
+                                </cue>
+
+                                <cue name="Tutorial_Shiptrader_role" instantiate="true">
+                                  <conditions>
+                                    <event_ui_triggered screen="'MapMenu'" control="'npcrole'"/>
+                                    <check_value value="event.param3 == 'post:shiptrader'"/>
+                                  </conditions>
+                                  <actions>
+                                    <set_value name="$workplace_done" exact="true"/>
+                                    <remove_help all="true" />
+                                    <remove_help_overlay id="'assign_staff_role'"/>
+
+                                    <show_help line="18332" duration="7s" position="1" force="true" comment="Click 'assign' to confirm your orders."/>
+                                    <show_help_overlay id="'assign_staff_hire_ok'" highlightonly="true" />
+                                  </actions>
+                                  <cues>
+
+                                    <cue name="Tutorial_Shiptrade_assign_rehint" checkinterval="20s" instantiate="true">
+                                      <conditions>
+                                        <check_value value="$assign_done == false"/>
+                                      </conditions>
+                                      <actions>
+                                        <show_help line="18332" duration="7s" position="1" force="true" comment="Click 'assign' to confirm your assignment order."/>
+                                      </actions>
+                                    </cue>
+
+                                    <cue name="Tutorial_Shiptrader_assign_hire">
+                                      <conditions>
+                                        <event_ui_triggered screen="'MapMenu'" control="'assign_staff_hire_ok'"/>
+                                        <check_value value="$workplace_done and $assign_done" />
+                                      </conditions>
+                                      <actions>
+                                        <remove_help_overlay id="'assign_staff_hire_ok'"/>
+                                        <set_value name="$assign_done" exact="true"/>
+                                      </actions>
+
+                                    </cue>
+
+                                  </cues>
+                                </cue>
+                              </cues>
+                            </cue>
+                          </cues>
+                        </cue>
+
+                      </cues>
+                    </cue>
+
+
+                    <cue name="Tutorial_Shiptrader_assigned" comment="win-condition">
+                      <conditions>
+                        <event_control_entity_added object="$Station"/>
+                        <check_value value="event.param.controlpost == controlpost.shiptrader"/>
+                      </conditions>
+                      <actions>
+                        <remove_help all="true"/>
+                        <signal_cue cue="Tutorial_Shiptrader_Completed"/>
+                      </actions>
+                    </cue>
+
+                    <cue name="Tutorial_Shiptrader_Completed">
+                      <conditions>
+                        <event_cue_signalled/>
+                      </conditions>
+                      <delay exact="10s"/>
+                      <actions>
+                        <remove_help all="true" />
+                        <signal_cue cue="Tutorial_TriggerNext"/>
+                        <cancel_cue cue="Tutorial_Shiptrader"/>
+                      </actions>
+                    </cue>
+
+                  </cues>
+                </cue>
+
+                <cue name="Tutorial_LSO">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+
+                    <remove_help all="true" />
+                    <do_if value="$Station.isshipyard">
+                      <show_help line="18400" duration="7s" position="1" force="true" comment="In order for your shipyward to work efficiently you need builder drones."/>
+                    </do_if>
+                    <do_elseif value="$Station.iswharf">
+                      <show_help line="18401" duration="7s" position="1" force="true" comment="In order for your wharf to work efficiently you need builder drones."/>
+                    </do_elseif>
+                    <do_else>
+                      <show_help line="18402" duration="7s" position="1" force="true" comment="In order for your station to work efficiently you need various drones."/>
+                    </do_else>
+                    <!--show_help line="18410" duration="7s" position="1" force="true" comment="Open the map and select '{1001,8401}'(logical overview) from the context-menu of your station."/-->
+
+                    <set_value name="$lso_opened" exact="false"/>
+                    <set_value name="$drones_expanded" exact="false"/>
+                    <show_help_overlay id="'interactmenu_logicalstationoverview'" highlightonly="true"/>
+                    <show_help line="18410" duration="7s" position="1" force="true" comment="Open the map and select '{1001,8401}'(logical overview) from the context-menu of your station." allowclose="false" timeout="false"/>
+                  </actions>
+                  <cues>
+
+                    <cue name="Tutorial_LSO_openmenu">
+                      <conditions>
+                        <event_ui_triggered screen="'StationOverviewMenu'"/>
+                      </conditions>
+                      <actions>
+                        <set_value name="$lso_opened" exact="true"/>
+                        <remove_help all="true" />
+                        <remove_help_overlay id="'interactmenu_logicalstationoverview'"/>
+                        <show_help line="18420" duration="7s" position="17" force="true" comment="Expand the drones node." allowclose="false" timeout="false"/>
+                      </actions>
+                      <cues>
+
+                        <cue name="Tutorial_LSO_expanddrones">
+                          <conditions>
+                            <event_ui_triggered screen="'StationOverviewMenu'" control="'expand_supply'"/>
+                            <check_value value="event.param3 == 'drones'"/>
+                          </conditions>
+                          <delay exact="1ms"/>
+                          <actions>
+                            <set_value name="$drones_expanded" exact="true"/>
+                            <remove_help all="true" />
+                            <show_help_multi log="true" position="17" force="true" allowclose="false">
+                              <text line="18421" comment="You can change the amount of drones for available for cargo, defence, restocking and building."/>
+                              <text line="18422" comment="For efficiently constructing ships, you need builder drones."/>
+                              <text line="18430" comment="Enabling the 'restock automatically' checkbox per each drone type will let your station try and maintain the selected amount."/>
+                              <text line="18431" comment="Disabling the 'restock automatically' checkbox will result in a one-time purchase to match the selected amount."/>
+                            </show_help_multi>
+                          </actions>
+
+                          <cues>
+                            <cue name="Tutorial_LSO_DoneDelayed">
+                              <conditions>
+                                <event_ui_triggered screen="'hintclosed'" control="'18421'"/>
+                              </conditions>
+                              <actions>
+                                <signal_cue cue="Tutorial_TriggerNext"/>
+                                <cancel_cue cue="Tutorial_LSO"/>
+                              </actions>
+                            </cue>
+                          </cues>
+
+                        </cue>
+
+                      </cues>
+                    </cue>
+                  </cues>
+
+                </cue>
+
+                <!-- 
+                - Logical station overview (map/right-click on station/logical-overview )
+                - scroll down a bit to the "drones" section and open it
+                - You can select drones for Cargo/Defence/Restock/Building
+                - You want building drones for building ships
+                - Having the checkbox "ticked" will let the manager keep the target amount
+                - Having the checkbox "unticked" will be a 1-off purchase
+                - The "station" section will show the total cost of the selected drones as "Supply Budget"
+                
+                [Owen]I've tested ships being built at player shipyards and the money ends up in the shipyard account. Will test other cases.
+                [ego]Florian, 11:07 AM  may be the player only looked at their own account?
+                      @roger: can you put a line about that in the tutorial?
+                
+                Show the toggle so that NPC's can build at your station
+                Default is enabled, theu pay into the station account (which is quite obvious because same for trade... )
+                -->
+
+                <cue name="Tutorial_Final">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <delay exact="1s"/>
+                  <actions>
+                    <show_help_multi log="true" position="17" force="true" allowclose="false">
+                      <text line="18500" comment="You can build your own ships now via the station's context menu '{1001,7875}'(build ships)."/>
+                      <text line="18510" comment="Go to '{1001,7903}'(LSO) to change settings about trading with other factions and prices"/>
+                      <text line="18511" comment="By default other factions can order ships, enable '{1001,8424}'(restrict orders from other factions) to block this."/>
+                      <text line="18520" comment="Factions purchasing something from your station pay will into the stations account."/>
+                      <text line="18550" comment="Get additional blueprints for constructing ships and equipment from the faction representatives."/>
+                    </show_help_multi>
+
+                  </actions>
+                  <cues>
+                    <cue name="Tutorial_Final_DoneDelayed">
+                      <conditions>
+                        <event_ui_triggered screen="'hintclosed'" control="'18500'"/>
+                      </conditions>
+                      <actions>
+                        <signal_cue cue="Tutorial_TriggerNext"/>
+                        <cancel_cue cue="Tutorial_Final"/>
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="Cleanup">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <remove_help_overlay all="true"/>
+                <debug_text text="'cleanup'" chance="$DebugChance"/>
+                <do_if value="$BriefingCutsceneStarted?">
+                  <stop_cutscene key="$CutsceneKey"/>
+                </do_if>
+                <do_if value="$Beacons?">
+                  <destroy_group group="$Beacons"/>
+                </do_if>
+                <remove_offer cue="Start"/>
+                <remove_mission cue="Start" />
+                <reset_cue cue="Trigger"/>
+              </actions>
+            </cue>
+
+          </cues>
+        </cue>
+
+      </cues>
+    </cue>
+  </cues>
+</mdscript>

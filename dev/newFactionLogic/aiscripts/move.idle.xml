@@ -1,0 +1,224 @@
+<?xml version="1.0" encoding="iso-8859-1" ?>
+<aiscript name="move.idle" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" version="3">
+  <!--
+
+  Idle Random Movement Script
+  by Adrian
+  
+  Generic routine for idle flying a ship around to random positions in its current zone.
+  Either use $TimeOut or $Min and $Max, to set the duration
+  No Timeout provided means infinite idle.
+
+  -->
+  <params>
+    <param name="TimeOut" default="-1" comment="duration of the idle move"/>
+    <param name="Min" default="-1" comment="Minimum duration, together with $Max (Overrides $Timeout)"/>
+    <param name="Max" default="-1" comment="Maximun duration, together with $Min (Overrides $Timeout)"/>
+    <param name="untilattentionchangeto" default="null" comment="Attention level around which this script will return. If attention.visible or greater, will return at that attention level or greater. If less than attention.visible, will return at that attention level or lower. If TimeOut, Min, or Max is 1 or greater, that will also stop movement even if untilattentionchangeto is not reached."/>
+    <!--Defaults have the ship flying around its original position-->
+    <param name="anchorpos_sector" default="null"/>
+    <param name="zone_anchor" default="if not this.zone.isclass.highway then this.zone else null"/>
+    <param name="Offset" default="this.ship.position"/>
+    <param name="MaxDistance" default="10km"/>
+    <param name="debugchance" default="0"/>
+  </params>
+  <interrupts>
+    <handler>
+      <conditions>
+        <event_object_changed_attention object="this.assignedcontrolled"/>
+        <check_value value="$untilattentionchangeto"/>
+        <check_any>
+          <check_value value="$untilattentionchangeto ge attention.visible and this.assignedcontrolled.attention ge $untilattentionchangeto"/>
+          <check_value value="$untilattentionchangeto lt attention.visible and this.assignedcontrolled.attention le $untilattentionchangeto"/>
+        </check_any>
+      </conditions>
+      <actions>
+        <abort_called_scripts resume="end"/>
+      </actions>
+    </handler>
+    <handler ref="TargetInvalidHandler"/>
+  </interrupts>
+  <init>
+    <set_value name="$iscapship" exact="this.ship.isclass.ship_l or this.ship.isclass.ship_xl" />
+    <!-- Use the min and max if there are -->
+    <do_if value="$Max gt 0">
+      <set_value name="$Min" exact="[1, $Min].max" />
+      <set_value name="$Max" exact="[$Max, $Min].max" />
+      <set_value name="$TimeOut" min="$Min" max="$Max" />
+    </do_if>
+  </init>
+  <patch sinceversion="1">
+    <do_if value="$untilattentionchangeto == null and $Min == -1 and $Max == -1 and $TimeOut == -1">
+      <debug_text text="'patching %1 flying %2 (%3) in unintended infinite idle'.[this, this.ship.knownname, this.ship.idcode]" chance="$debugchance" />
+      <!-- after init TimeOut needs to be converted to the endtime -->
+      <set_value name="$TimeOut" min="player.age + 1s" max="player.age + 3s" />
+    </do_if>
+  </patch>
+  <attention min="unknown">
+    <actions>
+      <do_if value="$zone_anchor.exists and $zone_anchor.sector != this.sector">
+        <!-- try to recover? or return and let the calling script handle it?
+              we're idling and don't know why. the calling script should know why and if we should recover. -->
+        <!--<run_script name="'move.generic'">
+          <param name="destination" value="$zone_anchor"/>
+          <param name="position" value="$Offset"/>
+          <param name="debugchance" value="$debugchance"/>
+        </run_script>-->
+        <debug_text text="'%1 %2 is trying to idle in %3 %4 which is in a different sector. aborting.'.[this.ship.idcode, this.ship.knownname, $zone_anchor.class, $zone_anchor.knownname]" filter="error"/>
+        <return/>
+      </do_if>
+
+      <do_if value="$TimeOut" min="1">
+        <!--Timeout is now the end time-->
+        <set_value name="$TimeOut" exact="player.age + $TimeOut"/>
+      </do_if>
+      <do_else>
+        <debug_text text="'Timeout is : ' + $TimeOut + '. Setting to null. Movement will be infinite'" chance="$debugchance" />
+      </do_else>
+
+      <!-- Label to allow us to repeat indefinitely -->
+      <label name="start" />
+
+      <do_if value="this.zone.isclass.highway">
+        <do_if value="this.zone.exitjumpgate and this.sector">
+          <get_safe_pos result="$safepos" sector="this.sector" radius="this.assignedcontrolled.size / 2m" value="this.sector.coreposition" max="this.sector.coresize / 2m"/>
+          <move_to endzone="$endzone" object="this.assignedcontrolled" destination="this.sector" sinceversion="3">
+            <position value="$safepos"/>
+          </move_to>
+          <do_if value="not $endzone">
+            <debug_text text="'movement out of highway failed. waiting to try again.'" chance="$debugchance"/>
+            <wait min="1s" max="3s" sinceversion="3"/>
+          </do_if>
+          <remove_value name="$endzone"/>
+          <remove_value name="$safepos"/>
+        </do_if>
+        <do_else>
+          <!-- if we ever get superhighways that never end, we'll have to go to a point in some space. hopefully, in that case, the superhighway will still designate a destination. -->
+          <wait>
+            <interrupt>
+              <conditions>
+                <event_object_changed_zone object="this.assignedcontrolled"/>
+                <check_value value="not event.param.isclass.highway"/>
+              </conditions>
+            </interrupt>
+          </wait>
+        </do_else>
+
+        <do_if value="(player.age lt $TimeOut) or ($TimeOut lt 0)">
+          <resume label="start"/>
+        </do_if>
+        <resume label="end"/>
+      </do_if>
+      <do_elseif value="this.sector">
+        <do_if value="not $anchorpos_sector">
+          <do_if value="$zone_anchor.exists and $Offset">
+            <create_position name="$anchorpos_sector" space="this.sector" value="$Offset" object="$zone_anchor"/>
+          </do_if>
+          <do_else>
+            <create_position name="$anchorpos_sector" space="this.sector" object="this.ship"/>
+          </do_else>
+        </do_if>
+      </do_elseif>
+      <do_else>
+        <debug_text text="'%1 %2 is neither in a sector nor in a superhighway. aborting.'.[this.ship.idcode, this.ship.knownname]" filter="error"/>
+        <return/>
+      </do_else>
+
+      <do_if value="false">
+        <debug_text text="player.age + ':\nanchorpos: %s\nzone anchor: %s'.[$anchorpos_sector, $zone_anchor]"/>
+      </do_if>
+
+      <do_while value="(player.age lt $TimeOut) or ($TimeOut lt 0)" comment="infinite loop if TimeOut less than 0">
+
+        <do_if value="$anchorpos_sector and (@$randpos != $anchorpos_sector) and (not $zone_anchor.exists or (this.zone != $zone_anchor))">
+          <debug_text text="'pacing back'" chance="$debugchance"/>
+          <set_value name="$randpos" exact="$anchorpos_sector"/>
+        </do_if>
+        <do_else>
+          <!-- Create safe random position -->
+          <do_if value="$iscapship and this.ship.distanceto.[this.sector, $anchorpos_sector] le $MaxDistance">
+            <!--<set_value name="$tempxoffset" min="this.ship.position.x" max="this.ship.position.x + ($MaxDistance / 2)"/>
+            <set_value name="$tempzoffset" min="this.ship.position.z + ($MaxDistance / 3)" max="this.ship.position.z + $MaxDistance"/>
+            <create_position name="$temp" space="this.sector" x="[-$tempxoffset, $tempxoffset].random" y="this.ship.position.y" z="$tempzoffset"/>-->
+            <!-- NB: active below, positions are set relative to the ship, so x, y, and z, would depend on how the ship is oriented. if this still results in crazy offsets or capships move stupidly while idling, activate above where axes are consistent with zone axes. -->
+            <set_value name="$tempxoffset" max="$MaxDistance / 2"/>
+            <set_value name="$tempzoffset" min="$MaxDistance / 3" max="$MaxDistance"/>
+            <create_position name="$temp" space="this.sector" x="[-$tempxoffset, $tempxoffset].random" y="0" z="$tempzoffset" object="this.ship"/>
+            <remove_value name="$tempxoffset"/>
+            <remove_value name="$tempzoffset"/>
+          </do_if>
+          <do_else>
+            <create_position name="$temp" space="this.sector" value="$anchorpos_sector" object="this.sector" min="this.ship.size" max="$MaxDistance + this.ship.size"/>
+          </do_else>
+          <debug_text text="'%1 (%2) is idling in %4, %5.\nat %3\nnew temp pos: %6.'.[this.ship.knownname, this.ship, this.ship.position, this.ship.sector.knownname, this.ship.cluster.knownname, $temp]" chance="$debugchance"/>
+
+          <do_if value="not $zone_anchor.exists">
+            <get_zone_at_position name="$zone_anchor" sector="this.sector" value="$anchorpos_sector"/>
+          </do_if>
+
+          <do_if value="$zone_anchor.exists">
+            <do_if value="$iscapship">
+              <get_safe_pos result="$randpos" zone="$zone_anchor" value="$temp" object="this.sector" radius="this.ship.size / 2" angle="60deg" direction="quadrant.front" directionobject="this.ship"/>
+            </do_if>
+            <do_else>
+              <get_safe_pos result="$randpos" zone="$zone_anchor" value="$temp" object="this.sector" radius="this.ship.size / 2"/>
+            </do_else>
+            <create_position name="$randpos" space="this.sector" value="$randpos" object="$zone_anchor"/>
+          </do_if>
+          <do_else>
+            <set_value name="$randpos" exact="$temp"/>
+          </do_else>
+        </do_else>
+        <debug_text text="'%1 (%2) is idling in %4, %5.\nat %3\nmoving to %6.'.[this.ship.knownname, this.ship, this.ship.position, this.ship.sector.knownname, this.ship.cluster.knownname, $randpos]" chance="$debugchance"/>
+
+
+        <!-- Make the random movement (with an interruption if necessary) -->
+        <do_if value="$TimeOut gt 0">
+          <move_to object="this.ship" destination="this.sector" finishonapproach="true" forceposition="false" commandaction="false">
+            <position value="$randpos"/>
+            <interrupt_after_time time="$TimeOut - player.age"/>
+          </move_to>
+        </do_if>
+        <do_else>
+          <!-- Infinite movement -->
+          <move_to object="this.ship" destination="this.sector" finishonapproach="true" forceposition="false" commandaction="false">
+            <position value="$randpos"/>
+          </move_to>
+        </do_else>
+
+        <debug_text text="'reached position' " chance="$debugchance" />
+
+        <wait min="100ms" max="500ms" />
+
+      </do_while>
+
+      <label name="end"/>
+
+      <do_if value="$anchorpos_sector">
+        <debug_text text="'about to finish idle. moving to anchor position.'" chance="$debugchance"/>
+        <move_to object="this.assignedcontrolled" destination="this.sector" finishonapproach="true" commandaction="false" sinceversion="2">
+          <position value="$anchorpos_sector"/>
+        </move_to>
+      </do_if>
+
+      <apply_experience entity="this" experience="'ship_bored'" factor="0.01"/>
+      <apply_experience object="this.assignedcontrolled" role="entityrole.service" experience="'ship_bored'" factor="0.01"/>
+
+      <stop_moving object="this.controlled"/>
+
+      <!-- check if this is a jobship at the end of its lifetime -->
+      <do_if value="this.ship.jobexpired">
+        <debug_text text="'%1 doing job %2 has expired, die!'.[this.ship.knownname, this.ship.job]" chance="$debugchance" />
+        <create_order object="this.ship" id="'MoveDie'" immediate="true">
+          <param name="byhighway" value="not this.ship.isclass.[class.ship_l, class.ship_xl]" />
+        </create_order>
+      </do_if>
+
+    </actions>
+  </attention>
+  <on_abort>
+    <do_if value="this.assignedcontrolled.isoperational">
+      <stop_moving object="this.assignedcontrolled"/>
+    </do_if>
+  </on_abort>
+</aiscript>

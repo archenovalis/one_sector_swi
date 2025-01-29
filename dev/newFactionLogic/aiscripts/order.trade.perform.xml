@@ -1,0 +1,606 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<aiscript name="order.trade.perform" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" version="6">
+  <order id="TradePerform" name="{1041, 171}" description="{1041, 172}" category="internal" allowinloop="false">
+    <params>
+      <param name="tradedeal" type="trade" text="{1041, 10130}" comment="Trade">
+        <input_param name="playerreadonly" value="true"/>
+      </param>
+      <param name="cannotdock" type="internal" default="false" text="{1041, 10133}" comment="Unable to dock. used for error handling in case of inability to dock"/>
+      <param name="internalorder" type="bool" default="false" advanced="true" text="{1041, 10159}" comment="Order results from an automated behavior."/>
+      <param name="debugchance" type="bool" default="0" advanced="true" text="{1041, 10086}" comment="Print debug output">
+        <input_param name="truevalue" value="100"/>
+      </param>
+    </params>
+    <requires>
+      <match shiptype="shiptype.lasertower" negate="true"/>
+      <match class="class.spacesuit" negate="true"/>
+    </requires>
+    <location object="$tradedeal.owner" condition="@$tradedeal.owner.exists" />
+  </order>
+  <interrupts>
+    <handler>
+      <conditions>
+        <check_any>
+          <event_object_destroyed object="$buyer"/>
+          <event_object_destroyed object="$seller"/>
+        </check_any>
+      </conditions>
+      <actions>
+        <debug_text text="'one of the trade partners was destroyed. buyer: %s %s %s, operational: %s; seller: %s %s %s, operational: %s'.[$buyer.idcode, $buyer.knownname, $buyer, $buyer.isoperational, $seller.idcode, $seller.knownname, $seller, $seller.isoperational]" chance="$debugchance"/>
+        <set_value name="$failreason" exact="'ERR_TRADEPARTNER_DESTROYED'"/>
+        <set_value name="$failuretext" exact="{1045, 121}" comment="Trade partner was destroyed."/>
+        <abort_called_scripts resume="finish"/>
+      </actions>
+    </handler>
+    <handler>
+      <conditions>
+        <check_any>
+          <check_all>
+            <event_trade_cancelled tradeoffer="$tradedeal"/>
+            <check_value value="this.assignedcontrolled.order.state != orderstate.critical"/>
+          </check_all>
+          <event_object_signalled object="this.assignedcontrolled" param="'tradeperform_abort'"/>
+        </check_any>
+      </conditions>
+      <actions>
+        <set_value name="$failreason" exact="'TRADE_CANCELLED'"/>
+        <abort_called_scripts resume="finish"/>
+      </actions>
+    </handler>
+    <handler ref="SectorChangeHandler"/>
+    <handler ref="InspectedHandler"/>
+    <handler ref="FoundAbandonedHandler"/>
+    <handler ref="FoundLockboxHandler"/>
+    <handler ref="ResupplyHandler"/>
+    <handler ref="TideHandler"/>
+  </interrupts>
+  <init>
+    <set_command_action commandaction="commandaction.searchingtrades" />
+    <!-- Initialize variables -->
+    <set_value name="$targetobject" exact="@$tradedeal.owner" comment="Partner" />
+    <set_value name="$amount" exact="@$tradedeal.amount" comment="Amount. Could change afterwards" />
+    <set_value name="$buyer" exact="if @$tradedeal.buyer.exists then $tradedeal.buyer else this.assignedcontrolled" />
+    <set_value name="$seller" exact="if @$tradedeal.seller.exists then $tradedeal.seller else this.assignedcontrolled" />
+    <set_value name="$isbuying" exact="@$tradedeal.seller.exists"/>
+    <set_value name="$waitduration" exact="1ms"/>
+
+    <!-- debugging -->
+    <set_value name="$failreason" exact="''" />
+  </init>
+  <patch sinceversion="1">
+    <!-- patched to true since that is safer. if no path is possible, order should be called again with the proper flag set. -->
+    <set_value name="$internalorder" exact="this.isplayerowned"/>
+  </patch>
+  <patch sinceversion="3">
+    <include_interrupt_actions ref="GetBlacklistgroup"/>
+  </patch>
+  <patch sinceversion="4" early="true">
+    <set_value name="$waitduration" exact="1ms"/>
+    <do_if value="$failreason == ''">
+      <set_value name="$waitduration" min="1s" max="3s"/>
+    </do_if>
+  </patch>
+  <patch sinceversion="6">
+    <do_if value="(this.assignedcontrolled.parkedat == $targetobject) and (@$targetobject.order.id != 'WaitForSignal' or $targetobject.order.$releasesignal != ['resupply_proceed'])">
+      <debug_text text="'%s %s %s has parking connection at %s %s %s that is not waiting for it. aborting.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, @$targetobject.idcode, @$targetobject.knownname, $targetobject]" filter="savegame"/>
+      <signal_objects object="this.assignedcontrolled" param="'tradeperform_abort'"/>
+      <disconnect_from_trade_location ship="this.assignedcontrolled"/>
+      <remove_value name="this.$reevaluate_parking"/>
+      <remove_value name="this.$unparkreleasesignal"/>
+    </do_if>
+  </patch>
+  <attention min="unknown">
+    <actions>
+
+      <label name="start"/>
+
+      <do_if value="not $tradedeal.exists">
+        <set_value name="$failreason" exact="'ERR_TRADEDEAL_NONEXISTENT'"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <do_if value="@this.assignedcontrolled.commander.isclass.station and (this.assignedcontrolled.assignment == assignment.trade)">
+        <set_value name="$commander" exact="this.assignedcontrolled.commander"/>
+        <do_if value="$internalorder and ($tradedeal.owner == $tradedeal.seller) and ($tradedeal.owner != $commander)">
+          <set_value name="$commanderresources" exact="[]"/>
+          <do_all exact="$commander.resources.count" counter="$i">
+            <append_to_list name="$commanderresources" exact="$commander.resources.{$i}"/>
+          </do_all>
+          <do_all exact="$commander.supplyresources.count" counter="$i">
+            <do_if value="not $commanderresources.indexof.{$commander.supplyresources.{$i}}">
+              <append_to_list name="$commanderresources" exact="$commander.supplyresources.{$i}"/>
+            </do_if>
+          </do_all>
+          <do_all exact="$commander.tradewares.count" counter="$i">
+            <do_if value="not $commanderresources.indexof.{$commander.tradewares.{$i}}">
+              <append_to_list name="$commanderresources" exact="$commander.tradewares.{$i}"/>
+            </do_if>
+          </do_all>
+          <do_if value="@$commander.buildstorage">
+            <do_all exact="$commander.buildstorage.resources.count" counter="$i">
+              <do_if value="not $commanderresources.indexof.{$commander.buildstorage.resources.{$i}}">
+                <append_to_list name="$commanderresources" exact="$commander.buildstorage.resources.{$i}"/>
+              </do_if>
+            </do_all>
+          </do_if>
+          <do_if value="not $commanderresources.indexof.{$tradedeal.ware}">
+            <debug_text text="'%s %s %s, subordinate of %s %s %s, about to purchase %s %s which is not required by its commander. possibly valid due to changing needs. cancelling trade.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, $commander.idcode, $commander.knownname, $commander, $tradedeal.amount, $tradedeal.ware]" chance="$debugchance"/>
+            <remove_value name="$commander"/>
+            <remove_value name="$commanderresources"/>
+            <resume label="finish"/>
+          </do_if>
+          <remove_value name="$commanderresources"/>
+        </do_if>
+        <remove_value name="$commander"/>
+        <debug_text text="'station cash: %sCr, my cash: %sCr'.[this.ship.commander.money / 100, this.ship.money / 100]" chance="$debugchance"/>
+      </do_if>
+
+      <do_if value="not $targetobject.isoperational">
+        <debug_text text="'one of the trade partners is not operational. buyer: %s %s %s, operational: %s; seller: %s %s %s, operational: %s'.[$buyer.idcode, $buyer.knownname, $buyer, $buyer.isoperational, $seller.idcode, $seller.knownname, $seller, $seller.isoperational]" chance="$debugchance"/>
+        <set_value name="$failreason" exact="'ERR_TRADEPARTNER_NOT_OPERATIONAL'"/>
+        <set_value name="$failuretext" exact="{1045, 122}" comment="Unable to trade with trade partner."/>
+        <resume label="finish"/>
+      </do_if>
+
+      <do_if value="this.assignedcontrolled.iscapitalship and not this.assignedcontrolled.availableunits.{unitcategory.transport}.count and not $targetobject.availableunits.{unitcategory.transport}.count">
+        <debug_text text="'%s %s %s is a capital ship that is about to trade but has no cargolifters. attempting to recover.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled]" filter="error" chance="(not this.isplayerowned) * 100"/>
+        <signal_objects object="this.assignedcontrolled" param="'resupply'" param2="[true]" param3="$debugchance" comment="param2 = [urgent?, resupplystationID], param3 = $debugchance"/>
+        <wait exact="1s" sinceversion="5"/>
+        <!-- if no orders result from resupply, we cannot trade. -->
+        <set_value name="$failreason" exact="'ERR_NO_TRANSPORT_UNITS'"/>
+        <set_value name="$failuretext" exact="{1045, 123}" comment="No available cargo drones."/>
+        <resume label="finish"/>
+      </do_if>
+
+      <include_interrupt_actions ref="GetBlacklistgroup"/>
+      <do_if value="$internalorder and ($targetobject.isblacklisted.{blacklisttype.objectactivity}.{$blacklistgroup}.{this.assignedcontrolled} or @$targetobject.sector.isblacklisted.{blacklisttype.sectoractivity}.{$blacklistgroup}.{this.assignedcontrolled} or @$targetobject.sector.isblacklisted.{blacklisttype.sectortravel}.{$blacklistgroup}.{this.assignedcontrolled}) and $targetobject.sector and ($targetobject.sector != @this.assignedcontrolled.commander.sector)">
+        <debug_text text="'trade partner: %s %s %s %s is blacklisted. aborting trade.'.[@$targetobject.class, @$targetobject.idcode, @$targetobject.knownname, $targetobject]" chance="$debugchance"/>
+        <!-- this is not an error. trade will fail in this case since we will refuse to trade with this trade partner. -->
+        <set_value name="$failreason" exact="'TRADEPARTNER_BLACKLISTED'"/>
+        <set_value name="$failuretext" exact="{1045, 124}" comment="Trade partner is blacklisted."/>
+        <resume label="finish"/>
+      </do_if>
+
+      <debug_text text="'Trade perform: ware %1, amount %2, unit price %3, with object %4 (on %5)'.[$tradedeal.ware, $amount, $tradedeal.unitprice, $targetobject, $targetobject.zone]" chance="$debugchance" />
+
+      <!-- Check that there is a trade offer that matches this deal -->
+      <do_if value="$tradedeal.seller.exists">
+        <find_sell_offer result="$tradeoffer" seller="$seller" wares="$tradedeal.ware" tradepartner="this.ship" excludemissions="not $tradedeal.ismission" />
+      </do_if>
+      <do_else>
+        <!-- $tradeoffer needed for player.interaction.tradefailed even if ERR_NOTHING_TO_SELL -->
+        <find_buy_offer result="$tradeoffer" buyer="$buyer" wares="$tradedeal.ware" tradepartner="this.ship" excludemissions="not $tradedeal.ismission" />
+        <do_if value="($tradedeal.ware.waretransport != waretransport.equipment and not this.ship.cargo.{$tradedeal.ware}.exists)
+                        or (@$tradedeal.ware.objectmacro.isunit and not this.ship.availableunits.{$tradedeal.ware.objectmacro}.count)
+                        or ($tradedeal.ware.objectmacro and ($tradedeal.ware.objectmacro.isdeployable or $tradedeal.ware.isammo) and not this.ship.ammostorage.{$tradedeal.ware.objectmacro}.count)">
+          <debug_text text="'has cargo: %1. amount: %2. default order: %3. cargo count may be null if ware is ammo or units.'.[this.ship.cargo.{$tradedeal.ware}.exists, $tradedeal.amount, this.ship.defaultorder]" chance="$debugchance"/>
+          <set_value name="$failreason" exact="'ERR_NOTHING_TO_SELL'"/>
+          <set_value name="$failuretext" exact="{1045, 116}" comment="Nothing to sell."/>
+          <resume label="finish"/>
+        </do_if>
+      </do_else>
+
+      <do_if value="not $tradeoffer.available and $tradedeal.iswareexchange">
+        <set_value name="$tradeoffer" exact="$tradedeal"/>
+      </do_if>
+
+      <!-- Error checks -->
+      <do_if value="not $tradeoffer.available and not $tradedeal.iswareexchange">
+        <debug_text text="'where: %1, ware: %2, my location: %3, %4, %5, trade partner location: %6, %7, %8'.[$tradedeal.owner, $tradedeal.ware, this.object.zone, this.object.sector, this.object.cluster, $tradedeal.owner.zone, $tradedeal.owner.sector, $tradedeal.owner.cluster]" chance="$debugchance"/>
+        <set_value name="$failreason" exact="'ERR_TRADEOFFER_INVALID'" />
+        <resume label="finish" />
+      </do_if>
+
+      <do_if value="not $targetobject.isoperational">
+        <set_value name="$failreason" exact="'ERR_TARGET_INVALID'" />
+        <set_value name="$failuretext" exact="{1045, 122}" comment="Unable to trade with trade partner."/>
+        <resume label="finish" />
+      </do_if>
+
+      <set_value name="$preamount" exact="$amount" chance="$debugchance"/>
+
+      <!-- Limit the amount if neccesary -->
+      <clamp_trade_amount trade="$tradedeal" amount="$amount" buyer="$buyer" seller="$seller" result="$amount" unbundle="$tradedeal.unbundle" updatedeal="true" reason="$clampreason"/>
+
+      <!-- Amount check -->
+      <do_if value="$amount == 0">
+        <debug_text text="'Amount before clamping: %1 After clamping: %2 Trade Deal Amount: %3 Trade Offer Amount: %4, Ware: %5, Buyer: %6, Seller: %7'.[$preamount, $amount, $tradedeal.amount, $tradeoffer.amount, $tradedeal.ware, $buyer, $seller]" chance="$debugchance"/>
+        <do_if value="$clampreason == 'buyer_cargo'">
+          <set_value name="$failreason" exact="'ERR_NO_CARGO_SPACE'"/>
+          <set_value name="$failuretext" exact="{1045,125}" comment="Not enough free cargo space for trade."/>
+        </do_if>
+        <do_elseif value="$clampreason == 'buyer_money'">
+          <set_value name="$failreason" exact="'ERR_BUYER_NO_MONEY'"/>
+          <do_if value="$buyer.isoperational">
+            <set_value name="$failuretext" exact="'%s%s %s'.[$buyer.knownname, {1001,120}, {1015,28}]" comment="[buyer name]: Insufficient funds"/>
+          </do_if>
+          <do_else>
+            <set_value name="$failuretext" exact="{1015,28}" comment="Insufficient funds"/>
+          </do_else>
+        </do_elseif>
+        <do_elseif value="$clampreason == 'seller_cargo'">
+          <set_value name="$failreason" exact="'ERR_SELLER_NO_CARGO'"/>
+          <do_if value="$seller.isoperational">
+            <set_value name="$failuretext" exact="'%s%s %s'.[$seller.knownname, {1001,120}, {1026,3406}]" comment="[seller name]: Not enough wares in cargo."/>
+          </do_if>
+          <do_else>
+            <!-- TODO: find better text, maybe "Seller no longer has items in stock." -->
+            <set_value name="$failuretext" exact="{1045,105}" comment="No resources found in range."/>
+          </do_else>
+        </do_elseif>
+        <do_else>
+          <!-- generic error that should not happen -->
+          <set_value name="$failuretext" exact="{1045,120}" comment="Unable to complete trade."/>
+        </do_else>
+        <debug_text text="'Buyer: %1 Buyer cargo capacity: %2 Seller: %3 Seller free cargo capacity: %4'.[$buyer.knownname, $buyer.cargo.{$tradedeal.ware}.free, $seller.knownname, $seller.cargo.{$tradedeal.ware}.free]" chance="$debugchance"/>
+        <resume label="finish" />
+      </do_if>
+      <remove_value name="$preamount" chance="$debugchance"/>
+
+      <!-- set up initial state for trade runs -->
+      <set_command command="command.trade" param="$targetobject"/>
+
+      <label name="move_to_targetobject" />
+      <!-- skip the movement step if we are already there -->
+      <do_if value="(this.ship.dock and (this.ship.dock.container == $targetobject) and this.ship.dock.istradingallowed) or (this.ship.parkedat and ((this.ship.parkedat == $targetobject) or this.ship.parkedat.hascontext.{$targetobject}))">
+        <debug_text text="'already docked at a trading dock at the destination %1 (%2)'.[$targetobject.knownname, $targetobject]" chance="$debugchance" />
+        <resume label="perform_trade" />
+      </do_if>
+
+      <!-- long-distance movement now handled in order.dock via order.dock.wait -->
+      <run_script name="'move.generic'" chance="0"/>
+
+      <!-- Docking procedure -->
+      <do_if value="not $cannotdock">
+        <do_if value="@this.ship.dock.container != $targetobject or (this.ship.dock and not this.ship.dock.istradingallowed)">
+          <debug_text text="player.age + ' moving to dock at ' + $targetobject.knownname" chance="$debugchance"/>
+          <create_order id="'DockAndWait'" object="this.ship" immediate="true">
+            <param name="destination" value="$targetobject"/>
+            <param name="trading" value="true"/>
+            <param name="waittime" value="60min"/>
+            <param name="callerid" value="this.assignedcontrolled.order"/>
+            <param name="internalorder" value="$internalorder"/>
+            <param name="debugchance" value="$debugchance"/>
+          </create_order>
+          <return/>
+        </do_if>
+        <do_else>
+          <debug_text text="player.age + ' docked at ' + $targetobject.knownname" chance="$debugchance"/>
+        </do_else>
+      </do_if>
+      <do_else>
+        <debug_text text="'cannot dock. aborting.'" chance="$debugchance"/>
+        <set_value name="$failreason" exact="'ERR_CANNOT_DOCK'"/>
+        <set_value name="$failuretext" exact="{1045, 119}" comment="Unable to dock."/>
+        <resume label="finish"/>
+      </do_else>
+
+      <!-- time has passed for the movement step, make sure there is still an offer that matches what we want to buy
+        also ensure that our tradepartner is still operational since destruction would have been handled in move.generic via order.dock directly
+        and the event wouldn't have reached this script -->
+      <do_if value="not $tradeoffer.available">
+        <do_if value="$tradedeal.seller.exists and $seller.isoperational">
+          <find_sell_offer result="$tradeoffer" seller="$seller" wares="$tradedeal.ware" tradepartner="this.ship" />
+        </do_if>
+        <do_elseif value="$tradedeal.buyer.exists and $buyer.isoperational">
+          <find_buy_offer result="$tradeoffer" buyer="$buyer" wares="$tradedeal.ware" tradepartner="this.ship" />
+        </do_elseif>
+        <do_else>
+          <set_value name="$failreason" exact="'ERR_TRADEPARTNER_DESTROYED'"/>
+          <set_value name="$failuretext" exact="{1045, 121}" comment="Trade partner was destroyed."/>
+          <resume label="finish" />
+        </do_else>
+      </do_if>
+      <do_if value="not $tradeoffer.available and not $tradedeal.iswareexchange">
+        <set_value name="$failreason" exact="'ERR_TRADEOFFER_INVALID'" />
+        <resume label="finish" />
+      </do_if>
+
+      <!-- another check right after we move to our trade partner and dock in case the targetobject is now blacklisted but wasn't when the script started. -->
+      <do_if value="$internalorder and ($targetobject.isblacklisted.{blacklisttype.objectactivity}.{$blacklistgroup}.{this.assignedcontrolled} or @$targetobject.sector.isblacklisted.{blacklisttype.sectoractivity}.{$blacklistgroup}.{this.assignedcontrolled} or @$targetobject.sector.isblacklisted.{blacklisttype.sectortravel}.{$blacklistgroup}.{this.assignedcontrolled}) and $targetobject.sector and ($targetobject.sector != @this.assignedcontrolled.commander.sector)">
+        <debug_text text="'was about to dock but trade partner: %s %s %s %s is blacklisted. aborting trade.'.[@$targetobject.class, @$targetobject.idcode, @$targetobject.knownname, $targetobject]" chance="$debugchance"/>
+        <!-- this is not an error. trade will fail in this case since we will refuse to trade with this trade partner. -->
+        <set_value name="$failreason" exact="'TRADEPARTNER_BLACKLISTED'"/>
+        <set_value name="$failuretext" exact="{1045, 124}" comment="Trade partner is blacklisted."/>
+        <resume label="finish"/>
+      </do_if>
+
+      <label name="perform_trade"/>
+
+      <!-- short wait to process order starting or being cancelled before setting it to critical and executing trade. -->
+      <wait exact="$waitduration" sinceversion="4"/>
+
+      <do_if value="(this.assignedcontrolled.parkedat == $targetobject) and (@$targetobject.order.id != 'WaitForSignal' or $targetobject.order.$releasesignal != ['resupply_proceed'])">
+        <debug_text text="'parked at tradepartner but tradepartner is not ready to accept trade. unreachable and unhandled.'" filter="error"/>
+      </do_if>
+
+      <debug_text text="'order: %s %s, order state: %s, trade: %s, trade available: %s'.[@this.assignedcontrolled.order.id, this.assignedcontrolled.order, this.assignedcontrolled.order.state, $tradedeal, @$tradedeal.available]" chance="0"/>
+      <do_if value="((this.object.order.id == 'TradePerform') or (this.object.order.id == 'TradeExchangeNonShip')) and ((this.object.order.state == orderstate.started) or (this.object.order.state == orderstate.critical))">
+        <do_if value="this.object.order.state == orderstate.started">
+          <set_order_state order="this.object.order" state="orderstate.critical"/>
+        </do_if>
+      </do_if>
+      <!-- $trade.available checks for the existence of a trade offer on $trade.seller and ware exchange doesn't require a trade offer to exist. -->
+      <do_elseif value="@$tradedeal.available and not $tradedeal.iswareexchange">
+        <set_value name="$waitduration" min="2s" max="5s"/>
+        <debug_text text="'order is not ready but trade is available. waiting %s seconds to try again.'.[$waitduration]" chance="$debugchance"/>
+        <resume label="perform_trade"/>
+      </do_elseif>
+      <do_else>
+        <debug_text text="'order is not ready and trade is no longer available. aborting.\norder: %s, state: %s, trade available: %s'.[this.object.order.id, this.object.order.state, @$tradedeal.available]" chance="$debugchance"/>
+        <resume label="finish"/>
+      </do_else>
+
+      <set_value name="$waitduration" exact="1ms"/>
+
+      <!-- time has passed, make sure we have a tradeoffer that fits -->
+      <do_if value="not $tradeoffer.available">
+        <do_if value="$tradedeal.seller.exists">
+          <find_sell_offer result="$tradeoffer" seller="$seller" wares="$tradedeal.ware" tradepartner="this.ship" />
+        </do_if>
+        <do_else>
+          <find_buy_offer result="$tradeoffer" buyer="$buyer" wares="$tradedeal.ware" tradepartner="this.ship" />
+        </do_else>
+      </do_if>
+      <!-- double check -->
+      <do_if value="not $tradeoffer.available and not $tradedeal.iswareexchange">
+        <set_value name="$failreason" exact="'ERR_TRADEOFFER_INVALID'" />
+        <resume label="finish" />
+      </do_if>
+      <!-- Trade partner check -->
+      <do_if value="not $targetobject.isoperational">
+        <set_value name="$failreason" exact="'ERR_TRADEPARTNER_DESTROYED'" />
+        <set_value name="$failuretext" exact="{1045, 121}" comment="Trade partner was destroyed."/>
+        <resume label="finish" />
+      </do_if>
+
+      <!-- trade execution and double checks-->
+      <do_if value="$tradedeal.iswareexchange or $tradeoffer.offeramount.{this.ship} gt 0">
+        <debug_text text="player.age + ' start trade operation!'" chance="$debugchance" />
+        <!-- illegal ware check -->
+        <do_if value="not $tradedeal.ismission and this.zone.policefaction and (this.zone.policefaction != this.owner) and (this.sector.owner != this.owner)" chance="10">
+          <do_if value="this.assignedcontrolled.cargo.illegalto.{this.zone.policefaction}" chance="100 - this.assignedcontrolled.hidecargochance">
+            <drop_illegal_cargo object="this.ship" faction="this.zone.policefaction" groupname="$drops" wares="$droppedwares" amounts="$droppedamounts" />
+            <do_if value="this.ship.isplayerowned">
+              <!-- MD notification -->
+              <signal_objects object="player.entity" param="'IllegalCargoDropped'" param2="this.ship" param3="[this, $droppedwares, $droppedamounts, $drops, this.zone.policefaction]" />
+            </do_if>
+            <debug_text text="'Dropped illegal wares %1, amount %2, drops %3, police %4'.[$droppedwares, $droppedamounts, $drops, this.zone.policefaction]" chance="$debugchance"/>
+            <!-- If I dropped the trade ware -->
+            <do_if value="$droppedwares.indexof.{$tradedeal.ware}">
+              <!-- Check future trade orders with this ware, to cancel them -->
+              <set_value name="$tradeorders" exact="this.ship.tradeorders" />
+              <do_all exact="$tradeorders.count" counter="$i">
+                <do_if value="$tradeorders.{$i} != this.ship.order">
+                  <do_if value="$droppedwares.indexof.{$tradeorders.{$i}.$tradedeal.ware}">
+                    <cancel_order order="$tradeorders.{$i}" />
+                  </do_if>
+                </do_if>
+              </do_all>
+              <set_value name="$failreason" exact="'ERR_ILLEGAL_CARGO_DROPPED'" />
+              <set_value name="$failuretext" exact="{1045, 126}" comment="Forced to drop illegal cargo."/>
+              <resume label="finish" />
+            </do_if>
+          </do_if>
+        </do_if>
+
+        <!-- TODO: REMOVE RESERVATION CODE -->
+        <!-- Remove selloffer reservation -->
+        <do_if value="$tradedeal.seller.exists">
+          <do_if value="not $reservation_removed?">
+            <!-- for sell offers the reservation should be removed directly before the trade is started because wares are immediately put in escrow -->
+            <remove_ware_reservation object="$targetobject" reserver="this.ship" ware="$tradedeal.ware" virtual="$tradedeal.unbundle" mission="$tradedeal.ismission" />
+            <!-- changing ware reservations triggers an offer update which could lead to the offer being removed -->
+            <set_value name="$reservation_removed" exact="1" />
+            <resume label="perform_trade" />
+          </do_if>
+          <do_else>
+            <remove_value name="$reservation_removed" />
+          </do_else>
+        </do_if>
+
+        <!-- last minute amount check: Limit the amount if neccesary -->
+        <clamp_trade_amount trade="$tradedeal" amount="$amount" buyer="$buyer" seller="$seller" result="$amount" updatedeal="true"/>
+
+        <do_if value="this.isplayerowned and not $tradedeal.iswareexchange">
+          <!-- Note: this can take time, so the trade id could dissapear -->
+          <!-- INTERACTION: trade failed (logbook entry added in player.interaction.tradefailed) -->
+          <run_script name="'player.interaction.tradefailed'">
+            <param name="tradeoffer" value="$tradeoffer" />
+            <param name="ware" value="$tradedeal.ware" />
+            <param name="seller" value="$seller" />
+            <param name="buyer" value="$buyer" />
+            <param name="amount" value="$amount" />
+            <param name="price" value="$tradedeal.unitprice * $amount" />
+            <param name="debugchance" value="$debugchance" />
+          </run_script>
+        </do_if>
+
+        <!-- we are buying and the transaction is not free -->
+        <do_if value="$tradedeal.seller.exists and (not $tradedeal.buyfree) and (($tradedeal.unitprice * $amount)/1Cr gt this.container.money/1Cr)">
+          <set_value name="$amount" exact="this.container.money / $tradedeal.unitprice"/>
+          <debug_text text="'%1(%2) reducing amount of %3 to buy from %4(%5) from %6 to %7 (directly before trade start; not enough money: %8)'.[this.ship.knownname, this.ship, $tradedeal.ware.name, $targetobject.knownname, $targetobject, $tradedeal.amount, $amount, this.container.money]" chance="$debugchance" />
+          <debug_text text="'money: %1, amount %2 (original amount %3), unitprice %4, total %5'.[this.container.money, $amount, $tradedeal.amount, $tradedeal.unitprice, $tradedeal.unitprice * $amount]" chance="$debugchance" />
+        </do_if>
+
+        <!-- The actual trade execution -->
+        <do_if value="$amount gt 0">
+          <!-- now execute the trade -->
+          <execute_trade tradeoffer="$tradedeal" tradepartner="this.ship" amount="$amount" result="$traderesult" custom="true" comment="Deal with fixed price" />
+
+          <do_if value="$isbuying">
+            <set_value name="$tradequality" exact="-$tradedeal.relativeprice"/>
+          </do_if>
+          <do_else>
+            <set_value name="$tradequality" exact="$tradedeal.relativeprice"/>
+          </do_else>
+
+          <do_if value="$tradequality gt 0.5">
+            <debug_text text="'good trade. trade quality: %s. buying? %s'.[$tradequality, $isbuying]" chance="$debugchance"/>
+            <set_value name="$XP_category" exact="'ship_trade_good'"/>
+          </do_if>
+          <do_elseif value="($tradequality lt -0.5) and ($targetobject.trueowner != this.trueowner)">
+            <debug_text text="'bad trade. trade quality: %s. buying? %s'.[$tradequality, $isbuying]" chance="$debugchance"/>
+            <set_value name="$XP_category" exact="'ship_trade_bad'"/>
+          </do_elseif>
+          <do_else>
+            <debug_text text="'normal trade. trade quality: %s. buying? %s'.[$tradequality, $isbuying]" chance="$debugchance"/>
+            <set_value name="$XP_category" exact="'ship_trade_normal'"/>
+          </do_else>
+
+          <!--<set_value name="$XP_factor" exact="[($tradedeal.transferredamount)f / ([$tradeoffer.amount, 1].max)f, 1.0].min"/>
+          <debug_text text="'XP factor: %s. amount: %s, cargo capacity: %s'.[$XP_factor, $tradedeal.transferredamount, $tradeoffer.amount]" chance="$debugchance"/>-->
+          <!-- this would mean that traders in small ships will tend to be more likely to get experience. -->
+          <set_value name="$XP_factor" exact="[($tradedeal.transferredamount)f / ([this.ship.cargo.{$tradedeal.ware}.max, 1].max)f, 1.0].min"/>
+          <debug_text text="'XP factor: %s. category: %s, amount: %s, cargo capacity: %s'.[$XP_factor, $XP_category, $tradedeal.transferredamount, this.ship.cargo.{$tradedeal.ware}.max]" chance="$debugchance"/>
+
+          <!-- this would ideally take time into account as well, but no quick way to measure time taken at the moment since scripts calling this script could have done the bulk of the movement before coming here, and this script itself reinitializes after docking. -->
+          <apply_experience entity="this" experience="$XP_category" factor="$XP_factor"/>
+          <apply_experience object="this.assignedcontrolled" role="entityrole.service" experience="$XP_category" factor="$XP_factor"/>
+        </do_if>
+        <do_else>
+          <set_value name="$traderesult" exact="false" />
+        </do_else>
+
+        <!-- TODO: REMOVE RESERVATION CODE -->
+        <!-- Remove the buyoffer reservation -->
+        <do_if value="not $tradedeal.seller.exists">
+          <!-- buyoffers remove their reservation directly after the trade -->
+          <remove_ware_reservation object="$targetobject" reserver="this.ship" ware="$tradedeal.ware" virtual="$tradedeal.unbundle" mission="$tradedeal.ismission"/>
+        </do_if>
+        <do_if value="$tradedeal.unbundle">
+          <!-- $tradeoffer.unbundle = true! in case we failed to buy ammo, trigger an update for our ammo offers -->
+          <debug_text text="'send update_ammo_offers signal to %1 (%2)'.[$targetobject.knownname, $targetobject]" chance="$debugchance" />
+          <signal_objects object="$targetobject" param="'update_ammo_offers'" />
+        </do_if>
+
+        <do_if value="this.isplayerowned">
+          <do_if value="not $targetobject.isplayerowned and not $targetobject.hastradesubscription">
+            <!-- if a playership trades with an NPC station that doesn't have a trade subscription anyway, store one offer snapshot -->
+            <store_trade_offer_snapshot object="$targetobject" />
+          </do_if>
+        </do_if>
+
+        <!-- Result (notificate to player) -->
+        <do_if value="$traderesult">
+          <debug_text text="player.age + ' %1(job:%5) traded %2 units of %3 with %4'.[this.ship.knownname, $tradedeal.transferredamount, $tradedeal.ware, $targetobject.knownname, this.ship.job]" chance="$debugchance" />
+          <!-- TODO: check the feedback -->
+          <do_if value="this.isplayerowned">
+            <!-- Helper script for feedback -->
+            <run_script name="'player.interaction.traderesult'" >
+              <param name="ware" value="$tradedeal.ware" />
+              <param name="transferredamount" value="$tradedeal.transferredamount" />
+              <param name="destroyedamount" value="$tradedeal.destroyedamount" />
+              <param name="seller" value="$seller" />
+              <param name="buyer" value="$buyer" />
+              <param name="price" value="$tradedeal.unitprice * $amount" />
+            </run_script>
+          </do_if>
+        </do_if>
+        <do_else>
+          <do_if value="$amount le 0">
+            <set_value name="$failreason" exact="'ERR_AMOUNT_0'" />
+          </do_if>
+          <do_else>
+            <set_value name="$failreason" exact="'ERR_EXECUTE_FAIL'" />
+          </do_else>
+          <resume label="finish" />
+        </do_else>
+
+        <!-- Recall the masstraffic drones -->
+        <detach_from_masstraffic object="this.ship" wait="true">
+          <interrupt_after_time time="5min" />
+        </detach_from_masstraffic>
+
+        <debug_text text="player.age + ' successfully traded chosen goods!'" chance="$debugchance" />
+      </do_if>
+      <do_else>
+        <set_value name="$failreason" exact="'ERR_TRADEOFFER_RESERVED'" />
+        <resume label="finish" />
+      </do_else>
+
+      <!-- Give some time to medium/small ships to 'do' the trade -->
+      <set_value name="$waitduration" min="1s" max="3s"/>
+
+      <label name="finish" />
+
+      <wait exact="$waitduration"/>
+
+      <!-- Check if something failed -->
+      <do_if value="$failreason != ''">
+        <do_if value="@this.assignedcontrolled.order.isrunning">
+          <do_if value="not $failuretext?">
+            <set_value name="$failuretext" exact="{1045, 120}" comment="Unable to complete trade."/>
+          </do_if>
+          <set_order_failed order="this.assignedcontrolled.order" text="$failuretext" recurring="$internalorder"/>
+        </do_if>
+        <!-- suppressed the error if TRADEPARTNER_BLACKLISTED and ERR_ILLEGAL_CARGO_DROPPED since this is handling for a valid case. -->
+        <set_value name="$silenterrors" exact="['ERR_ILLEGAL_CARGO_DROPPED', 'ERR_TRADEOFFER_INVALID', 'TRADEPARTNER_BLACKLISTED']"/>
+        <do_if value="not $silenterrors.indexof.{$failreason}">
+          <!-- tradeoffers can become invalid during regular gameplay, e.g. construction/repair, destruction, hacking, workforce change etc., so don't spam errors about those (but still send a player notification) -->
+          <debug_text text="player.age + ' \'%1\'(%2, job: \'%3\') TRADE RUN FAILED! Error: %4'.[this.ship.knownname, this.ship.idcode, this.ship.job, $failreason]" chance="(not this.isplayerowned) * 100"/>
+        </do_if>
+
+        <do_if value="this.isplayerowned and not $tradedeal.iswareexchange">
+          <!-- Note: this can take time, so the trade id could dissapear -->
+          <!-- INTERACTION: trade failed (logbook entry added in player.interaction.tradefailed) -->
+          <run_script name="'player.interaction.tradefailed'">
+            <param name="tradeoffer" value="$tradedeal" />
+            <param name="ware" value="$tradedeal.ware" />
+            <param name="seller" value="$seller" />
+            <param name="buyer" value="$buyer" />
+            <param name="amount" value="$amount" />
+            <param name="price" value="$tradedeal.unitprice * $amount" />
+            <param name="debugchance" value="$debugchance" />
+          </run_script>
+        </do_if>
+
+        <!-- if this is the buy of a buy-sell pair,
+              and it failed,
+              and we have none of the ware needed for the sell,
+              cancel the sell. -->
+        <do_if value="(@this.assignedcontrolled.nextorder.id == 'TradePerform') and @this.assignedcontrolled.nextorder.$tradedeal.buyer.exists and not this.assignedcontrolled.cargo.{$tradedeal.ware}.exists">
+          <!--<do_if value="@this.ship.nextorder.id == 'TradePerform' and @this.ship.nextorder.$tradedeal.buyer.exists and @this.ship.nextorder.$tradedeal.ware == $tradedeal.ware and not this.ship.cargo.{$tradedeal.ware}.exists">-->
+          <debug_text text="'This is a buy of a buy-sell pair. Cancelling the sell.'" chance="$debugchance"/>
+          <cancel_order order="this.assignedcontrolled.nextorder"/>
+        </do_if>
+        <do_if value="@this.assignedcontrolled.order.id == 'TradePerform'">
+          <debug_text text="'cancelling order %s. nextorder: %s %s, defaultorder: %s'.[this.assignedcontrolled.order, @this.assignedcontrolled.nextorder.id, @this.assignedcontrolled.nextorder, @this.assignedcontrolled.defaultorder.id]" chance="$debugchance"/>
+          <cancel_order order="this.assignedcontrolled.order"/>
+        </do_if>
+      </do_if>
+      <do_else>
+        <do_if value="$internalorder">
+          <clear_recurring_order_failure object="this.assignedcontrolled" id="this.assignedcontrolled.order.id"/>
+        </do_if>
+        <debug_text text="player.age + ' CONGRATULATIONS, TRADE RUN COMPLETE!'" chance="$debugchance" />
+
+        <!-- All trades done: If there is only this trade in the queue and the default order won't add new trades -->
+        <do_if value="this.isplayerowned and this.shouldinformplayer and (@this.ship.defaultorder.id != 'TradeRoutine') and (@this.ship.defaultorder.id != 'TradeRoutine_Basic') and (@this.ship.defaultorder.id != 'TradeRoutine_Advanced') and (@this.ship.defaultorder.id != 'Middleman')">
+          <set_value name="$tradeorders" exact="this.ship.tradeorders" />
+          <do_if value="$tradeorders.count == 0 or ($tradeorders.count == 1 and $tradeorders.{1} == this.ship.order)">
+            <set_value name="$logtext" exact="[this.name, '', this.ship.name, '', {1015,32}]" />
+            <set_value name="$tickertext" exact="$logtext.clone" />
+            <set_value name="$tickertext.{1}" operation="insert" exact="{1015,31}" />
+            <set_value name="$tickertext.{2}" operation="insert" exact="''" />
+            <do_if value="notification.trade_queue_completed.active">
+              <show_notification text="$tickertext" sound="notification_achievement" comment="All trade operations completed." />
+            </do_if>
+            <write_to_logbook category="general" title="{1015,31}" text="$logtext" />
+          </do_if>
+        </do_if>
+
+        <do_if value="this.assignedcontrolled.isplayerowned and not $targetobject.isplayerowned and not $tradedeal.iswareexchange and not $tradedeal.ispricelocked.{this.assignedcontrolled}">
+          <set_value name="$baseprice" exact="($tradedeal.transferredamount + $tradedeal.destroyedamount) * $tradedeal.unitprice" />
+          <add_faction_relation faction="$buyer.owner" otherfaction="$seller.owner" value="0.00016LF + (0.00064LF / (4000000Cr)LF * ($baseprice)LF)" reason="relationchangereason.tradecompleted" />
+        </do_if>
+      </do_else>
+
+      <!-- Return -->
+      <return>
+        <retval name="success" value="$failreason == ''" />
+      </return>
+
+    </actions>
+  </attention>
+</aiscript>

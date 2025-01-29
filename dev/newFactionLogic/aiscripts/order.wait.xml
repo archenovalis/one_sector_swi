@@ -1,0 +1,275 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<aiscript name="order.wait" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" version="7">
+  <!--
+  Wait order
+  -->
+
+  <order id="Wait" name="{1041, 101}" description="{1041, 102}" category="navigation" allowinloop="false">
+    <params>
+      <param name="timeout" type="time" default="0s" infinitevalue="0s" text="{1041, 10034}" comment="Duration">
+        <input_param name="min" value="0s" />
+        <input_param name="max" value="5h" />
+        <input_param name="step" value="30s" />
+      </param>
+      <param name="allowdocked" type="bool" default="this.ship.isplayerowned and not this.ship.iscapitalship" advanced="true" text="{1041, 10121}" comment="Stay docked. only works for non capital ships. implementation is in orders.base.">
+        <patch value="this.ship.isplayerowned and not this.ship.iscapitalship" sinceversion="5"/>
+      </param>
+      <param name="holdfire" type="bool" default="false" text="{1041, 10157}" comment="Hold fire. Hold fire until this order is completed or aborted."/>
+      <param name="noattackresponse" type="internal" default="false" comment="Will not respond to attacks. Read in interrupt.attacked"/>
+      <param name="attacker" type="internal" default="null" comment="Order will end when attacker is no longer in radar range. Will only take effect if this order is an override order."/>
+      <param name="skipalignment" type="internal" default="null" comment="Whether or not to skip the ship's alignment to the ecliptic."/>
+      <param name="fidget" type="internal" default="false" comment="Idles rather than waits in place. Ignored if docked.">
+        <patch value="false" sinceversion="7"/>
+      </param>
+      <param name="debugchance" type="bool" default="0" advanced="true" text="{1041, 10086}" comment="Print debug output">
+        <input_param name="truevalue" value="100"/>
+      </param>
+    </params>
+    <requires>
+      <match shiptype="shiptype.lasertower" negate="true"/>
+    </requires>
+  </order>
+
+  <interrupts>
+    <handler ref="AttackHandler"/>
+    <handler ref="MissileLockHandler" />
+    <handler ref="InspectedHandler"/>
+    <handler ref="FoundAbandonedHandler"/>
+    <handler ref="FoundLockboxHandler"/>
+    <handler ref="TideHandler"/>
+    <handler consume="false">
+      <conditions>
+        <!-- proceed when the player issues a new order. -->
+        <event_object_order_ready object="this.assignedcontrolled"/>
+        <debug_text text="'event_object_order_ready\n event.param: %s %s\n current order: %s %s\n default order: %s %s\n next order: %s %s'.[event.param.id, event.param, this.assignedcontrolled.order.id, this.assignedcontrolled.order, this.assignedcontrolled.defaultorder.id, this.assignedcontrolled.defaultorder, @this.assignedcontrolled.nextorder.id, this.assignedcontrolled.nextorder]" debugchance="$debugchance"/>
+        <check_value value="this.isplayerowned"/>
+        <check_value value="event.param.exists"/>
+        <check_value value="(event.param != this.assignedcontrolled.defaultorder)"/>
+        <check_value value="(event.param.id != 'Undock')"/>
+        <check_value value="this.assignedcontrolled.dock"/>
+        <!-- if this Wait is an order in this ship's order queue, this.assignedcontrolled.order.id == 'Wait'. if this wait is this ship's default order, this.assignedcontrolled.order == event.param. -->
+        <check_value value="@this.assignedcontrolled.order.id == 'Wait' or ((@this.assignedcontrolled.defaultorder.id == 'Wait') and (event.param == this.assignedcontrolled.order))"/>
+        <check_value value="(event.param.id != 'DockAndWait' or (event.param.$ventureplatform and not this.assignedcontrolled.dock.isventureronly) or (not this.assignedcontrolled.hascontext.{event.param.$destination})) and ((event.param.id != 'Wait') or not event.param.$allowdocked)"/>
+        <debug_text text="'Wait proceed: new order: ' + @event.param.id" debugchance="$debugchance"/>
+      </conditions>
+      <actions>
+        <debug_text text="player.age + ': got a new order: %s undocking.'.[event.param.id]" chance="$debugchance"/>
+        <!-- immediately used and cleaned up in orders.base -->
+        <set_value name="this.$skipwait"/>
+      </actions>
+    </handler>
+    <handler>
+      <conditions>
+        <check_any>
+          <event_object_destroyed object="$attacker" check="false"/>
+          <event_object_abandoned object="$attacker" check="false"/>
+          <check_all>
+            <event_object_changed_true_owner object="$attacker" check="false"/>
+            <check_value value="not $attacker.mayattack.{this.assignedcontrolled}"/>
+          </check_all>
+          <check_all>
+            <event_object_changed_zone object="$attacker" check="false"/>
+            <check_value value="not this.assignedcontrolled.cansee.{$attacker}"/>
+          </check_all>
+        </check_any>
+        <check_value value="@this.assignedcontrolled.order.isoverride"/>
+      </conditions>
+      <actions>
+        <abort_called_scripts resume="cleanup"/>
+      </actions>
+    </handler>
+    <handler>
+      <conditions>
+        <check_any>
+          <event_object_changed_attention object="this.assignedcontrolled" attention="attention.nearby"/>
+          <event_object_signalled object="this.assignedcontrolled" param="'request_dock_spacesuit_with_playership'"/>
+        </check_any>
+        <check_value value="player.occupiedship"/>
+        <check_value value="this.assignedcontrolled.isclass.spacesuit"/>
+        <check_value value="this.isplayerowned"/>
+        <check_value value="player.occupiedship.bboxdistanceto.{this.assignedcontrolled} le 10km"/>
+        <check_value value="player.occupiedship.people.free"/>
+        <check_value value="player.occupiedship.dockingallowed.{this.assignedcontrolled}"/>
+        <check_value value="not this.zone.isclass.highway"/>
+      </conditions>
+      <actions>
+        <find_dockingbay name="$locdock" object="player.occupiedship">
+          <match_dock size="this.assignedcontrolled.docksize"/>
+        </find_dockingbay>
+        <do_if value="not $locdock.assignedship">
+          <request_docking grantedresult="$dockgranted" queuedresult="$dockqueued" ship="this.assignedcontrolled" container="player.occupiedship"/>
+          <do_if value="$dockgranted">
+            <signal_objects object="player.entity"
+                            param="'npc_usecase'"
+                            param2="table[ $name = '$Rescue_Docking_At_Player', $actors = table[ $Stranded = this] ]"
+                            chance="if @global.$SuppressCommChatter then 0 else 100"
+                            comment="(really grateful)Thanks. Preparing to dock."/>
+            <debug_text text="'1 spacesuit docking at %s %s %s'.[@player.occupiedship.idcode, @player.occupiedship.knownname, player.occupiedship]" chance="$debugchance"/>
+            <cancel_all_orders object="this.assignedcontrolled"/>
+            <create_order id="'DockAt'" object="this.assignedcontrolled">
+              <param name="destination" value="player.occupiedship"/>
+            </create_order>
+          </do_if>
+          <do_else>
+            <remove_docking_request container="player.occupiedship" ship="this.assignedcontrolled" immediate="true"/>
+          </do_else>
+          <remove_value name="$dockqueued"/>
+          <remove_value name="$dockgranted"/>
+        </do_if>
+        <remove_value name="$locdock"/>
+      </actions>
+    </handler>
+  </interrupts>
+
+  <init>
+    <set_command command="command.wait" />
+    <set_command_action commandaction="commandaction.standingby" />
+
+    <set_value name="$starttime" exact="player.age"/>
+
+    <!-- Required for all infinite orders, no effect in case of finite timeout -->
+    <set_order_syncpoint_reached order="this.ship.order" />
+  </init>
+
+  <patch sinceversion="2">
+    <do_if value="not $holdfire?">
+      <set_value name="$holdfire" exact="false"/>
+    </do_if>
+  </patch>
+  <patch sinceversion="3" early="true">
+    <set_value name="$attacker" exact="null"/>
+  </patch>
+  <patch sinceversion="4">
+    <do_if value="this.assignedcontrolled.isclass.ship_xs">
+      <destroy_object object="this.assignedcontrolled"/>
+    </do_if>
+  </patch>
+  <patch sinceversion="5">
+    <set_value name="$allowdocked" exact="this.assignedcontrolled.isplayerowned and not this.assignedcontrolled.iscapitalship"/>
+  </patch>
+  <patch sinceversion="6">
+    <!-- patch for r438122 -->
+    <do_if value="@this.assignedcontrolled.dock.container.isclass.buildstorage">
+      <create_order id="'Undock'" object="this.assignedcontrolled">
+        <param name="skipwait" value="true"/>
+      </create_order>
+    </do_if>
+  </patch>
+  <patch sinceversion="7">
+    <set_value name="$fidget" exact="false"/>
+  </patch>
+
+  <attention min="unknown">
+    <actions>
+
+      <!-- TODO: Player feedback here? -->
+
+      <!--<set_to_default_flight_control_model object="this.object"/>-->
+      <stop_moving object="this.assignedcontrolled"/>
+
+      <do_if value="$holdfire">
+        <!-- hold fire -->
+        <run_script name="'lib.set.weaponmode'" result="$weaponmodes" sinceversion="1">
+          <param name="weaponmode" value="weaponmode.holdfire"/>
+          <param name="debugchance" value="$debugchance"/>
+        </run_script>
+      </do_if>
+
+      <do_if value="not this.zone.isclass.highway and not this.assignedcontrolled.dock and not @$skipalignment">
+        <!-- this will align this ship to the ecliptic plane -->
+        <move_to object="this.assignedcontrolled" destination="this.zone" forceposition="false" forcerotation="true">
+          <position object="this.assignedcontrolled" z="5m"/>
+          <rotation pitch="0deg" yaw="this.assignedcontrolled.rotation.yaw" roll="0deg"/>
+          <interrupt_after_time time="0s"/>
+        </move_to>
+      </do_if>
+
+      <do_if value="player.occupiedship and this.assignedcontrolled.isclass.spacesuit and this.isplayerowned and this.assignedcontrolled.attention == attention.nearby and player.occupiedship.bboxdistanceto.{this.assignedcontrolled} le 10km and player.occupiedship.people.free and player.occupiedship.dockingallowed.{this.assignedcontrolled} and not this.zone.isclass.highway">
+        <find_dockingbay name="$locdock" object="player.occupiedship">
+          <match_dock size="this.assignedcontrolled.docksize"/>
+        </find_dockingbay>
+        <do_if value="not $locdock.assignedship">
+          <request_docking grantedresult="$dockgranted" queuedresult="$dockqueued" ship="this.assignedcontrolled" container="player.occupiedship"/>
+          <do_if value="$dockgranted">
+            <signal_objects object="player.entity"
+                            param="'npc_usecase'"
+                            param2="table[ $name = '$Rescue_Docking_At_Player', $actors = table[ $Stranded = this] ]"
+                            chance="if @global.$SuppressCommChatter then 0 else 100"
+                            comment="(really grateful)Thanks. Preparing to dock."/>
+            <debug_text text="'2 spacesuit docking at %s %s %s'.[@player.occupiedship.idcode, @player.occupiedship.knownname, player.occupiedship]" chance="$debugchance"/>
+            <cancel_all_orders object="this.assignedcontrolled"/>
+            <create_order id="'DockAt'" object="this.assignedcontrolled">
+              <param name="destination" value="player.occupiedship"/>
+            </create_order>
+          </do_if>
+          <do_else>
+            <remove_docking_request container="player.occupiedship" ship="this.assignedcontrolled" immediate="true"/>
+          </do_else>
+          <remove_value name="$dockqueued"/>
+          <remove_value name="$dockgranted"/>
+        </do_if>
+        <remove_value name="$locdock"/>
+      </do_if>
+
+      <do_if value="$timeout">
+        <!-- Wait for timeout -->
+        <do_if value="$fidget and not this.assignedcontrolled.dock">
+          <run_script name="'move.idle'" sinceversion="7">
+            <param name="TimeOut" value="$timeout"/>
+          </run_script>
+        </do_if>
+        <do_else>
+          <wait exact="$timeout"/>
+        </do_else>
+      </do_if>
+      <do_else>
+        <do_if value="$fidget and not this.assignedcontrolled.dock">
+          <run_script name="'move.idle'" sinceversion="7"/>
+        </do_if>
+        <do_else>
+          <!-- Wait until a new order is added, or if there is a sync point, until it is released -->        
+          <wait/>
+        </do_else>
+      </do_else>
+
+      <label name="cleanup"/>
+
+      <!-- restore weapon modes -->
+      <do_if value="$holdfire and $weaponmodes? and $weaponmodes.keys.count">
+        <run_script name="'lib.set.weaponmode'" sinceversion="1">
+          <param name="weapons" value="$weaponmodes.keys.list"/>
+          <param name="weaponmodes" value="$weaponmodes"/>
+          <param name="debugchance" value="$debugchance"/>
+        </run_script>
+      </do_if>
+
+      <do_if value="not @this.assignedcontrolled.order.$ventureplatform and not $attacker">
+        <apply_experience entity="this" experience="'ship_bored'" factor="[((player.age - $starttime) / 24h)f, 1.0].min"/>
+        <apply_experience object="this.assignedcontrolled" role="entityrole.service" experience="'ship_bored'" factor="[((player.age - $starttime) / 24h)f, 1.0].min"/>
+      </do_if>
+
+      <do_if value="@this.$haltedby and (@this.assignedcontrolled.order.id != 'WaitForSignal' or @this.assignedcontrolled.order.$signaller != this.$haltedby) and (@this.assignedcontrolled.nextorder.id != 'WaitForSignal' or @this.assignedcontrolled.nextorder.$signaller != this.$haltedby)">
+        <remove_value name="this.$haltedby"/>
+      </do_if>
+
+    </actions>
+  </attention>
+  <on_abort>
+    <do_if value="this.assignedcontrolled.exists and not $attacker">
+      <apply_experience entity="this" experience="'ship_bored'" factor="[((player.age - $starttime) / 24h)f, 1.0].min"/>
+      <apply_experience object="this.assignedcontrolled" role="entityrole.service" experience="'ship_bored'" factor="[((player.age - $starttime) / 24h)f, 1.0].min"/>
+    </do_if>
+
+    <do_if value="@this.$haltedby and (@this.assignedcontrolled.order.id != 'WaitForSignal' or @this.assignedcontrolled.order.$signaller != this.$haltedby) and (@this.assignedcontrolled.nextorder.id != 'WaitForSignal' or @this.assignedcontrolled.nextorder.$signaller != this.$haltedby)">
+      <remove_value name="this.$haltedby"/>
+    </do_if>
+
+    <!-- restore weapon modes -->
+    <do_if value="$holdfire and $weaponmodes? and $weaponmodes.keys.count">
+      <do_all exact="$weaponmodes.keys.count" counter="$i">
+        <debug_text text="'restore weapon %s %s. mode: %s'.[$weaponmodes.keys.{$i}.knownname, $weaponmodes.keys.{$i}, $weaponmodes.{$weaponmodes.keys.{$i}}]" chance="$debugchance"/>
+        <set_weapon_mode weapon="$weaponmodes.keys.{$i}" weaponmode="$weaponmodes.{$weaponmodes.keys.{$i}}" />
+      </do_all>
+    </do_if>
+  </on_abort>
+</aiscript>

@@ -1,0 +1,604 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_Destroy_Components" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--
+    $feedbackvalue:
+    Mission Errors <=-100
+    -105: Number of targets does not exceed $EndObjectAmount
+    -104: No Targets were operational
+    -103: Provided group Targets_Param was empty
+    -102: EndSignalCue or MissionCue not defined
+    -101: $Targets is not of type group
+    -100: Undefined failure. Defaulted to -100
+    
+    Player Fails
+    -3: Player killed Parent (Variant 4)
+    -2: Object Destroyed by non-Player Object
+    -1: Player did not kill any objects
+    
+    Player Success
+    1: Player destroyed at least 1 object
+    2: Player partially damaged at least 1 object
+    3: Player destroyed all objects
+    4: There were never any targets-->
+
+    <library name="DestroyComponents" version="6">
+      <params>
+        <param name="EndSignalCue"/>
+        <param name="MissionCue"/>
+        <param name="StartStep" default="1" comment="Briefing step to start the mission on"/>
+        <param name="UpdateBriefing" default="true" comment="Update the briefing objective step when the objective is updated"/>
+        <param name="UpdateObjective" default="true" comment="Update objective targets. Usually only disabled if another library is controlling this."/>
+        <param name="EndTime" default="null" comment="This currently does not handle ending the mission when the time is over. That still has to be handled by the calling script"/>
+
+        <param name="Targets_Param" comment="Target components to destroy. This group will be copied to '$Targets'"/>
+        <param name="TargetUpdateCue" default="null" comment="Cue to be signalled when targets are to be added (event.param.{1} = target group)"/>
+        <param name="Objective" default="objective.destroy"  comment="Objective used, e.g objective.pickup / objective.destroy"/>
+        <param name="KillMethod" default="null"/>
+        <param name="AllowAbandoned" default="false" comment="Allow capturing of objects to succeed"/>
+        <param name="AllowCapture" default="false" comment="Allow capturing of objects to succeed"/>
+        <param name="AllowDestroy" default="true" comment="Allow destruction of parent object (Variant 4)"/>
+        <param name="ObjectiveIsGroup" default="false" comment="(true) Have the objective point to the group or (false) have the guidance point to one object"/>
+        <param name="ObjectiveText" default="null" comment="Override text for objectives"/>
+        <param name="EndObjectAmount" default="0" comment="The amount of objects in the group which can be left for the mission to continue"/>
+        <param name="TriggerEndCue" default="null" comment="Trigger the end of the RML from the caller. Allows the RML to continue if there is no target in the group. WARNING: If set, the mission must be cancelled from caller"/>
+
+        <param name="DebugChance" default="0"/>
+      </params>
+      <actions>
+        <set_value name="$feedbackvalue" exact="0"/>
+        <create_list name="$ErrorList"/>
+
+        <do_if value="not $EndSignalCue or not $MissionCue">
+          <append_to_list name="$ErrorList" exact="-102"/>
+        </do_if>
+
+        <do_if value="typeof $Targets_Param != datatype.group">
+          <append_to_list name="$ErrorList" exact="-101"/>
+        </do_if>
+        <do_elseif value="$Targets_Param.count == 0 and not $TriggerEndCue">
+          <append_to_list name="$ErrorList" exact="-103"/>
+        </do_elseif>
+        <do_else>
+          <create_group groupname="$Targets"/>
+          <do_all exact="$Targets_Param.count" counter="$Counter">
+            <do_if value="$Targets_Param.{$Counter}.isoperational">
+              <add_to_group groupname="$Targets" object="$Targets_Param.{$Counter}"/>
+            </do_if>
+          </do_all>
+          <do_if value="$EndObjectAmount" max="0">
+            <set_value name="$EndObjectAmount" exact="0"/>
+          </do_if>
+          <do_if value="not $ObjectiveText">
+            <set_value name="$ObjectiveText" exact="''" />
+          </do_if>
+
+          <do_if value="not $TriggerEndCue">
+            <do_if value="$Targets.count" exact="0">
+              <append_to_list name="$ErrorList" exact="-104"/>
+            </do_if>
+            <do_elseif value="$Targets.count" max="$EndObjectAmount">
+              <append_to_list name="$ErrorList" exact="-105"/>
+            </do_elseif>
+          </do_if>
+        </do_else>
+      </actions>
+      <patch sinceversion="4" state="complete">
+        <set_value name="$TargetUpdateCue" exact="null"/>
+        <set_value name="$TriggerEndCue" exact="null"/>
+      </patch>
+      <patch sinceversion="5" state="complete">
+        <set_value name="$ArchivedTargetList" exact="$Targets.list"/>
+      </patch>
+      <patch sinceversion="6" state="complete">
+        <set_value name="$AllowDestroy" exact="true"/>
+      </patch>
+      <cues>
+
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="1"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup"/>
+          </actions>
+        </cue>
+
+        <cue name="StartMission" onfail="cancel" version="3">
+          <conditions>
+            <check_value value="$ErrorList.count" exact="0"/>
+          </conditions>
+          <actions>
+            <set_value name="$PlayerKillCount" exact="0"/>
+            <set_value name="$PlayerPartialKillCount" exact="0"/>
+            <set_value name="$ArchivedTargetList" exact="$Targets.list"/>
+            <set_value name="$FirstObjective" exact="true"/>
+            <create_group groupname="$ObjectiveTargets"/>
+
+            <!--AttackedMap
+              - Target
+              - Player owned attack damage
+              - Other attack damage
+              - Last health amount (hull + sheilds)
+              - Last attacker-->
+            <!--TODO @Owen turn into a table-->
+            <create_list name="$AttackedMap"/>
+            <do_all exact="$Targets.count" counter="$Counter">
+              <append_to_list name="$AttackedMap" exact="[$Targets.{$Counter}, 0, 0, $Targets.{$Counter}.shield + $Targets.{$Counter}.hull, null]"/>
+            </do_all>
+            <set_value name="$AttackedMap_TargetIndex" exact="1"/>
+            <set_value name="$AttackedMap_PlayerAttackIndex" exact="2"/>
+            <set_value name="$AttackedMap_OtherAttackIndex" exact="3"/>
+            <set_value name="$AttackedMap_LastHealthIndex" exact="4"/>
+            <set_value name="$AttackedMap_LastAttackerIndex" exact="5"/>
+          </actions>
+          <patch sinceversion="3" state="complete">
+            <create_group groupname="$ObjectiveTargets"/>
+          </patch>
+          <cues>
+            <!--We add this delay cue here so we don't signal a child cue-->
+            <cue name="StartMission_Delay" version="2">
+              <delay exact="1ms"/>
+              <actions>
+                <signal_cue cue="ChooseTarget"/>
+              </actions>
+              <patch sinceversion="2">
+                <signal_cue cue="ChooseTarget"/>
+              </patch>
+            </cue>
+
+
+            <cue name="Debug_ParentKill" instantiate="true">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <set_value name="$Target" exact="$Targets.random"/>
+                <debug_text text="'ship ' + $Target.container.name"/>
+                <set_object_hull object="$Target.container" exact="1"/>
+                <set_object_shield object="$Target.container" exact="0"/>
+              </actions>
+            </cue>
+
+
+            <cue name="Debug_ObjectKill" instantiate="true">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <set_object_hull object="$Targets.random" exact="1"/>
+                <set_object_shield object="$Targets.random" exact="0" />
+              </actions>
+            </cue>
+
+            <cue name="ChooseTarget" instantiate="true">
+              <conditions>
+                <check_any>
+                  <event_cue_signalled/>
+                  <event_object_changed_sector object="player.entity"/>
+                  <event_object_changed_sector group="$Targets"/>
+                </check_any>
+              </conditions>
+              <delay exact="1ms"/>
+              <actions>
+                <debug_text text="$Targets.count + ' targets remain in the group. ' + ($Targets.count - $EndObjectAmount) + ' must be killed'" chance="$DebugChance"/>
+                <do_if value="$Targets.count ge ($EndObjectAmount + 1) or $TriggerEndCue">
+                  <do_if value="$Targets.count == 0">
+                    <!--Do nothing-->
+                  </do_if>
+                  <do_elseif value="$ObjectiveIsGroup">
+                    <clear_group group="$ObjectiveTargets"/>
+                    <do_for_each name="$GroupMember" in="$Targets">
+                      <do_if value="$GroupMember.sector == player.sector or $GroupMember.isrealclass.object">
+                        <add_to_group groupname="$ObjectiveTargets" object="$GroupMember"/>
+                      </do_if>
+                      <do_elseif value="$GroupMember.object">
+                        <add_to_group groupname="$ObjectiveTargets" object="$GroupMember.object"/>
+                      </do_elseif>
+                      <do_else>
+                        <assert value="$GroupMember.isclass.object or $GroupMember.object" text="'Group member is not an object and has no object. Unknown case [Owen]'"/>
+                      </do_else>
+                    </do_for_each>
+                    <do_if value="$ObjectiveTargets.count == 0">
+                      <assert value="$ObjectiveTargets.count" text="'Unable to populate a group with valid targets. Defaulting to $Targets group. [Owen]'"/>
+                      <add_to_group groupname="$ObjectiveTargets" group="$Targets"/>
+                    </do_if>
+
+                    <do_if value="$UpdateBriefing">
+                      <update_mission cue="$MissionCue">
+                        <briefing>
+                          <objective step="$StartStep" action="$Objective" group="$ObjectiveTargets" text="$ObjectiveText" endtime="@$EndTime"/>
+                        </briefing>
+                      </update_mission>
+                    </do_if>
+                    <do_if value="$UpdateObjective">
+                      <set_objective cue="$MissionCue" step="$StartStep" action="$Objective" group="$ObjectiveTargets" text="$ObjectiveText" silent="not $FirstObjective" endtime="@$EndTime"/>
+                    </do_if>
+                  </do_elseif>
+                  <do_else>
+                    <set_value name="$Target" exact="$Targets.{1}"/>
+                    <debug_text text="'Target is now ' + $Target.knownname" chance="$DebugChance"/>
+                    <do_if value="$UpdateBriefing">
+                      <update_mission cue="$MissionCue">
+                        <briefing>
+                          <objective step="$StartStep" action="$Objective" object="$Target" text="$ObjectiveText"/>
+                        </briefing>
+                      </update_mission>
+                    </do_if>
+                    <do_if value="$UpdateObjective">
+                      <set_objective cue="$MissionCue" step="$StartStep" action="$Objective" object="$Target" text="$ObjectiveText" endtime="@$EndTime"/>
+                    </do_if>
+                  </do_else>
+                  <set_value name="$FirstObjective" exact="false"/>
+                </do_if>
+                <do_else>
+                  <include_actions ref="EvaluateAndEnd"/>
+                </do_else>
+              </actions>
+            </cue>
+
+            <library name="EvaluateAndEnd">
+              <actions>
+                <do_if value="$ArchivedTargetList.count == 0">
+                  <!--There were never any targets-->
+                  <set_value name="$feedbackvalue" exact="4"/>
+                </do_if>
+                <do_elseif value="$PlayerKillCount" min="$ArchivedTargetList.count">
+                  <set_value name="$feedbackvalue" exact="3"/>
+                </do_elseif>
+                <do_elseif value="$PlayerKillCount" min="1">
+                  <set_value name="$feedbackvalue" exact="1"/>
+                </do_elseif>
+                <do_elseif value="$PlayerPartialKillCount" min="1">
+                  <set_value name="$feedbackvalue" exact="2"/>
+                </do_elseif>
+                <do_else>
+                  <set_value name="$feedbackvalue" exact="-1"/>
+                </do_else>
+                <signal_cue cue="Cleanup"/>
+              </actions>
+            </library>
+
+            <cue name="TargetUpdateCue_Check" onfail="cancel">
+              <conditions>
+                <check_value value="$TargetUpdateCue"/>
+              </conditions>
+              <actions>
+                <create_group groupname="$OldTargets"/>
+              </actions>
+              <cues>
+                <cue name="TargetUpdateCue_Triggered" instantiate="true">
+                  <conditions>
+                    <event_cue_signalled cue="$TargetUpdateCue"/>
+                    <check_value value="typeof @event.param.{1} == datatype.group"/>
+                  </conditions>
+                  <actions>
+                    <clear_group group="$OldTargets"/>
+                    <add_to_group groupname="$OldTargets" group="$Targets"/>
+
+                    <set_value name="$NewGroup" exact="event.param.{1}"/>
+                    <add_to_group groupname="$Targets" group="event.param.{1}"/>
+                    <do_all exact="$NewGroup.count" counter="$i">
+                      <set_value name="$NewTarget" exact="$NewGroup.{$i}"/>
+                      <do_if value="not $ArchivedTargetList.indexof.{$NewTarget}">
+                        <append_to_list name="$ArchivedTargetList" exact="$NewTarget"/>
+                        <append_to_list name="$AttackedMap" exact="[$NewTarget, 0, 0, $NewTarget.shield + $NewTarget.hull, null]"/>
+                      </do_if>
+                    </do_all>
+
+                    <set_value name="$TargetsDiffer" exact="false"/>
+                    <do_if value="$OldTargets == $Targets" comment="Same">
+                      <!--Do nothing-->
+                    </do_if>
+                    <do_elseif value="$OldTargets.count != $Targets.count" comment="Different amounts">
+                      <set_value name="$TargetsDiffer" exact="true"/>
+                    </do_elseif>
+                    <do_else comment="Same amounts but maybe different order">
+                      <do_all exact="$Targets.count" counter="$i">
+                        <do_if value="not $OldTargets.indexof.{$Targets.$i}">
+                          <set_value name="$TargetsDiffer" exact="true"/>
+                          <break/>
+                        </do_if>
+                      </do_all>
+                    </do_else>
+                    <do_if value="$TargetsDiffer">
+                      <!--Set $FirstObjective to true to allow the guidance targets to update-->
+                      <set_value name="$FirstObjective" exact="true"/>
+                      <signal_cue cue="ChooseTarget"/>
+                    </do_if>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="TriggerEndCue_Check" onfail="cancel">
+              <conditions>
+                <check_value value="$TriggerEndCue"/>
+              </conditions>
+              <cues>
+                <cue name="TriggerEndCue_Triggered">
+                  <conditions>
+                    <event_cue_signalled cue="$TriggerEndCue"/>
+                  </conditions>
+                  <actions>
+                    <debug_text text="'Triggered to end.'" chance="$DebugChance"/>
+                    <include_actions ref="EvaluateAndEnd"/>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="TargetCapturedCheck_V2" onfail="cancel">
+              <conditions>
+                <check_value value="$AllowCapture"/>
+              </conditions>
+              <actions>
+                <create_group groupname="$OwnableTargets"/>
+                <do_all exact="$Targets.count" counter="$i">
+                  <do_if value="$Targets.{$i}.isclass.object">
+                    <add_to_group groupname="$OwnableTargets" object="$Targets.{$i}"/>
+                  </do_if>
+                  <do_elseif value="$Targets.{$i}.object">
+                    <add_to_group groupname="$OwnableTargets" object="$Targets.{$i}.object"/>
+                  </do_elseif>
+                </do_all>
+              </actions>
+              <cues>
+                <cue name="TargetCaptured_V2" instantiate="true">
+                  <conditions>
+                    <event_object_changed_true_owner group="$OwnableTargets" owner="faction.player" />
+                  </conditions>
+                  <actions>
+                    <do_all exact="$Targets.count" counter="$i" reverse="true">
+                      <do_if value="event.object == $Targets.{$i} or event.object == $Targets.{$i}.object">
+                        <!--If the target is the object which changed or is contained in the object which changed, remove it-->
+                        <remove_from_group group="$Targets" object="$Targets.{$i}"/>
+                        <remove_from_group group="$OwnableTargets" object="event.object"/>
+                        <set_value name="$PlayerKillCount" operation="add"/>
+                      </do_if>
+                    </do_all>
+
+                    <signal_cue cue="ChooseTarget"/>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="TargetDestroyed" instantiate="true">
+              <conditions>
+                <check_any>
+                  <event_object_destroyed group="$Targets"/>
+                  <event_object_abandoned group="$Targets"/>
+                  <event_masstraffic_ship_removed group="$Targets"/>
+                </check_any>
+              </conditions>
+              <actions>
+                <debug_text text="'event was ' + event.name" chance="$DebugChance"/>
+                <do_if value="event.name == 'event_object_destroyed'">
+                  <remove_from_group group="$Targets" object="event.object"/>
+                  <do_if value="$OwnableTargets?">
+                    <remove_from_group group="$OwnableTargets" object="event.object"/>
+                  </do_if>
+
+                  <set_value name="this.$Killed" exact="true"/>
+                  <do_if value="this.$Killed">
+                    <set_value name="this.$PlayerKilled" exact="false"/>
+                    <!--TODO: Increment different counters and pass them back as feedback-->
+
+                    <do_if value="(not $AllowDestroy) and (event.param3 == true)">
+                      <set_value name="$feedbackvalue" exact="-3"/>
+                      <signal_cue cue="Cleanup"/>
+                    </do_if>
+
+                    <do_if value="event.param.exists">
+                      <do_if value="event.param.isplayerowned" comment="Player can have a coverfaction, .isplayerowned takes true owner into account">
+                        <do_if value="not $KillMethod or ($KillMethod == event.param2)">
+                          <debug_text text="'Target was destroyed by player'" chance="$DebugChance"/>
+                          <set_value name="$PlayerKillCount" operation="add"/>
+                          <set_value name="this.$PlayerKilled" exact="true"/>
+                        </do_if>
+                      </do_if>
+                    </do_if>
+                    <do_if value="not this.$PlayerKilled and $KillMethod != killmethod.collected" comment="If the killmethod was to collect, don't check the attacked map">
+                      <do_all exact="$AttackedMap.count" counter="$Counter">
+                        <do_if value="$AttackedMap.{$Counter}.{$AttackedMap_TargetIndex}.exists">
+                          <debug_text text="'Check attackmap for object ' + $AttackedMap.{$Counter}.{$AttackedMap_TargetIndex} + ' ' + $AttackedMap.{$Counter}.{$AttackedMap_TargetIndex}.knownname" chance="$DebugChance"/>
+                        </do_if>
+                        <do_if value="$AttackedMap.{$Counter}.{$AttackedMap_TargetIndex}" exact="event.object">
+                          <set_value name="this.$PlayerAttacked" exact="$AttackedMap.{$Counter}.{$AttackedMap_PlayerAttackIndex}"/>
+                          <set_value name="this.$OtherAttacked" exact="$AttackedMap.{$Counter}.{$AttackedMap_OtherAttackIndex}"/>
+                          <do_if value="this.$PlayerAttacked + this.$OtherAttacked" min="1">
+                            <do_if value="(100f / (this.$PlayerAttacked + this.$OtherAttacked) * this.$PlayerAttacked)" min="80" comment="Player dealt at least 80% of the damage">
+                              <debug_text text="'Target was heavily damaged by player - give as kill'" chance="$DebugChance"/>
+                              <set_value name="$PlayerKillCount" operation="add"/>
+                            </do_if>
+                            <do_elseif value="(100f / (this.$PlayerAttacked + this.$OtherAttacked) * this.$PlayerAttacked)" min="40" comment="Player dealt at least 40% of the damage">
+                              <debug_text text="'Target was damaged by player - partial credit'" chance="$DebugChance"/>
+                              <set_value name="$PlayerPartialKillCount" operation="add"/>
+                            </do_elseif>
+                          </do_if>
+                          <break/>
+                        </do_if>
+                      </do_all>
+                    </do_if>
+                  </do_if>
+                </do_if>
+                <do_elseif value="event.name == 'event_masstraffic_ship_removed'">
+                  <remove_from_group group="$Targets" object="event.object"/>
+                  <remove_from_group group="$OwnableTargets" object="event.object"/>
+                </do_elseif>
+                <do_elseif value="event.name == 'event_object_abandoned'">
+                  <do_if value="$AllowAbandoned">
+                    <set_value name="$PlayerKillCount" operation="add"/>
+                    <remove_from_group group="$Targets" object="event.object"/>
+                    <remove_from_group group="$OwnableTargets" object="event.object"/>
+                  </do_if>
+                </do_elseif>
+                
+                <signal_cue cue="ChooseTarget"/>
+
+                <!--Force CheckGroupIntegrity to cancel as we know there are 0 targets left-->
+                <do_if value="$Targets.count == 0">
+                  <cancel_cue cue="CheckGroupIntegrity"/>
+                </do_if>
+              </actions>
+            </cue>
+
+            <cue name="TargetAttacked" instantiate="true">
+              <conditions>
+                <event_object_attacked group="$Targets"/>
+              </conditions>
+              <actions>
+                <!--<debug_text text="event.object + ' ' + event.object.knownname + ' ' + event.param + ' ' + event.param.knownname + ' ' + event.param2" chance="$DebugChance"/>-->
+                
+                <!-- lasertower-case: all of them turn enemy -->
+                <do_all exact="$Targets.count" counter="$j">
+                  <do_if value="$Targets.{$j}.isclass.ship and $Targets.{$j}.islasertower">
+                    <set_relation_boost object="$Targets.{$j}" otherobject="event.param" value="event.param.owner.relation.kill.min" delay="10min" decay="1" />
+                  </do_if>
+                </do_all>
+
+                <set_value name="this.$Success" exact="false"/>
+                <do_all exact="$AttackedMap.count" counter="$i">
+                  <do_if value="$AttackedMap.{$i}.{$AttackedMap_TargetIndex}" exact="event.object">
+                    <set_value name="$CurHealth" exact="event.object.shield + event.object.hull"/>
+                    <do_if value="$AttackedMap.{$i}.{$AttackedMap_LastAttackerIndex}">
+                      <do_if value="$CurHealth lt $AttackedMap.{$i}.{$AttackedMap_LastHealthIndex}">
+                        <set_value name="$Damage" exact="$AttackedMap.{$i}.{$AttackedMap_LastHealthIndex} - $CurHealth"/>
+                      </do_if>
+                      <do_else>
+                        <set_value name="$Damage" exact="1"/>
+                      </do_else>
+
+                      <do_if value="not $AttackedMap.{$i}.{$AttackedMap_LastAttackerIndex}.exists">
+                        <set_value name="$AttackedMap.{$i}.{$AttackedMap_PlayerAttackIndex}" operation="add"/>
+                        <debug_text text="'Previous attacker no longer exists dealt ' + $Damage + '. Total is now: ' + $AttackedMap.{$i}.{$AttackedMap_PlayerAttackIndex}" chance="$DebugChance"/>
+                      </do_if>
+                      <do_if value="$AttackedMap.{$i}.{$AttackedMap_LastAttackerIndex}.isplayerowned" comment="player can be under cover">
+                        <set_value name="$AttackedMap.{$i}.{$AttackedMap_PlayerAttackIndex}" operation="add" exact="$Damage"/>
+                        <debug_text text="'Player dealt ' + $Damage + '. Total is now: ' + $AttackedMap.{$i}.{$AttackedMap_PlayerAttackIndex}" chance="$DebugChance"/>
+                      </do_if>
+                      <do_else>
+                        <set_value name="$AttackedMap.{$i}.{$AttackedMap_OtherAttackIndex}" operation="add" exact="$Damage"/>
+                        <debug_text text="'Other (' + $AttackedMap.{$i}.{$AttackedMap_LastAttackerIndex}.knownname + ') dealt ' + $Damage + '. Total is now: ' + $AttackedMap.{$i}.{$AttackedMap_OtherAttackIndex}" chance="$DebugChance"/>
+                      </do_else>
+                    </do_if>
+                    <set_value name="$AttackedMap.{$i}.{$AttackedMap_LastHealthIndex}" exact="$CurHealth"/>
+                    <set_value name="$AttackedMap.{$i}.{$AttackedMap_LastAttackerIndex}" exact="event.param"/>
+                    <set_value name="this.$Success" exact="true"/>
+                    <!--<debug_text text="$AttackedMap" chance="$DebugChance"/>-->
+                    <break/>
+                  </do_if>
+                </do_all>
+                <assert value="this.$Success" text="'An attacked object is not in the $AttackedMap'"/>
+              </actions>
+            </cue>
+
+            <cue name="CheckGroupIntegrity" checkinterval="5s">
+              <conditions>
+                <cue_is_complete cue="DestroyComponents"/>
+                <check_value value="not $TriggerEndCue and not @$Targets.{1}.exists"/>
+              </conditions>
+              <actions>
+                <assert break="1" value="false" text="'Target group is empty or objects dead. Mission should have ended but not through this cue. Contact Owen'"/>
+                <signal_cue cue="Cleanup"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <!--TODO remove_objective-->
+
+            <do_if value="$feedbackvalue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'ERROR: Feedback value is 0 and no error values were set. Defaulting to -100'"/>
+                <set_value name="$feedbackvalue" exact="-100"/>
+              </do_if>
+              <do_else>
+                <set_value name="$feedbackvalue" exact="$ErrorList.{1}"/>
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+                    <do_if value="$ErrorList.{$Counter}" exact="-105">
+                      <set_value name="$FeedbackText" exact="'Number of targets does not exceed $EndObjectAmount'"/>
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-104">
+                      <set_value name="$FeedbackText" exact="'No Targets were operational'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-103">
+                      <set_value name="$FeedbackText" exact="'Provided group Targets_Param was empty'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-102">
+                      <set_value name="$FeedbackText" exact="'EndSignalCue or MissionCue not defined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'$Targets is not of type group'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-100">
+                      <set_value name="$FeedbackText" exact="'Undefined failure. Defaulted to -100'"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                    </do_else>
+
+                    <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+
+              <do_if value="$feedbackvalue" exact="-3">
+                <set_value name="$FeedbackText" exact="{30004,6020}" comment="'Parent of Object Destroyed'"/>
+              </do_if>
+              <do_elseif value="$feedbackvalue" exact="-2">
+                <set_value name="$FeedbackText" exact="{30004,6072}" comment="'Object Destroyed by non-Player Object'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="-1">
+                <set_value name="$FeedbackText" exact="{30004,6021}" comment="'Player did not kill any objects'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="1">
+                <set_value name="$FeedbackText" exact="'Player destroyed at least 1 object'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="2">
+                <set_value name="$FeedbackText" exact="'Player partially damaged at least 1 object'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="3">
+                <set_value name="$FeedbackText" exact="'Player destroyed all objects'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="4">
+                <set_value name="$FeedbackText" exact="'There were never any targets'"/>
+              </do_elseif>
+
+              <do_if value="$feedbackvalue" exact="-3">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+              </do_if>
+              <do_elseif value="$feedbackvalue" min="1">
+                <debug_text text="'Mission Successful. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission Failed. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+            <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$feedbackvalue"/>
+            <signal_cue cue="$EndSignalCue"/>
+            <cancel_cue cue="DestroyComponents"/>
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

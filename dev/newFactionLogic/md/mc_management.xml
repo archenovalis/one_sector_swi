@@ -1,0 +1,1034 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="MC_Management" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <cue name="Thread_Manager" instantiate="true" namespace="this" version="2">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <set_value name="$ThreadManagerParams" exact="event.param"/>
+        <set_value name="$Definition" exact="$ThreadManagerParams.$ThreadDefinition"/>
+        <set_value name="$NumMissions" min="$Definition.$MinMissions" max="$Definition.$MaxMissions"/>
+        <set_value name="$CompletedMissions" exact="0"/>
+        <set_value name="$FailedMissions" exact="0"/>
+        
+        <!--Table where the key is the static cue of a submission, and the value a group of mission objects/spaces used by those missions.
+        This table is used to prevent multiple variants being created with the same objects.-->
+        <set_value name="$ExcludedObjectTable" exact="table[]"/>
+        <!--A group of mission objects which should not be used for other submissions, regardless of submission type-->
+        <create_group groupname="$MissionObjects"/>
+
+        <set_value name="$ThreadCue" exact="this"/>
+
+        <set_value name="$DebugChance" exact="$Definition.$DebugChance"/>
+      </actions>
+      <patch sinceversion="2">
+        <set_value name="$ExcludedObjectTable" exact="table[]"/>
+        <create_group groupname="$MissionObjects" />
+      </patch>
+      <cues>
+        <cue name="Thread_Manager_Register">
+          <actions>
+            <signal_cue_instantly cue="$ThreadManagerParams.$RegisterThreadCue" param="table[$ThreadCue = $ThreadCue, $CleanupCue = Thread_Manager_Cleanup]"/>
+          </actions>
+        </cue>
+
+        <cue name="Thread_Manager_Create_Offer">
+          <actions>
+            <do_if value="$Definition.$ThreadAbortRelation? and $Definition.$Faction.relationto.{faction.player} lt $Definition.$ThreadAbortRelation">
+              <signal_cue cue="Thread_Manager_Cleanup"/>
+            </do_if>
+            <do_else>
+              <!-- Create the missionthread-entry -->
+              <do_if value="$Definition.$ThreadType == 'sequential'">
+                <create_mission_thread_offer cue="$ThreadCue" actor="$Definition.$Contact" type="$Definition.$MissionType" difficulty="$Definition.$Difficulty" threadtype="sequential" group="$Definition.$MissionGroup"
+                                       name="$Definition.$ThreadName" description="$Definition.$ThreadDescription" faction="$Definition.$Faction" opposingfaction="if @$Definition.$EnemyFaction then @$Definition.$EnemyFaction else null" space="@$Definition.$OfferSectors" reward="@$Definition.$Reward" rewardtext="@$Definition.$RewardText"/>
+              </do_if>
+              <do_elseif value="$Definition.$ThreadType == 'parallel'">
+                <create_mission_thread_offer cue="$ThreadCue" actor="$Definition.$Contact" type="$Definition.$MissionType" difficulty="$Definition.$Difficulty" threadtype="parallel" group="$Definition.$MissionGroup"
+                                       name="$Definition.$ThreadName" description="$Definition.$ThreadDescription" faction="$Definition.$Faction" opposingfaction="if @$Definition.$EnemyFaction then @$Definition.$EnemyFaction else null" space="@$Definition.$OfferSectors" reward="@$Definition.$Reward" rewardtext="@$Definition.$RewardText"/>
+              </do_elseif>
+              <do_else>
+                <assert value="$Definition.$ThreadType == 'sequential' or $Definition.$ThreadType == 'parallel'" text="'Unknown thread type [Owen]'"/>
+                <signal_cue cue="Thread_Manager_Cleanup"/>
+              </do_else>
+            </do_else>
+          </actions>
+          <cues>
+            <library name="PopulateSubmissionPlan_RandomMissions">
+              <actions>
+                <!--Table where the key is the mission ID and the value is the amount of times it has been used in this mission plan-->
+                <set_value name="$PotentialMissionTable" exact="table[]"/>
+                <do_all exact="$SubmissionPlan.count" counter="$i">
+                  <do_if value="$SubmissionPlan.{$i} and @$SubmissionPlan.{$i}.$Randomisable">
+                    <set_value name="$PotentialMissionTable.{$SubmissionPlan.{$i}.$ID}" operation="add"/>
+                  </do_if>
+                </do_all>
+                <!--Add missions which are not yet in the plan-->
+                <do_all exact="$RandomisableMissionDefinitions.count" counter="$i">
+                  <do_if value="not $PotentialMissionTable.{$RandomisableMissionDefinitions.{$i}.$ID}?">
+                    <set_value name="$PotentialMissionTable.{$RandomisableMissionDefinitions.{$i}.$ID}" exact="0"/>
+                  </do_if>
+                </do_all>
+
+                <do_all exact="$SubmissionPlan.count" counter="$i">
+                  <do_if value="not $SubmissionPlan.{$i}">
+                    <!--Empty submission entry index-->
+
+                    <!--Build a list of potential submissions to select, with the least used as the most likely to be selected-->
+                    <set_value name="$PotentialRandomMissions" exact="[]"/>
+
+                    <debug_text text="'$PotentialMissionTable ' + $PotentialMissionTable" chance="$DebugChance"/>
+
+                    <set_value name="$PotentialMissionIDs" exact="$PotentialMissionTable.keys.sorted"/>
+                    <set_value name="$PotentialMissionSubset" exact="[]"/>
+                    <do_all exact="$PotentialMissionIDs.count" counter="$k">
+                      <set_value name="$MissionUses" exact="$PotentialMissionTable.{$PotentialMissionIDs.{$k}}"/>
+                      <do_if value="not $PreviousMissionUse? or $MissionUses == $PreviousMissionUse">
+                        <!--This mission is either the first one we've iterated over for this number of uses or it has the same number of uses as the last one. Add it to the subset for later randomisation.-->
+                        <append_to_list name="$PotentialMissionSubset" exact="$PotentialMissionIDs.{$k}"/>
+                        <set_value name="$PreviousMissionUse" exact="$MissionUses"/>
+                        <do_if value="$k == $PotentialMissionIDs.count">
+                          <!--It was the final mission to iterate over, so shuffle and add them to $PotentialRandomMissions-->
+                          <shuffle_list list="$PotentialMissionSubset"/>
+                          <do_all exact="$PotentialMissionSubset.count" counter="$o">
+                            <append_to_list name="$PotentialRandomMissions" exact="$PotentialMissionSubset.{$o}"/>
+                          </do_all>
+                        </do_if>
+                      </do_if>
+                      <do_else>
+                        <!--This mission has a different number of uses to the previous mission. Randomise the subset and add its entries to $PotentialRandomMissions and then process this mission-->
+                        <shuffle_list list="$PotentialMissionSubset"/>
+                        <do_all exact="$PotentialMissionSubset.count" counter="$o">
+                          <append_to_list name="$PotentialRandomMissions" exact="$PotentialMissionSubset.{$o}"/>
+                        </do_all>
+
+                        <do_if value="$k == $PotentialMissionIDs.count">
+                          <!--This mission was the last one, so simply add it to the end of $PotentialRandomMissions-->
+                          <append_to_list name="$PotentialRandomMissions" exact="$PotentialMissionIDs.{$k}"/>
+                        </do_if>
+                        <do_else>
+                          <clear_list list="$PotentialMissionSubset"/>
+                          <append_to_list name="$PotentialMissionSubset" exact="$PotentialMissionIDs.{$k}"/>
+                          <remove_value name="$PreviousMissionUse"/>
+                        </do_else>
+                      </do_else>
+                    </do_all>
+                    <remove_value name="$PotentialMissionSubset"/>
+
+                    <debug_text text="'$PotentialRandomMissions ' + $PotentialRandomMissions" chance="$DebugChance"/>
+
+                    <do_all exact="$PotentialRandomMissions.count" counter="$k">
+                      <set_value name="$PotentialRandomMissionDef" exact="$Definition.$Submissions.{$PotentialRandomMissions.{$k}}"/>
+                      <!--Check if there is a followup mission which we need to allow space for-->
+                      <set_value name="$EndMissionIndex" exact="$i"/>
+                      <set_value name="$NextMission" exact="@$PotentialRandomMissionDef.$NextMission"/>
+                      <do_while value="$NextMission">
+                        <set_value name="$EndMissionIndex" operation="add"/>
+                        <do_if value="$EndMissionIndex gt $SubmissionPlan.count">
+                          <!--Follow up missions exceed the number of free missions in this range-->
+                          <set_value name="$EndMissionIndex" exact="null"/>
+                          <break/>
+                        </do_if>
+                        <do_elseif value="$SubmissionPlan.{$EndMissionIndex}">
+                          <!--Another mission is already present in that index-->
+                          <set_value name="$EndMissionIndex" exact="null"/>
+                          <break/>
+                        </do_elseif>
+                        <set_value name="$NextMission" exact="@$NextMission.$NextMission"/>
+                      </do_while>
+                      <remove_value name="$NextMission"/>
+
+                      <do_if value="$EndMissionIndex">
+                        <!--There is enough space for this random submission and its followup missions-->
+                        <set_value name="$SubmissionPlan.{$i}" exact="$PotentialRandomMissionDef"/>
+                        <set_value name="$PotentialMissionTable.{$PotentialRandomMissions.{$k}}" operation="add"/>
+                        <set_value name="$NextMission" exact="@$PotentialRandomMissionDef.$NextMission"/>
+                        <set_value name="$NextMissionIndex" exact="0"/>
+                        <do_while value="$NextMission">
+                          <do_if value="$Definition.$Submissions.{$NextMission}?">
+                            <set_value name="$NextMissionIndex" operation="add"/>
+                            <set_value name="$SubmissionPlan.{$i + $NextMissionIndex}" exact="$Definition.$Submissions.{$NextMission}"/>
+                            <set_value name="$NextMission" exact="@$NextMission.$NextMission"/>
+                          </do_if>
+                        </do_while>
+                        <break/>
+                      </do_if>
+                    </do_all>
+                  </do_if>
+                </do_all>
+              </actions>
+            </library>
+
+            <cue name="Thread_Manager_Check_Abort_Relation" onfail="cancel">
+              <conditions>
+                <check_value value="$Definition.$ThreadAbortRelation?"/>
+              </conditions>
+              <cues>
+                <cue name="Thread_Manager_Check_Abort_Relation_Condition">
+                  <conditions>
+                    <event_player_relation_changed faction="$Definition.$Faction" />
+                    <check_value value="event.param2.{1} lt $Definition.$ThreadAbortRelation"/>
+                  </conditions>
+                  <actions>
+                    <debug_text text="$Definition.$ID + ': player has dropped below the allowed reputation for this mission thread. Aborting.'" chance="$DebugChance"/>
+                    
+                    <show_notification text="{1015,431}" sound="notification_warning" comment="Subscription aborted: reputation too low." />
+                    <write_to_logbook category="missions" title="$Definition.$ThreadName" text="{1015,431}" entity="@$Definition.$Contact" faction="$Definition.$Faction" />
+
+                    <do_if value="Thread_Manager_Accepted.state == cuestate.complete">
+                      <set_value name="$Failed" exact="true"/>
+                    </do_if>
+                    <signal_cue cue="Thread_Manager_Cleanup"/>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="Thread_Manager_Faction_Deactivated">
+              <conditions>
+                <event_faction_deactivated faction="$Definition.$Faction"/>
+              </conditions>
+              <actions>
+                <debug_text text="$Definition.$ID + ' faction ' + $Definition.$Faction + ' has deactivated. Aborting.'"/>
+                <signal_cue cue="Thread_Manager_Cleanup"/>
+              </actions>
+            </cue>
+
+            <cue name="Thread_Manager_Check_Submissions">
+              <actions>
+                <set_value name="$Submissions" exact="[]"/>
+
+                <create_list name="$SubmissionPlan" exact="$NumMissions"/>
+                <set_value name="$RandomisableMissionDefinitions" exact="[]"/>
+                <set_value name="$SubmissionKeys" exact="$Definition.$Submissions.keys.list"/>
+                <set_value name="$RefilledSubmissions" exact="false" comment="On failure to generate a submission, a random one can be added for another attempt."/>
+
+                <do_if value="not $SubmissionKeys.count">
+                  <signal_cue cue="Thread_Manager_Cleanup"/>
+                </do_if>
+                <do_else>
+                  <do_all exact="$SubmissionKeys.count" counter="$i" reverse="true">
+                    <set_value name="$SubMissionDef" exact="$Definition.$Submissions.{$SubmissionKeys.{$i}}"/>
+                    <!--Save the key of this submission to its definition for easy comparisons later-->
+                    <set_value name="$SubMissionDef.$ID" exact="$SubmissionKeys.{$i}"/>
+                    <do_if value="@$SubMissionDef.$Chance">
+                      <do_if value="true" chance="100 - $SubMissionDef.$Chance">
+                        <!--Chance check failed. Don't attempt to spawn this submission-->
+                        <remove_value name="$SubmissionKeys.{$i}"/>
+                        <continue/>
+                      </do_if>
+                    </do_if>
+                    <do_if value="@$SubMissionDef.$Sequence gt 0">
+                      <assert value="not @$SubMissionDef.$FollowUp" text="$Definition.$ID + ' - ' + 'Sequence indexed submission ' + $SubMissionDef + ' is also marked as a followup mission which is not supported.'"/>
+                      <assert value="$SubMissionDef.$Sequence le $Definition.$MinMissions" text="$Definition.$ID + ' - ' + 'Submission definition has sequence index of ' + $SubMissionDef.$Sequence + ' which exceeds the minimum number of missions: ' + $Definition.$MinMissions + '. Adjust the sequence or MinMissions values.'"/>
+                      <assert value="$SubMissionDef.$Sequence le $Definition.$MaxMissions" text="$Definition.$ID + ' - ' + 'Submission definition has sequence index of ' + $SubMissionDef.$Sequence + ' which exceeds the maximum number of missions: ' + $Definition.$MaxMissions + '. Submission will be ignored.'"/>
+                      <assert value="$SubMissionDef.$Sequence le $SubmissionPlan.count" text="$Definition.$ID + ' - ' + 'Submission definition has sequence index of ' + $SubMissionDef.$Sequence + ' which exceeds the submission number of ' + $SubmissionPlan.count + '. Submission will be ignored.'"/>
+                      <assert value="not $SubmissionPlan.{$SubMissionDef.$Sequence}" text="$Definition.$ID + ' - ' + 'Submission definition ' + $SubmissionPlan.{$SubMissionDef.$Sequence} + ' already has taken the sequence index of ' + $SubMissionDef.$Sequence + ' which was requested by ' + $SubMissionDef + 
+                              '\nCheck that two submissions have not been defined with the same sequence index or that a followup mission does not encroach on a defined sequence index.'"
+                              chance="if $SubmissionPlan.count ge $SubMissionDef.$Sequence then 100 else 0" comment="Only check this assert if $SubMissionDef.$Sequence is within a valid range of $SubmissionPlan"/>
+
+                      <do_if value="not @$SubMissionDef.$FollowUp and $SubMissionDef.$Sequence le $SubmissionPlan.count and not $SubmissionPlan.{$SubMissionDef.$Sequence}">
+                        <set_value name="$SubmissionPlan.{$SubMissionDef.$Sequence}" exact="$SubMissionDef"/>
+                        <remove_value name="$SubmissionKeys.{$i}"/>
+                      </do_if>
+                    </do_if>
+                    <do_elseif value="not @$SubMissionDef.$FollowUp">
+                      <set_value name="$SubMissionDef.$Randomisable" exact="true"/>
+                      <append_to_list name="$RandomisableMissionDefinitions" exact="$SubMissionDef"/>
+                      <remove_value name="$SubmissionKeys.{$i}"/>
+                    </do_elseif>
+                  </do_all>
+
+                  <!--The only remaining entries in $SubmissionKeys should be followup missions which need to be linked-->
+                  <!--First pass over the $SubmissionPlan to process the already indexed missions-->
+                  <do_all exact="$SubmissionPlan.count" counter="$i">
+                    <do_if value="$SubmissionPlan.{$i} and $SubmissionPlan.{$i}.$NextMission?">
+                      <!--Check that there is space in the $SubmissionPlan list for the next mission-->
+                      <assert value="$i lt $NumMissions" text="$SubmissionPlan.{$i} + ' has a next mission defined, but the submission list has no space for it.'"/>
+                      <do_if value="$i lt $NumMissions">
+                        <!--Check that a mission is not already taking that index-->
+                        <assert value="not $SubmissionPlan.{$i + 1}" text="$SubmissionPlan.{$i + 1} + ' is already taking the submission index which is needed for followup mission ' + $SubmissionPlan.{$i}.$NextMission"/>
+                        <do_if value="not $SubmissionPlan.{$i + 1}">
+                          <!--Find the next mission in the remaining $SubmissionKeys-->
+                          <assert value="$SubmissionKeys.indexof.{$SubmissionPlan.{$i}.$NextMission}" text="'The definition for next mission ' + $SubmissionPlan.{$i}.$NextMission + ' was not found via its key. Check the definition.'"/>
+                          <do_if value="$SubmissionKeys.indexof.{$SubmissionPlan.{$i}.$NextMission}">
+                            <debug_text text="'Adding ' + $SubmissionPlan.{$i}.$NextMission + ' as the followup mission to ' + $SubmissionPlan.{$i}" chance="$DebugChance"/>
+                            <set_value name="$SubmissionPlan.{$i + 1}" exact="$Definition.$Submissions.{$SubmissionPlan.{$i}.$NextMission}"/>
+                            <!--Do not remove the followup key from $SubmissionKeys as it may be used again-->
+                          </do_if>
+                        </do_if>
+                      </do_if>
+                    </do_if>
+                  </do_all>
+
+                  <!--Second pass over the $SubmissionPlan to insert random missions into the spaces which are left-->
+                  <do_if value="$RandomisableMissionDefinitions.count" chance="$DebugChance">
+                    <debug_text text="$Definition.$ID + ' has ' + $RandomisableMissionDefinitions.count + ' random mission definitions to fill the thread with'"/>
+                    <do_all exact="$RandomisableMissionDefinitions.count" counter="$i">
+                      <debug_text text="'Definition: ' + $RandomisableMissionDefinitions.{$i}" context="false"/>
+                    </do_all>
+                  </do_if>
+                  <include_actions ref="PopulateSubmissionPlan_RandomMissions"/>
+
+                  <!--Third pass over the $SubmissionPlan to remove any dead entries which could not be filled with random missions due to followup missions-->
+                  <do_all exact="$SubmissionPlan.count" counter="$i" reverse="true">
+                    <do_if value="not $SubmissionPlan.{$i}">
+                      <remove_value name="$SubmissionPlan.{$i}"/>
+                    </do_if>
+                  </do_all>
+
+                </do_else>
+
+                <do_if value="$SubmissionPlan.count">
+                  <do_all chance="$DebugChance">
+                    <debug_text text="$Definition.$ID + ' - ' + $SubmissionPlan.count + ' submissions planned. Preparing to check if they can be spawned.'"/>
+                    <do_all exact="$SubmissionPlan.count" counter="$i">
+                      <debug_text text="'Submission: ' + $SubmissionPlan.{$i}" context="false"/>
+                    </do_all>
+                  </do_all>
+
+                  <set_value name="$SubmissionPlanIdx" exact="1"/>
+                </do_if>
+                <do_else>
+                  <debug_text text="'No submissions were planned. Aborting.'"/>
+                  <signal_cue cue="Thread_Manager_Cleanup"/>
+                </do_else>
+              </actions>
+              <cues>
+                <!--To make sure that the missions are created in the correct order, we attempt it one after the other and wait for the signal that it was successful-->
+                <cue name="Thread_Manager_Check_Submissions_Trigger">
+                  <actions>
+                    <!--Submission is instanced here!-->
+                    <set_value name="$SpawningFailed" exact="false"/>
+
+                    <!--params already contain $missiontype, $page and $TextOffset-->
+                    <set_value name="$Submission_Params"                  exact="$SubmissionPlan.{$SubmissionPlanIdx}.clone"/>
+                    <set_value name="$Submission_Params.$ThreadData"      exact="$Definition"/>
+                    <set_value name="$Submission_Params.$ThreadCue"       exact="$ThreadCue"/>
+                    <set_value name="$Submission_Params.$SpawnSuccessCue" exact="Thread_Manager_Submission_Created"/>
+                    <set_value name="$Submission_Params.$SpawnFailedCue"  exact="Thread_Manager_Submission_Spawn_Failed"/>
+                    <set_value name="$Submission_Params.$OfferAcceptedCue" exact="Thread_Manager_Create_Submission"/>
+                    <set_value name="$Submission_Params.$EndedCue"        exact="Thread_Manager_Submission_Ended"/>
+                    <set_value name="$Submission_Params.$ForceCleanupCue" exact="Thread_Manager_Cleanup_Submission"/>
+
+                    <assert value="$Submission_Params.$Cue" text="'Cue not defined for submission ' + $SubmissionPlan.{$SubmissionPlanIdx}"/>
+                    <debug_text text="'Attempting to instance submission ' + $Submission_Params.$Cue" chance="$DebugChance"/>
+                    <signal_cue_instantly cue="$Submission_Params.$Cue" param="$Submission_Params"/>
+                  </actions>
+                  <cues>
+                    <library name="Thread_Manager_Trigger_Next_Submission">
+                      <actions>
+                        <do_if value="$SpawningFailed">
+                          <!--Remove this failed mission and its followup missions from the plan-->
+                          <set_value name="$RemoveMissionCount" exact="1"/>
+                          <set_value name="$NextMission" exact="@$SubmissionPlan.{$SubmissionPlanIdx}.$NextMission"/>
+                          <do_while value="$NextMission">
+                            <set_value name="$RemoveMissionCount" operation="add"/>
+                            <set_value name="$NextMission" exact="@$NextMission.$NextMission"/>
+                          </do_while>
+                          <do_all exact="$RemoveMissionCount" counter="$clear_i" reverse="true">
+                            <do_if value="$RefilledSubmissions">
+                              <!--Cleared submissions were already attempted to be refilled. Simply remove the entries-->
+                              <debug_text text="'Removing entry ' + $SubmissionPlan.{$SubmissionPlanIdx + ($clear_i - 1)} + ' at index ' + $SubmissionPlanIdx + ($clear_i - 1)" chance="$DebugChance"/>
+                              <remove_value name="$SubmissionPlan.{$SubmissionPlanIdx + ($clear_i - 1)}"/>
+                            </do_if>
+                            <do_else>
+                              <!--Clear these entries as they may be filled again with the PopulateSubmissionPlan_RandomMissions library-->
+                              <debug_text text="'Clearing entry ' + $SubmissionPlan.{$SubmissionPlanIdx + ($clear_i - 1)} + ' at index ' + $SubmissionPlanIdx + ($clear_i - 1)" chance="$DebugChance"/>
+                              <set_value name="$SubmissionPlan.{$SubmissionPlanIdx + ($clear_i - 1)}" exact="null"/>
+                            </do_else>
+                          </do_all>
+
+                          <do_if value="not $RefilledSubmissions">
+                            <!--Attempt to re-fill the cleared mission spaces - but only once-->
+                            <include_actions ref="PopulateSubmissionPlan_RandomMissions"/>
+                            <set_value name="$RefilledSubmissions" exact="true"/>
+                          </do_if>
+
+                          <!--Clear any dead entries-->
+                          <do_all exact="$SubmissionPlan.count" counter="$i" reverse="true">
+                            <do_if value="not $SubmissionPlan.{$i}">
+                              <debug_text text="'Clearing dead entry from index ' + $i + ' . Current size: ' + $SubmissionPlan.count" chance="$DebugChance"/>
+                              <remove_value name="$SubmissionPlan.{$i}"/>
+                            </do_if>
+                          </do_all>
+
+                          <do_if value="$SubmissionPlan.count">
+                            <do_if value="$SubmissionPlanIdx gt $SubmissionPlan.count">
+                              <!--$SubmissionPlanIdx is now out of range of $SubmissionPlan which means the plan was pruned. Potential abort if $Submissions does not contain the allowed number of missions-->
+                              <debug_text text="$Definition.$ID + ' $SubmissionPlan was pruned due to a mission failure and now has ' + $SubmissionPlan.count + ' entries. $SubmissionPlanIdx is now out of range.'" chance="$DebugChance"/>
+                              <do_if value="$Submissions.count" min="$Definition.$MinMissions" max="$Definition.$MaxMissions">
+                                <debug_text text="$Definition.$ID + ' still has enough submissions to proceed'" chance="$DebugChance"/>
+                                <signal_cue cue="Thread_Manager_Offer_Successful"/>
+                              </do_if>
+                              <do_else>
+                                <debug_text text="$Definition.$ID + ' does not have enough submissions to proceed. Aborting offer'" chance="$DebugChance"/>
+                                <signal_cue_instantly cue="Thread_Manager_Cleanup"/>
+                              </do_else>
+                            </do_if>
+                            <do_else>
+                              <reset_cue cue="Thread_Manager_Check_Submissions_Trigger"/>
+                            </do_else>
+                          </do_if>
+                          <do_else>
+                            <debug_text text="$Definition.$ID + ' $SubmissionPlan is empty. Aborting offer.'" chance="$DebugChance"/>
+                            <signal_cue_instantly cue="Thread_Manager_Cleanup"/>
+                          </do_else>
+                        </do_if>
+                        <do_elseif value="$SubmissionPlanIdx ge $SubmissionPlan.count">
+                          <!--TODO @Owen evaluate if it was actually successful. Plan may have been pruned to the point where it should be cleaned up.-->
+                          <signal_cue cue="Thread_Manager_Offer_Successful"/>
+                        </do_elseif>
+                        <do_else>
+                          <set_value name="$SubmissionPlanIdx" operation="add"/>
+                          <reset_cue cue="Thread_Manager_Check_Submissions_Trigger"/>
+                        </do_else>
+                      </actions>
+                    </library>
+
+                    <cue name="Thread_Manager_Create_Next_Mission">
+                      <conditions>
+                        <event_cue_signalled cue="Thread_Manager_Submission_Created"/>
+                      </conditions>
+                      <actions>
+                        <assert value="typeof event.param.$Cue == datatype.cue" text="'Param ' + event.param + ' is not of type cue [Owen]'"/>
+                        <set_value name="$SpawningFailed" exact="false"/>
+                        <include_actions ref="Thread_Manager_Trigger_Next_Submission"/>
+                      </actions>
+                    </cue>
+
+                    <cue name="Thread_Manager_Create_Submission_Failed">
+                      <conditions>
+                        <event_cue_signalled cue="Thread_Manager_Submission_Spawn_Failed"/>
+                      </conditions>
+                      <actions>
+                        <set_value name="$SpawningFailed" exact="true"/>
+                        <include_actions ref="Thread_Manager_Trigger_Next_Submission"/>
+                      </actions>
+                    </cue>
+
+                    <cue name="Thread_Manager_Create_Submission_Timeout">
+                      <delay exact="1s"/>
+                      <actions>
+                        <set_value name="$SpawningFailed" exact="true"/>
+                        <assert value="false" text="'Submission for ' + $Definition.$ID + ' was unable to be created. ' + $SubmissionPlan.{$SubmissionPlanIdx} + ' Skipping. [Owen]'" break="always"/>
+                        <include_actions ref="Thread_Manager_Trigger_Next_Submission"/>
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+              </cues>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Thread_Manager_Submission_Created" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <do_if value="@event.param.$FollowUp">
+              <assert value="$Submissions.count" text="'Thread submission ' + event.param.$WrapperCue + ' is set as a followup mission but there is not preceeding mission. [Owen]'"/>
+              <do_if value="$Submissions.count">
+                <set_value name="$Submissions.{$Submissions.count}.$NextMission" exact="event.param"/>
+              </do_if>
+            </do_if>
+            <append_to_list name="$Submissions" exact="event.param"/>
+            <update_mission_thread_offer cue="$ThreadCue">
+              <briefing>
+                <mission step="$Submissions.count" name="event.param.$Name" type="$Submission_Params.$MissionType" faction="$Definition.$Faction" reward="@event.param.$Reward" rewardtext="@event.param.$RewardText" duration="@event.param.$Duration"/>
+              </briefing>
+            </update_mission_thread_offer>
+          </actions>
+        </cue>
+
+        <cue name="Thread_Manager_Submission_Spawn_Failed" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+        </cue>
+
+        <cue name="Thread_Manager_Create_Submission" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+        </cue>
+
+        <cue name="Thread_Manager_Cleanup_Submission" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+        </cue>
+
+        <cue name="Thread_Manager_Offer_Successful">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <cancel_cue cue="Thread_Manager_Check_Submissions"/>
+            <do_all chance="$DebugChance">
+              <debug_text text="'Thread ' + $Definition.$ID + ' has created an offer with ' + $Submissions.count + ' submissions'"/>
+              <do_all exact="$Submissions.count" counter="$i">
+                <debug_text text="'Submission: ' + $Submissions.{$i}" context="false"/>
+              </do_all>
+            </do_all>
+          </actions>
+        </cue>
+
+        <cue name="Thread_Manager_Accepted">
+          <conditions>
+            <event_object_signalled object="$Definition.$Contact" param="'accept'" param2="$ThreadCue" />
+          </conditions>
+          <actions>
+            <debug_text text="'Thread ' + $Definition.$ID + ' accepted'" chance="$DebugChance"/>
+            <create_mission_thread cue="$ThreadCue" offercue="$ThreadCue" threadtype="sequential" />
+            <remove_offer cue="$ThreadCue"/>
+            <do_all exact="$Submissions.count" counter="$i">
+              <debug_text text="'Signalling GM ' + $Submissions.{$i}.$Cue + ' to create submission construct'" chance="$DebugChance"/>
+              <signal_cue_instantly cue="Thread_Manager_Create_Submission" param="$Submissions.{$i}.$Cue"/>
+            </do_all>
+
+            <signal_cue_instantly cue="$ThreadManagerParams.$ThreadAcceptedCue" param="$ThreadCue" comment="pass thread-name the player selected"/>
+          </actions>
+          <cues>
+            <cue name="Thread_Manager_Aborted">
+              <conditions>
+                <event_mission_aborted cue="$ThreadCue"/>
+              </conditions>
+              <actions>
+                <debug_text text="'Mission thread ' + $Definition.$ID + ' was aborted'"/>
+                <set_value name="$Failed" exact="true"/>
+                <signal_cue cue="Thread_Manager_Cleanup"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <!--Signalled from GM wrapper
+            EITHER
+            event.param == The wrapper cue, the cue which was used to contain the mission instance
+            OR
+            event.param == table[
+              $wrappercue = The wrapper cue, the cue which was used to contain the mission instance
+              $feedback = The feedback data from the GM (optional)]-->
+        <cue name="Thread_Manager_Submission_Ended" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <do_if value="typeof event.param == datatype.cue">
+              <set_value name="$WrapperCue" exact="event.param"/>
+              <set_value name="$Feedback" exact="null"/>
+              <debug_text text="$WrapperCue + ' was forced to be cleaned up. Attempting to remove from thread'" chance="$DebugChance"/>
+            </do_if>
+            <do_else>
+              <set_value name="$WrapperCue" exact="event.param.$wrappercue"/>
+              <set_value name="$Feedback" exact="@event.param.$feedback"/>
+              <do_if value="$Feedback">
+                <debug_text text="$WrapperCue + ' submission ended with feedback: ' + $Feedback.$ID + ' - Attempting to remove from thread'" chance="$DebugChance"/>
+                <do_if value="$Feedback.$type == 'success'">
+                  <set_value name="$CompletedMissions" operation="add"/>
+                </do_if>
+                <do_elseif value="$Feedback.$type == 'failure'">
+                  <set_value name="$FailedMissions" operation="add"/>
+                </do_elseif>
+              </do_if>
+              <do_else>
+                <debug_text text="$WrapperCue + ' was forced to be cleaned up. Attempting to remove from thread'" chance="$DebugChance"/>
+              </do_else>
+            </do_else>
+
+            <set_value name="this.$Idx" exact="0"/>
+            <do_all exact="$Submissions.count" counter="$i">
+              <do_if value="$Submissions.{$i}.$WrapperCue == $WrapperCue">
+                <set_value name="this.$Idx" exact="$i"/>
+                <break/>
+              </do_if>
+            </do_all>
+            <do_if value="this.$Idx">
+              <remove_value name="$Submissions.{this.$Idx}"/>
+            </do_if>
+            <do_else>
+              <assert value="false" text="'Ended mission is not in the $Submissions list [Owen]'"/>
+            </do_else>
+
+            <do_all exact="$Submissions.count" counter="$i" reverse="true">
+              <do_if value="not $Submissions.{$i}.$Cue.exists">
+                <assert value="$Submissions.{$i}.$Cue.exists" text="'Submission cue no longer exists. Should have been removed by other means [Owen]'"/>
+                <remove_value name="$Submissions.{$i}"/>
+              </do_if>
+            </do_all>
+
+            <do_if value="$Feedback and $Feedback.$type == 'failure'">
+              <!--TODO @Owen too harsh?-->
+              <debug_text text="'Player failed a mission. Abort thread.'" chance="$DebugChance"/>
+              <set_value name="$Failed" exact="true"/>
+              <signal_cue cue="Thread_Manager_Cleanup"/>
+            </do_if>
+            <do_elseif value="not $Submissions.count">
+              <debug_text text="'Thread has no more submissions. Clean up thread.'" chance="$DebugChance"/>
+              <signal_cue cue="Thread_Manager_Cleanup"/>
+            </do_elseif>
+          </actions>
+        </cue>
+
+        <cue name="Thread_Manager_Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <!--TODO @Owen - cleanup-->
+            <debug_text text="$Definition.$ID + ' Cleanup'" chance="$DebugChance"/>
+
+            <do_if value="$Submissions?">
+              <do_all exact="$Submissions.count" counter="$i">
+                <signal_cue_instantly cue="Thread_Manager_Cleanup_Submission" param="$Submissions.{$i}.$Cue"/>
+              </do_all>
+            </do_if>
+
+            <do_if value="not @$Failed and Thread_Manager_Accepted.state == cuestate.complete">
+              <do_if value="@$Definition.$Reward">
+                <reward_player money="@$Definition.$Reward" />
+              </do_if>
+              <do_if value="@$Definition.$RewardObject.count">
+                <do_all exact="@$Definition.$RewardObject.count" counter="$ri">
+                  <do_if value="(typeof @$Definition.$RewardObject.{$ri} == datatype.ware)">
+                    <do_if value="@$Definition.$RewardObject.{$ri}.isinventory">
+                      <add_inventory entity="player.entity" ware="@$Definition.$RewardObject.{$ri}" />
+                    </do_if>
+                    <do_else>
+                      <debug_text text="'Unhandled reward: ware `' + @$Definition.$RewardObject.{$ri}.name + '` is not for inventory'"/>
+                    </do_else>
+                  </do_if>
+                  <do_elseif value="typeof @$Definition.$RewardObject.{$ri} == datatype.table">
+                    <do_if value="@$Definition.$RewardObject.{$ri}.$macro and @$Definition.$RewardObject.{$ri}.$loadout">
+                      <set_value name="$shipmacro"   exact="@$Definition.$RewardObject.{$ri}.$macro"/>
+                      <set_value name="$loadout"     exact="@$Definition.$RewardObject.{$ri}.$loadout"/>
+                      <set_value name="$cargo"       exact="@$Definition.$RewardObject.{$ri}.$cargo"/>
+                      <set_value name="$bulkcrew"    exact="@$Definition.$RewardObject.{$ri}.$bulkcrew"/>
+                      <set_value name="$pilot"       exact="@$Definition.$RewardObject.{$ri}.$pilot"/>
+                      <set_value name="$mods"        exact="@$Definition.$RewardObject.{$ri}.$mods"/>
+                      <set_value name="$paintmod"    exact="@$Definition.$RewardObject.{$ri}.$paintmod"/>
+                      <set_value name="$shipdock"    exact="@$Definition.$RewardObject.{$ri}.$station"/>
+                      <set_value name="$reward_ship" exact="null"/>
+                      <do_if value="not $shipdock.isoperational">
+                        <set_value name="$Faction" exact="$Definition.$Faction"/>
+                        <run_actions ref="md.LIB_Generic.FindNearestStationForFaction" result="$SuitableStation">
+                          <param name="Faction" value="$Faction"/>
+                        </run_actions>
+                        <set_value name="$shipdock" exact="$SuitableStation"/>
+                      </do_if>
+                      <create_ship name="$reward_ship" macro="$shipmacro" zone="$shipdock" dock="$shipdock">
+                        <people ref="$bulkcrew.{2}">
+                          <fillpercent exact="$bulkcrew.{3}"/>
+                        </people>
+                        <paint ware="$paintmod"/>
+                        <pilot>
+                          <select tags="@$pilot.{2}" faction="@$pilot.{1}"/>
+                          <skills>
+                            <skill type="piloting" exact="@$pilot.{3}" comment="only overrides pilot-skill"/>
+                          </skills>
+                        </pilot>
+                        <owner exact="faction.player"/>
+                        <loadout loadout="$loadout.{1}"/>
+                      </create_ship>
+                      <debug_text text="'Ship: ' + $reward_ship + ' ' + $reward_ship.knownname + ' at ' + $SuitableStation.name + ' in Sector: ' + $reward_ship.sector.name" chance="$DebugChance"/>
+
+                      <do_if value="not $reward_ship" comment="fallback (no dock, or all docks on station were full)">
+                        <create_ship name="$reward_ship" macro="$shipmacro" zone="$shipdock.zone">
+                          <people ref="$bulkcrew.{2}">
+                            <fillpercent exact="$bulkcrew.{3}"/>
+                          </people>
+                          <!--people ref="$bulkcrew.{3}" minfillpercentage="$bulkcrew.{1}" maxfillpercentage="$bulkcrew.{2}"/-->
+                          <owner exact="faction.player"/>
+                          <loadout loadout="$loadout.{1}"/>
+                          <safepos object="if $shipdock then $shipdock else player.entity" min="5km" max="15km"/>
+                        </create_ship>
+                      </do_if>
+                      <do_if value="$reward_ship">
+                        <do_if value="$cargo">
+                          <do_all exact="$cargo.count" counter="$ci">
+                            <add_cargo object="$reward_ship" ware="$cargo.{$ci}.{2}" exact="$cargo.{$ci}.{1}" result="$cargo_result"/>
+                            <do_if value="$cargo_result">
+                              <debug_text text="'Adding ' + cargo.{$ci}.{1} + 'x ' + $cargo.{$ci}.{1} + ' success'" chance="$DebugChance"/>
+                            </do_if>
+                            <do_else>
+                              <debug_text text="'Adding ' + cargo.{$ci}.{1} + 'x ' + $cargo.{$ci}.{1} + ' failed'" chance="$DebugChance"/>
+                            </do_else>
+                          </do_all>
+                        </do_if>
+                        <do_if value="$mods and $mods.count">
+                          <add_equipment_mods object="$reward_ship">
+                            <mods list="$mods"/>
+                          </add_equipment_mods>
+                        </do_if>
+                      </do_if>
+                    </do_if>
+                    <do_else>
+                      <debug_text text="'Unhandled reward: parameter type mismatch'"/>
+                    </do_else>
+                  </do_elseif>
+                  <do_else>
+                      <debug_text text="'Unhandled reward: ' + @$Definition.$RewardObject.{$ri}"/>
+                  </do_else>
+                </do_all>
+                <do_if value="@$Definition.$RewardText">
+                  <do_if value="@$Definition.$RewardObject.count == 1">
+                    <show_notification text="{1015,90} + '\n' + @$Definition.$RewardText" sound="notification_achievement" comment="Reward received"/>
+                  </do_if>
+                  <do_elseif value="@$Definition.$RewardObject.count gt 1">
+                    <show_notification text="{1015,91} + '\n' + @$Definition.$RewardText" sound="notification_achievement" comment="Rewards received"/>
+                  </do_elseif>
+                </do_if>
+              </do_if>
+            </do_if>
+
+            <do_if value="@$ThreadManagerParams.$CleanupThreadCue">
+              <signal_cue_instantly cue="$ThreadManagerParams.$CleanupThreadCue" param="table[$cue = $ThreadCue, $failed = @$Failed, $interrupted = @$Interrupted, $completedmissions = $CompletedMissions, $failedmissions = $FailedMissions]"/>
+            </do_if>
+            <cancel_cue cue="$ThreadCue"/>
+          </actions>
+        </cue>
+      </cues>
+    </cue>
+
+    <!--Mission thread test cues-->
+    <cue name="Sequential_Test" instantiate="true" namespace="this">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <set_value name="$DebugChance" exact="100"/>
+        <create_cue_actor cue="Sequential_Test" name="$Client">
+          <select race="race.argon" tags="tag.pilot"/>
+        </create_cue_actor>
+        <set_value name="$Sector" exact="player.sector"/>
+        <create_mission_thread_offer cue="Sequential_Test" threadtype="sequential" actor="$Client"
+                                     name="'Save the Argon!'" description="'This is a sequential mission description'" faction="faction.argon" opposingfaction="faction.paranid" difficulty="level.hard"
+                                     reward="5678Cr" rewardtext="'Some bonus reward'" type="missiontype.fight" space="$Sector">
+          <briefing>
+            <mission step="1" name="'Assassinate the Paranid warlord'" description="'This Paranid is causing us a lot of trouble! Take him out.'" type="missiontype.fight" difficulty="level.veryhard" faction="faction.argon" opposingfaction="faction.paranid"/>
+            <mission step="2" name="'Collect the secret documents'" description="'Some top secret documents have been dumped in the middle of nowhere. Go pick them up!'" type="missiontype.collect" difficulty="level.easy" faction="faction.argon"/>
+          </briefing>
+        </create_mission_thread_offer>
+      </actions>
+      <force name="Mission_Thread_Sequential_Test"/>
+      <cues>
+        <cue name="Sequential_Test_Accepted">
+          <conditions>
+            <event_object_signalled object="$Client" param="'accept'" />
+          </conditions>
+          <actions>
+            <create_mission_thread cue="Sequential_Test" offercue="Sequential_Test" threadtype="sequential" />
+            <remove_offer cue="Sequential_Test"/>
+          </actions>
+          <cues>
+            <cue name="Sequential_Test_Aborted">
+              <conditions>
+                <event_mission_aborted cue="Sequential_Test"/>
+              </conditions>
+              <actions>
+                <remove_mission cue="Sequential_Test" type="aborted"/>
+                <signal_cue cue="Sequential_Test_Cleanup"/>
+              </actions>
+            </cue>
+
+            <cue name="Sequential_Test_Mission_1">
+              <actions>
+                <set_value name="$Sector" exact="player.sector"/>
+
+                <create_ship name="$ParanidShip" sector="$Sector">
+                  <select faction="faction.paranid" size="class.ship_s"/>
+                  <owner exact="faction.paranid" overridenpc="true"/>
+                  <safepos max="3km" object="player.entity" allowyaxis="false"/>
+                </create_ship>
+                <set_object_shield object="$ParanidShip" exact="10"/>
+                <set_object_hull object="$ParanidShip" exact="10"/>
+                <create_position name="$Waitpos" object="$ParanidShip" space="$Sector" max="10km"/>
+                <create_order object="$ParanidShip" id="'MoveWait'">
+                  <param name="destination" value="[$Sector, $Waitpos]"/>
+                </create_order>
+                <create_group groupname="$NPC_Targets"/>
+                <add_to_group groupname="$NPC_Targets" object="$ParanidShip.pilot"/>
+
+                <create_mission cue="Sequential_Test_Mission_1" name="'Assassinate the Paranid'" description="'Take out this troublesome Paranid!'" type="missiontype.fight" difficulty="level.veryhard" faction="faction.argon" opposingfaction="faction.paranid" missionthread="Sequential_Test"/>
+              </actions>
+              <cues>
+                <cue name="Sequential_Test_Mission_1_Assassinate_Ref" ref="md.RML_Destroy_Entities.DestroyEntities">
+                  <param name="EndSignalCue" value="Sequential_Test_Mission_1_End"/>
+                  <param name="MissionCue" value="Sequential_Test_Mission_1"/>
+                  <param name="Targets_Param" value="$NPC_Targets"/>
+                  <param name="DebugChance" value="$DebugChance"/>
+                </cue>
+
+                <cue name="Sequential_Test_Mission_1_Aborted">
+                  <conditions>
+                    <event_mission_aborted cue="Sequential_Test_Mission_1"/>
+                  </conditions>
+                  <actions>
+                    <remove_mission cue="Sequential_Test_Mission_1" type="aborted"/>
+                    <signal_cue cue="Sequential_Test_Cleanup"/>
+                  </actions>
+                </cue>
+
+                <cue name="Sequential_Test_Mission_1_End" instantiate="true">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <debug_text text="'$EndFeedbackValue ' + @this.$EndFeedbackValue"/>
+
+                    <signal_cue cue="Sequential_Test_Mission_2_Trigger"/>
+                    <remove_mission cue="Sequential_Test_Mission_1" type="completed" activate="next"/>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="Sequential_Test_Mission_2_Trigger">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+            </cue>
+
+            <cue name="Sequential_Test_Mission_2">
+              <conditions>
+                <event_cue_completed cue="Sequential_Test_Mission_1"/>
+              </conditions>
+              <actions>
+                <set_value name="$CollectWare" exact="ware.inv_decryptionmodule"/>
+
+                <!--Set-up the second mission in the sequence-->
+                <create_mission cue="Sequential_Test_Mission_2" name="'Collect the documents'" description="'Go pick up the top secret documents which were dumped in the middle of nowhere!'" type="missiontype.collect" difficulty="level.easy" faction="faction.argon"
+                                  missionthread="Sequential_Test">
+                  <briefing>
+                    <!--The mission objects for the future sequential mission may not actually exist yet, so the briefing objectives may have to be put together with custom text-->
+                    <objective step="1" action="objective.collect" text="$CollectWare.name"/>
+                  </briefing>
+                </create_mission>
+                <set_objective cue="Sequential_Test_Mission_2" step="1" action="objective.collect" text="$CollectWare.name" />
+              </actions>
+              <cues>
+                <cue name="Sequential_Test_Mission_2_Start">
+                  <conditions>
+                    <event_cue_completed cue="Sequential_Test_Mission_2_Trigger"/>
+                  </conditions>
+                  <actions>
+                    <create_object name="$Crate" groupname="$CrateGroup" macro="$CollectWare.container" zone="player.zone">
+                      <safepos object="player.entity" z="-3km"/>
+                    </create_object>
+                  </actions>
+                  <cues>
+                    <cue name="Sequential_Test_Mission_2_Collect_Ref" ref="md.RML_Collect_Crates.CollectCrates">
+                      <param name="EndSignalCue" value="Sequential_Test_Mission_2_End"/>
+                      <param name="MissionCue" value="Sequential_Test_Mission_2"/>
+
+                      <param name="Targets" value="$CrateGroup" comment="Target crates to collect"/>
+
+                      <param name="DebugChance" value="$DebugChance"/>
+                    </cue>
+
+                    <cue name="Sequential_Test_Mission_2_Aborted">
+                      <conditions>
+                        <event_mission_aborted cue="Sequential_Test_Mission_2"/>
+                      </conditions>
+                      <actions>
+                        <remove_mission cue="Sequential_Test_Mission_2" type="aborted"/>
+                        <signal_cue cue="Sequential_Test_Cleanup"/>
+                      </actions>
+                    </cue>
+
+                    <cue name="Sequential_Test_Mission_2_End" instantiate="true">
+                      <conditions>
+                        <event_cue_signalled/>
+                      </conditions>
+                      <actions>
+                        <debug_text text="'$EndFeedbackValue ' + @this.$EndFeedbackValue"/>
+
+                        <remove_mission cue="Sequential_Test" type="completed"/>
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="Sequential_Test_Cleanup">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <cancel_cue cue="Sequential_Test"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+      </cues>
+    </cue>
+
+    <cue name="Parallel_Test" instantiate="true" namespace="this">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <set_value name="$DebugChance" exact="100"/>
+        <create_cue_actor cue="Parallel_Test" name="$Client">
+          <select race="race.argon" tags="tag.pilot"/>
+        </create_cue_actor>
+        <set_value name="$Sector" exact="player.sector"/>
+        <do_any>
+          <set_value name="$MissionGroup" exact="missiongroup.argon_secret_service"/>
+          <set_value name="$MissionGroup" exact="missiongroup.argon_war_xenon"/>
+        </do_any>
+        <create_mission_thread_offer cue="Parallel_Test" threadtype="parallel" actor="$Client" group="$MissionGroup"
+                                     name="'Prove your money making skill!'" description="'This is a parallel mission description'" faction="faction.argon" difficulty="level.hard"
+                                     reward="5678Cr" rewardtext="'Some bonus reward'" type="missiontype.trade" space="$Sector">
+          <briefing>
+            <mission step="1" name="'Amass a large amount of funds'" description="'You\'re gonna need to be a millionare if we\'re going to take you seriously'" type="missiontype.trade" difficulty="level.hard" faction="faction.argon"/>
+            <mission step="2" name="'Build a station'" description="'We want you to build some station nearby'" type="missiontype.build" difficulty="level.medium" faction="faction.argon"/>
+          </briefing>
+        </create_mission_thread_offer>
+        <debug_text text="'created offer of group ' + $MissionGroup"/>
+
+        <set_value name="$SubMissions" exact="[]"/>
+      </actions>
+      <force name="Mission_Thread_Parallel_Test"/>
+      <cues>
+        <cue name="Parallel_Test_Accepted">
+          <conditions>
+            <event_object_signalled object="$Client" param="'accept'" />
+          </conditions>
+          <actions>
+            <create_mission_thread cue="Parallel_Test" offercue="Parallel_Test" threadtype="parallel" />
+            <remove_offer cue="Parallel_Test"/>
+          </actions>
+          <cues>
+            <cue name="Parallel_Test_Aborted">
+              <conditions>
+                <event_mission_aborted cue="Parallel_Test"/>
+              </conditions>
+              <actions>
+                <remove_mission cue="Parallel_Test" type="aborted"/>
+                <signal_cue cue="Parallel_Test_Cleanup"/>
+              </actions>
+            </cue>
+
+            <cue name="Parallel_Test_Mission_1">
+              <actions>
+                <create_mission cue="Parallel_Test_Mission_1" name="'Get over 1,000,000 credits'" description="'You\'re gonna need to be a millionare if we\'re going to take you seriously'" type="missiontype.trade" difficulty="level.hard" faction="faction.argon"
+                                missionthread="Parallel_Test">
+                  <briefing>
+                    <objective step="1" action="objective.collect" text="'1,000,000 Credits'"/>
+                  </briefing>
+                </create_mission>
+                <set_objective cue="Parallel_Test_Mission_1" step="1" action="objective.collect" text="'1,000,000 Credits'" />
+                <append_to_list name="$SubMissions" exact="Parallel_Test_Mission_1"/>
+              </actions>
+              <cues>
+                <cue name="Parallel_Test_Mission_1_Aborted">
+                  <conditions>
+                    <event_mission_aborted cue="Parallel_Test_Mission_1"/>
+                  </conditions>
+                  <actions>
+                    <!--TODO @Owen $cue.submissions-->
+                    <remove_mission cue="Parallel_Test_Mission_1" type="aborted"/>
+                    <remove_from_list name="$SubMissions" exact="Parallel_Test_Mission_1" multiple="false" />
+                    <do_if value="$SubMissions.count == 0">
+                      <signal_cue cue="Parallel_Test_Cleanup"/>
+                    </do_if>
+                  </actions>
+                </cue>
+
+                <cue name="Parallel_Test_Mission_End" checkinterval="50ms">
+                  <conditions>
+                    <check_value value="player.money ge 1000000Cr"/>
+                  </conditions>
+                  <actions>
+                    <debug_text text="'mission 1 ended'"/>
+                    <remove_mission cue="Parallel_Test_Mission_1" type="completed"/>
+                    <remove_from_list name="$SubMissions" exact="Parallel_Test_Mission_1" multiple="false" />
+
+                    <do_if value="$SubMissions.count == 0">
+                      <signal_cue cue="Parallel_Test_Cleanup"/>
+                    </do_if>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="Parallel_Test_Mission_2">
+              <actions>
+                <set_value name="$PlayerSpace" exact="player.sector"/>
+                <!--Set-up the second parallel mission-->
+                <create_mission cue="Parallel_Test_Mission_2" name="'Build a station'" description="'We want you to build some station nearby'" type="missiontype.build" difficulty="level.medium" faction="faction.argon"
+                                  missionthread="Parallel_Test">
+                  <briefing>
+                    <objective step="1" action="objective.build_station" text="'any type'"/>
+                  </briefing>
+                </create_mission>
+                <set_objective cue="Parallel_Test_Mission_2" step="1" action="objective.build_station" text="'any type'" />
+                <append_to_list name="$SubMissions" exact="Parallel_Test_Mission_2"/>
+              </actions>
+              <cues>
+                <cue name="Parallel_Test_Mission_2_Changed_Sector" instantiate="true">
+                  <conditions>
+                    <event_object_changed_sector object="player.entity"/>
+                  </conditions>
+                  <actions>
+                    <clear_group group="$PlayerSpace"/>
+                    <add_to_group groupname="$PlayerSpace" object="event.param"/>
+                  </actions>
+                </cue>
+                <cue name="Parallel_Test_Mission_2_Aborted">
+                  <conditions>
+                    <event_mission_aborted cue="Parallel_Test_Mission_2"/>
+                  </conditions>
+                  <actions>
+                    <!--TODO @Owen $cue.submissions-->
+                    <remove_mission cue="Parallel_Test_Mission_2" type="aborted"/>
+                    <remove_from_list name="$SubMissions" exact="Parallel_Test_Mission_2" multiple="false" />
+                    <do_if value="$SubMissions.count == 0">
+                      <signal_cue cue="Parallel_Test_Cleanup"/>
+                    </do_if>
+                  </actions>
+                </cue>
+
+                <!--TODO @Owen - new event for building stations/plots-->
+                <cue name="Parallel_Test_Mission_2_End" instantiate="true">
+                  <conditions>
+                    <event_object_entered space="$PlayerSpace"/>
+                    <check_value value="event.param.isrealclass.buildstorage"/>
+                  </conditions>
+                  <delay exact="1ms"/>
+                  <actions>
+                    <do_if value="event.param.owner == faction.player">
+                      <debug_text text="'mission 2 ended'"/>
+
+                      <remove_mission cue="Parallel_Test_Mission_2" type="completed"/>
+                      <remove_from_list name="$SubMissions" exact="Parallel_Test_Mission_2" multiple="false" />
+
+                      <do_if value="$SubMissions.count == 0">
+                        <signal_cue cue="Parallel_Test_Cleanup"/>
+                      </do_if>
+                    </do_if>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="Parallel_Test_Cleanup">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <cancel_cue cue="Parallel_Test"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+      </cues>
+    </cue>
+  </cues>
+</mdscript>

@@ -1,0 +1,181 @@
+<?xml version="1.0" encoding="utf-8"?>
+<aiscript name="order.salvage.collect" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" version="1">
+  <order id="SalvageCollect" name="{1041,801}" description="{1041,802}" category="salvage" allowinloop="false">
+    <params>
+      <param name="target" required="true" type="object" text="{1041,10126}" comment="Target. The wreck or scrap cube to salvage.">
+        <input_param name="canbetowed" value="true"/>
+      </param>
+      <param name="internalorder" type="internal" default="not this.ship.isplayerowned" comment="Will be passed on to move.generic for blacklist enforcement."/>
+      <param name="debugchance" type="bool" default="0" advanced="true" text="{1041,10086}" comment="Print debug output">
+        <input_param name="truevalue" value="100"/>
+      </param>
+    </params>
+    <requires>
+      <match shiptype="shiptype.tug"/>
+    </requires>
+    <location object="$target" condition="$target.exists"/>
+  </order>
+  <interrupts>
+    <handler ref="SectorChangeHandler"/>
+    <handler ref="TargetInvalidHandler"/>
+    <handler ref="AttackHandler"/>
+    <handler ref="MissileLockHandler" />
+    <handler ref="ScannedHandler"/>
+    <handler ref="InspectedHandler"/>
+    <handler ref="FoundAbandonedHandler"/>
+    <handler ref="FoundLockboxHandler"/>
+    <handler ref="ResupplyHandler"/>
+    <handler ref="TideHandler"/>
+  </interrupts>
+  <patch sinceversion="1">
+    <do_if value="not $target.exists or not $target.canbetowed or (@$target.tugship and $target.tugship != this.assignedcontrolled) or (@$target.salvageclaimants.count and not $target.salvageclaimants.indexof.{this.assignedcontrolled}) or not @$target.recyclingwares.remaining.count">
+      <debug_text text="'%s%s%s%s%s'.[$target.exists, $target.canbetowed, (not @$target.tugship or $target.tugship == this.assignedcontrolled), (not @$target.salvageclaimants.count or $target.salvageclaimants.indexof.{this.assignedcontrolled}), @$target.recyclingwares.remaining.count]" chance="0"/>
+      <debug_text text="'PATCH: collecting invalid object %s %s %s. dropping and resetting.'.[@$target.macro, @$target.knownname, @$target]" filter="savegame"/>
+      <do_if value="this.assignedcontrolled.towedobject">
+        <stop_towing_object ship="this.assignedcontrolled"/>
+      </do_if>
+      <!-- clear target and reset and restart the script -->
+      <edit_order_param order="this.assignedcontrolled.order" param="'target'" value="null"/>
+    </do_if>
+  </patch>
+  <attention min="unknown">
+    <actions>
+
+      <do_if value="(this.assignedcontrolled.type != shiptype.tug) or not this.assignedcontrolled.cantowobjects">
+        <debug_text text="'%s %s %s cannot tow objects. aborting.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled]" filter="error"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <do_if value="not $target.exists">
+        <debug_text text="'Target %s (%s, %s) has no valid context (disconnected?). Aborting.'.[@$target.knownname, $target, @$target.idcode]" chance="$debugchance"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <do_if value="not $target.canbetowed">
+        <debug_text text="'target %s %s %s %s %s containing %s is an object that cannot be towed.'.[@$target.class, @$target.idcode, @$target.knownname, $target, @$target.macro, @$target.wares.list]" filter="error"/>
+        <resume label="finish"/>
+      </do_if>
+      <!--<do_if value="not $target.isclass.recyclable and (not $target.state.wreck or (not $target.isrealclass.ship_s and not $target.isrealclass.ship_m))">
+        <debug_text text="'target %s %s %s %s is an object that cannot be towed.'.[@$target.class, @$target.idcode, @$target.knownname, $target]" filter="error"/>
+        <resume label="finish"/>
+      </do_if>-->
+
+      <do_if value="this.assignedcontrolled.towedobject">
+        <debug_text text="'Already towing an object. Aborting.'" chance="$debugchance"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <do_if value="$target.container">
+        <debug_text text="'Target %s %s %s %s is connected to %s %s %s and cannot be towed. Aborting.'.[@$target.class, @$target.idcode, @$target.knownname, $target, @$target.container.idcode, @$target.container.knownname, $target.container]" chance="$debugchance"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <do_if value="$target.tugship">
+        <debug_text text="'Target %s %s %s %s already being towed by %s %s %s and cannot be towed. Aborting.'.[@$target.class, @$target.idcode, @$target.knownname, $target, @$target.tugship.idcode, @$target.tugship.knownname, $target.tugship]" chance="$debugchance"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <do_if value="$target.zone.isclass.highway">
+        <debug_text text="'Target is in a highway and cannot be towed. Aborting.'" filter="error"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <do_if value="not $target.salvageclaimants.indexof.{this.assignedcontrolled}">
+        <assign_tow_target ship="this.assignedcontrolled" object="$target"/>
+        <do_if value="not $target.salvageclaimants.indexof.{this.assignedcontrolled}">
+          <debug_text text="'Failed to assign tow target'" chance="$debugchance"/>
+          <resume label="finish"/>
+        </do_if>
+      </do_if>
+
+      <!-- done after we have verified that assignment was successfully set. -->
+      <set_region_object_persistence object="$target"/>
+
+      <label name="start"/>
+
+      <set_command command="command.collect" param="$target"/>
+
+      <debug_text text="'Attempting to tow %s %s %s %s.'.[@$target.class, @$target.idcode, @$target.knownname, $target]" chance="$debugchance"/>
+
+      <do_if value="not this.assignedcontrolled.hascontext.{$target.zone}">
+        <run_script name="'move.generic'" result="$movesuccess">
+          <param name="destination" value="$target.zone"/>
+          <param name="endintargetzone" value="true"/>
+          <param name="strictblacklist" value="$internalorder"/>
+          <param name="debugchance" value="$debugchance"/>
+        </run_script>
+        <do_if value="not $movesuccess">
+          <do_if value="@this.assignedcontrolled.order.isrunning">
+            <set_order_failed order="this.assignedcontrolled.order" text="{1045,101}" comment="Unable to reach destination." recurring="$internalorder"/>
+          </do_if>
+          <debug_text text="'Unable to reach destination. Aborting.'" chance="$debugchance"/>
+          <resume label="finish"/>
+        </do_if>
+      </do_if>
+
+      <do_if value="not $target.exists">
+        <debug_text text="'target no longer exists. aborting.'" chance="$debugchance"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <do_if value="$target.tugship">
+        <debug_text text="'After long movement, target %s %s %s %s already being towed by %s %s %s. Aborting.'.[@$target.class, @$target.idcode, @$target.knownname, $target, @$target.tugship.idcode, @$target.tugship.knownname, $target.tugship]" chance="$debugchance"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <get_safe_pos result="$readypos" object="$target" space="$target.zone" zone="$target.zone" exact="$target.size + this.assignedcontrolled.size" allowyaxis="false"/>
+      <create_orientation name="$readyrot" orientation="look_at" refposition="$readypos">
+        <position object="$target"/>
+      </create_orientation>
+
+      <debug_text text="'moving to ready position.'" chance="$debugchance"/>
+      <move_to object="this.assignedcontrolled" destination="$target.zone" uselocalhighways="false" forcerotation="true" finishonapproach="false" commandaction="true" travel="true">
+        <position value="$readypos"/>
+        <rotation value="$readyrot"/>
+        <interrupt_after_time time="((this.assignedcontrolled.distanceto.[$target.zone, $readypos] * 2m) / [this.assignedcontrolled.maxspeed, 1m].max)s" comment="conservative estimate in case movement does not finish"/>
+      </move_to>
+
+      <do_if value="not $target.exists">
+        <debug_text text="'target no longer exists. aborting.'" chance="$debugchance"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <do_if value="$target.tugship">
+        <debug_text text="'After short movement, target %s %s %s %s already being towed by %s %s %s. Aborting.'.[@$target.class, @$target.idcode, @$target.knownname, $target, @$target.tugship.idcode, @$target.tugship.knownname, $target.tugship]" chance="$debugchance"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <start_towing_object ship="this.assignedcontrolled" object="$target"/>
+
+      <do_if value="not this.assignedcontrolled.towedobject">
+        <debug_text text="'Target not connected after start_towing_object.'" filter="error"/>
+        <resume label="finish"/>
+      </do_if>
+      <debug_text text="'Towing cable successfully attached.'" chance="$debugchance"/>
+
+      <apply_experience entity="this" experience="'ship_collect_scrap'" factor="1.0"/>
+      <apply_experience object="this.assignedcontrolled" role="entityrole.service" experience="'ship_collect_scrap'" factor="1.0"/>
+
+      <do_if value="$internalorder">
+        <clear_recurring_order_failure object="this.assignedcontrolled" id="this.assignedcontrolled.order.id"/>
+      </do_if>
+
+      <label name="finish"/>
+
+    </actions>
+  </attention>
+  <on_abort>
+    <do_if value="this.assignedcontrolled.isoperational">
+      <do_if value="@this.assignedcontrolled.towedobject">
+        <stop_towing_object ship="this.assignedcontrolled"/>
+      </do_if>
+      <do_if value="$target.exists">
+        <clear_tow_target ship="this.assignedcontrolled" object="$target"/>
+      </do_if>
+      <stop_moving object="this.assignedcontrolled"/>
+    </do_if>
+    <do_if value="$target.exists">
+      <set_region_object_persistence object="$target" persistent="false"/>
+    </do_if>
+  </on_abort>
+</aiscript>

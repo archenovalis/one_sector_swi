@@ -1,0 +1,2500 @@
+<?xml version="1.0" encoding="iso-8859-1" ?>
+<aiscript name="order.fight.escort" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" priority="2" version="26">
+  <!--
+
+  Escort ship
+
+  Movement of a ship escorting another ship.
+  This will stay in a group with a formation (by parameter) while
+  target to escort is operational.
+
+  Movement:
+  1 - Stay in formation
+  2 - Break formation to attack enemy if:
+    2.1 - Leader send a signal
+    2.2 - Leader under attack
+    2.3 - Escort group under attack
+
+  Will return to this formation if:
+  - enemy destroyed
+  - far away from escortee (if exists)
+
+  -->
+  <order id="Escort" name="{1041, 411}" description="{1041, 412}" category="internal">
+    <params>
+      <param name="target" default="this.ship.commander" type="object" text="{1041, 10024}" required="true" comment="Commander. The escortee (null for jobs, so they will use the commander). Mandatory for UI" >
+        <input_param name="class" value="[class.ship]" />
+        <input_param name="canbecommanderof" value="this.ship" />
+      </param>
+      <param name="formation" default="if (not @$target.formationshape) then param.formation.shape else @$target.formationshape" type="formationshape" text="{1041, 10042}" advanced="true" comment="Formation shape. the formation to escort"/>
+      <!-- NB: should this be a dynamic value to account for changing conditions? -->
+      <param name="formationparam" default="[[@$target.formationradius, this.ship.defaultformationradius.{@$target}].max, 5km].min" type="length" text="{1041, 10040}" advanced="true" comment="Formation distance. First parameter for formation">
+        <input_param name="min" value="this.ship.size + @$target.size"/>
+        <input_param name="max" value="[[@$target.formationradius * 2, this.ship.defaultformationradius.{@$target} * 2, 2km].max, 5km].min"/>
+        <input_param name="step" value="100m"/>
+      </param>
+      <param name="rollmembers" default="if (not @$target.formationshape) then param.formation.rollmembers else @$target.isformationrollmembers" type="bool" text="{1041, 10107}" advanced="true" comment="Roll with formation"/>
+      <param name="rollformation" default="if (not @$target.formationshape) then param.formation.rollformation else @$target.isformationrolling" type="bool" text="{1041, 10106}" advanced="true" comment="Roll the formation"/>
+      <param name="maxshipsperline" default="if (not @$target.formationshape) then param.formation.maxshipsperline else @$target.formationmaxshipsperline" type="number" text="{1041, 10060}" advanced="true" comment="Max ships per line. Maximum ships per line, parameter for formation" >
+        <input_param name="min" value="3" />
+        <input_param name="max" value="50" />
+        <input_param name="step" value="1" />
+      </param>
+      <param name="pursuedistance" default="if ((this.ship.assignment == assignment.defence) and this.ship.isplayerowned) then 20km else [@$target.maxradarrange, this.ship.maxradarrange, 1km].max" type="internal" text="{1041, 10090}" comment="Pursue distance. Distance to pursue/escort. Default: max radar range">
+        <input_param name="min" value="1km"/>
+        <input_param name="max" value="[@$target.maxradarrange, this.ship.maxradarrange, 1km].max"/>
+        <input_param name="step" value="1km"/>
+      </param>
+      <param name="timeout" type="time" default="0s" infinitevalue="0s" text="{1041, 10034}" advanced="true" comment="Duration">
+        <input_param name="min" value="0s" />
+        <input_param name="max" value="10h" />
+        <input_param name="step" value="30s" />
+      </param>
+      <param name="overrideformationskill" type="internal" default="false" comment="overrides skill check so currentformation is always the same as the formation parameter."/>
+      <param name="cannotdock" type="internal" default="false" text="{1041, 10133}" comment="Unable to dock. used for error handling in case of inability to dock"/>
+      <param name="releasesignal" type="internal" default="null" comment="Release signal. List: [param, param2]. This order will complete if a signal with $releasesignal.{1} as event.param and $releasesignal.{2} as event.param2 is sent to $target. While event.param MUST be non-null, event.param2 may be null."/>
+      <param name="subordinateorders" type="internal" default="[]" comment="Subordinate orders. subordinate dock orders to cancel. Defined in order.dock or order.dock.wait."/>
+      <param name="endontargetdeath" type="internal" default="false" comment="Allow the script to complete when $target, normally the commander of this ship, is destroyed. Also cancels this order if it is default."/>
+      <param name="thresholdbreak" type="internal" default="100.0f" advanced="false" text="'Threshold formation  break'" comment="The hull/shield threshold for which this ship will break the formation when it is lower" />
+      <param name="debugchance" type="bool" default="0" advanced="true" text="{1041, 10086}" comment="Print debug output">
+        <input_param name="truevalue" value="100"/>
+      </param>
+    </params>
+    <requires>
+      <match shiptype="shiptype.lasertower" negate="true"/>
+      <match class="class.spacesuit" negate="true"/>
+    </requires>
+    <location object="$target" condition="$target.exists" />
+  </order>
+  <interrupts>
+    <library>
+      <actions name="SetCurrentFormation">
+        <!-- do not change formationparam so we remember which formation we wanted and can switch to it if a better commander takes over or if our current commander gets better. -->
+        <set_value name="$currentformation" exact="$formation"/>
+        <do_if value="@$target.pilot">
+          <set_value name="$_commanderstarthirds" exact="($target.pilot.combinedskill / 6.66f)i"/>
+          <do_if value="$overrideformationskill or $target.pilot.combinedskill == 100">
+            <set_value name="$_commanderstarthirds" exact="15"/>
+          </do_if>
+          <do_all exact="$_commanderstarthirds + 1" counter="$i" reverse="true">
+            <!-- do_all iterator is 1-based, but skills, hence formation categories, are 0-based. iterate from current skill+1 to 1 and adjust index by -1. -->
+            <do_if value="not $locformationindex? and @param.formation.skillshapes.{$i-1}">
+              <set_value name="$locformationindex" exact="$i-1"/>
+            </do_if>
+            <do_if value="@param.formation.skillshapes.{$i-1}.indexof.{$currentformation}">
+              <set_value name="$formationislegal"/>
+              <break/>
+            </do_if>
+          </do_all>
+          <do_if value="not $formationislegal?">
+            <!-- handling for zero-skill case.
+              problem: zero-skill formations are straight lines which, with nested formations, results in overlapping lines.
+              solution: alternate horizontal and vertical lines.
+              worst case: all commanders in a complex formation have less than three piloting skill. -->
+            <do_if value="$_commanderstarthirds lt 3">
+              <set_value name="$layer" exact="1"/>
+              <set_value name="$loccommander" exact="$target"/>
+              <do_while value="@$loccommander.commander.isclass.ship">
+                <set_value name="$loccommander" exact="$loccommander.commander"/>
+                <set_value name="$layer" exact="$layer + 1"/>
+              </do_while>
+              <set_value name="$currentformation" exact="formationshape.lineastern"/>
+              <do_if value="$layer % 2">
+                <set_value name="$currentformation" exact="formationshape.lineabreast"/>
+              </do_if>
+              <remove_value name="$layer"/>
+              <remove_value name="$loccommander"/>
+            </do_if>
+            <do_elseif value="$locformationindex?">
+              <set_value name="$currentformation" exact="param.formation.skillshapes.{$locformationindex}.random"/>
+            </do_elseif>
+            <do_else>
+              <debug_text text="'$locformationindex not initialized! formation will not be changed. commander captain piloting skill: %s'.[$target.pilot.skill.piloting]" filter="error"/>
+            </do_else>
+            <debug_text text="'current formation changed from %s to %s. commander star thirds: %s. job ID: %s, commander job ID: %s'.[$formation, $currentformation, $_commanderstarthirds, @this.assignedcontrolled.job, @$target.job]" chance="$debugchance"/>
+          </do_if>
+          <remove_value name="$locformationindex"/>
+          <remove_value name="$formationislegal"/>
+          <remove_value name="$_commanderstarthirds"/>
+        </do_if>
+      </actions>
+      <actions name="CheckToRestock">
+        <do_if value="not this.assignedcontrolled.isunit">
+          <!-- check for a fleet resupplier. if present, only get supplies at the fleet resupplier. -->
+          <do_if value="@this.assignedcontrolled.dock.container.cansupplyclass.{this.assignedcontrolled.class} and (this.assignedcontrolled.dock.container.trueowner == this.trueowner) and this.assignedcontrolled.dock.container.shiptrader">
+            <!-- if i am currently docked at either a carrier or a resupplier, resupply at the ship i'm docked at. -->
+            <set_value name="$resupplier" exact="this.assignedcontrolled.dock.container"/>
+            <debug_text text="'%s case 1: resupplier %s %s %s'.[this.assignedcontrolled.class, $resupplier.idcode, $resupplier.knownname, $resupplier]" chance="$debugchance"/>
+          </do_if>
+          <do_elseif value="@$iscarrierbased and ($target.trueowner == this.trueowner) and $target.cansupplyclass.{this.assignedcontrolled.class} and $target.shiptrader and (this.assignedcontrolled.iscapitalship or $target.dockingallowed.{this.assignedcontrolled})">
+            <!-- if i am directly subordinate to a carrier and can dock at the carrier, always resupply at the carrier. -->
+            <set_value name="$resupplier" exact="$target"/>
+            <debug_text text="'%s case 2: resupplier %s %s %s'.[this.assignedcontrolled.class, $resupplier.idcode, $resupplier.knownname, $resupplier]" chance="$debugchance"/>
+          </do_elseif>
+          <do_else>
+            <set_value name="$topcommander" exact="this.assignedcontrolled.toplevelcommander"/>
+            <do_if value="$topcommander.cansupplyclass.{this.assignedcontrolled.class} and $topcommander.shiptrader and (this.assignedcontrolled.iscapitalship or $topcommander.dockingallowed.{this.assignedcontrolled})">
+              <set_value name="$resupplier" exact="$topcommander"/>
+              <debug_text text="'%s case 3: resupplier %s %s %s'.[this.assignedcontrolled.class, $resupplier.idcode, $resupplier.knownname, $resupplier]" chance="$debugchance"/>
+            </do_if>
+            <do_else>
+              <!-- NB: this can mean that a fleet resupply ship will not itself have a resupply unless that fleet has at least two resupply ships.
+              they will only need this for repairs. carriers and resupplier ships take care of their own ammo and deployables. -->
+              <do_for_each name="$evalship" in="$topcommander.allsubordinates">
+                <do_if value="$evalship.isoperational and ($evalship.trueowner == this.trueowner)">
+                  <debug_text text="'%s %s %s is: operational: %s, a resupplier: %s, a carrier that i can dock at: %s'.[$evalship.idcode, $evalship.knownname, $evalship, $evalship.isoperational, $evalship.type == shiptype.resupplier, ($evalship.type == shiptype.carrier) and $evalship.dockingallowed.{this.assignedcontrolled}]" chance="$debugchance"/>
+                  <!-- otherwise, if i can dock at a carrier, resupply at either a carrier or a resupply ship. -->
+                  <!-- else, resupply at a fleet resupply ship. -->
+                  <do_if value="$evalship.cansupplyclass.{this.assignedcontrolled.class} and $evalship.shiptrader and (this.assignedcontrolled.iscapitalship or $evalship.dockingallowed.{this.assignedcontrolled})">
+                    <set_value name="$resupplier" exact="$evalship"/>
+                    <break/>
+                  </do_if>
+                </do_if>
+              </do_for_each>
+              <debug_text text="'%s case 4: resupplier %s %s %s'.[this.assignedcontrolled.class, $resupplier.idcode, $resupplier.knownname, $resupplier]" chance="$resupplier? * $debugchance"/>
+            </do_else>
+            <remove_value name="$topcommander"/>
+          </do_else>
+          <do_if value="@$resupplier.isoperational">
+            <!-- this.$resupplier for use in combat scripts where we might run out of supplies while running the script. -->
+            <set_value name="this.$resupplier" exact="$resupplier"/>
+            <debug_text text="'%s %s %s checking to see if we need supplies. Our fleet resupplier is: %s %s %s. cansupply: %s, has shiptrader: %s'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, $resupplier.idcode, $resupplier.knownname, $resupplier, $resupplier.cansupplyclass.{this.assignedcontrolled.class}, $resupplier.shiptrader]" chance="$debugchance"/>
+            <signal_objects object="this.assignedcontrolled" param="'resupply'" param2="[false, $resupplier]" param3="$debugchance" comment="param2 = [urgent?, resupplystationID], param3 = $debugchance"/>
+          </do_if>
+          <do_else>
+            <debug_text text="'%s %s %s has no fleet resupplier.'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled]" chance="$debugchance"/>
+          </do_else>
+        </do_if>
+      </actions>
+      <actions name="CreateAttackOrder">
+        <do_if value="this.assignedcontrolled.subordinategroupdockoverride">
+          <debug_text text="'Inactive subordinate %s %s %s ordered to attack.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled]" filter="error"/>
+        </do_if>
+        <do_elseif value="not this.assignedcontrolled.dps.all">
+          <debug_text text="'No DPS. Unable to attack. Disengaging.'" chance="$debugchance"/>
+        </do_elseif>
+        <do_elseif value="@$enemy.canbeattacked">
+          <do_if value="$enemy.coverowner">
+            <do_if value="not $enemy.isclass.defensible and $enemy.defensible">
+              <signal_objects object="$enemy.defensible" param="'LoseCover'"/>
+            </do_if>
+            <do_else>
+              <signal_objects object="$enemy" param="'LoseCover'"/>
+            </do_else>
+          </do_if>
+          <signal_objects object="this.assignedcontrolled" param="'LoseCover'"/>
+          <do_if value="not this.mayattack.{$enemy}">
+            <do_if value="this.isplayerowned">
+              <set_relation_boost object="$enemy" otherobject="this" value="this.owner.relation.kill.min" decay="1" delay="10min" silent="true" />
+            </do_if>
+            <do_else>
+              <set_relation_boost object="this" otherobject="$enemy" value="this.owner.relation.kill.min" decay="1" delay="10min" silent="true" />
+            </do_else>
+          </do_if>
+          <do_if value="@$target.subordinates.{assignment.positiondefence}.count and $target.sector">
+            <create_position name="$_locpos" space="$target.sector" object="$target"/>
+            <signal_objects object="$target" param="'intersector_reinforce'" param2="[$target.sector, $_locpos]" param3="this.assignedcontrolled.subordinategroupid"/>
+            <remove_value name="$_locpos"/>
+          </do_if>
+          <debug_text text="'%s %s %s attacking %s %s %s.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, @$enemy.idcode, @$enemy.knownname, $enemy]" chance="$debugchance"/>
+          <set_value name="$internalordercalled"/>
+          <set_value name="$attackorderid" exact="'Attack'"/>
+          <do_if value="(this.assignedcontrolled.assignment == assignment.attack) and ($target == player.occupiedship)">
+            <set_value name="$attackorderid" exact="'Attack_Player'"/>
+          </do_if>
+          <create_order id="$attackorderid" object="this.assignedcontrolled" immediate="true">
+            <param name="primarytarget" value="$enemy"/>
+            <param name="escort" value="@$target"/>
+            <param name="pursuedistance" value="$pursuedistance" comment="make sure to be the same distance as max attack range"/>
+            <param name="pursuetargets" value="false"/>
+            <param name="allowothertargets" value="($assignment != assignment.attack) and ((@$target.order.id != 'Attack') or $target.order.$allowothertargets)"/>
+            <param name="targetclasses" value="if ($assignment == assignment.interception) then [class.ship_s, class.ship_m] else (if ($assignment == assignment.bombardment) then [class.ship_l, class.ship_xl] else [])"/>
+            <param name="forceprimarytarget" value="if (($assignment == assignment.attack) and ((@$target.order.id == 'Attack') or (@$target.order.id == 'Attack_Player'))) then $target.order.$forceprimarytarget else false"/>
+            <param name="internalorder" value="true"/>
+            <param name="debugchance" value="$debugchance" />
+          </create_order>
+        </do_elseif>
+        <do_else>
+          <debug_text text="'subordinate %s %s %s ordered to attack invalid target %s %s %s.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, @$enemy.idcode, @$enemy.knownname, @$enemy]" chance="$debugchance"/>
+        </do_else>
+      </actions>
+      <actions name="GetFleetAdmiral">
+        <set_value name="$fleetcmdr" exact="$target"/>
+        <do_while value="@$fleetcmdr.commander.isclass.ship" comment="$fleetcmdr would have to have a commander that is operational and that is a ship.">
+          <set_value name="$fleetcmdr" exact="$fleetcmdr.commander"/>
+        </do_while>
+        <clear_group group="$fleetcmdrgrp"/>
+        <do_if value="$fleetcmdr.isoperational">
+          <add_to_group groupname="$fleetcmdrgrp" object="$fleetcmdr"/>
+          <do_if value="$fleetcmdr.pilot">
+            <do_if value="@$fleetadmiral.$fleet and $fleetadmiral != $fleetcmdr.pilot">
+              <!-- will be recreated and repopulated for the new admiral below -->
+              <remove_value name="$fleetadmiral.$fleet"/>
+            </do_if>
+            <set_value name="$fleetadmiral" exact="$fleetcmdr.pilot"/>
+            <do_if value="not $fleetadmiral.$fleet?">
+              <create_group groupname="$fleetadmiral.$fleet"/>
+            </do_if>
+          </do_if>
+        </do_if>
+      </actions>
+    </library>
+    <handler ref="SectorChangeHandler"/>
+    <handler ref="ScannedHandler" />
+    <handler ref="InspectedHandler"/>
+    <handler ref="TargetInvalidHandler" />
+    <handler ref="ResupplyHandler" />
+    <handler ref="TideHandler" />
+    <handler>
+      <conditions>
+        <!-- event.param2 = cover faction, event.param3 = debugchance -->
+        <event_object_signalled object="this.ship" param="'Cover up'"/>
+      </conditions>
+      <actions>
+        <signal_objects object="player.galaxy" param="'Cover'" param2="[this.ship, event.param2]"/>
+        <debug_text text="'%1 set cover to %2'.[this.ship.knownname, event.param2]" chance="event.param3"/>
+      </actions>
+    </handler>
+    <handler>
+      <conditions>
+        <check_any>
+          <event_object_destroyed group="$fleetcmdrgrp"/>
+          <event_object_commander_set group="$fleetcmdrgrp"/>
+        </check_any>
+        <check_value value="not @this.$goattack"/>
+      </conditions>
+      <actions>
+        <!-- $fleetadmiral.$fleet will be initialized at resume -->
+        <include_interrupt_actions ref="GetFleetAdmiral"/>
+        <abort_called_scripts resume="start"/>
+      </actions>
+    </handler>
+    <!-- new $fleetadmiral could be the same as new $leaderpilot -->
+    <handler consume="false">
+      <conditions>
+        <event_control_entity_added group="$fleetcmdrgrp"/>
+        <check_value value="not @this.$goattack"/>
+      </conditions>
+      <actions>
+        <debug_text text="'changing fleet admirals from %s %s to %s %s.'.[$fleetadmiral.knownname, $fleetadmiral, event.param.knownname, event.param]" chance="$debugchance"/>
+        <do_if value="$fleetadmiral? and $fleetadmiral.$fleet? and not event.param.$fleet?">
+          <remove_from_group group="$fleetadmiral.$fleet" object="this.ship"/>
+          <!-- copy the squadron variables from the original fleet admiral's blackboard to that of the new fleet admiral, -->
+          <set_value name="event.param.$fleet" exact="$fleetadmiral.$fleet"/>
+          <!-- and delete them from the old fleet admiral's blackboard. -->
+          <remove_value name="$fleetadmiral.$fleet"/>
+        </do_if>
+        <!-- then set the new fleet admiral as $fleetadmiral. -->
+        <set_value name="$fleetadmiral" exact="event.param"/>
+        <do_if value="not $fleetadmiral.$fleet?">
+          <create_group groupname="$fleetadmiral.$fleet"/>
+        </do_if>
+        <abort_called_scripts resume="start"/>
+      </actions>
+    </handler>
+    <handler consume="false">
+      <conditions>
+        <event_control_entity_added object="$target" check="false"/>
+        <check_value value="not @this.$goattack"/>
+      </conditions>
+      <actions>
+        <debug_text text="'changing squadron leaders from %s %s to %s %s.'.[$leaderpilot.knownname, $leaderpilot, event.param.knownname, event.param]" chance="$debugchance"/>
+        <do_if value="$leaderpilot? and $leaderpilot.$squad_formationdist? and not event.param.$squad_formationdist?">
+          <!-- copy the squadron variables from the original leader pilot's blackboard to that of the new leader pilot, -->
+          <set_value name="event.param.$squad_formationdist" exact="$leaderpilot.$squad_formationdist"/>
+          <set_value name="event.param.$escortgroup" exact="$leaderpilot.$escortgroup"/>
+          <!-- and delete them from the old leader pilot's blackboard. -->
+          <remove_value name="$leaderpilot.$squad_formationdist"/>
+          <remove_value name="$leaderpilot.$escortgroup"/>
+        </do_if>
+        <!-- then set the new leader pilot as $leaderpilot. -->
+        <set_value name="$leaderpilot" exact="event.param"/>
+        <do_if value="@$leaderpilot.escortgroup.indexof.{this.assignedcontrolled}">
+          <remove_from_group group="$leaderpilot.$escortgroup" object="this.ship"/>
+        </do_if>
+        <!-- re-evaluate current formation when leaderpilot changes -->
+        <include_interrupt_actions ref="SetCurrentFormation"/>
+        <abort_called_scripts resume="start"/>
+      </actions>
+    </handler>
+    <handler>
+      <conditions>
+        <check_any>
+          <event_object_signalled object="$target" param="@$releasesignal.{1}" param2="@$releasesignal.{2}" check="false"/>
+          <event_object_destroyed object="$target" check="false"/>
+          <event_object_abandoned object="$target" check="false"/>
+          <event_object_docked object="$target" check="false"/>
+          <check_all>
+            <event_object_changed_true_owner object="$target" check="false"/>
+            <check_value value="event.param != this.ship.trueowner"/>
+          </check_all>
+        </check_any>
+        <!-- bullet-proofing. to make sure that this handler does not respond to signals with null parameters. -->
+        <check_value value="@$releasesignal.{1}"/>
+      </conditions>
+      <actions>
+        <debug_text text="'%s %s %s released. event: %s'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, event.name]" chance="$debugchance"/>
+        <set_value name="$validfinish"/>
+        <abort_called_scripts resume="finish"/>
+      </actions>
+    </handler>
+    <handler comment="Squadron moves to attack or squadron stops attack.">
+      <conditions>
+        <event_object_order_ready object="$target" check="false"/>
+        <check_value value="event.param.exists"/>
+        <check_any>
+          <check_all>
+            <!-- if we are shifting to attack, save the attack order in case the commander dies. -->
+            <check_value value="event.param.id == 'Attack'"/>
+            <check_value value="@event.param.$primarytarget.canbeattacked"/>
+            <debug_text text="'Squadron under %s %s %s moving to attack %s %s %s.'.[@$target.idcode, @$target.knownname, $target, @event.param.$primarytarget.idcode, @event.param.$primarytarget.knownname, event.param.$primarytarget]" debugchance="$debugchance"/>
+            <set_value name="$temp_squadorder" exact="event.param"/>
+          </check_all>
+          <check_all>
+            <!-- if we are done attacking, clear squadorder. -->
+            <check_value value="$squadorder?"/>
+            <debug_text text="'Squadron under %s %s %s stopped attacking. Clearing squadron order.'.[@$target.idcode, @$target.knownname, $target]" debugchance="$debugchance"/>
+          </check_all>
+        </check_any>
+      </conditions>
+      <actions>
+        <!-- NB: $temp_squadorder could have been cancelled between the event firing and these actions taking place. -->
+        <do_if value="@$temp_squadorder.exists">
+          <!-- do not propagate $maintaindistance, $minrange, and $maxrange since that is used by carriers and if our commander is a carrier and gets destroyed, we do not want the new commander to inherit our current commander's attack behavior. -->
+          <set_value name="$squadorder" exact="table[
+                                                          $id = $temp_squadorder.id,
+                                                          $primarytarget = $temp_squadorder.$primarytarget,
+                                                          $secondarytargets = $temp_squadorder.$secondarytargets,
+                                                          $escort = $temp_squadorder.$escort,
+                                                          $pursuedistance = $temp_squadorder.$pursuedistance,
+                                                          $pursuetargets = $temp_squadorder.$pursuetargets,
+                                                          $allowothertargets = $temp_squadorder.$allowothertargets,
+                                                          $checkrelation = $temp_squadorder.$checkrelation,
+                                                          $disable = $temp_squadorder.$disable,
+                                                          $disablehullpercentagethreshold = $temp_squadorder.$disablehullpercentagethreshold,
+                                                          $disabletargets = $temp_squadorder.$disabletargets,
+                                                          $squad_attack = $temp_squadorder.$squad_attack,
+                                                          $boardingbehavior = $temp_squadorder.$boardingbehavior,
+                                                          $behaviortargetclasses = $temp_squadorder.$behaviortargetclasses,
+                                                          $uncover = $temp_squadorder.$uncover,
+                                                          $radius = $temp_squadorder.$radius,
+                                                          $radiusanchorpos = $temp_squadorder.$radiusanchorpos,
+                                                          $radiusanchorspace = $temp_squadorder.$radiusanchorspace,
+                                                          $forceprimarytarget = $temp_squadorder.$forceprimarytarget,
+                                                          $internalorder = $temp_squadorder.$internalorder,
+                                                          $debugchance = $temp_squadorder.$debugchance ]"/>
+          <debug_text text="'Saving squadron order to %s %s %s %s.'.[$squadorder.$id, @$squadorder.$primarytarget.idcode, @$squadorder.$primarytarget.knownname, $squadorder.$primarytarget]" chance="0"/>
+          <remove_value name="$temp_squadorder"/>
+        </do_if>
+        <do_else>
+          <remove_value name="$squadorder"/>
+        </do_else>
+      </actions>
+    </handler>
+    <handler comment="ship gets new assignment">
+      <conditions>
+        <check_any>
+          <event_object_changed_assignment object="this.assignedcontrolled"/>
+          <check_all>
+            <event_object_changed_assignment object="$assignmentobject" check="false"/>
+            <check_value value="this.assignedcontrolled.assignment == assignment.assist"/>
+          </check_all>
+        </check_any>
+      </conditions>
+      <actions>
+        <do_if value="event.param3 != $assignment">
+          <debug_text text="'%s %s %s assignment changed from %s to %s.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, $assignment, event.param3]" chance="$debugchance"/>
+          <set_value name="$assignment" exact="event.param3"/>
+        </do_if>
+        <do_if value="$assignment != assignment.defence and $assignment != assignment.attack and $assignment != assignment.interception and $assignment != assignment.bombardment and $assignment != assignment.supplyfleet">
+          <do_if value="@this.assignedcontrolled.order.exists">
+            <!-- assignment changed to one which requires a different order -->
+            <cancel_order order="this.assignedcontrolled.order"/>
+          </do_if>
+          <set_value name="$validfinish"/>
+          <abort_called_scripts resume="finish"/>
+        </do_if>
+      </actions>
+    </handler>
+    <handler comment="handler for commander going on a venture">
+      <conditions>
+        <event_object_docking_started object="$target" check="false"/>
+        <check_value value="@event.param.isventureronly"/>
+      </conditions>
+      <actions>
+        <debug_text text="'commander leaving on a venture. leaving squadron.'" chance="$debugchance"/>
+        <create_order id="'AssignCommander'" object="this.assignedcontrolled" immediate="true">
+          <param name="cancelorders" value="true"/>
+          <param name="debugchance" value="$debugchance"/>
+        </create_order>
+        <abort_called_scripts resume="finish"/>
+      </actions>
+    </handler>
+    <handler comment="commander signalled to append a subordinateorder. used when commander is already docked at commanders commander when subordinate joins.">
+      <conditions>
+        <!-- param2 == single order -->
+        <event_object_signalled object="this.assignedcontrolled" param="'add_subordinateorder'"/>
+        <check_value value="event.param2.exists"/>
+      </conditions>
+      <actions>
+        <append_to_list name="$subordinateorders" exact="event.param2"/>
+      </actions>
+    </handler>
+  </interrupts>
+  <init>
+    <!-- Now is safe to set the command -->
+    <set_command command="command.escort" param="$target" />
+    <set_command_action commandaction="commandaction.flying" />
+    <set_value name="$starttime" exact="player.age" />
+
+    <set_value name="$iscarrierbased" exact="((@$target.type == shiptype.carrier) or this.assignedcontrolled.subordinategroupdockoverride) and not this.assignedcontrolled.iscapitalship"/>
+    <do_if value="$iscarrierbased and $target.isoperational">
+      <find_dockingbay name="$locdock" object="$target">
+        <match_dock size="this.assignedcontrolled.docksize" storage="false"/>
+      </find_dockingbay>
+      <do_if value="not @$locdock.isoperational">
+        <set_value name="$iscarrierbased" exact="false"/>
+      </do_if>
+      <remove_value name="$locdock"/>
+    </do_if>
+
+    <do_if value="$target == this.ship">
+      <!-- if this is the ship's order, we should cancel the order. we will get a new order via orders.base->lib.request.orders, but the cause should still be fixed.
+        if this was called by a different order, the calling order should handle the error.
+        NB: simply returning if this is the default order will result in this order still being ready and simply being started again, leading to an infinite loop. -->
+      <debug_text text="'Ship is trying to escort itself.'" filter="error"/>
+      <do_if value="this.assignedcontrolled.order.id != 'Escort'">
+        <return/>
+      </do_if>
+      <cancel_order order="this.assignedcontrolled.order"/>
+    </do_if>
+
+    <do_if value="$target.isoperational and not $target.isclass.ship">
+      <debug_text text="'Ship is trying to escort %s %s %s %s which is not a ship.'.[@$target.class, @$target.idcode, @$target.knownname, $target]" filter="error"/>
+      <do_if value="this.assignedcontrolled.order.id != 'Escort'">
+        <return/>
+      </do_if>
+      <cancel_order order="this.assignedcontrolled.order"/>
+    </do_if>
+
+    <do_if value="$target.isoperational and this.ship.isclass.[class.ship_l, class.ship_xl] and $target.isclass.[class.ship_s, class.ship_m]">
+      <debug_text text="'capital ship trying to escort a smaller ship: Use ProtectShip order instead'" filter="error"/>
+      <do_if value="this.assignedcontrolled.order.id != 'Escort'">
+        <return/>
+      </do_if>
+      <cancel_order order="this.assignedcontrolled.order"/>
+    </do_if>
+
+    <set_value name="this.$goattack" exact="false"/>
+    <remove_value name="this.$resupplier" chance="this.$resupplier? * 100"/>
+    <!-- no need to update since changing assignment should result in a new instance of this script. -->
+    <set_value name="$assignment" exact="this.assignedcontrolled.assignment"/>
+    <set_value name="$assignmentobject" exact="null"/>
+    <do_if value="($assignment == assignment.assist) and (@this.assignedcontrolled.defaultorder.id == 'Assist')">
+      <do_if value="@this.assignedcontrolled.defaultorder.$orderobject.isoperational">
+        <set_value name="$assignmentobject" exact="this.assignedcontrolled.defaultorder.$orderobject"/>
+        <set_value name="$assignment" exact="$assignmentobject.assignment"/>
+      </do_if>
+    </do_if>
+
+    <!-- If the target is on attack, and the threshold formation break triggers -->
+    <do_if value="@$target.order.id == 'Attack' and ((this.ship.hullpercentage) le $thresholdbreak)">
+      <set_value name="$temp_squadorder" exact="$target.order"/>
+      <!-- do not propagate $maintaindistance, $minrange, and $maxrange since that is used by carriers and if our commander is a carrier and gets destroyed, we do not want the new commander to inherit our current commander's attack behavior. -->
+      <set_value name="$squadorder" exact="table[
+                                                      $id = $temp_squadorder.id,
+                                                      $primarytarget = $temp_squadorder.$primarytarget,
+                                                      $secondarytargets = $temp_squadorder.$secondarytargets,
+                                                      $escort = $temp_squadorder.$escort,
+                                                      $pursuedistance = $temp_squadorder.$pursuedistance,
+                                                      $pursuetargets = $temp_squadorder.$pursuetargets,
+                                                      $allowothertargets = $temp_squadorder.$allowothertargets,
+                                                      $checkrelation = $temp_squadorder.$checkrelation,
+                                                      $disable = $temp_squadorder.$disable,
+                                                      $disablehullpercentagethreshold = $temp_squadorder.$disablehullpercentagethreshold,
+                                                      $disabletargets = $temp_squadorder.$disabletargets,
+                                                      $squad_attack = $temp_squadorder.$squad_attack,
+                                                      $boardingbehavior = $temp_squadorder.$boardingbehavior,
+                                                      $behaviortargetclasses = $temp_squadorder.$behaviortargetclasses,
+                                                      $uncover = $temp_squadorder.$uncover,
+                                                      $radius = $temp_squadorder.$radius,
+                                                      $radiusanchorpos = $temp_squadorder.$radiusanchorpos,
+                                                      $radiusanchorspace = $temp_squadorder.$radiusanchorspace,
+                                                      $forceprimarytarget = $temp_squadorder.$forceprimarytarget,
+                                                      $internalorder = $temp_squadorder.$internalorder,
+                                                      $debugchance = $temp_squadorder.$debugchance ]"/>
+      <remove_value name="$temp_squadorder"/>
+      <do_if value="($assignment == assignment.attack) and @$squadorder.$primarytarget.canbeattacked and not this.assignedcontrolled.subordinategroupdockoverride">
+        <set_value name="$enemy" exact="$squadorder.$primarytarget"/>
+        <do_if value="@$enemy.canbeattacked and ($target.distanceto.{$enemy} le $pursuedistance)">
+          <debug_text text="'commander already attacking %s %s %s %s. shifting to attack.'.[@$enemy.class, @$enemy.idcode, @$enemy.knownname, $enemy]" chance="$debugchance"/>
+          <include_interrupt_actions ref="CreateAttackOrder"/>
+        </do_if>
+        <do_else>
+          <set_value name="$enemy" exact="null"/>
+        </do_else>
+      </do_if>
+    </do_if>
+
+    <do_if value="$target.isoperational and ($target != this.assignedcontrolled.commander) and ($target.trueowner == this.assignedcontrolled.trueowner)">
+      <set_value name="$internalordercalled"/>
+      <debug_text text="'subordinate group: %s, assignment: %s'.[this.assignedcontrolled.subordinategroupid, this.assignedcontrolled.assignment]" chance="0"/>
+      <!-- if subordinategroup supercedes assignment if subordinategroupid gt 0. -->
+      <create_order id="'AssignCommander'" object="this.assignedcontrolled" immediate="true">
+        <param name="commander" value="$target"/>
+        <param name="subordinategroup" value="this.assignedcontrolled.subordinategroupid"/>
+        <param name="assignment" value="this.assignedcontrolled.assignment"/>
+        <param name="cancelorders" value="false"/>
+        <param name="debugchance" value="$debugchance"/>
+      </create_order>
+    </do_if>
+
+    <include_interrupt_actions ref="SetCurrentFormation"/>
+
+    <set_value name="$maxformationoffset" exact="5km" comment="half of the maximum offset enforced in code."/>
+    <create_group groupname="$fleetcmdrgrp"/>
+
+    <debug_text text="'init: formationparam: %sm\n target formationradius: %sm\n default formationradius: %sm\n this ship: %s %s %s\n commander: %s %s %s\n commander radius: %sm\n my radius: %s\n my max forward speed: %sm/s\n my max yaw speed: %s'.[$formationparam, @$target.formationradius, @this.ship.defaultformationradius.{$target}, this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, @$target.idcode, @$target.knownname, $target, $target.size / 2.0, this.assignedcontrolled.size / 2.0, this.assignedcontrolled.maxspeed, this.assignedcontrolled.maxyawspeed]" chance="$debugchance"/>
+  </init>
+  <patch sinceversion="1">
+    <set_value name="$maxformationoffset" exact="5km"/>
+  </patch>
+  <patch sinceversion="3">
+    <do_if value="$iscarrierbased and this.assignedcontrolled.iscapitalship">
+      <set_value name="$iscarrierbased" exact="false"/>
+    </do_if>
+  </patch>
+  <patch sinceversion="4">
+    <!--<do_if value="this.assignedcontrolled.order.id == 'Escort'">
+      <edit_order_param order="this.assignedcontrolled.order" param="'overrideformationskill'" value="not this.isplayerowned"/>
+    </do_if>-->
+    <!-- no way to determine if the ship's job sets overrideformationskill, so activate for all NPC ships for first pass so nothing changes at first. parameter will be set for any subsequent instances of the job. -->
+    <set_value name="$overrideformationskill" exact="not this.isplayerowned"/>
+    <include_interrupt_actions ref="SetCurrentFormation"/>
+    <do_if value="$currentformation != $formation">
+      <debug_text text="'PATCH: current formation changed from %s to %s. commander piloting skill: %s. job ID: %s, commander job ID: %s'.[$formation, $currentformation, $target.pilot.skill.piloting, @this.assignedcontrolled.job, @$target.job]" filter="savegame"/>
+    </do_if>
+  </patch>
+  <patch sinceversion="6">
+    <do_if value="$target.isonlineobject">
+      <debug_text text="'PATCH: target is on a venture. leaving squadron.'" filter="savegame"/>
+      <create_order id="'AssignCommander'" object="this.assignedcontrolled" immediate="true">
+        <param name="cancelorders" value="true"/>
+        <param name="debugchance" value="$debugchance"/>
+      </create_order>
+      <do_if value="(this.assignedcontrolled.order.id == 'Escort') or (this.assignedcontrolled.order.id == 'SupplyFleet')">
+        <!-- restart the order and immediately redirects to label finish. -->
+        <edit_order_param order="this.assignedcontrolled.order" param="'target'" value="null"/>
+      </do_if>
+    </do_if>
+  </patch>
+  <patch sinceversion="7">
+    <do_if value="@this.$squadorder">
+      <do_if value="$target.order and (@$target.order.id == @this.$squadorder.id) and @this.$squadorder.$primarytarget.canbeattacked">
+        <set_value name="$squadorder" exact="this.$squadorder"/>
+        <set_value name="$squadorder.$disable" exact="$target.order.$disable"/>
+        <set_value name="$squadorder.$disablehullpercentagethreshold" exact="$target.order.$disablehullpercentagethreshold"/>
+        <set_value name="$squadorder.$disabletargets" exact="$target.order.$disabletargets"/>
+        <set_value name="$squadorder.$boardingbehavior" exact="$target.order.$boardingbehavior"/>
+        <set_value name="$squadorder.$behaviortargetclasses" exact="$target.order.$behaviortargetclasses"/>
+        <set_value name="$squadorder.$uncover" exact="$target.order.$uncover"/>
+        <set_value name="$squadorder.$radius" exact="$target.order.$radius"/>
+        <set_value name="$squadorder.$radiusanchorpos" exact="$target.order.$radiusanchorpos"/>
+        <set_value name="$squadorder.$radiusanchorspace" exact="$target.order.$radiusanchorspace"/>
+        <set_value name="$squadorder.$internalorder" exact="$target.order.$internalorder"/>
+      </do_if>
+      <remove_value name="this.$squadorder"/>
+    </do_if>
+  </patch>
+  <patch sinceversion="8">
+    <do_if value="this.assignedcontrolled.isformationwingman and ($target.zone.isclass.highway or ($target.sector != this.sector))">
+      <do_if value="(this.assignedcontrolled.order.id == 'Escort') or (this.assignedcontrolled.order.id == 'SupplyFleet')">
+        <!-- reset the target to restart the order script. -->
+        <edit_order_param order="this.assignedcontrolled.order" param="'target'" value="$target"/>
+      </do_if>
+    </do_if>
+  </patch>
+  <patch sinceversion="9">
+    <do_if value="this.assignedcontrolled.commander">
+      <set_value name="$assignment" exact="this.assignedcontrolled.assignment"/>
+    </do_if>
+  </patch>
+  <patch sinceversion="11">
+    <do_if value="@$fleetadmiral.exists and not $fleetadmiral.$fleet?">
+      <create_group groupname="$fleetadmiral.$fleet"/>
+    </do_if>
+  </patch>
+  <patch sinceversion="12">
+    <remove_value name="$internalordercalled"/>
+  </patch>
+  <patch sinceversion="14">
+    <do_if value="$in_formation? and not this.assignedcontrolled.isformationwingman">
+      <debug_text text="'PATCH: %s %s %s has in_formation set but is not in formation. clearing flag and reinitializing.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled]" filter="savegame"/>
+      <remove_value name="$in_formation"/>
+      <do_if value="(this.assignedcontrolled.order.id == 'Escort') or (this.assignedcontrolled.order.id == 'SupplyFleet')">
+        <edit_order_param order="this.assignedcontrolled.order" param="'target'" value="$target"/>
+      </do_if>
+    </do_if>
+  </patch>
+  <patch sinceversion="15">
+    <do_if value="this.assignedcontrolled.trueowner != $target.trueowner">
+      <debug_text text="'PATCH: %s %s %s has wrong true owner. changing owner to %s.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, $target.trueowner]" filter="savegame"/>
+      <set_owner object="this.assignedcontrolled" faction="$target.trueowner" overridenpc="true"/>
+    </do_if>
+  </patch>
+  <patch sinceversion="16">
+    <do_if value="(this.assignedcontrolled.assignment == assignment.defence) and this.isplayerowned and ($pursuedistance == this.assignedcontrolled.maxradarrange)">
+      <do_if value="(this.assignedcontrolled.order.id == 'Escort') or (this.assignedcontrolled.order.id == 'SupplyFleet')">
+        <edit_order_param order="this.assignedcontrolled.order" param="'pursuedistance'" value="20km"/>
+      </do_if>
+      <do_if value="(this.assignedcontrolled.defaultorder.id == 'Escort') or (this.assignedcontrolled.defaultorder.id == 'SupplyFleet')">
+        <edit_order_param order="this.assignedcontrolled.defaultorder" param="'pursuedistance'" value="20km"/>
+      </do_if>
+    </do_if>
+  </patch>
+  <patch sinceversion="22">
+    <do_if value="$fleetadmiral? and not $fleetadmiral.$fleet?">
+      <include_interrupt_actions ref="GetFleetAdmiral"/>
+      <debug_text text="'PATCH: retrieved new fleet admiral commanding: %s %s %s'.[@$fleetadmiral.assignedcontrolled.idcode, @$fleetadmiral.assignedcontrolled.knownname, $fleetadmiral.assignedcontrolled]" filter="savegame"/>
+    </do_if>
+  </patch>
+  <patch sinceversion="17" early="true">
+    <set_value name="$assignmentobject" exact="null"/>
+  </patch>
+  <patch sinceversion="18" early="true">
+    <set_value name="$thresholdbreak" exact="100.0f"/>
+    <set_value name="$endontargetdeath" exact="false"/>
+  </patch>
+  <patch sinceversion="19">
+    <do_if value="$target.isownerless">
+      <do_if value="(this.assignedcontrolled.order.id == 'Escort') or (this.assignedcontrolled.order.id == 'SupplyFleet')">
+        <edit_order_param order="this.assignedcontrolled.order" param="'target'" value="null"/>
+      </do_if>
+      <do_if value="(this.assignedcontrolled.defaultorder.id == 'Escort') or (this.assignedcontrolled.defaultorder.id == 'SupplyFleet')">
+        <edit_order_param order="this.assignedcontrolled.defaultorder" param="'target'" value="null"/>
+      </do_if>
+    </do_if>
+  </patch>
+  <patch sinceversion="20">
+    <do_if value="(@$target.defaultorder.id == 'Escort') and $target.dock and not this.assignedcontrolled.iscapitalship and $target.allcommanders.indexof.{$target.dock.defensible} and (@this.assignedcontrolled.dock.container != $target.dock.container)">
+      <set_value name="$loctarget" exact="$target"/>
+      <do_while value="(@$loctarget.defaultorder.id == 'Escort') and @$loctarget.defaultorder.$target">
+        <set_value name="$loctarget" exact="$loctarget.defaultorder.$target"/>
+        <do_if value="$target.dock.container == $loctarget">
+          <set_value name="$locdocktarget" exact="$target.dock.container"/>
+          <break/>
+        </do_if>
+      </do_while>
+      <remove_value name="$loctarget"/>
+
+      <do_if value="@$locdocktarget.isoperational">
+        <debug_text text="'immediate commander %s %s %s already docked\nat distant commander %s %s %s.\ndocking.'.[@$target.idcode, @$target.knownname, $target, @$locdocktarget.idcode, @$locdocktarget.knownname, $locdocktarget]" chance="$debugchance"/>
+        <set_value name="$internalordercalled"/>
+        <leave_formation object="this.assignedcontrolled"/>
+        <create_order name="$locorder" object="this.assignedcontrolled" id="'DockAndWait'" immediate="true">
+          <param name="destination" value="$locdocktarget"/>
+          <param name="dockfollowers" value="true"/>
+          <param name="debugchance" value="$debugchance"/>
+        </create_order>
+        <do_if value="$target.defaultorder.isrunning or ($target.order.id == 'DockAndWait')">
+          <signal_objects object="$target" param="'add_subordinateorder'" param2="$locorder"/>
+          <do_if value="$target.defaultorder.isrunning">
+            <edit_order_param order="$locorder" param="'callerid'" value="$target.defaultorder"/>
+          </do_if>
+          <do_else>
+            <edit_order_param order="$locorder" param="'callerid'" value="$target.order"/>
+          </do_else>
+        </do_if>
+        <do_else>
+          <set_value name="$locorders" exact="@$target.defaultorder.$subordinateorders.clone"/>
+          <do_if value="not @$locorders.count">
+            <set_value name="$locorders" exact="[]"/>
+          </do_if>
+          <append_to_list name="$locorders" exact="$locorder"/>
+          <edit_order_param order="$target.defaultorder" param="'subordinateorders'" value="$locorders"/>
+          <edit_order_param order="$locorder" param="'callerid'" value="$target.order"/>
+          <remove_value name="$locorders"/>
+        </do_else>
+        <remove_value name="$locorder"/>
+      </do_if>
+      <remove_value name="$locdocktarget"/>
+    </do_if>
+  </patch>
+  <patch sinceversion="21">
+    <remove_value name="$docked"/>
+  </patch>
+  <patch sinceversion="24">
+    <do_if value="$iscarrierbased">
+      <find_dockingbay name="$locdock" object="$target">
+        <match_dock size="this.assignedcontrolled.docksize" storage="false"/>
+      </find_dockingbay>
+      <do_if value="not @$locdock.isoperational">
+        <set_value name="$iscarrierbased" exact="false"/>
+      </do_if>
+      <remove_value name="$locdock"/>
+    </do_if>
+  </patch>
+  <patch sinceversion="26">
+    <do_if value="not @$leaderpilot and $target.pilot">
+      <debug_text text="'PATCH: changing squadron leaders from %s %s to %s %s.'.[@$leaderpilot.knownname, @$leaderpilot, $target.pilot.knownname, $target.pilot]" filter="savegame"/>
+      <do_if value="@$leaderpilot and $leaderpilot.$squad_formationdist? and not $target.pilot.$squad_formationdist?">
+        <!-- copy the squadron variables from the original leader pilot's blackboard to that of the new leader pilot, -->
+        <set_value name="$target.pilot.$squad_formationdist" exact="$leaderpilot.$squad_formationdist"/>
+        <set_value name="$target.pilot.$escortgroup" exact="$leaderpilot.$escortgroup"/>
+        <!-- and delete them from the old leader pilot's blackboard. -->
+        <remove_value name="$leaderpilot.$squad_formationdist"/>
+        <remove_value name="$leaderpilot.$escortgroup"/>
+      </do_if>
+      <!-- then set the new leader pilot as $leaderpilot. -->
+      <set_value name="$leaderpilot" exact="$target.pilot"/>
+      <do_if value="@$leaderpilot.escortgroup.indexof.{this.assignedcontrolled}">
+        <remove_from_group group="$leaderpilot.$escortgroup" object="this.ship"/>
+      </do_if>
+      <!-- re-evaluate current formation when leaderpilot changes -->
+      <include_interrupt_actions ref="SetCurrentFormation"/>
+      <!-- reset the target to restart the order script. -->
+      <edit_order_param order="this.assignedcontrolled.order" param="'target'" value="$target"/>
+    </do_if>
+  </patch>
+  <attention min="visible">
+    <actions>
+
+      <!-- short wait to allow events to trigger -->
+      <wait exact="1ms" sinceversion="25"/>
+
+      <do_if value="not this.assignedcontrolled.isunit and (not $assignment or (($assignment != assignment.defence) and ($assignment != assignment.attack) and ($assignment != assignment.interception) and ($assignment != assignment.bombardment) and ($assignment != assignment.supplyfleet)))">
+        <do_if value="@this.assignedcontrolled.order.exists">
+          <!-- assignment changed to one which requires a different order -->
+          <cancel_order order="this.assignedcontrolled.order"/>
+        </do_if>
+        <set_value name="$validfinish"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <!-- short wait with a wide range to assure that multiple ships do not check to restock all at the same time, to space out load. -->
+      <wait min="1ms" max="1s" sinceversion="13"/>
+
+      <!-- moved to before start label to avoid checking to restock at loopback. intention is to check to restock whenever a ship rejoins formation, which is not the case on loopback. -->
+      <!-- always check to see if we have to go in for supplies before joining formation. -->
+      <do_if value="$target.isoperational and not this.assignedcontrolled.isunit">
+        <!--do this before going to $target in case our resupplier is closer. -->
+        <include_interrupt_actions ref="CheckToRestock"/>
+      </do_if>
+
+      <label name="start" />
+
+      <wait min="200ms" max="400ms" />
+      <do_if value="not this.assignedcontrolled.isformationwingman or this.assignedcontrolled.formationleader != $target">
+        <stop_moving object="this.assignedcontrolled" immediate="false"/>
+        <leave_formation object="this.assignedcontrolled"/>
+      </do_if>
+      <cease_fire object="this.assignedcontrolled"/>
+
+      <set_value name="$enemy" exact="null" />
+
+      <do_if value="not $target.isoperational or (not $target.pilot and not $target.isplayerowned)">
+        <resume label="finish" />
+      </do_if>
+
+      <do_if value="$target.trueowner != this.trueowner">
+        <create_order id="'AssignCommander'" object="this.assignedcontrolled" immediate="true"/>
+        <resume label="finish" />
+      </do_if>
+
+      <do_if value="@this.assignedcontrolled.allsubordinates.indexof.{$target} or ($target.isformationwingman and $target.formationleader == this.assignedcontrolled)">
+        <do_if value="$target.isformationwingman and $target.formationleader == this.assignedcontrolled and $target.order.id == this.assignedcontrolled.order.id">
+          <do_if value="$target.defaultorder == $target.order">
+            <cancel_order order="$target.defaultorder"/>
+          </do_if>
+          <do_else>
+            <cancel_order order="$target.order"/>
+          </do_else>
+        </do_if>
+        <do_if value="this.assignedcontrolled.defaultorder and (this.assignedcontrolled.order == this.assignedcontrolled.defaultorder)">
+          <cancel_order order="this.assignedcontrolled.defaultorder"/>
+        </do_if>
+        <create_order id="'AssignCommander'" object="this.assignedcontrolled" immediate="true"/>
+        <set_value name="$validfinish"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <!-- If far away/different zone -->
+      <do_if value="(this.sector != $target.sector) or (((not this.assignedcontrolled.iscapitalship and not $target.zone.isclass.highway) or this.zone != $target.zone) and this.assignedcontrolled.bboxdistanceto.{$target} gt 10km)">
+        <leave_formation object="this.ship"/>
+        <do_if value="this.assignedcontrolled.dock">
+          <create_order id="'Undock'" object="this.assignedcontrolled" immediate="true"/>
+        </do_if>
+
+        <debug_text text="'leader in different zone'" chance="$debugchance" />
+        <run_script name="'move.generic'" result="$movesuccess">
+          <param name="destination" value="$target" />
+          <param name="endintargetzone" value="this.assignedcontrolled.iscapitalship or $target.zone.isclass.highway"/>
+          <param name="activepatrol" value="if (this.assignedcontrolled.assignment == assignment.interception) or (this.assignedcontrolled.assignment == assignment.bombardment) or (this.assignedcontrolled.assignment == assignment.defence) then true else false"/>
+          <param name="radius" value="$pursuedistance"/>
+          <param name="radiusanchorpos" value="position.[0m,0m,0m]"/>
+          <param name="radiusanchorspace" value="$target"/>
+          <param name="targetclasses" value="if (this.assignedcontrolled.assignment == assignment.interception) then [class.ship_s, class.ship_m] else (if (this.assignedcontrolled.assignment == assignment.bombardment) then [class.ship_l, class.ship_xl] else [])"/>
+          <param name="recallsubordinates" value="not @$squadorder.exists or (@$squadorder.id != 'Attack')"/>
+          <param name="debugchance" value="$debugchance"/>
+        </run_script>
+        <do_if value="not $movesuccess">
+          <do_if value="$target.isoperational">
+            <do_if value="this.assignedcontrolled.gatedistance.{$target} ge 0">
+              <debug_text text="'target just changed sectors but is reachable. going there'" chance="$debugchance"/>
+              <resume label="start"/>
+            </do_if>
+            <do_if value="@this.assignedcontrolled.order.isrunning">
+              <set_order_failed order="this.assignedcontrolled.order" text="{1045, 102}" comment="Unable to reach commander."/>
+            </do_if>
+            <debug_text text="'Unable to move to commander: %s %s %s in sector %s %s. Aborting.'.[@$target.idcode, @$target.knownname, $target, @$target.sector, @$target.sector.macro]" filter="error"/>
+          </do_if>
+          <resume label="finish"/>
+        </do_if>
+        <remove_value name="$movesuccess"/>
+        <do_if value="$target.isoperational">
+          <do_if value="(this.sector != $target.sector) or (((not this.assignedcontrolled.iscapitalship and not $target.zone.isclass.highway) or this.zone != $target.zone) and this.assignedcontrolled.bboxdistanceto.{$target} gt 10km)">
+            <!-- Retry just in case is not there yet -->
+            <resume label="start" />
+          </do_if>
+        </do_if>
+      </do_if>
+
+      <!-- If the target already has an attack target (do the same as when signal with 'leader_attack') -->
+      <do_if value="@$target.pilot.$attacktarget.canbeattacked">
+        <!-- Shoot while in formation-->
+        <shoot_at object="this.ship" target="$target.pilot.$attacktarget" fixedtarget="true" />
+        <shoot_at object="this.ship" target="$target.pilot.$attacktarget" missiles="true" tolerance="5deg" fixedtarget="true" />
+        <!-- Escortee enemy relation-->
+        <do_if value="not this.mayattack.{$target.pilot.$attacktarget}">
+          <do_if value="$target.pilot.$attacktarget.coverowner">
+            <do_if value="not $target.pilot.$attacktarget.isclass.defensible and $target.pilot.$attacktarget.defensible">
+              <signal_objects object="$target.pilot.$attacktarget.defensible" param="'LoseCover'"/>
+            </do_if>
+            <do_else>
+              <signal_objects object="$target.pilot.$attacktarget" param="'LoseCover'"/>
+            </do_else>
+          </do_if>
+          <signal_objects object="this.assignedcontrolled" param="'LoseCover'"/>
+          <do_if value="this.ship.isplayerowned">
+            <add_relation_boost object="$target.pilot.$attacktarget" otherobject="this" value="this.owner.relation.kill.max" decay="1" delay="10min" silent="true" />
+          </do_if>
+          <do_else>
+            <add_relation_boost object="this" otherobject="$target.pilot.$attacktarget" value="this.owner.relation.kill.max" decay="1" delay="10min" silent="true" />
+          </do_else>
+        </do_if>
+      </do_if>
+
+      <debug_text text="'join formation. Visible. Ship: ' + this.ship" chance="$debugchance" />
+
+      <!-- Create / add to escort group -->
+      <wait max="500ms" comment="delay to check leader, because there is no mutex" />
+
+      <do_if value="(this.assignedcontrolled.assignment == assignment.attack) and @$squadorder.$primarytarget.canbeattacked and ((this.ship.hullpercentage) le $thresholdbreak) and not this.assignedcontrolled.subordinategroupdockoverride">
+        <set_value name="$enemy" exact="$squadorder.$primarytarget"/>
+        <do_if value="@$enemy.canbeattacked and ($target.distanceto.{$enemy} le $pursuedistance)">
+          <debug_text text="'commander already attacking %s %s %s %s. shifting to attack.'.[@$enemy.class, @$enemy.idcode, @$enemy.knownname, $enemy]" chance="$debugchance"/>
+          <include_interrupt_actions ref="CreateAttackOrder"/>
+        </do_if>
+        <do_else>
+          <set_value name="$enemy" exact="null"/>
+        </do_else>
+      </do_if>
+      <do_elseif value="this.sector and (this.assignedcontrolled.assignment == assignment.interception or this.assignedcontrolled.assignment == assignment.bombardment) and not this.assignedcontrolled.subordinategroupdockoverride">
+        <set_value name="$loctargetclasses" exact="[class.ship_s, class.ship_m]"/>
+        <do_if value="this.assignedcontrolled.assignment == assignment.bombardment">
+          <set_value name="$loctargetclasses" exact="[class.ship_l, class.ship_xl]"/>
+        </do_if>
+        <find_gravidar_contact name="$loctargets" object="this.assignedcontrolled" class="$loctargetclasses" masstraffic="false" maybeattackedby="this.assignedcontrolled" multiple="true">
+          <match_context macro="this.sector.macro"/>
+        </find_gravidar_contact>
+        <do_if value="$loctargets.count">
+          <shuffle_list list="$loctargets"/>
+          <do_for_each name="$loctarget" in="$loctargets">
+            <do_if value="$loctarget.canbeattacked and $target.distanceto.{$loctarget} le $pursuedistance">
+              <set_value name="$enemy" exact="$loctarget"/>
+              <break/>
+            </do_if>
+          </do_for_each>
+        </do_if>
+        <remove_value name="$loctargetclasses"/>
+        <remove_value name="$loctargets"/>
+
+        <do_if value="@$enemy">
+          <debug_text text="'valid target %s %s %s %s already in sight. assignment: %s. shifting to attack.'.[@$enemy.class, @$enemy.idcode, @$enemy.knownname, $enemy, this.assignedcontrolled.assignment]" chance="$debugchance"/>
+          <include_interrupt_actions ref="CreateAttackOrder"/>
+        </do_if>
+      </do_elseif>
+
+      <!-- account for $target.pilot changing. critical is between this node and the long wait in the do_while below. - DONE
+            Because there are no blocking actions in between, it should be enough to deal with it in the wait interrupt. -->
+      <debug_text text="'%1, subordinate of %2 \n formation distance: %3 \n max yaw: %4 \n max pitch: %5 \n max roll: %6 \n max speed: %7 \n this size: %8 \n leader size: %9'.[this.ship.knownname, $target.knownname, $formationparam, this.ship.maxyawspeed, this.ship.maxpitchspeed, this.ship.maxrollspeed, this.ship.maxspeed, this.ship.size, $target.size]" chance="$debugchance"/>
+      <do_if value="$target.isoperational">
+        <!-- doing this here rather than in init so changes are taken into account on loopback. -->
+        <include_interrupt_actions ref="GetFleetAdmiral"/>
+        <debug_text text="'%s %s %s escorting %s %s %s. top level commander: %s %s %s'.[this.ship.idcode, this.ship.knownname, this.ship, this.ship.commander.idcode, this.ship.commander.knownname, this.ship.commander, $fleetcmdr.idcode, $fleetcmdr.knownname, $fleetcmdr]" chance="$debugchance"/>
+
+        <do_if value="@$target.pilot">
+          <set_value name="$leaderpilot" exact="$target.pilot"/>
+
+          <!-- TODO: re-evaluate $leaderpilot.$escortgroup.
+            keeping distinction between escortgroup and fleet for now,
+              but fleet currently supercedes escortgroup in most usage.
+            if distinct usage is not implemented,
+              consider discarding escortgroup. -->
+          <do_if value="not $leaderpilot.$escortgroup?">
+            <debug_text text="'creating escort list'" chance="$debugchance" />
+            <create_group groupname="$leaderpilot.$escortgroup" />
+          </do_if>
+          <!-- we now have a case where the order ID is SupplyFleet, which we do not want to send out to engage attackers, but that we do want to call for help. -->
+          <do_if value="@this.assignedcontrolled.order.id != 'SupplyFleet'">
+            <add_to_group groupname="$leaderpilot.$escortgroup" object="this.ship" />
+            <do_if value="$fleetadmiral? and not @$fleetadmiral.$fleet.indexof.{this.ship}">
+              <add_to_group groupname="$fleetadmiral.$fleet" object="this.ship"/>
+            </do_if>
+          </do_if>
+
+          <!-- we are based on a carrier and we are either not docked or docked at something other than our carrier. -->
+          <do_if value="$iscarrierbased and @this.ship.dock.container != $target">
+            <do_if value="not $cannotdock">
+              <debug_text text="'docking at mother ship'" chance="$debugchance"/>
+              <leave_formation object="this.ship"/>
+              <set_value name="$internalordercalled"/>
+              <create_order object="this.ship" id="'DockAt'" immediate="true">
+                <param name="destination" value="$target"/>
+                <param name="dockfollowers" value="true"/>
+                <param name="internalorder" value="true"/>
+                <param name="callerid" value="this.ship.order"/>
+                <param name="debugchance" value="$debugchance"/>
+              </create_order>
+            </do_if>
+            <do_else>
+              <!-- reset $cannotdock in case we can in the future. important here since this can be a default order. -->
+              <set_value name="$cannotdock" exact="false"/>
+            </do_else>
+            <do_if value="this.ship.dock">
+              <set_value name="$internalordercalled"/>
+              <create_order object="this.ship" id="'Undock'" immediate="true"/>
+            </do_if>
+          </do_if>
+          <do_elseif value="not $iscarrierbased and this.ship.dock">
+            <set_value name="$internalordercalled"/>
+            <create_order object="this.ship" id="'Undock'" immediate="true"/>
+          </do_elseif>
+          <do_elseif value="(@$target.defaultorder.id == 'Escort') and $target.dock and not this.assignedcontrolled.iscapitalship and ($target == this.assignedcontrolled.commander)">
+            <set_value name="$loctarget" exact="$target"/>
+            <set_value name="$evaluatedtargets" exact="[$loctarget]"/>
+            <do_while value="(@$loctarget.defaultorder.id == 'Escort') and @$loctarget.commander and not $evaluatedtargets.indexof.{$loctarget.commander}">
+              <set_value name="$loctarget" exact="$loctarget.commander"/>
+              <append_to_list name="$evaluatedtargets" exact="$loctarget"/>
+              <do_if value="$target.dock.container == $loctarget">
+                <set_value name="$locdocktarget" exact="$target.dock.container"/>
+                <break/>
+              </do_if>
+            </do_while>
+            <remove_value name="$evaluatedtargets"/>
+            <remove_value name="$loctarget"/>
+
+            <do_if value="@$locdocktarget.isoperational">
+              <find_dockingbay name="$locdock" object="$locdocktarget">
+                <match_dock size="this.assignedcontrolled.docksize" free="true"/>
+              </find_dockingbay>
+              <do_if value="@$locdock.isoperational">
+                <debug_text text="'immediate commander %s %s %s already docked\nat distant commander %s %s %s.\ndocking.'.[@$target.idcode, @$target.knownname, $target, @$locdocktarget.idcode, @$locdocktarget.knownname, $locdocktarget]" chance="$debugchance"/>
+                <set_value name="$internalordercalled"/>
+                <leave_formation object="this.assignedcontrolled"/>
+                <!-- param callerid set below. important for error handling and so that subordinateorders from dockfollowers stored in this DockAndWait order. -->
+                <create_order name="$locorder" object="this.assignedcontrolled" id="'DockAndWait'" immediate="true">
+                  <param name="destination" value="$locdocktarget"/>
+                  <param name="dockfollowers" value="true"/>
+                  <param name="internalorder" value="true"/>
+                  <param name="debugchance" value="$debugchance"/>
+                </create_order>
+                <do_if value="$target.defaultorder.isrunning or ($target.order.id == 'DockAndWait')">
+                  <!-- NB: important that this is NOT done via edit_order_param since that would trigger on_abort which cancels $subordinateorders -->
+                  <signal_objects object="$target" param="'add_subordinateorder'" param2="$locorder"/>
+                  <do_if value="$target.defaultorder.isrunning">
+                    <edit_order_param order="$locorder" param="'callerid'" value="$target.defaultorder"/>
+                  </do_if>
+                  <do_else>
+                    <edit_order_param order="$locorder" param="'callerid'" value="$target.order"/>
+                  </do_else>
+                </do_if>
+                <do_else>
+                  <set_value name="$locorders" exact="@$target.defaultorder.$subordinateorders.clone"/>
+                  <do_if value="not @$locorders.count">
+                    <set_value name="$locorders" exact="[]"/>
+                  </do_if>
+                  <append_to_list name="$locorders" exact="$locorder"/>
+                  <edit_order_param order="$target.defaultorder" param="'subordinateorders'" value="$locorders"/>
+                  <edit_order_param order="$locorder" param="'callerid'" value="$target.defaultorder"/>
+                  <remove_value name="$locorders"/>
+                </do_else>
+                <remove_value name="$locorder"/>
+              </do_if>
+              <remove_value name="$locdock"/>
+            </do_if>
+            <remove_value name="$locdocktarget"/>
+          </do_elseif>
+
+          <do_if value="$internalordercalled?">
+            <set_value name="$retaininescortgroup"/>
+            <!-- short wait to prevent further action before created orders can run. -->
+            <wait exact="1s" sinceversion="10"/>
+          </do_if>
+
+          <set_value name="$newformationoffset" exact="$formationparam"/>
+          <do_if value="$newformationoffset gt $maxformationoffset">
+            <debug_text text="'high: formation offset was about to be set to %sm which is greater than 10km! attempting to recover.'.[$formationparam]" chance="$debugchance"/>
+            <set_value name="$newformationoffset" exact="[this.ship.defaultformationradius.{$target}, $maxformationoffset].min"/>
+            <debug_text text="'formation offset recovery: initial: %sm\n formationparam: %sm\n target formationradius: %sm\n default formationradius: %sm\n this ship: %s %s %s\n commander: %s %s %s\n commander radius: %sm\n my radius: %s\n my max forward speed: %sm/s\n my max yaw speed: %s'.[$newformationoffset, $formationparam, @$target.formationradius, this.ship.defaultformationradius.{$target}, this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, $target.idcode, $target.knownname, $target, $target.size / 2.0, this.assignedcontrolled.size / 2.0, this.assignedcontrolled.maxspeed, this.assignedcontrolled.maxyawspeed]" chance="$debugchance"/>
+            <do_all exact="$target.subordinates.count" counter="$i">
+              <do_if value="[$target.subordinates.{$i}.defaultformationradius.{$target}, $maxformationoffset].min gt $newformationoffset">
+                <set_value name="$newformationoffset" exact="[$target.subordinates.{$i}.defaultformationradius.{$target}, $maxformationoffset].min"/>
+                <debug_text text="'formation offset recovery: increased to %sm'.[$newformationoffset]" chance="$debugchance"/>
+              </do_if>
+            </do_all>
+            <debug_text text="'formationparam will be reset to %sm. this order will restart.'.[$newformationoffset]" chance="$debugchance"/>
+            <remove_value name="$leaderpilot.$squad_formationdist"/>
+            <do_if value="this.assignedcontrolled.order == this.assignedcontrolled.defaultorder">
+              <edit_order_param order="this.assignedcontrolled.defaultorder" param="'formationparam'" value="$newformationoffset"/>
+            </do_if>
+            <edit_order_param order="this.assignedcontrolled.order" param="'formationparam'" value="$newformationoffset"/>
+          </do_if>
+
+          <do_if value="not $leaderpilot.$squad_formationdist? or $newformationoffset gt $leaderpilot.$squad_formationdist">
+            <set_value name="$leaderpilot.$squad_formationdist" exact="$newformationoffset"/>
+            <set_value name="$formationparam" exact="$newformationoffset"/>
+          </do_if>
+          <do_else>
+            <assert value="$leaderpilot.$squad_formationdist le $maxformationoffset" text="'high: about to set formationparam to %sm which is greater than maxformationoffset'.[$leaderpilot.$squad_formationdist]" break="0"/>
+            <set_value name="$formationparam" exact="$leaderpilot.$squad_formationdist"/>
+          </do_else>
+
+          <do_if value="$target.zone.isclass.highway or this.zone.isclass.highway">
+            <debug_text text="'target is in highway'" chance="$debugchance"/>
+            <set_value name="$objectinhighway" exact="this.ship"/>
+            <do_if value="$target.zone.isclass.highway">
+              <set_value name="$objectinhighway" exact="$target"/>
+            </do_if>
+
+            <leave_formation object="this.ship"/>
+
+            <wait>
+              <interrupt>
+                <conditions>
+                  <check_any>
+                    <check_all>
+                      <event_object_changed_zone object="$objectinhighway"/>
+                      <check_value value="not $objectinhighway.zone.isclass.highway"/>
+                    </check_all>
+                    <event_object_destroyed object="$objectinhighway"/>
+                  </check_any>
+                </conditions>
+              </interrupt>
+            </wait>
+            <remove_value name="$objectinhighway"/>
+            <resume label="start"/>
+          </do_if>
+          <do_elseif value="$target.dock or (@$target.order.id == 'DockAndWait') or (@$target.order.id == 'DockAt')">
+            <debug_text text="'commander is docked or docking. waiting for commander to undock.'" chance="$debugchance"/>
+            <!-- do not join formation. fall through to while. that will handle $target undocking. we may be ordered by our immediate commander to dock in the meantime. -->
+          </do_elseif>
+          <do_elseif value="(@this.assignedcontrolled.dock.container != $target) and not this.assignedcontrolled.isformationwingman and not this.assignedcontrolled.dock and (player.age ge @$time_rejoinformation)">
+            <do_if value="$currentformation == formationshape.singlefile">
+              <debug_text text="'%s %s %s using invalid formation singlefile.\nparam: %s\ncommander formation: %s\ndefault: %s'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, @$formation, @$target.formationshape, param.formation.shape]" filter="error"/>
+            </do_if>
+            <debug_text text="'creating formation (high) object: %s'.[this.assignedcontrolled]" chance="$debugchance"/>
+            <!-- Set formation, if there is not -->
+            <create_formation leader="$target" follower="this.assignedcontrolled" formation="$currentformation" param="$formationparam" maxshipsperline="$maxshipsperline" rollmembers="$rollmembers" rollformation="$rollformation"/>
+            <wait sinceversion="23">
+              <interrupt>
+                <conditions>
+                  <check_any>
+                    <check_all>
+                      <event_object_formation_update_succeeded object="this.assignedcontrolled"/>
+                      <!--<debug_text text="'HIGH: event_object_formation_update_succeeded but we are either not in formation or wrong formationleader.\nisformationwingman: %s,\nformationleader: %s\ntarget: %s'.[this.assignedcontrolled.isformationwingman, this.assignedcontrolled.formationleader, $target]"  debugchance="(not this.assignedcontrolled.isformationwingman or this.assignedcontrolled.formationleader != $target) * 100" filter="error"/>-->
+                      <!-- NB: checks necessary since event can apply to an earlier instance of leave/break_formation. a later event should apply to create_formation immediately preceding these checks. -->
+                      <check_value value="this.assignedcontrolled.isformationwingman"/>
+                      <check_value value="this.assignedcontrolled.formationleader == $target"/>
+                    </check_all>
+                    <event_object_formation_update_failed object="this.assignedcontrolled"/>
+                  </check_any>
+                </conditions>
+                <actions>
+                  <do_if value="event.name == 'event_object_formation_update_failed'">
+                    <debug_text text="'create formation failed. restarting.'" chance="$debugchance"/>
+                    <resume label="start"/>
+                  </do_if>
+                  <debug_text text="'In formation with %s %s %s, is target: %s.'.[this.assignedcontrolled.formationleader.idcode, this.assignedcontrolled.formationleader.knownname, this.assignedcontrolled.formationleader, this.assignedcontrolled.formationleader == $target]" chance="$debugchance"/>
+                </actions>
+              </interrupt>
+            </wait>
+          </do_elseif>
+        </do_if>
+        <do_elseif value="not $target.isownerless">
+          <!--<assert value="$target.pilot" text="'%1 (%2), commander of %3 (%4), has no pilot. Figure out why and account for it.'.[$target.knownname, $target, this.ship.knownname, this.ship]" break="always"/>-->
+          <!--<debug_text text="'%1 (%2), commander of %3 (%4), has no pilot. Figure out why and account for it.'.[$target.knownname, $target, this.ship.knownname, this.ship]" filter="error"/>-->
+          <debug_text text="'%1 (%2), commander of %3 (%4), has no pilot. %3 will now wait until %1 has a pilot.'.[$target.knownname, $target, this.ship.knownname, this.ship]" chance="$debugchance"/>
+          <wait/>
+        </do_elseif>
+        <do_else>
+          <resume label="finish"/>
+        </do_else>
+      </do_if>
+
+      <do_if value="this.ship.order" comment="Safety check in case the script is called from non-order script">
+        <set_order_syncpoint_reached order="this.ship.order" />
+      </do_if>
+
+      <do_if value="player.age lt @$time_rejoinformation">
+        <debug_text text="'not yet time to rejoin formation. joining in %ss.'.[$time_rejoinformation - player.age]" chance="$debugchance"/>
+        <wait exact="player.age - $time_rejoinformation" sinceversion="14"/>
+        <resume label="start"/>
+      </do_if>
+
+      <!-- Loop: exit when there is no pilot for a non-player faction -->
+      <do_while value="$target.isoperational and (($target.owner == faction.player) or $leaderpilot) and (this.assignedcontrolled.isformationwingman or ($iscarrierbased and @this.assignedcontrolled.dock.container == $target) or $target.dock or (@$target.order.id == 'DockAndWait') or (@$target.order.id == 'DockAt'))">
+
+        <wait>
+          <interrupt>
+            <conditions>
+              <check_any>
+                <check_all>
+                  <check_any>
+                    <!-- 'leader_attack' sent via order.fight.attack.object by small or medium ships attacking,
+                          'break and attack' sent from this script by ships requesting reinforcements.
+                          'carrier attack' sent via fight.attack.object.capital for carriers attacking. should be a measured attack, but tends to cascade at the moment.
+                          'carrier scramble' also sent via fight.attack.object if threat is very close. will lead to all ready subordinates attacking.
+                          in all four cases, param is the hostile. -->
+                    <event_object_signalled object="this.ship" param2="'leader_attack'"/>
+                    <check_all>
+                      <event_player_changed_target/>
+                      <check_value value="$assignment == assignment.attack"/>
+                      <check_value value="$target == player.occupiedship"/>
+                      <check_value value="@event.param.canbeattacked"/>
+                      <check_value value="this.mayattack.{event.param} or $target.mayattack.{event.param}"/>
+                    </check_all>
+                    <check_all>
+                      <check_any>
+                        <!-- consider: carrier attack only for attack subordinates? -->
+                        <event_object_signalled object="this.ship" param2="'carrier attack'"/>
+                        <event_object_signalled object="this.ship" param2="'break and attack'"/>
+                        <event_object_signalled object="$target" param2="'carrier scramble'"/>
+                        <!--<check_all>
+                          <event_object_signalled object="$target" param2="'carrier scramble'"/>
+                          <check_value value="this.ship.container == $target"/>
+                        </check_all>-->
+                        <check_all>
+                          <check_any>
+                            <event_object_attacked object="this.ship"/>
+                            <event_object_attacked object="$target"/>
+                            <event_object_attacked group="@$fleetadmiral.$fleet" check="false"/>
+                            <event_object_attacked group="$leaderpilot.$escortgroup"/>
+                            <check_all>
+                              <!-- you only want this event once per target since the response can be measured, which is why there's only one listener. otherwise, response will immediately cascade.
+                                      deprecated for player defence subordinates with the addition of more specific assignments. -->
+                              <event_object_enemy_found object="this.ship"/>
+                              <check_value value="not this.isplayerowned"/>
+                              <check_value value="(@$fleetadmiral.command.value == command.attackenemies) or (@$fleetadmiral.command.value == command.attackobject) or (@$fleetadmiral.command.value == command.patrol) or (@$fleetadmiral.command.value == command.protect) or (@$fleetcmdr.primarypurpose != purpose.fight)" comment="last condition accounts for $fleetcmdr being null. conditions before account for $fleetcmdr not having a pilot and thus being vulnerable."/>
+                              <check_value value="event.param.primarypurpose == purpose.fight"/>
+                            </check_all>
+                            <check_all>
+                              <check_any>
+                                <event_object_enemy_found group="$leaderpilot.$escortgroup"/>
+                                <event_object_enemy_found object="$target"/>
+                              </check_any>
+                              <check_any>
+                                <check_all>
+                                  <check_value value="$assignment == assignment.interception"/>
+                                  <check_value value="event.param.isclass.ship and not event.param.iscapitalship"/>
+                                </check_all>
+                                <check_all>
+                                  <check_value value="$assignment == assignment.bombardment"/>
+                                  <check_value value="event.param.isclass.ship and event.param.iscapitalship"/>
+                                </check_all>
+                              </check_any>
+                              <check_value value="not event.param.ismasstraffic"/>
+                            </check_all>
+                          </check_any>
+                          <check_any>
+                            <check_value value="this.assignedcontrolled.isplayerowned"/>
+                            <check_value value="this.mayattack.{event.param} or $target.mayattack.{event.param}"/>
+                          </check_any>
+                        </check_all>
+                      </check_any>
+                      <check_any>
+                        <check_value value="$assignment == assignment.defence"/>
+                        <check_value value="this.assignedcontrolled.isunit"/>
+                        <check_all>
+                          <check_value value="$assignment == assignment.interception"/>
+                          <check_value value="event.param.isclass.ship and not event.param.iscapitalship"/>
+                        </check_all>
+                        <check_all>
+                          <check_value value="$assignment == assignment.bombardment"/>
+                          <check_value value="event.param.isclass.ship and event.param.iscapitalship"/>
+                        </check_all>
+                      </check_any>
+                      <check_value value="(this.ship.hullpercentage) le $thresholdbreak" />
+                    </check_all>
+                  </check_any>
+                  <check_value value="($target.distanceto.{event.param} le $pursuedistance) and (this.ship.distanceto.{event.param} le $pursuedistance)"/>
+                  <check_value value="not this.assignedcontrolled.subordinategroupdockoverride"/>
+                  <check_value value="$target.isoperational and $target.pilot"/>
+                  <check_value value="$target != event.param" comment="special check for attack (or not) the target" />
+                  <check_value value="event.param.canbeattacked"/>
+                  <check_value value="not @event.param.dock or this.assignedcontrolled.mayattack.{event.param.container}"/>
+                  <check_value value="event.param.trueowner != this.trueowner"/>
+                </check_all>
+                <event_object_destroyed object="$target" />
+                <event_object_abandoned object="$target" />
+                <event_object_removed_from_formation object="this.assignedcontrolled"/>
+                <check_all>
+                  <!-- remember that this event is fired AFTER ownership is changed. so ownership checks apply to the new owner. -->
+                  <event_object_changed_true_owner object="$target"/>
+                  <!-- this will break if a ship is subordinate to
+                        a ship belonging to a different faction,
+                          and that ship uncovers. -->
+                  <check_value value="event.param != this.ship.trueowner"/>
+                </check_all>
+                <event_object_undocked object="$target"/>
+                <event_object_docking_denied object="$target"/>
+                <check_all>
+                  <event_object_changed_zone object="$target"/>
+                  <check_value value="$target.zone.isclass.highway or $target.sector != this.sector"/>
+                </check_all>
+              </check_any>
+            </conditions>
+            <actions>
+
+              <!-- Reset enemy -->
+              <set_value name="$enemy" exact="null" />
+
+              <set_value name="$params" exact="[event.param, event.param2, event.param3]"/>
+
+              <!--<set_value name="$debugchance" exact="100"/>-->
+              <debug_text text="'squadron movement interrupted by: %1. assignment: %5. event.param: %2 (%3) event.param2: %4'.[event.name, @$params.{1}.knownname, $params.{1}, @$params.{2}, $assignment]" chance="$debugchance"/>
+
+              <!-- Commander signal this -->
+              <!-- This case applies to small ship squadrons. They will move in formation and fire as opportunity presents itself. Squadron commander should actively maneouver against the target, so the formation should follow suit. -->
+              <do_if value="(event.name == 'event_object_signalled') and ($params.{2} == 'leader_attack')">
+                <!-- enemy -->
+                <do_if value="@$params.{1}.canbeattacked">
+                  <debug_text text="'This ship, %1 (%2), subordinate of %3, staying in formation with weapons free on %4 (%5). CONDITION 1: Small ship leader is attacking.'.[this.ship.knownname, this.ship, $target.knownname, $params.{1}.knownname, $params.{1}]" chance="$debugchance"/>
+                  <!-- Shoot while in formation-->
+                  <shoot_at object="this.ship" target="$params.{1}" fixedtarget="true" largetarget="$params.{1}.isclass.[class.ship_l, class.ship_xl, class.station]"/>
+                  <shoot_at object="this.ship" target="$params.{1}" missiles="true" tolerance="5deg" fixedtarget="true" largetarget="$params.{1}.isclass.[class.ship_l, class.ship_xl, class.station]"/>
+                  <!-- Escortee enemy relation-->
+                  <do_if value="not this.mayattack.{$params.{1}}">
+                    <do_if value="$params.{1}.coverowner">
+                      <do_if value="not $params.{1}.isclass.defensible and $params.{1}.defensible">
+                        <signal_objects object="$params.{1}.defensible" param="'LoseCover'"/>
+                      </do_if>
+                      <do_else>
+                        <signal_objects object="$params.{1}" param="'LoseCover'"/>
+                      </do_else>
+                    </do_if>
+                    <signal_objects object="this.assignedcontrolled" param="'LoseCover'"/>
+                    <do_if value="this.isplayerowned">
+                      <add_relation_boost object="$params.{1}" otherobject="this" value="this.owner.relation.kill.max" decay="1" delay="10min" silent="true" />
+                      <do_if value="$fleetadmiral? and not $fleetadmiral.mayattack.{$params.{1}}">
+                        <add_relation_boost object="$params.{1}" otherobject="$fleetadmiral" value="this.owner.relation.kill.max" decay="1" delay="10min" silent="true" />
+                        <do_if value="@$fleetadmiral.$fleet.count">
+                          <do_all exact="$fleetadmiral.$fleet.count" counter="$i">
+                            <do_if value="$fleetadmiral.$fleet.{$i}.pilot and not $fleetadmiral.$fleet.{$i}.pilot.mayattack.{$params.{1}}">
+                              <add_relation_boost object="$params.{1}" otherobject="$fleetadmiral.$fleet.{$i}.pilot" value="this.owner.relation.kill.max" decay="1" delay="10min" silent="true" />
+                            </do_if>
+                          </do_all>
+                        </do_if>
+                      </do_if>
+                    </do_if>
+                    <do_else>
+                      <add_relation_boost object="this" otherobject="$params.{1}" value="this.owner.relation.kill.max" decay="1" delay="10min" silent="true" />
+                      <do_if value="$fleetadmiral? and not $fleetadmiral.mayattack.{$params.{1}}">
+                        <add_relation_boost object="$fleetadmiral" otherobject="$params.{1}" value="this.owner.relation.kill.max" decay="1" delay="10min" silent="true" />
+                        <do_if value="@$fleetadmiral.$fleet.count">
+                          <do_all exact="$fleetadmiral.$fleet.count" counter="$i">
+                            <do_if value="$fleetadmiral.$fleet.{$i}.pilot and not $fleetadmiral.$fleet.{$i}.pilot.mayattack.{$params.{1}}">
+                              <add_relation_boost object="$fleetadmiral.$fleet.{$i}.pilot" otherobject="$params.{1}" value="this.owner.relation.kill.max" decay="1" delay="10min" silent="true" />
+                            </do_if>
+                          </do_all>
+                        </do_if>
+                      </do_if>
+                    </do_else>
+                  </do_if>
+                  <!-- If we're not breaking off to attack, or are otherwise staying in this script, relay signal to subordinates. other signals are relayed on in their respective called scripts. -->
+                  <do_if value="@this.$escortgroup.count">
+                    <debug_text text="'%s %s %s relaying signal to %s to %s subordinates.'.[this.ship.idcode, this.ship.knownname, this.ship, $params.{2}, this.$escortgroup.count]" chance="$debugchance"/>
+                    <signal_objects group="this.$escortgroup" param="$params.{1}" param2="$params.{2}"/>
+                  </do_if>
+                </do_if>
+              </do_if>
+              <do_elseif value="event.name == 'event_object_changed_true_owner'">
+                <debug_text text="'commander changed owner from %s to %s. my true owner: %s'.[$params.{2}, $params.{1}, this.trueowner]" chance="$debugchance"/>
+                <set_value name="$changedowner"/>
+                <remove_value name="$params"/>
+                <resume label="finish" />
+              </do_elseif>
+              <do_elseif value="(event.name == 'event_object_destroyed') or (event.name == 'event_object_abandoned')">
+                <!--<set_value name="$debugchance" exact="0"/>-->
+                <remove_value name="$params"/>
+                <resume label="finish" />
+              </do_elseif>
+              <do_elseif value="(event.name == 'event_object_undocked') or (event.name == 'event_object_changed_zone') or (event.name == 'event_object_docking_denied')">
+                <debug_text text="'event: %s. leaving formation and catching up.'.[event.name]" chance="$debugchance"/>
+                <leave_formation object="this.ship"/>
+                <remove_from_group group="$leaderpilot.$escortgroup" object="this.ship"/>
+                <!--<set_value name="$debugchance" exact="0"/>-->
+                <remove_value name="$params"/>
+                <resume label="start"/>
+              </do_elseif>
+              <do_elseif value="event.name == 'event_object_removed_from_formation'">
+                <do_if value="@$leaderpilot.$escortgroup">
+                  <remove_from_group group="$leaderpilot.$escortgroup" object="this.assignedcontrolled"/>
+                </do_if>
+                <set_value name="$time_rejoinformation" exact="player.age + 5min"/>
+                <remove_value name="$params"/>
+                <resume label="start"/>
+              </do_elseif>
+              <do_else>
+                <!-- operational checks-->
+                <do_if value="@$params.{1}.canbeattacked">
+
+                  <!-- enemy -->
+                  <set_value name="$enemy" exact="$params.{1}" />
+
+                  <do_if value="this.ship.commander and
+                         (($enemy.isclass.ship and $enemy.controlentity.default) or ($enemy.controllable.isclass.ship and $enemy.controllable.controlentity.default))">
+                    <do_if value="$enemy.isclass.ship">
+                      <set_value name="$enemyPilot" exact="$enemy.controlentity.default"/>
+                    </do_if>
+                    <do_elseif value="$enemy.controllable.isclass.ship" comment="enemy is i.e. a shield generator">
+                      <set_value name="$enemyPilot" exact="$enemy.controllable.controlentity.default"/>
+                    </do_elseif>
+
+                    <do_if value="@$enemyPilot">
+                      <do_if value="($enemyPilot.owner == @faction.loanshark)
+                               or ($enemyPilot.owner == @faction.yaki)
+                               or ($enemyPilot.owner == @faction.fallensplit)
+                               or ($enemyPilot.owner == faction.buccaneers)
+                               or ($enemyPilot.owner == faction.scaleplate)">
+                        <signal_objects object="player.entity" param="'npc_usecase'" chance="if @global.$SuppressCommChatter then 0 else 100" param2="table[ $name = '$Combat_Escort_Spotted_Pirate', $actors = table[ $Spotter = this, $Leader = this.assignedcontrolled.commanderentity, $Enemy = $enemyPilot] ]"/>
+                      </do_if>
+                      <do_else>
+                        <signal_objects object="player.entity" param="'npc_usecase'" chance="if @global.$SuppressCommChatter then 0 else 100" param2="table[ $name = '$Combat_Escort_Spotted_Hostile', $actors = table[ $Spotter = this, $Leader = this.assignedcontrolled.commanderentity, $Enemy = $enemyPilot] ]"/>
+                      </do_else>
+                    </do_if>
+                  </do_if>
+
+                  <!-- if this.ship received break and attack, simply set $enemy and attack without calling reinforcements. -->
+                  <do_if value="((event.name == 'event_object_signalled') and (($params.{2} == 'break and attack') or ($params.{2} == 'carrier scramble')))
+                                or ((event.name == 'event_object_enemy_found') and ($assignment == assignment.interception) and $enemy.isclass.ship and not $enemy.iscapitalship)
+                                or ((event.name == 'event_object_enemy_found') and ($assignment == assignment.bombardment) and $enemy.isclass.ship and $enemy.iscapitalship)
+                                or (event.name == 'event_player_changed_target')">
+                    <debug_text text="'attacking player target: %s %s %s.'.[@$enemy.idcode, @$enemy.knownname, $enemy]" chance="$debugchance"/>
+                    <set_value name="this.ship.pilot.$goattack" exact="true"/>
+                    <do_if value="this.assignedcontrolled.commander">
+                      <signal_objects object="player.entity" param="'npc_usecase'" chance="if @global.$SuppressCommChatter then 0 else 100" param2="table[ $name = '$Combat_Escort_Engaging', $actors = table[ $Spotter = this, $Leader = this.assignedcontrolled.commanderentity] ]"/>
+                    </do_if>
+                    <remove_from_group group="$leaderpilot.$escortgroup" object="this.ship" />
+                    <do_if value="@$fleetadmiral.$fleet and $fleetadmiral.$fleet.indexof.{this.ship}">
+                      <remove_from_group group="$fleetadmiral.$fleet" object="this.ship"/>
+                    </do_if>
+                    <debug_text text="'This ship, %1 (%2), subordinate of %3, attacking %4 (%5). CONDITION 4.2.2: Squadron reinforcing (response to condition 4.1)'.[this.ship.knownname, this.ship, $target.knownname, $enemy.knownname, $enemy]" chance="$debugchance"/>
+                  </do_if>
+                  <do_elseif value="($leaderpilot.$escortgroup.count or @$fleetadmiral.$fleet.count) and ((event.name == 'event_object_attacked') or (event.name == 'event_object_enemy_found') or ((event.name == 'event_object_signalled') and ($params.{2} == 'carrier attack')))">
+                    <!-- Default Send 20% of escort ships -->
+                    <do_if value="@$fleetadmiral.$fleet.count">
+                      <set_value name="$nsupportships" exact="$fleetadmiral.$fleet.count * 0.2" />
+                    </do_if>
+                    <do_else>
+                      <set_value name="$nsupportships" exact="$leaderpilot.$escortgroup.count * 0.2" />
+                    </do_else>
+
+                    <do_if value="event.name" exact="'event_object_attacked'">
+                      <!--  Me under attack, so attack him -->
+                      <do_if value="$params.{3}" exact="this.ship">
+                        <set_value name="this.$goattack" exact="true" />
+                        <remove_from_group group="$leaderpilot.$escortgroup" object="this.ship" />
+                        <do_if value="@$fleetadmiral.$fleet and $fleetadmiral.$fleet.indexof.{this.ship}">
+                          <remove_from_group group="$fleetadmiral.$fleet" object="this.ship"/>
+                        </do_if>
+                        <debug_text text="'This ship, %1 (%2), subordinate of %3, attacking %4 (%5). CONDITION 2: Squadron was attacked'.[this.ship.knownname, this.ship, $target.knownname, $enemy.knownname, $enemy]" chance="$debugchance"/>
+                        <do_if value="@$fleetadmiral.$fleet.count">
+                          <set_value name="$nsupportships" exact="$fleetadmiral.$fleet.count * 0.3" />
+                        </do_if>
+                        <do_else>
+                          <set_value name="$nsupportships" exact="$leaderpilot.$escortgroup.count * 0.3" />
+                        </do_else>
+                      </do_if>
+                      <!-- Target under attack. Send 60% of ships -->
+                      <!-- this won't work. if $target is attacked, squad movement of all subordinates is interrupted. - FIXED.
+                            all of them will send a signal, and none of them will attack unless they fulfill an attack condition other than this.
+                            so they will all signal some of their squadmates, but no one would be listening. -->
+                      <do_else>
+                        <!--<set_value name="$nsupportships" exact="$leaderpilot.$escortgroup.count * 0.6" />-->
+                        <do_all chance="60">
+                          <set_value name="this.ship.pilot.$goattack" exact="true"/>
+                          <remove_from_group group="$leaderpilot.$escortgroup" object="this.ship" />
+                          <do_if value="@$fleetadmiral.$fleet and $fleetadmiral.$fleet.indexof.{this.ship}">
+                            <remove_from_group group="$fleetadmiral.$fleet" object="this.ship"/>
+                          </do_if>
+                          <debug_text text="'This ship, %1 (%2), subordinate of %3, attacking %4 (%5). CONDITION 3: Leader under attack'.[this.ship.knownname, this.ship, $target.knownname, $enemy.knownname, $enemy]" chance="$debugchance"/>
+                        </do_all>
+                      </do_else>
+                    </do_if>
+
+                    <!-- Call support ships -->
+                    <do_if value="$leaderpilot.$escortgroup.count or @$fleetadmiral.$fleet.count">
+                      <do_all exact="[1, $nsupportships].max" counter="$i">
+                        <do_if value="@$fleetadmiral.$fleet.count ge $i and $fleetadmiral.$fleet.{$i}.pilot">
+                          <set_value name="$locsupportship" exact="$fleetadmiral.$fleet.{$i}"/>
+                        </do_if>
+                        <do_elseif value="@$leaderpilot.$escortgroup.count ge $i and $leaderpilot.$escortgroup.{$i}.pilot">
+                          <set_value name="$locsupportship" exact="$leaderpilot.$escortgroup.{$i}"/>
+                        </do_elseif>
+
+                        <do_if value="@$locsupportship and not @$locsupportship.pilot.$goattack">
+                          <signal_objects object="$locsupportship" param="$enemy" param2="'break and attack'"/>
+                          <set_value name="$locsupportship.pilot.$goattack" exact="true" />
+
+                          <debug_text text="'Requesting %1 (%2), subordinate of %3, to attack %4 (%5). CONDITION 4.1: Requesting reinforcements'.[$locsupportship.knownname, $locsupportship, $target.knownname, $enemy.knownname, $enemy]" chance="$debugchance"/>
+                          <do_if value="$locsupportship == this.ship">
+                            <do_if value="(event.name == 'event_object_signalled') and (($params.{2} == 'carrier scramble') or ($params.{2} == 'carrier attack'))">
+                              <debug_text text="'%s %s %s, subordinate of %s %s %s, responding to scramble. attacking %s %s %s. signal: %s'.[$leaderpilot.$escortgroup.{$i}.idcode, $leaderpilot.$escortgroup.{$i}.knownname, $leaderpilot.$escortgroup.{$i}, $target.idcode, $target.knownname, $target, $params.{1}.idcode, $params.{1}.knownname, $params.{1}, $params.{2}]" chance="$debugchance"/>
+                            </do_if>
+                            <remove_from_group group="$leaderpilot.$escortgroup" object="this.ship" />
+                            <do_if value="@$fleetadmiral.$fleet and $fleetadmiral.$fleet.indexof.{this.ship}">
+                              <remove_from_group group="$fleetadmiral.$fleet" object="this.ship"/>
+                            </do_if>
+                            <debug_text text="'This ship, %1 (%2), subordinate of %3, attacking %4 (%5). CONDITION 4.2.1'.[this.ship.knownname, this.ship, $target.knownname, $enemy.knownname, $enemy]" chance="$debugchance"/>
+                          </do_if>
+                          <remove_value name="$locsupportship"/>
+                        </do_if>
+                      </do_all>
+                    </do_if>
+                  </do_elseif>
+                  <do_elseif value="((@this.assignedcontrolled.order.id == 'SupplyFleet') or this.assignedcontrolled.isunit) and this.assignedcontrolled.commander">
+                    <!-- if we are a resupplier or a drone and there are no available ships in the fleet, we should still not attack. drones can temporarily be in formation before they launch or before they dock. -->
+                  </do_elseif>
+                  <do_else>
+                    <debug_text text="'squadron attack case unaccounted for. this ship will just stay in formation. event.name: ' + event.name" filter="error"/>
+                    <debug_text text="'ship: %s %s %s, commander escortgroup: %s, fleet: %s'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, @$leaderpilot.$escortgroup.count, @$fleetadmiral.$fleet]" chance="$debugchance"/>
+                  </do_else>
+                </do_if>
+                <remove_value name="$nsupportships" />
+              </do_else>
+              <remove_value name="$params"/>
+              <!--<set_value name="$debugchance" exact="0"/>-->
+            </actions>
+          </interrupt>
+        </wait>
+
+        <!-- Timeout or job expired -->
+        <do_if value="this.ship.jobexpired or ($timeout and (player.age gt $starttime + $timeout))">
+          <resume label="finish" />
+        </do_if>
+
+        <!-- Go into attack mode-->
+        <do_if value="this.$goattack">
+
+          <do_if value="$target.isoperational and $enemy.canbeattacked">
+            <do_if value="not this.mayattack.{$enemy}">
+              <do_if value="$enemy.coverowner">
+                <do_if value="not $enemy.isclass.defensible and $enemy.defensible">
+                  <signal_objects object="$enemy.defensible" param="'LoseCover'"/>
+                </do_if>
+                <do_else>
+                  <signal_objects object="$enemy" param="'LoseCover'"/>
+                </do_else>
+              </do_if>
+              <signal_objects object="this.assignedcontrolled" param="'LoseCover'"/>
+              <do_if value="this.isplayerowned">
+                <add_relation_boost object="$enemy" otherobject="this" value="this.owner.relation.kill.max" decay="1" delay="10min" silent="true" />
+                <do_if value="$fleetadmiral? and not $fleetadmiral.mayattack.{$enemy}">
+                  <add_relation_boost object="$enemy" otherobject="$fleetadmiral" value="this.owner.relation.kill.max" decay="1" delay="10min" silent="true" />
+                  <do_if value="@$fleetadmiral.$fleet.count">
+                    <do_all exact="$fleetadmiral.$fleet.count" counter="$i">
+                      <do_if value="$fleetadmiral.$fleet.{$i}.pilot and not $fleetadmiral.$fleet.{$i}.pilot.mayattack.{$enemy}">
+                        <add_relation_boost object="$enemy" otherobject="$fleetadmiral.$fleet.{$i}.pilot" value="this.owner.relation.kill.max" decay="1" delay="10min" silent="true" />
+                      </do_if>
+                    </do_all>
+                  </do_if>
+                </do_if>
+              </do_if>
+              <do_else>
+                <add_relation_boost object="this" otherobject="$enemy" value="this.owner.relation.kill.max" decay="1" delay="10min" silent="true" />
+                <do_if value="$fleetadmiral? and not $fleetadmiral.mayattack.{$enemy}">
+                  <add_relation_boost object="$fleetadmiral" otherobject="$enemy" value="this.owner.relation.kill.max" decay="1" delay="10min" silent="true" />
+                  <do_if value="@$fleetadmiral.$fleet.count">
+                    <do_all exact="$fleetadmiral.$fleet.count" counter="$i">
+                      <do_if value="$fleetadmiral.$fleet.{$i}.pilot and not $fleetadmiral.$fleet.{$i}.pilot.mayattack.{$enemy}">
+                        <add_relation_boost object="$fleetadmiral.$fleet.{$i}.pilot" otherobject="$enemy" value="this.owner.relation.kill.max" decay="1" delay="10min" silent="true" />
+                      </do_if>
+                    </do_all>
+                  </do_if>
+                </do_if>
+              </do_else>
+            </do_if>
+
+            <leave_formation object="this.ship"/>
+            <remove_from_group group="$leaderpilot.$escortgroup" object="this.ship"/>
+            <do_if value="@$fleetadmiral.$fleet.indexof.{this.ship}">
+              <remove_from_group group="$fleetadmiral.$fleet" object="this.ship"/>
+            </do_if>
+
+            <debug_text text="'%1 (%2), subordinate of %3, attacking %4 (%5). assignment: %6'.[this.ship.knownname, this.ship, $target.knownname, $enemy.knownname, $enemy, $assignment]" chance="$debugchance"/>
+
+            <!-- npc_usecase groupleader scramble -->
+            <do_if value="($target.type == shiptype.carrier) and ($target == this.assignedcontrolled.container)">
+              <!-- $target is the carrier, this.assignedcontrol is groupleader-->
+              <set_value name="$usecase_carrier" exact="$target"/>
+              <set_value name="$usecase_groupleader" exact="this.assignedcontrolled"/>
+              <do_for_each in="$usecase_groupleader.subordinates" name="$groupship">
+                <do_if value="$groupship.container == $usecase_carrier" comment="docked">
+                  <set_value name="$usecase_groupship" exact="$groupship"/>
+                  <break/>
+                </do_if>
+              </do_for_each>
+              <do_if value="$usecase_groupship?">
+                <signal_objects object="player.entity" param="'npc_usecase'" chance="if @global.$SuppressCommChatter then 0 else 100" param2="table[ $name = '$Combat_Carrier_Scramble_Verbose', $locations = table[ $CarrierBridge = $usecase_carrier, $SubordinateBridge = $usecase_groupleader, $SubsubordinateBridge =  $usecase_groupship] ]"/>
+              </do_if>
+              <do_else>
+                <signal_objects object="player.entity" param="'npc_usecase'" chance="if @global.$SuppressCommChatter then 0 else 100" param2="table[ $name = '$Combat_Carrier_Scramble', $locations = table[ $CarrierBridge = $usecase_carrier, $SubordinateBridge = $usecase_groupleader ] ]"/>
+              </do_else>
+            </do_if>
+            <include_interrupt_actions ref="CreateAttackOrder"/>
+          </do_if>
+        </do_if>
+
+        <!-- check if this is a jobship at the end of its lifetime -->
+        <do_if value="this.ship.jobexpired">
+          <resume label="finish" />
+        </do_if>
+
+        <do_if value="not this.ship.formationleader">
+          <resume label="start"/>
+        </do_if>
+      </do_while>
+
+      <label name="finish" />
+
+      <wait max="200ms" comment="delay to wait for a possible commander promotion" />
+
+      <debug_text text="'leader dead, timeout, or released'" chance="$debugchance" />
+
+      <!-- check if this is a jobship at the end of its lifetime -->
+      <do_if value="this.ship.jobexpired">
+        <debug_text text="'%1 doing job %2 has expired, die!'.[this.ship.knownname, this.ship.job]" chance="$debugchance" />
+        <create_order object="this.ship" id="'MoveDie'" immediate="true">
+          <param name="byhighway" value="not this.ship.isclass.[class.ship_l, class.ship_xl]" />
+          <param name="byhostile" value="true" />
+        </create_order>
+      </do_if>
+      <!-- If target is dead ... -->
+      <do_elseif value="not $target.isoperational or $changedowner?">
+        <!-- ... and we have a new commander, -->
+        <do_if value="not $endontargetdeath and @this.assignedcontrolled.commander.isoperational">
+          <!-- In any case, set the new commander as target of this order and reinitialize. -->
+          <debug_text text="'Commander was killed. Setting %1 (%2) as new squadron leader.'.[this.assignedcontrolled.commander.knownname, this.assignedcontrolled.commander]" chance="$debugchance"/>
+          <do_if value="this.assignedcontrolled.order and (this.assignedcontrolled.order.id == 'Escort' or this.assignedcontrolled.order.id == 'SupplyFleet')">
+            <edit_order_param order="this.assignedcontrolled.order" param="'target'" value="this.assignedcontrolled.commander"/>
+          </do_if>
+          <do_if value="this.assignedcontrolled.defaultorder and (this.assignedcontrolled.defaultorder.id == 'Escort' or this.assignedcontrolled.defaultorder.id == 'SupplyFleet')">
+            <edit_order_param order="this.assignedcontrolled.defaultorder" param="'target'" value="this.assignedcontrolled.commander"/>
+          </do_if>
+
+          <!-- ... and this is a unit that has been promoted and is now directly subordinate to the mother ship, -->
+          <do_if value="this.assignedcontrolled.isunit and not this.assignedcontrolled.commander.isunit">
+            <!-- ... and we were attacking, break and attack, -->
+            <do_if value="@$squadorder.$id == 'Attack'">
+              <set_value name="$locattacker" exact="this.assignedcontrolled"/>
+              <debug_text text="'Commander was killed. Resuming attack on %1 (%2).'.[@$squadorder.$primarytarget.knownname, @$squadorder.$primarytarget]" chance="$debugchance"/>
+            </do_if>
+            <do_else>
+              <debug_text text="'Commander was killed. Docking at %1 (%2).'.[this.assignedcontrolled.commander.knownname, this.assignedcontrolled.commander]" chance="$debugchance"/>
+            </do_else>
+            <!-- ... then dock. -->
+            <create_order id="'DockAndWait'" object="this.assignedcontrolled">
+              <param name="destination" value="this.assignedcontrolled.commander"/>
+              <param name="dockfollowers" value="true"/>
+            </create_order>
+          </do_if>
+          <!-- and we were attacking, -->
+          <do_elseif value="(@$squadorder.$id == 'Attack') and (@this.assignedcontrolled.commander.order.id != $squadorder.$id) and not @this.assignedcontrolled.commander.pilot.$squadorderupdated">
+            <!-- ... relay last attack order to new commander. -->
+            <set_value name="$locattacker" exact="this.assignedcontrolled.commander"/>
+            <do_if value="this.assignedcontrolled.commander.pilot">
+              <set_value name="this.assignedcontrolled.commander.pilot.$squadorderupdated"/>
+            </do_if>
+            <debug_text text="'Commander was killed while we were attacking %s %s %s. Relaying order to new commander %s %s %s.'.[@$squadorder.$primarytarget.idcode, @$squadorder.$primarytarget.knownname, @$squadorder.$primarytarget, @this.assignedcontrolled.commander.idcode, @this.assignedcontrolled.commander.knownname, this.assignedcontrolled.commander]" chance="$debugchance"/>
+          </do_elseif>
+
+          <do_if value="$locattacker?">
+            <do_if value="@$squadorder.$primarytarget.canbeattacked">
+              <create_order id="'Attack'" object="$locattacker" immediate="true">
+                <param name="primarytarget" value="@$squadorder.$primarytarget"/>
+                <param name="secondarytargets" value="$squadorder.$secondarytargets"/>
+                <param name="escort" value="$squadorder.$escort"/>
+                <param name="pursuedistance" value="$squadorder.$pursuedistance"/>
+                <param name="pursuetargets" value="$squadorder.$pursuetargets"/>
+                <param name="allowothertargets" value="$squadorder.$allowothertargets"/>
+                <param name="checkrelation" value="$squadorder.$checkrelation"/>
+                <param name="disable" value="$squadorder.$disable"/>
+                <param name="disablehullpercentagethreshold" value="$squadorder.$disablehullpercentagethreshold"/>
+                <param name="disabletargets" value="$squadorder.$disabletargets"/>
+                <param name="squad_attack" value="$squadorder.$squad_attack"/>
+                <param name="boardingbehavior" value="$squadorder.$boardingbehavior"/>
+                <param name="behaviortargetclasses" value="$squadorder.$behaviortargetclasses"/>
+                <param name="uncover" value="$squadorder.$uncover"/>
+                <param name="radius" value="$squadorder.$radius"/>
+                <param name="radiusanchorpos" value="$squadorder.$radiusanchorpos"/>
+                <param name="radiusanchorspace" value="$squadorder.$radiusanchorspace"/>
+                <param name="forceprimarytarget" value="@$squadorder.$forceprimarytarget"/>
+                <param name="internalorder" value="$squadorder.$internalorder"/>
+                <param name="debugchance" value="$squadorder.$debugchance"/>
+              </create_order>
+            </do_if>
+            <remove_value name="$squadorder"/>
+            <remove_value name="$locattacker"/>
+          </do_if>
+        </do_if>
+        <!-- ... and we do not have a new commander, cancel the default order and request new orders. -->
+        <do_else>
+          <debug_text text="'Escortee was killed. We have no commander so requesting new orders.'" chance="$debugchance"/>
+          <do_if value="this.assignedcontrolled.isjobship">
+            <set_ship_expiration_time ship="this.assignedcontrolled" time="player.age + 2h"/>
+            <!--Give the subordinates the same expiration time as their commander-->
+            <set_value name="$subordinates" exact="this.assignedcontrolled.subordinates"/>
+            <do_all exact="$subordinates.count" counter="$i">
+              <set_ship_expiration_time ship="$subordinates.{$i}" time="player.age + 2h"/>
+            </do_all>
+          </do_if>
+          <do_if value="this.assignedcontrolled.order == this.assignedcontrolled.defaultorder">
+            <cancel_order order="this.assignedcontrolled.defaultorder"/>
+          </do_if>
+        </do_else>
+      </do_elseif>
+      <!-- NB: this will be overridden by the section above if we have a new operational commander -->
+      <do_elseif value="$validfinish?">
+        <!-- due to an event that requires re-initialization -->
+      </do_elseif>
+      <do_elseif value="$target.isownerless">
+        <do_if value="this.assignedcontrolled.order == this.assignedcontrolled.defaultorder">
+          <cancel_order order="this.assignedcontrolled.defaultorder"/>
+        </do_if>
+      </do_elseif>
+      <do_elseif value="not $target.pilot">
+        <do_if value="$target.isplayerowned">
+          <wait min="7s" max="13s"/>
+          <resume label="start"/>
+        </do_if>
+      </do_elseif>
+      <do_elseif value="this.ship.isclass.[class.ship_l, class.ship_xl] and $target.isclass.[class.ship_s, class.ship_m]">
+        <debug_text text="'redirecting %s %s %s %s to protect rather than escort %s %s %s %s'.[this.ship.class, this.ship.idcode, this.ship.knownname, this.ship, $target.class, $target.idcode, $target.knownname, $target]" chance="$debugchance"/>
+        <set_value name="$internalordercalled"/>
+        <create_order id="'ProtectShip'" object="this.ship">
+          <param name="target" value="$target"/>
+          <param name="pursuedistance" value="$pursuedistance"/>
+          <param name="radius" value="$formationparam"/>
+          <param name="debugchance" value="$debugchance"/>
+        </create_order>
+      </do_elseif>
+      <do_else>
+        <debug_text text="'Unhandled case.\n escort target: %1 %2, operational: %5, has pilot: %6\n commander: %3 %4, operational: %7, has pilot: %8'.[$target.knownname, $target, this.ship.commander.knownname, this.ship.commander, $target.isoperational, $target.pilot.exists, this.ship.commander.isoperational, this.ship.commander.pilot.exists]" filter="error"/>
+      </do_else>
+
+      <do_if value="$target.pilot.$escortgroup?">
+        <remove_from_group group="$target.pilot.$escortgroup" object="this.ship"/>
+      </do_if>
+      <do_if value="$fleetadmiral? and @$fleetadmiral.$fleet.indexof.{this.ship}">
+        <remove_from_group group="$fleetadmiral.$fleet" object="this.ship"/>
+      </do_if>
+      <remove_value name="this.$goattack"/>
+      <stop_moving object="this.ship" immediate="false"/>
+      <cease_fire object="this.ship"/>
+      <leave_formation object="this.ship"/>
+      <set_to_default_flight_control_model object="this.assignedcontrolled"/>
+
+      <do_if value="not $internalordercalled?">
+        <remove_value name="this.$resupplier"/>
+      </do_if>
+
+      <do_if value="@$subordinateorders.count">
+        <do_all exact="$subordinateorders.count" counter="$i">
+          <do_if value="$subordinateorders.{$i}.exists">
+            <debug_text text="'HIGH: cancelling subordinate order to dock: %s'.[$subordinateorders.{$i}]" chance="$debugchance"/>
+            <cancel_order order="$subordinateorders.{$i}"/>
+          </do_if>
+        </do_all>
+        <do_if value="@this.assignedcontrolled.defaultorder.id == 'Escort'">
+          <edit_order_param order="this.assignedcontrolled.defaultorder" param="'subordinateorders'" value="[]"/>
+          <debug_text text="'clearing subordinateorders to dock. subordinateorders: %s, defaultorder param: %s'.[$subordinateorders, this.assignedcontrolled.defaultorder.$subordinateorders]" chance="$debugchance"/>
+        </do_if>
+      </do_if>
+
+      <do_if value="@this.assignedcontrolled.defaultorder.id == 'Escort'">
+        <!-- reset $cannotdock so we try to dock the next time we restart the escort order. only necessary if this is the default order. -->
+        <edit_order_param order="this.assignedcontrolled.defaultorder" param="'cannotdock'" value="false"/>
+      </do_if>
+
+      <!-- Don't return directly, wait for orders.base to abort this script -->
+      <wait exact="1ms" />
+
+    </actions>
+  </attention>
+  <attention min="unknown">
+    <actions>
+
+      <!-- short wait to allow events to trigger -->
+      <wait exact="1ms" sinceversion="25"/>
+
+      <do_if value="not this.assignedcontrolled.isunit and (not $assignment or (($assignment != assignment.defence) and ($assignment != assignment.attack) and ($assignment != assignment.interception) and ($assignment != assignment.bombardment) and ($assignment != assignment.supplyfleet)))">
+        <do_if value="@this.assignedcontrolled.order.exists">
+          <!-- assignment changed to one which requires a different order -->
+          <cancel_order order="this.assignedcontrolled.order"/>
+        </do_if>
+        <set_value name="$validfinish"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <!-- short wait with a wide range to assure that multiple ships do not check to restock all at the same time, to space out load. -->
+      <wait min="1ms" max="1s" sinceversion="13"/>
+
+      <!-- moved to before start label to avoid checking to restock at loopback. intention is to check to restock whenever a ship rejoins formation, which is not the case on loopback. -->
+      <!-- always check to see if we have to go in for supplies before joining formation. -->
+      <do_if value="$target.isoperational and not this.assignedcontrolled.isunit">
+        <!--do this before going to $target in case our resupplier is closer. -->
+        <include_interrupt_actions ref="CheckToRestock"/>
+      </do_if>
+
+      <label name="start" />
+
+      <set_value name="$enemy" exact="null"/>
+
+      <do_if value="not $target.isoperational or (not $target.pilot and not $target.isplayerowned)">
+        <debug_text text="'No valid escortee specified, and no commander found - exiting script'" chance="$debugchance" />
+        <resume label="finish" />
+      </do_if>
+
+      <do_if value="$target.trueowner != this.trueowner">
+        <create_order id="'AssignCommander'" object="this.assignedcontrolled" immediate="true"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <!-- Timeout or job expired -->
+      <do_if value="this.ship.jobexpired or ($timeout and (player.age gt $starttime + $timeout))">
+        <resume label="finish" />
+      </do_if>
+
+      <do_if value="@this.assignedcontrolled.allsubordinates.indexof.{$target} or ($target.isformationwingman and $target.formationleader == this.assignedcontrolled)">
+        <do_if value="$target.isformationwingman and $target.formationleader == this.assignedcontrolled and $target.order.id == this.assignedcontrolled.order.id">
+          <do_if value="$target.defaultorder == $target.order">
+            <cancel_order order="$target.defaultorder"/>
+          </do_if>
+          <do_else>
+            <cancel_order order="$target.order"/>
+          </do_else>
+        </do_if>
+        <do_if value="this.assignedcontrolled.defaultorder and (this.assignedcontrolled.order == this.assignedcontrolled.defaultorder)">
+          <cancel_order order="this.assignedcontrolled.defaultorder"/>
+        </do_if>
+        <create_order id="'AssignCommander'" object="this.assignedcontrolled" immediate="true"/>
+        <set_value name="$validfinish"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <!-- If far away/different zone -->
+      <do_if value="(this.sector != $target.sector) or (((not this.assignedcontrolled.iscapitalship and not $target.zone.isclass.highway) or this.zone != $target.zone) and this.assignedcontrolled.bboxdistanceto.{$target} gt 10km)">
+        <do_if value="not $testtime?">
+          <set_value name="$testtime" exact="player.age"/>
+          <set_value name="$initialdebugchance" exact="$debugchance"/>
+        </do_if>
+
+        <remove_value name="$in_formation"/>
+        <leave_formation object="this.ship"/>
+        <do_if value="this.assignedcontrolled.dock">
+          <create_order id="'Undock'" object="this.assignedcontrolled" immediate="true"/>
+        </do_if>
+
+        <debug_text text="'leader in different zone. moving long-distance.\nthis sector: %s\ntarget sector: %s\nthis sector != target sector: %s\nthis zone != target zone: %s\ndistance to commander: %s'.[this.sector, @$target.sector, this.sector != @$target.sector, this.zone != $target.zone, this.ship.bboxdistanceto.{$target}]" chance="$debugchance"/>
+        <run_script name="'move.generic'" result="$movesuccess">
+          <param name="destination" value="$target" />
+          <param name="endintargetzone" value="this.assignedcontrolled.iscapitalship or $target.zone.isclass.highway"/>
+          <param name="activepatrol" value="if (this.assignedcontrolled.assignment == assignment.interception) or (this.assignedcontrolled.assignment == assignment.bombardment) or (this.assignedcontrolled.assignment == assignment.defence) then true else false"/>
+          <param name="radius" value="$pursuedistance"/>
+          <param name="radiusanchorpos" value="position.[0m,0m,0m]"/>
+          <param name="radiusanchorspace" value="$target"/>
+          <param name="targetclasses" value="if (this.assignedcontrolled.assignment == assignment.interception) then [class.ship_s, class.ship_m] else (if (this.assignedcontrolled.assignment == assignment.bombardment) then [class.ship_l, class.ship_xl] else [])"/>
+          <param name="recallsubordinates" value="not @$squadorder.exists or (@$squadorder.id != 'Attack')"/>
+          <param name="debugchance" value="$debugchance"/>
+        </run_script>
+        <do_if value="not $movesuccess">
+          <do_if value="$target.isoperational">
+            <do_if value="this.assignedcontrolled.gatedistance.{$target} ge 0">
+              <debug_text text="'target just changed sectors but is reachable. going there'" chance="$debugchance"/>
+              <resume label="start"/>
+            </do_if>
+            <do_if value="@this.assignedcontrolled.order.isrunning">
+              <set_order_failed order="this.assignedcontrolled.order" text="{1045, 102}" comment="Unable to reach commander."/>
+            </do_if>
+            <debug_text text="'Unable to move to commander: %s %s %s in sector %s %s. Aborting.'.[@$target.idcode, @$target.knownname, $target, @$target.sector, @$target.sector.macro]" filter="error"/>
+          </do_if>
+          <resume label="finish"/>
+        </do_if>
+        <remove_value name="$movesuccess"/>
+
+        <!--<assert value="player.age - $testtime gt 1s" text="'exited move.generic after less than 1 second. possible unhandled case.'"/>-->
+
+        <do_if value="$target.isoperational">
+          <do_if value="(this.sector != $target.sector) or (((not this.assignedcontrolled.iscapitalship and not $target.zone.isclass.highway) or this.zone != $target.zone) and this.assignedcontrolled.bboxdistanceto.{$target} gt 10km)">
+            <debug_text text="'leader moved away after we moved long-distance. looping back.'" chance="$debugchance"/>
+            <resume label="start"/>
+          </do_if>
+        </do_if>
+      </do_if>
+
+      <!-- delay before retrieving commander information to match wait in visible section. -->
+      <wait exact="500ms"/>
+
+      <do_if value="(this.assignedcontrolled.assignment == assignment.attack) and @$squadorder.$primarytarget.canbeattacked and ((this.ship.hullpercentage) le $thresholdbreak) and not this.assignedcontrolled.subordinategroupdockoverride">
+        <set_value name="$enemy" exact="$squadorder.$primarytarget"/>
+        <do_if value="@$enemy.canbeattacked and ($target.distanceto.{$enemy} le $pursuedistance)">
+          <debug_text text="'commander already attacking %s %s %s %s. shifting to attack.'.[@$enemy.class, @$enemy.idcode, @$enemy.knownname, $enemy]" chance="$debugchance"/>
+          <include_interrupt_actions ref="CreateAttackOrder"/>
+        </do_if>
+        <do_else>
+          <set_value name="$enemy" exact="null"/>
+        </do_else>
+      </do_if>
+      <do_elseif value="this.sector and (this.assignedcontrolled.assignment == assignment.interception or this.assignedcontrolled.assignment == assignment.bombardment) and not this.assignedcontrolled.subordinategroupdockoverride">
+        <set_value name="$loctargetclasses" exact="[class.ship_s, class.ship_m]"/>
+        <do_if value="this.assignedcontrolled.assignment == assignment.bombardment">
+          <set_value name="$loctargetclasses" exact="[class.ship_l, class.ship_xl]"/>
+        </do_if>
+        <find_gravidar_contact name="$loctargets" object="this.assignedcontrolled" class="$loctargetclasses" masstraffic="false" maybeattackedby="this.assignedcontrolled" multiple="true">
+          <match_context macro="this.sector.macro"/>
+        </find_gravidar_contact>
+        <do_if value="$loctargets.count">
+          <shuffle_list list="$loctargets"/>
+          <do_for_each name="$loctarget" in="$loctargets">
+            <do_if value="$loctarget.canbeattacked and $target.distanceto.{$loctarget} le $pursuedistance">
+              <set_value name="$enemy" exact="$loctarget"/>
+              <break/>
+            </do_if>
+          </do_for_each>
+        </do_if>
+        <remove_value name="$loctargetclasses"/>
+        <remove_value name="$loctargets"/>
+
+        <do_if value="@$enemy">
+          <debug_text text="'valid target %s %s %s %s already in sight. assignment: %s. shifting to attack.'.[@$enemy.class, @$enemy.idcode, @$enemy.knownname, $enemy, this.assignedcontrolled.assignment]" chance="$debugchance"/>
+          <include_interrupt_actions ref="CreateAttackOrder"/>
+        </do_if>
+      </do_elseif>
+
+      <do_if value="$target.isoperational">
+        <!-- doing this here rather than in init so changes are taken into account on loopback. -->
+        <include_interrupt_actions ref="GetFleetAdmiral"/>
+        <debug_text text="'%s %s %s escorting %s %s %s. top level commander: %s %s %s'.[this.ship.idcode, this.ship.knownname, this.ship, this.ship.commander.idcode, this.ship.commander.knownname, this.ship.commander, $fleetcmdr.idcode, $fleetcmdr.knownname, $fleetcmdr]" chance="$debugchance"/>
+
+        <do_if value="@$target.pilot">
+          <set_value name="$leaderpilot" exact="$target.pilot"/>
+
+          <do_if value="not $leaderpilot.$escortgroup?">
+            <debug_text text="'creating escort list'" chance="$debugchance" />
+            <create_group groupname="$leaderpilot.$escortgroup" />
+          </do_if>
+          <do_if value="@this.assignedcontrolled.order.id != 'SupplyFleet'">
+            <add_to_group groupname="$leaderpilot.$escortgroup" object="this.ship" />
+            <do_if value="$fleetadmiral? and not @$fleetadmiral.$fleet.indexof.{this.ship}">
+              <add_to_group groupname="$fleetadmiral.$fleet" object="this.ship"/>
+            </do_if>
+          </do_if>
+
+          <do_if value="$iscarrierbased and @this.ship.dock.container != $target">
+            <do_if value="not $cannotdock">
+              <debug_text text="'docking at mother ship'" chance="$debugchance"/>
+              <leave_formation object="this.ship"/>
+              <set_value name="$internalordercalled"/>
+              <create_order object="this.ship" id="'DockAt'" immediate="true">
+                <param name="destination" value="$target"/>
+                <param name="dockfollowers" value="true"/>
+                <param name="internalorder" value="true"/>
+                <param name="callerid" value="this.ship.order"/>
+                <param name="debugchance" value="$debugchance"/>
+              </create_order>
+            </do_if>
+            <do_else>
+              <!-- reset $cannotdock in case we can in the future. important here since this can be a default order. -->
+              <set_value name="$cannotdock" exact="false"/>
+            </do_else>
+            <do_if value="this.ship.dock">
+              <set_value name="$internalordercalled"/>
+              <create_order object="this.ship" id="'Undock'" immediate="true"/>
+            </do_if>
+          </do_if>
+          <do_elseif value="not $iscarrierbased and this.ship.dock">
+            <set_value name="$internalordercalled"/>
+            <create_order object="this.ship" id="'Undock'" immediate="true"/>
+          </do_elseif>
+          <do_elseif value="(@$target.defaultorder.id == 'Escort') and $target.dock and not this.assignedcontrolled.iscapitalship and ($target == this.assignedcontrolled.commander)">
+            <set_value name="$loctarget" exact="$target"/>
+            <set_value name="$evaluatedtargets" exact="[$loctarget]"/>
+            <do_while value="(@$loctarget.defaultorder.id == 'Escort') and @$loctarget.commander and not $evaluatedtargets.indexof.{$loctarget.commander}">
+              <set_value name="$loctarget" exact="$loctarget.commander"/>
+              <append_to_list name="$evaluatedtargets" exact="$loctarget"/>
+              <do_if value="$target.dock.container == $loctarget">
+                <set_value name="$locdocktarget" exact="$target.dock.container"/>
+                <break/>
+              </do_if>
+            </do_while>
+            <remove_value name="$evaluatedtargets"/>
+            <remove_value name="$loctarget"/>
+
+            <do_if value="@$locdocktarget.isoperational">
+              <find_dockingbay name="$locdock" object="$locdocktarget">
+                <match_dock size="this.assignedcontrolled.docksize" free="true"/>
+              </find_dockingbay>
+              <do_if value="@$locdock.isoperational">
+                <debug_text text="'immediate commander %s %s %s already docked\nat distant commander %s %s %s.\ndocking.'.[@$target.idcode, @$target.knownname, $target, @$locdocktarget.idcode, @$locdocktarget.knownname, $locdocktarget]" chance="$debugchance"/>
+                <set_value name="$internalordercalled"/>
+                <leave_formation object="this.assignedcontrolled"/>
+                <!-- param callerid set below. important for error handling and so that subordinateorders from dockfollowers stored in this DockAndWait order. -->
+                <create_order name="$locorder" object="this.assignedcontrolled" id="'DockAndWait'" immediate="true">
+                  <param name="destination" value="$locdocktarget"/>
+                  <param name="dockfollowers" value="true"/>
+                  <param name="internalorder" value="true"/>
+                  <param name="debugchance" value="$debugchance"/>
+                </create_order>
+                <do_if value="$target.defaultorder.isrunning or ($target.order.id == 'DockAndWait')">
+                  <!-- NB: important that this is NOT done via edit_order_param since that would trigger on_abort which cancels $subordinateorders -->
+                  <signal_objects object="$target" param="'add_subordinateorder'" param2="$locorder"/>
+                  <do_if value="$target.defaultorder.isrunning">
+                    <edit_order_param order="$locorder" param="'callerid'" value="$target.defaultorder"/>
+                  </do_if>
+                  <do_else>
+                    <edit_order_param order="$locorder" param="'callerid'" value="$target.order"/>
+                  </do_else>
+                </do_if>
+                <do_else>
+                  <set_value name="$locorders" exact="@$target.defaultorder.$subordinateorders.clone"/>
+                  <do_if value="not @$locorders.count">
+                    <set_value name="$locorders" exact="[]"/>
+                  </do_if>
+                  <append_to_list name="$locorders" exact="$locorder"/>
+                  <edit_order_param order="$target.defaultorder" param="'subordinateorders'" value="$locorders"/>
+                  <edit_order_param order="$locorder" param="'callerid'" value="$target.defaultorder"/>
+                  <remove_value name="$locorders"/>
+                </do_else>
+                <remove_value name="$locorder"/>
+              </do_if>
+              <remove_value name="$locdock"/>
+            </do_if>
+            <remove_value name="$locdocktarget"/>
+          </do_elseif>
+
+          <!-- wait a frame to start the immediate order. -->
+          <!-- possible issue with Undock order not interrupting this script fast enough and this script doing a move_to while docked. -->
+          <do_if value="$internalordercalled?">
+            <set_value name="$retaininescortgroup"/>
+            <wait exact="1s" sinceversion="10"/>
+          </do_if>
+
+          <set_value name="$newformationoffset" exact="$formationparam"/>
+          <do_if value="$newformationoffset gt $maxformationoffset">
+            <debug_text text="'low: formation offset was about to be set to %sm which is greater than 10km! attempting to recover.'.[$formationparam]" chance="$debugchance"/>
+            <set_value name="$newformationoffset" exact="[this.ship.defaultformationradius.{$target}, $maxformationoffset].min"/>
+            <debug_text text="'formation offset recovery: initial: %sm\n formationparam: %sm\n target formationradius: %sm\n default formationradius: %sm\n this ship: %s %s %s\n commander: %s %s %s\n commander radius: %sm\n my radius: %s\n my max forward speed: %sm/s\n my max yaw speed: %s'.[$newformationoffset, $formationparam, @$target.formationradius, this.ship.defaultformationradius.{$target}, this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, $target.idcode, $target.knownname, $target, $target.size / 2.0, this.assignedcontrolled.size / 2.0, this.assignedcontrolled.maxspeed, this.assignedcontrolled.maxyawspeed]" chance="$debugchance"/>
+            <do_all exact="$target.subordinates.count" counter="$i">
+              <do_if value="[$target.subordinates.{$i}.defaultformationradius.{$target}, $maxformationoffset].min gt $newformationoffset">
+                <set_value name="$newformationoffset" exact="[$target.subordinates.{$i}.defaultformationradius.{$target}, $maxformationoffset].min"/>
+                <debug_text text="'formation offset recovery: increased to %sm'.[$newformationoffset]" chance="$debugchance"/>
+              </do_if>
+            </do_all>
+            <debug_text text="'formationparam will be reset to %sm. this order will restart.'.[$newformationoffset]" chance="$debugchance"/>
+            <remove_value name="$leaderpilot.$squad_formationdist"/>
+            <do_if value="this.assignedcontrolled.order == this.assignedcontrolled.defaultorder">
+              <edit_order_param order="this.assignedcontrolled.defaultorder" param="'formationparam'" value="$newformationoffset"/>
+            </do_if>
+            <edit_order_param order="this.assignedcontrolled.order" param="'formationparam'" value="$newformationoffset"/>
+          </do_if>
+
+          <do_if value="not $leaderpilot.$squad_formationdist? or $newformationoffset gt $leaderpilot.$squad_formationdist">
+            <set_value name="$leaderpilot.$squad_formationdist" exact="$newformationoffset"/>
+            <set_value name="$formationparam" exact="$newformationoffset"/>
+          </do_if>
+          <do_else>
+            <assert value="$leaderpilot.$squad_formationdist le $maxformationoffset" text="'low: about to set formationparam to %sm which is greater than maxformationoffset. target formationradius: %sm, default formationradius: %sm'.[$leaderpilot.$squad_formationdist, @$target.formationradius, this.ship.defaultformationradius.{$target}]" break="0"/>
+            <set_value name="$formationparam" exact="$leaderpilot.$squad_formationdist"/>
+          </do_else>
+
+          <do_if value="@this.assignedcontrolled.dock.container != $target">
+            <do_if value="$target.zone.isclass.highway or this.zone.isclass.highway">
+              <set_value name="$objectinhighway" exact="this.ship"/>
+              <do_if value="$target.zone.isclass.highway">
+                <set_value name="$objectinhighway" exact="$target"/>
+              </do_if>
+              <leave_formation object="this.assignedcontrolled"/>
+              <remove_value name="$in_formation"/>
+            </do_if>
+            <do_elseif value="not $in_formation? and not this.assignedcontrolled.isformationwingman and not this.assignedcontrolled.dock and not $target.dock and (@$target.order.id != 'DockAndWait') and (@$target.order.id != 'DockAt') and (player.age ge @$time_rejoinformation)">
+              <do_if value="$currentformation == formationshape.singlefile">
+                <debug_text text="'%s %s %s using invalid formation singlefile.\nparam: %s\ncommander formation: %s\ndefault: %s'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, @$formation, @$target.formationshape, param.formation.shape]" filter="error"/>
+              </do_if>
+              <debug_text text="'creating formation (low) object: %s'.[this.assignedcontrolled]" chance="$debugchance"/>
+              <!-- Set formation, if there is not -->
+              <create_formation leader="$target" follower="this.assignedcontrolled" formation="$currentformation" param="$formationparam" maxshipsperline="$maxshipsperline" rollmembers="$rollmembers" rollformation="$rollformation"/>
+              <wait sinceversion="23">
+                <interrupt>
+                  <conditions>
+                    <check_any>
+                      <check_all>
+                        <event_object_formation_update_succeeded object="this.assignedcontrolled"/>
+                        <!--<debug_text text="'LOW: event_object_formation_update_succeeded but we are either not in formation or wrong formationleader.\nisformationwingman: %s,\nformationleader: %s\ntarget: %s'.[this.assignedcontrolled.isformationwingman, this.assignedcontrolled.formationleader, $target]"  debugchance="(not this.assignedcontrolled.isformationwingman or this.assignedcontrolled.formationleader != $target) * 100" filter="error"/>-->
+                        <!-- NB: checks necessary since event can apply to an earlier instance of leave/break_formation. a later event should apply to create_formation immediately preceding these checks. -->
+                        <check_value value="this.assignedcontrolled.isformationwingman"/>
+                        <check_value value="this.assignedcontrolled.formationleader == $target"/>
+                      </check_all>
+                      <event_object_formation_update_failed object="this.assignedcontrolled"/>
+                    </check_any>
+                  </conditions>
+                  <actions>
+                    <do_if value="event.name == 'event_object_formation_update_failed'">
+                      <debug_text text="'create formation failed. restarting.'" chance="$debugchance"/>
+                      <resume label="start"/>
+                    </do_if>
+                    <debug_text text="'In formation with %s %s %s, is target: %s.'.[this.assignedcontrolled.formationleader.idcode, this.assignedcontrolled.formationleader.knownname, this.assignedcontrolled.formationleader, this.assignedcontrolled.formationleader == $target]" chance="$debugchance"/>
+                  </actions>
+                </interrupt>
+              </wait>
+              <set_value name="$in_formation"/>
+            </do_elseif>
+          </do_if>
+        </do_if>
+        <do_else>
+          <!--<assert value="$target.pilot" text="'%1 (%2), commander of %3 (%4), has no pilot. Figure out why and account for it.'.[$target.knownname, $target, this.ship.knownname, this.ship]" break="always"/>-->
+          <!--<debug_text text="'%1 (%2), commander of %3 (%4), has no pilot. Figure out why and account for it.'.[$target.knownname, $target, this.ship.knownname, this.ship]" filter="error"/>-->
+          <debug_text text="'%1 (%2), commander of %3 (%4), has no pilot. %3 will now wait until %1 has a pilot.'.[$target.knownname, $target, this.ship.knownname, this.ship]" chance="$debugchance"/>
+          <wait/>
+        </do_else>
+      </do_if>
+
+      <do_if value="$testtime?">
+        <set_value name="$debugchance" exact="$initialdebugchance"/>
+        <remove_value name="$initialdebugchance"/>
+        <remove_value name="$testtime"/>
+      </do_if>
+
+      <do_if value="this.ship.order" comment="Safety check in case the script is called from non-order script">
+        <set_order_syncpoint_reached order="this.ship.order" />
+      </do_if>
+
+      <!-- Keep up -->
+      <do_if value="@$target.isoperational">
+        <do_if value="($iscarrierbased and @this.assignedcontrolled.dock.container == $target) or ($in_formation? and not $objectinhighway?)">
+          <set_value name="$waittime" min="3600s" max="7200s"/>
+          <do_if value="$iscarrierbased">
+            <debug_text text="player.age + ': safely docked at mother ship'" chance="$debugchance"/>
+          </do_if>
+          <do_else>
+            <debug_text text="player.age + ': moving in formation'" chance="$debugchance"/>
+          </do_else>
+          <wait exact="$waittime">
+            <interrupt>
+              <conditions>
+                <check_any>
+                  <check_all>
+                    <check_any>
+                      <!-- 'leader_attack' sent via order.fight.attack.object by small or medium ships attacking,
+                        'break and attack' sent from this script by ships requesting reinforcements.
+                        'carrier attack' sent via fight.attack.object.capital for carriers attacking. should be a measured attack, but tends to cascade at the moment.
+                        'carrier scramble' also sent via fight.attack.object if threat is very close. will lead to all ready subordinates attacking.
+
+                        in all four cases, param is the hostile. -->
+                      <event_object_signalled object="this.ship" param2="'break and attack'"/>
+                      <event_object_signalled object="this.ship" param2="'carrier attack'"/>
+                      <event_object_signalled object="$target" param2="'carrier scramble'"/>
+                      <!--<check_all>
+                        <event_object_signalled object="$target" param2="'carrier scramble'"/>
+                        <check_value value="this.ship.container == $target"/>
+                      </check_all>-->
+                      <check_all>
+                        <check_any>
+                          <event_object_attacked object="this.ship"/>
+                          <event_object_attacked object="$target"/>
+                          <event_object_attacked group="@$fleetadmiral.$fleet" check="false"/>
+                          <event_object_attacked group="$leaderpilot.$escortgroup"/>
+                          <check_all>
+                            <check_any>
+                              <!-- NB: this is the only remaining difference between high and low attention target acquisition logic and is due to a difference in the target engagement logic. -->
+                              <event_object_enemy_found group="$leaderpilot.$escortgroup"/>
+                              <event_object_enemy_found object="$target"/>
+                            </check_any>
+                            <check_any>
+                              <check_all>
+                                <check_value value="not this.isplayerowned"/>
+                                <check_value value="(@$fleetadmiral.command.value == command.attackenemies) or (@$fleetadmiral.command.value == command.attackobject) or (@$fleetadmiral.command.value == command.patrol) or (@$fleetadmiral.command.value == command.protect) or (@$fleetcmdr.primarypurpose != purpose.fight)" comment="last condition accounts for $fleetcmdr being null. conditions before account for $fleetcmdr not having a pilot and thus being vulnerable."/>
+                                <check_value value="event.param.primarypurpose == purpose.fight"/>
+                              </check_all>
+                              <check_all>
+                                <check_value value="$assignment == assignment.interception"/>
+                                <check_value value="event.param.isclass.ship and not event.param.iscapitalship"/>
+                                <check_value value="not event.param.ismasstraffic"/>
+                              </check_all>
+                              <check_all>
+                                <check_value value="$assignment == assignment.bombardment"/>
+                                <check_value value="event.param.isclass.ship and event.param.iscapitalship"/>
+                                <check_value value="not event.param.ismasstraffic"/>
+                              </check_all>
+                            </check_any>
+                          </check_all>
+                        </check_any>
+                        <check_any>
+                          <check_value value="this.assignedcontrolled.isplayerowned"/>
+                          <check_value value="this.mayattack.{event.param} or $target.mayattack.{event.param}"/>
+                        </check_any>
+                        <check_value value="(this.ship.hullpercentage) le $thresholdbreak" />
+                      </check_all>
+                    </check_any>
+                    <check_any>
+                      <check_value value="$assignment == assignment.defence"/>
+                      <check_value value="this.assignedcontrolled.isunit"/>
+                      <check_all>
+                        <check_value value="$assignment == assignment.interception"/>
+                        <check_value value="event.param.isclass.ship and not event.param.iscapitalship"/>
+                      </check_all>
+                      <check_all>
+                        <check_value value="$assignment == assignment.bombardment"/>
+                        <check_value value="event.param.isclass.ship and event.param.iscapitalship"/>
+                      </check_all>
+                    </check_any>
+                    <!-- NB: no leader_attack handler since ships don't do the shoot action in low attention. damage done in the commander's attack script. -->
+                    <check_value value="not this.assignedcontrolled.subordinategroupdockoverride"/>
+                    <check_value value="$target.isoperational and $target.pilot"/>
+                    <check_value value="$target != event.param" comment="special check for attack (or not) the target"/>
+                    <check_value value="event.param.canbeattacked"/>
+                    <check_value value="not @event.param.dock or this.assignedcontrolled.mayattack.{event.param.container}"/>
+                    <check_value value="($target.distanceto.{event.param} le $pursuedistance) and (this.ship.distanceto.{event.param} le $pursuedistance)"/>
+                    <check_value value="event.param.trueowner != this.trueowner"/>
+                  </check_all>
+                  <event_object_destroyed object="$target" />
+                  <event_object_abandoned object="$target" />
+                  <check_all>
+                    <event_object_removed_from_formation object="this.assignedcontrolled"/>
+                    <check_value value="$in_formation?"/>
+                  </check_all>
+                  <check_all>
+                    <!-- remember that this event is fired AFTER ownership is changed. so ownership checks apply to the new owner. -->
+                    <event_object_changed_true_owner object="$target"/>
+                    <!-- this will break if a ship is subordinate to
+                          a ship belonging to a different faction,
+                            and that ship uncovers. -->
+                    <check_value value="event.param != this.ship.trueowner"/>
+                  </check_all>
+                  <event_object_undocked object="$target"/>
+                  <check_all>
+                    <event_object_changed_zone object="$target"/>
+                    <check_value value="$target.zone.isclass.highway or $target.sector != this.sector"/>
+                  </check_all>
+                </check_any>
+              </conditions>
+              <actions>
+
+                <debug_text text="'squadron movement interrupted by: %1. assignment: %5. event.param: %2 (%3) event.param2: %4'.[event.name, @event.param.knownname, event.param, @event.param2, $assignment]" chance="$debugchance"/>
+
+                <do_if value="event.name != 'event_object_destroyed'">
+                  <remove_value name="$in_formation"/>
+                  <leave_formation object="this.ship"/>
+                  <remove_from_group group="$leaderpilot.$escortgroup" object="this.ship"/>
+                  <do_if value="event.name == 'event_object_removed_from_formation'">
+                    <set_value name="$time_rejoinformation" exact="player.age + 5min"/>
+                    <resume label="start"/>
+                  </do_if>
+                  <do_if value="event.name == 'event_object_changed_zone'">
+                    <resume label="start"/>
+                  </do_if>
+                </do_if>
+
+                <do_if value="(event.name == 'event_object_signalled' or event.name == 'event_object_attacked' or event.name == 'event_object_enemy_found') and (@this.assignedcontrolled.order.id != 'SupplyFleet')">
+                  <debug_text text="'%s (%s), subordinate of %s, attacking %s (%s). assignment: %s'.[this.ship.knownname, this.ship, $target.knownname, event.param.knownname, event.param, $assignment]" chance="$debugchance"/>
+                  <set_value name="$enemy" exact="event.param"/>
+                  <include_interrupt_actions ref="CreateAttackOrder"/>
+                </do_if>
+                <do_elseif value="event.name == 'event_object_changed_true_owner'">
+                  <debug_text text="'commander changed owner from %s to %s. my true owner: %s'.[$params.{2}, $params.{1}, this.trueowner]" chance="$debugchance"/>
+                  <set_value name="$changedowner"/>
+                  <resume label="finish"/>
+                </do_elseif>
+                <do_elseif value="(event.name == 'event_object_destroyed') or (event.name == 'event_object_abandoned')">
+                  <resume label="finish"/>
+                </do_elseif>
+              </actions>
+            </interrupt>
+          </wait>
+        </do_if>
+        <do_else>
+          <leave_formation object="this.ship"/>
+          <remove_value name="$in_formation"/>
+          <debug_text text="player.age + ': %1 %2 catching up to leader.\n distance to leader: %3m\n formation distance: %4m'.[this.ship.idcode, this.ship.knownname, this.ship.bboxdistanceto.{$target}, $formationparam]" chance="$debugchance"/>
+          <do_if value="$objectinhighway?">
+            <debug_text text="'in a highway. waiting to exit.'" chance="$debugchance"/>
+            <wait>
+              <interrupt>
+                <conditions>
+                  <check_any>
+                    <check_all>
+                      <event_object_changed_zone object="$objectinhighway"/>
+                      <check_value value="not event.object.zone.isclass.highway"/>
+                    </check_all>
+                    <event_object_destroyed object="$objectinhighway"/>
+                  </check_any>
+                </conditions>
+              </interrupt>
+            </wait>
+            <remove_value name="$objectinhighway"/>
+          </do_if>
+          <do_else>
+            <!-- cases:
+              we are carrier-based and are not docked, (in this case, we will try to dock at carrier upon resume, after this movement.)
+              we are not in formation and commander is not in a highway. (in this case, we will try to join the formation upon resume, after this movement.) -->
+            <debug_text text="'moving to keep up.\n distance to commander: %sm'.[this.assignedcontrolled.distanceto.{$target}]" chance="0"/>
+            <set_value name="$lowkeepup_starttime" exact="player.age" chance="$debugchance"/>
+            <set_value name="$lowkeepup_startdist" exact="this.assignedcontrolled.distanceto.{$target}" chance="$debugchance"/>
+            <move_to object="this.ship" destination="$target.zone" uselocalhighways="false" travel="true" sinceversion="2">
+              <position object="$target" min="this.ship.size + $target.size" max="$formationparam"/>
+              <interrupt>
+                <conditions>
+                  <check_any>
+                    <event_object_destroyed object="$target"/>
+                    <event_object_abandoned object="$target"/>
+                    <event_object_changed_zone object="$target"/>
+                    <check_all>
+                      <event_object_changed_true_owner object="$target"/>
+                      <!-- this will break if a ship is subordinate to
+                            a ship belonging to a different faction,
+                              and that ship uncovers. -->
+                      <check_value value="event.param != this.ship.trueowner"/>
+                    </check_all>
+                    <event_object_undocked object="$target"/>
+                    <event_object_changed_attention object="this.assignedcontrolled"/>
+                  </check_any>
+                </conditions>
+                <actions>
+                  <debug_text text="'keep up movement interrupted by: %s after: %ss'.[event.name, player.age - $lowkeepup_starttime]" chance="$debugchance"/>
+                </actions>
+              </interrupt>
+            </move_to>
+            <debug_text text="'keep up movement finished.\n distance change: %sm (negative distance change is valid)\n time elapsed: %ss'.[(@$lowkeepup_startdist - @this.assignedcontrolled.distanceto.{$target}), (player.age - @$lowkeepup_starttime)]" chance="$debugchance"/>
+            <remove_value name="$lowkeepup_starttime" chance="$debugchance"/>
+            <remove_value name="$lowkeepup_startdist" chance="$debugchance"/>
+          </do_else>
+        </do_else>
+      </do_if>
+
+      <resume label="start" />
+
+      <label name="finish" />
+
+      <wait max="200ms" comment="delay to wait for a possible commander promotion" />
+
+      <debug_text text="'leader dead or timeout'" chance="$debugchance" />
+
+      <!-- check if this is a jobship at the end of its lifetime -->
+      <do_if value="this.ship.jobexpired">
+        <debug_text text="'%1 doing job %2 has expired, die!'.[this.ship.knownname, this.ship.job]" chance="$debugchance" />
+        <create_order object="this.ship" id="'MoveDie'" immediate="true">
+          <param name="byhighway" value="not this.ship.isclass.[class.ship_l, class.ship_xl]" />
+          <param name="byhostile" value="true" />
+        </create_order>
+      </do_if>
+      <!-- If target is dead ... -->
+      <do_elseif value="not $target.isoperational or $changedowner?">
+        <!-- ... and we have a new commander, -->
+        <do_if value="not $endontargetdeath and @this.assignedcontrolled.commander.isoperational">
+          <!-- In any case, set the new commander as target of this order and reinitialize. -->
+          <debug_text text="'Commander was killed. Setting %1 (%2) as new squadron leader.'.[this.assignedcontrolled.commander.knownname, this.assignedcontrolled.commander]" chance="$debugchance"/>
+          <do_if value="this.assignedcontrolled.order and (this.assignedcontrolled.order.id == 'Escort' or this.assignedcontrolled.order.id == 'SupplyFleet')">
+            <edit_order_param order="this.assignedcontrolled.order" param="'target'" value="this.assignedcontrolled.commander"/>
+          </do_if>
+          <do_if value="this.assignedcontrolled.defaultorder and (this.assignedcontrolled.defaultorder.id == 'Escort' or this.assignedcontrolled.defaultorder.id == 'SupplyFleet')">
+            <edit_order_param order="this.assignedcontrolled.defaultorder" param="'target'" value="this.assignedcontrolled.commander"/>
+          </do_if>
+
+          <!-- ... and this is a unit that has been promoted and is now directly subordinate to the mother ship, -->
+          <do_if value="this.assignedcontrolled.isunit and not this.assignedcontrolled.commander.isunit">
+            <!-- ... and we were attacking, break and attack, -->
+            <do_if value="@$squadorder.$id == 'Attack'">
+              <set_value name="$locattacker" exact="this.assignedcontrolled"/>
+              <debug_text text="'Commander was killed. Resuming attack on %1 (%2).'.[@$squadorder.$primarytarget.knownname, @$squadorder.$primarytarget]" chance="$debugchance"/>
+            </do_if>
+            <do_else>
+              <debug_text text="'Commander was killed. Docking at %1 (%2).'.[this.assignedcontrolled.commander.knownname, this.assignedcontrolled.commander]" chance="$debugchance"/>
+            </do_else>
+            <!-- ... then dock. -->
+            <create_order id="'DockAndWait'" object="this.assignedcontrolled">
+              <param name="destination" value="this.assignedcontrolled.commander"/>
+              <param name="dockfollowers" value="true"/>
+            </create_order>
+          </do_if>
+          <!-- and we were attacking, -->
+          <do_elseif value="(@$squadorder.$id == 'Attack') and (@this.assignedcontrolled.commander.order.id != $squadorder.$id) and not @this.assignedcontrolled.commander.pilot.$squadorderupdated">
+            <!-- ... relay last attack order to new commander. -->
+            <set_value name="$locattacker" exact="this.assignedcontrolled.commander"/>
+            <do_if value="this.assignedcontrolled.commander.pilot">
+              <set_value name="this.assignedcontrolled.commander.pilot.$squadorderupdated"/>
+            </do_if>
+            <debug_text text="'Commander was killed while we were attacking %s %s %s. Relaying order to new commander %s %s %s.'.[@$squadorder.$primarytarget.idcode, @$squadorder.$primarytarget.knownname, @$squadorder.$primarytarget, @this.assignedcontrolled.commander.idcode, @this.assignedcontrolled.commander.knownname, this.assignedcontrolled.commander]" chance="$debugchance"/>
+          </do_elseif>
+
+          <do_if value="$locattacker?">
+            <do_if value="@$squadorder.$primarytarget.canbeattacked">
+              <create_order id="'Attack'" object="$locattacker" immediate="true">
+                <param name="primarytarget" value="@$squadorder.$primarytarget"/>
+                <param name="secondarytargets" value="$squadorder.$secondarytargets"/>
+                <param name="escort" value="$squadorder.$escort"/>
+                <param name="pursuedistance" value="$squadorder.$pursuedistance"/>
+                <param name="pursuetargets" value="$squadorder.$pursuetargets"/>
+                <param name="allowothertargets" value="$squadorder.$allowothertargets"/>
+                <param name="checkrelation" value="$squadorder.$checkrelation"/>
+                <param name="disable" value="$squadorder.$disable"/>
+                <param name="disablehullpercentagethreshold" value="$squadorder.$disablehullpercentagethreshold"/>
+                <param name="disabletargets" value="$squadorder.$disabletargets"/>
+                <param name="squad_attack" value="$squadorder.$squad_attack"/>
+                <param name="boardingbehavior" value="$squadorder.$boardingbehavior"/>
+                <param name="behaviortargetclasses" value="$squadorder.$behaviortargetclasses"/>
+                <param name="uncover" value="$squadorder.$uncover"/>
+                <param name="radius" value="$squadorder.$radius"/>
+                <param name="radiusanchorpos" value="$squadorder.$radiusanchorpos"/>
+                <param name="radiusanchorspace" value="$squadorder.$radiusanchorspace"/>
+                <param name="forceprimarytarget" value="@$squadorder.$forceprimarytarget"/>
+                <param name="internalorder" value="$squadorder.$internalorder"/>
+                <param name="debugchance" value="$squadorder.$debugchance"/>
+              </create_order>
+            </do_if>
+            <remove_value name="$squadorder"/>
+            <remove_value name="$locattacker"/>
+          </do_if>
+        </do_if>
+        <!-- ... and we do not have a new commander, cancel the default order and request new orders. -->
+        <do_else>
+          <debug_text text="'Escortee was killed. We have no commander so requesting new orders.'" chance="$debugchance"/>
+          <do_if value="this.assignedcontrolled.isjobship">
+            <set_ship_expiration_time ship="this.assignedcontrolled" time="player.age + 2h"/>
+            <!--Give the subordinates the same expiration time as their commander-->
+            <set_value name="$subordinates" exact="this.assignedcontrolled.subordinates"/>
+            <do_all exact="$subordinates.count" counter="$i">
+              <set_ship_expiration_time ship="$subordinates.{$i}" time="player.age + 2h"/>
+            </do_all>
+          </do_if>
+          <do_if value="this.assignedcontrolled.order == this.assignedcontrolled.defaultorder">
+            <cancel_order order="this.assignedcontrolled.defaultorder"/>
+          </do_if>
+        </do_else>
+      </do_elseif>
+      <!-- NB: this will be overridden by the section above if we have a new operational commander -->
+      <do_elseif value="$validfinish?">
+        <!-- due to an event that requires re-initialization -->
+      </do_elseif>
+      <do_elseif value="$target.isownerless">
+        <do_if value="this.assignedcontrolled.order == this.assignedcontrolled.defaultorder">
+          <cancel_order order="this.assignedcontrolled.defaultorder"/>
+        </do_if>
+      </do_elseif>
+      <do_elseif value="not $target.pilot">
+        <do_if value="$target.isplayerowned">
+          <wait min="7s" max="13s"/>
+          <resume label="start"/>
+        </do_if>
+      </do_elseif>
+      <do_elseif value="this.ship.isclass.[class.ship_l, class.ship_xl] and $target.isclass.[class.ship_s, class.ship_m]">
+        <debug_text text="'redirecting %s %s %s %s to protect rather than escort %s %s %s %s'.[this.ship.class, this.ship.idcode, this.ship.knownname, this.ship, $target.class, $target.idcode, $target.knownname, $target]" chance="$debugchance"/>
+        <set_value name="$internalordercalled"/>
+        <create_order id="'ProtectShip'" object="this.ship">
+          <param name="target" value="$target"/>
+          <param name="pursuedistance" value="$pursuedistance"/>
+          <param name="radius" value="$formationparam"/>
+          <param name="debugchance" value="$debugchance"/>
+        </create_order>
+      </do_elseif>
+      <do_else>
+        <debug_text text="'Unhandled case.\n escort target: %1 %2, operational: %5, has pilot: %6\n commander: %3 %4, operational: %7, has pilot: %8'.[$target.knownname, $target, this.ship.commander.knownname, this.ship.commander, $target.isoperational, $target.pilot.exists, this.ship.commander.isoperational, this.ship.commander.pilot.exists]" filter="error"/>
+      </do_else>
+
+      <do_if value="$target.pilot.$escortgroup?">
+        <remove_from_group group="$target.pilot.$escortgroup" object="this.ship"/>
+      </do_if>
+      <do_if value="$fleetadmiral? and @$fleetadmiral.$fleet.indexof.{this.ship}">
+        <remove_from_group group="$fleetadmiral.$fleet" object="this.ship"/>
+      </do_if>
+      <remove_value name="this.$goattack"/>
+      <stop_moving object="this.ship" immediate="false"/>
+      <cease_fire object="this.ship"/>
+      <leave_formation object="this.ship"/>
+      <remove_value name="$in_formation"/>
+      <set_to_default_flight_control_model object="this.assignedcontrolled"/>
+
+      <do_if value="not $internalordercalled?">
+        <remove_value name="this.$resupplier"/>
+      </do_if>
+
+      <do_if value="@$subordinateorders.count">
+        <do_all exact="$subordinateorders.count" counter="$i">
+          <do_if value="$subordinateorders.{$i}.exists">
+            <debug_text text="'LOW: cancelling subordinate order to dock: %s'.[$subordinateorders.{$i}]" chance="$debugchance"/>
+            <cancel_order order="$subordinateorders.{$i}"/>
+          </do_if>
+        </do_all>
+        <do_if value="@this.assignedcontrolled.defaultorder.id == 'Escort'">
+          <edit_order_param order="this.assignedcontrolled.defaultorder" param="'subordinateorders'" value="[]"/>
+          <debug_text text="'clearing subordinateorders to dock. subordinateorders: %s, defaultorder param: %s'.[$subordinateorders, this.assignedcontrolled.defaultorder.$subordinateorders]" chance="$debugchance"/>
+        </do_if>
+      </do_if>
+
+      <do_if value="@this.assignedcontrolled.defaultorder.id == 'Escort'">
+        <!-- reset $cannotdock so we try to dock the next time we restart the escort order. only necessary if this is the default order. -->
+        <edit_order_param order="this.assignedcontrolled.defaultorder" param="'cannotdock'" value="false"/>
+      </do_if>
+
+      <!-- Don't return directly, wait for orders.base to abort this script -->
+      <wait exact="1ms" />
+
+    </actions>
+  </attention>
+  <on_abort>
+    <do_if value="$target.pilot.$squad_formationdist?">
+      <remove_value name="$target.pilot.$squad_formationdist"/>
+    </do_if>
+    <do_if value="$target.pilot.$escortgroup? and not $retaininescortgroup?">
+      <remove_from_group group="$target.pilot.$escortgroup" object="this.ship"/>
+    </do_if>
+    <do_if value="$fleetadmiral? and not $retaininescortgroup? and @$fleetadmiral.$fleet.indexof.{this.ship}">
+      <remove_from_group group="$fleetadmiral.$fleet" object="this.ship"/>
+    </do_if>
+    <remove_value name="this.$goattack"/>
+    <stop_moving object="this.ship" immediate="false" />
+    <cease_fire object="this.ship" />
+    <leave_formation object="this.ship" />
+    <set_to_default_flight_control_model object="this.ship"/>
+    <do_if value="not $internalordercalled?">
+      <!-- NB: this can be cleared if this ship is given an order from elsewhere such as MoveWait or ProtectPosition as part of the fleet moving long distances. -->
+      <remove_value name="this.$resupplier"/>
+    </do_if>
+    <!-- cancel subordinateorders if order we're about to execute next is not Escort. retain otherwise (if, for example, this order is restarted due to the commander changing our formation or if we update parameters). -->
+    <do_if value="@$subordinateorders.count and @this.assignedcontrolled.order.id != 'Escort'">
+      <do_all exact="$subordinateorders.count" counter="$i">
+        <do_if value="$subordinateorders.{$i}.exists">
+          <debug_text text="'ON_ABORT: cancelling subordinate order to dock: %s'.[$subordinateorders.{$i}]" chance="$debugchance"/>
+          <cancel_order order="$subordinateorders.{$i}"/>
+        </do_if>
+      </do_all>
+      <do_if value="@this.assignedcontrolled.defaultorder.id == 'Escort'">
+        <edit_order_param order="this.assignedcontrolled.defaultorder" param="'subordinateorders'" value="[]"/>
+        <debug_text text="'clearing subordinateorders to dock. subordinateorders: %s, defaultorder param: %s'.[$subordinateorders, this.assignedcontrolled.defaultorder.$subordinateorders]" chance="$debugchance"/>
+      </do_if>
+    </do_if>
+    <do_if value="@this.assignedcontrolled.defaultorder.id == 'Escort'">
+      <!-- reset $cannotdock so we try to dock the next time we restart the escort order. only necessary if this is the default order. -->
+      <edit_order_param order="this.assignedcontrolled.defaultorder" param="'cannotdock'" value="false"/>
+    </do_if>
+  </on_abort>
+</aiscript>

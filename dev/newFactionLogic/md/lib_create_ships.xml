@@ -1,0 +1,763 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="LIB_Create_Ships" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+    <!--
+    $errorvalue:
+    -101: -->
+
+    <library name="Start">
+      <params>
+        <param name="EndSignalCue" default="null"/>
+        <param name="GroupCue" comment="Ship group is saved to '$GroupCue.$LIB_Create_Ships_Result'"/>
+        <param name="ClearGroup" default="true" comment="Clear the group before adding the results"/>
+
+        <!--Ship Info-->
+        <param name="Ship_Amount"/>
+        <param name="Ship_Faction" default="null" comment="Overriding faction for the ship and created NPCs"/>
+
+        <param name="Ship_Class" default="null" comment="Guaranteed class of the spawned ship. Allows use of $AllowHighways and $AllowBoostingIn"/>
+        <param name="Ship_Ref" default="null" comment="Overriding ship ref for ship. Ship_Category params ignored."/>
+        <param name="Ship_Macro" default="null" comment="Overriding macro for ship. Ship_Category and Ship_Ref params ignored."/>
+
+        <param name="Ship_CategoryFaction" default="null" comment="faction or list of factions"/>
+        <param name="Ship_Category_Size" default="null"/>
+        <param name="Ship_CategoryTags" default="null"/>
+
+        <!--Location Info-->
+        <param name="Zone" default="null"/>
+        <param name="Sector" default="null" comment="Sector to spawn in, as opposed to $Zone. Sector co-ordinates expected with $Position. Ships will not attempt to spawn via close highways or jumpbeacons."/>
+        <param name="PositionObject" default="null" comment="Object to anchor $Position value. Will default to 'use zone' which will then be replaced with the $Zone value (if one is defined)
+               $AllowHighways and $AllowBoostingIn being true may stop the spawning near this object"/>
+        <param name="Position" default="null"/>
+        <param name="SafePos" default="true"/>
+        <param name="SafePosRadius" default="null"/>
+        <param name="SafePosFireRange" default="true" comment="Avoid the firing range of the safepos PositionObject"/>
+        <param name="MinRange" default="1km"/>
+        <param name="MaxRange" default="3km"/>
+
+        <param name="Dock" default="null" comment="Either a Dockslot, DockingBay component or Container component"/>
+
+        <!--Location overrides to travel to PositionObject. Requires Ship_Class to be valid-->
+        <param name="AllowHighways" default="0" comment="Spawn small ships inside highways leading to PositionObject. Ignored if $Dock is set"/>
+        <param name="AllowBoostingIn" default="0" comment="Spawn large ships in other zones to boost towards PositionObject's zone? Ignored if $Dock is set. May not occur if Jumpbeacon exists"/>
+        <param name="AllowJumpBeacon" default="100" comment="Use a jumpbeacon if one is present. May override positioning"/>
+
+        <!--NPC Info-->
+        <!--If Ship_Faction is set, all NPCs will have their owner set to that faction-->
+        <param name="Pilot_DoCreate" default="true" comment="Create a pilot. If not, destroy any generated pilot"/>
+        <param name="Pilot_Essential" default="true" comment="Bool whether the pilot is essential. If one is not created, abort ship creation."/>
+
+        <param name="DebugChance" default="0"/>
+      </params>
+      <actions>
+        <create_list name="$ErrorList"/>
+
+        <do_if value="$Zone and $Sector">
+          <debug_text text="'Both zone (' + $Zone.knownname + ') and sector (' + $Sector.knownname + ') provided. Setting $Sector to null'" chance="$DebugChance"/>
+          <set_value name="$Sector" exact="null"/>
+        </do_if>
+        <do_if value="not $PositionObject">
+          <set_value name="$PositionObject" exact="'use zone'"/>
+        </do_if>
+        <do_if value="$PositionObject" exact="'use zone'">
+          <do_if value="$Zone.exists">
+            <set_value name="$PositionObject" exact="$Zone"/>
+          </do_if>
+          <do_elseif value="$Sector.exists">
+            <set_value name="$PositionObject" exact="$Sector"/>
+          </do_elseif>
+          <do_else>
+            <set_value name="$PositionObject" exact="null"/>
+          </do_else>
+        </do_if>
+        <do_elseif value="typeof $PositionObject == datatype.component">
+          <do_if value="$PositionObject.isclass.zone">
+            <set_value name="$Zone" exact="$PositionObject"/>
+          </do_if>
+          <do_else>
+            <set_value name="$Zone" exact="$PositionObject.zone"/>
+          </do_else>
+        </do_elseif>
+
+        <do_if value="not $Position">
+          <set_value name="$Position" exact="position.[0,0,0]"/>
+        </do_if>
+
+        <do_if value="not $MinRange">
+          <set_value name="$MinRange" exact="1km"/>
+        </do_if>
+        <do_if value="not $MaxRange">
+          <set_value name="$MaxRange" exact="3km"/>
+        </do_if>
+
+        <do_if value="$Ship_Class and $Ship_Category_Size">
+          <do_if value="typeof $Ship_Category_Size == datatype.list">
+            <do_if value="not $Ship_Category_Size.indexof.{$Ship_Class}">
+              <assert value="$Ship_Category_Size.indexof.{$Ship_Class}" text="'$Ship_Class is not included in the list of $Ship_Category_Size. May get strange spawning behaviour.'"/>
+            </do_if>
+          </do_if>
+          <do_else>
+            <assert value="$Ship_Class == $Ship_Category_Size" text="'$Ship_Class is not $Ship_Category_Size. May get strange spawning behaviour.'"/>
+          </do_else>
+        </do_if>
+
+        <set_value name="$Size" exact="null"/>
+        <do_if value="$Ship_Class" exact="class.ship_xs">
+          <set_value name="$Size" exact="tag.dock_xs"/>
+        </do_if>
+        <do_elseif value="$Ship_Class" exact="class.ship_s">
+          <set_value name="$Size" exact="tag.dock_s"/>
+        </do_elseif>
+        <do_elseif value="$Ship_Class" exact="class.ship_m">
+          <set_value name="$Size" exact="tag.dock_m"/>
+        </do_elseif>
+        <do_elseif value="$Ship_Class" exact="class.ship_l">
+          <set_value name="$Size" exact="tag.dock_l"/>
+        </do_elseif>
+        <do_elseif value="$Ship_Class" exact="class.ship_xl">
+          <set_value name="$Size" exact="tag.dock_xl"/>
+        </do_elseif>
+
+        <do_if value="$Dock and $Size">
+          <set_value name="$CheckDock" exact="null"/>
+          <do_if value="typeof $Dock == datatype.componentslot">
+            <set_value name="$CheckDock" exact="$Dock.component"/>
+          </do_if>
+          <do_elseif value="typeof $Dock == datatype.component">
+            <do_if value="$Dock.isclass.dockingbay">
+              <set_value name="$CheckDock" exact="$Dock"/>
+            </do_if>
+            <do_elseif value="$Dock.isclass.container">
+              <find_dockingbay name="$CheckDock" object="$Dock">
+                <match_dock size="$Size" />
+              </find_dockingbay>
+            </do_elseif>
+            <do_else>
+              <assert value="false" text="'$Dock: ' + $Dock + ' is not a dockingbay nor a container'"/>
+            </do_else>
+          </do_elseif>
+          <do_if value="not $CheckDock">
+            <debug_text text="'$Dock: ' + $Dock + ' is invalid'"/>
+          </do_if>
+          <do_elseif value="not $CheckDock.docksize.indexof.{$Size}">
+            <debug_text text="'Invalidating $Dock: ' + $Dock + ' as it can not hold ' + $Size + ' sized ships'"/>
+            <set_value name="$Dock" exact="null"/>
+          </do_elseif>
+        </do_if>
+
+        <do_if value="$Ship_Class == class.ship_l or $Ship_Class == class.ship_xl">
+          <set_value name="$AllowHighways" exact="0"/>
+        </do_if>
+
+        <do_if value="$Ship_Class == class.ship_xs or $Ship_Class == class.ship_s or $Ship_Class == class.ship_m">
+          <set_value name="$AllowBoostingIn" exact="0"/>
+        </do_if>
+
+        <do_if value="$Sector">
+          <set_value name="$AllowHighways" exact="0"/>
+          <set_value name="$AllowJumpBeacon" exact="0"/>
+          <set_value name="$AllowBoostingIn" exact="0"/>
+        </do_if>
+
+        <set_value name="$Highway" exact="null"/>
+        <set_value name="$Highway_Z_Min" exact="null"/>
+        <set_value name="$Highway_Z_Max" exact="null"/>
+        <do_if value="not $Dock" chance="$AllowHighways">
+          <do_if value="$PositionObject.isclass.object">
+            <set_value name="$RefZone" exact="$PositionObject.zone"/>
+          </do_if>
+          <do_else>
+            <set_value name="$RefZone" exact="$PositionObject"/>
+          </do_else>
+          <do_if value="not $RefZone.isclass.highway and $RefZone.attention ge attention.visible">
+            <set_value name="$Adjacent" exact="$RefZone.adjacentzones"/>
+            <debug_text text="'checking highways of ' + $RefZone.knownname" chance="$DebugChance"/>
+            <do_all exact="$Adjacent.count" counter="$Counter">
+              <remove_value name="$Highway_Z"/>
+              <set_value name="$Temp_Highway_Z_Min" exact="null"/>
+              <set_value name="$Temp_Highway_Z_Max" exact="null"/>
+              <do_if value="$Adjacent.{$Counter}.isclass.highway">
+                <set_value name="$TempHighway" exact="$Adjacent.{$Counter}"/>
+                <do_if value="$TempHighway.junctions.indexof.{$RefZone}">
+                  <set_value name="$JunctionID" exact="$TempHighway.junctions.indexof.{$RefZone}"/>
+                  <do_if value="$JunctionID" exact="1">
+                    <!--Zone is the first along the highway. Spawn near beginning-->
+                    <set_value name="$Temp_Highway_Z_Min" exact="0.0001"/>
+                    <set_value name="$Temp_Highway_Z_Max" exact="0.001"/>
+                  </do_if>
+                  <do_else>
+                    <!--Get a point from the previous junction zone-->
+                    <get_closest_highway_offset highway="$TempHighway" result="$HighwayPosition" space="$TempHighway.junctions.{$JunctionID - 1}"/>
+                    <set_value name="$Temp_Highway_Z_Min" exact="$HighwayPosition.z - 0.001"/>
+                    <set_value name="$Temp_Highway_Z_Max" exact="$HighwayPosition.z"/>
+                  </do_else>
+                </do_if>
+                <do_elseif value="$TempHighway.islocalhighway">
+                  <!--Zone is at end of highway-->
+                  <do_if value="$TempHighway.destination" exact="$RefZone">
+                    <do_if value="$TempHighway.junctions.count">
+                      <!--Use the last junction-->
+                      <get_closest_highway_offset highway="$TempHighway" result="$HighwayPosition" space="$TempHighway.junctions.{$TempHighway.junctions.count}"/>
+                      <set_value name="$Temp_Highway_Z_Min" exact="$HighwayPosition.z - 0.001"/>
+                      <set_value name="$Temp_Highway_Z_Max" exact="$HighwayPosition.z"/>
+                    </do_if>
+                    <do_else>
+                      <!--No junctions, so just use a random position-->
+                      <set_value name="$Temp_Highway_Z_Min" exact="0.80"/>
+                      <set_value name="$Temp_Highway_Z_Max" exact="0.90"/>
+                    </do_else>
+                  </do_if>
+                  <do_else>
+                    <!--TODO: Must be a temp zone-->
+                  </do_else>
+                </do_elseif>
+                <do_elseif value="$TempHighway.issuperhighway">
+                  <do_if value="$TempHighway.destination.sector" exact="$RefZone.sector">
+                    <!--Super highway, so just use a random position-->
+                    <set_value name="$Temp_Highway_Z_Min" exact="0.80"/>
+                    <set_value name="$Temp_Highway_Z_Max" exact="0.90"/>
+                  </do_if>
+                </do_elseif>
+                <do_if value="$Temp_Highway_Z_Min">
+                  <set_value name="$Highway" exact="$TempHighway"/>
+                  <set_value name="$Highway_Z_Min" exact="$Temp_Highway_Z_Min"/>
+                  <set_value name="$Highway_Z_Max" exact="$Temp_Highway_Z_Max"/>
+                  <do_if value="$Highway_Z_Min" max="0">
+                    <set_value name="$Highway_Z_Min" exact="0"/>
+                  </do_if>
+                  <debug_text text="'Highway is ' + $Highway + ' from ' + $Highway.origin + ' ' + $Highway.origin.knownname + ' to ' + $Highway.destination + ' ' + $Highway.destination.knownname" chance="$DebugChance"/>
+                  <debug_text text="'Highway_Z_Min ' + $Highway_Z_Min" chance="$DebugChance"/>
+                  <debug_text text="'Highway_Z_Max ' + $Highway_Z_Max" chance="$DebugChance"/>
+                </do_if>
+              </do_if>
+            </do_all>
+          </do_if>
+        </do_if>
+
+        <!--Setup L and XL ship spawns-->
+        <set_value name="$JumpBeacon" exact="null"/>
+        <!--TODO @Owen Remove JumpBeacon sections-->
+        <!--<do_if value="(not $Dock) and ($Ship_Class == class.ship_l or $Ship_Class == class.ship_xl)" chance="$AllowJumpBeacon">
+          <find_object name="$JumpBeacon" class="class.jumpbeacon" space="$Zone"/>
+        </do_if>-->
+
+        <set_value name="$BoostZone" exact="null"/>
+        <do_if value="not $Dock and not $JumpBeacon" chance="$AllowBoostingIn">
+          <find_zone name="$PotentialZones" normalzone="true" space="$Zone.sector" multiple="true"/>
+          <remove_from_list name="$PotentialZones" exact="$Zone" multiple="false" />
+          <do_all exact="$PotentialZones.count" counter="$Counter">
+            <do_if value="$Counter == 1">
+              <set_value name="$BoostZone" exact="$PotentialZones.{1}"/>
+              <set_value name="$ZoneDistance" exact="$Zone.distanceto.{$BoostZone}"/>
+            </do_if>
+            <do_if value="$Zone.distanceto.{$PotentialZones.{$Counter}}" max="$ZoneDistance">
+              <set_value name="$BoostZone" exact="$PotentialZones.{$Counter}"/>
+              <set_value name="$ZoneDistance" exact="$Zone.distanceto.{$BoostZone}"/>
+            </do_if>
+          </do_all>
+        </do_if>
+
+        <do_if value="$ClearGroup and $GroupCue.$LIB_Create_Ships_Result?">
+          <do_if value="typeof $GroupCue.$LIB_Create_Ships_Result == datatype.group">
+            <clear_group group="$GroupCue.$LIB_Create_Ships_Result"/>
+          </do_if>
+        </do_if>
+        <do_else>
+          <create_group groupname="$GroupCue.$LIB_Create_Ships_Result"/>
+        </do_else>
+      </actions>
+      <cues>
+
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_any>
+              <check_value value="$ErrorList.count" min="1"/>
+              <check_value value="$Ship_Amount" max="0"/>
+            </check_any>
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup"/>
+          </actions>
+        </cue>
+
+        <cue name="Do_Start" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" exact="0"/>
+            <check_value value="$Ship_Amount" min="1"/>
+          </conditions>
+          <actions>
+            <do_if value="$Ship_Macro">
+              <debug_text text="$Ship_Macro" chance="$DebugChance"/>
+            </do_if>
+            <do_elseif value="$Ship_Ref">
+              <debug_text text="$Ship_Ref" chance="$DebugChance"/>
+            </do_elseif>
+            <do_else>
+              <debug_text text="$Ship_CategoryFaction" chance="$DebugChance"/>
+              <debug_text text="$Ship_Category_Size" chance="$DebugChance"/>
+              <debug_text text="$Ship_CategoryTags" chance="$DebugChance"/>
+            </do_else>
+
+            <do_all exact="$Ship_Amount">
+              <set_value name="$Ship" exact="null"/>
+
+              <do_if value="$Highway.exists">
+                <debug_text text="'Attempting to spawn in highway ' + $Highway.macro.id" chance="$DebugChance"/>
+                <!--Warp into highway-->
+                <set_value name="$X" min="-100" max="100"/>
+                <set_value name="$Y" min="-100" max="100"/>
+                <set_value name="$Z" min="$Highway_Z_Min" max="$Highway_Z_Max" profile="increasing"/>
+                <set_value name="$Highway_Z_Max" exact="$Z"/>
+                <do_if value="$Ship_Macro">
+                  <create_ship name="$Ship" groupname="$GroupCue.$LIB_Create_Ships_Result" zone="$Highway" macro="$Ship_Macro">
+                    <position x="$X" y="$Y" z="$Z"/>
+                  </create_ship>
+                </do_if>
+                <do_elseif value="$Ship_Ref">
+                  <create_ship name="$Ship" groupname="$GroupCue.$LIB_Create_Ships_Result" zone="$Highway" ref="$Ship_Ref">
+                    <position x="$X" y="$Y" z="$Z"/>
+                  </create_ship>
+                </do_elseif>
+                <do_else>
+                  <create_ship name="$Ship" groupname="$GroupCue.$LIB_Create_Ships_Result" zone="$Highway">
+                    <select faction="$Ship_CategoryFaction" size="$Ship_Category_Size" tags="$Ship_CategoryTags" required="false"/>
+                    <position x="$X" y="$Y" z="$Z"/>
+                  </create_ship>
+                </do_else>
+
+                <do_if value="$Ship.exists">
+                  <assert value="$Ship.pilot" text="'Ships spawned in highways need pilots'"/>
+                  <do_if value="$Ship.pilot">
+                    <!--Just enough time for outside scripts to give a new command-->
+                    <create_order object="$Ship" id="'MoveDie'">
+                      <param name="mintime" value="10s"/>
+                    </create_order>
+                  </do_if>
+                </do_if>
+              </do_if>
+
+              <do_else>
+                <set_value name="$SpawnZone" exact="$Zone"/>
+                <set_value name="$SpawnSector" exact="$Sector"/>
+                <set_value name="$SpawnPositionObject" exact="$PositionObject"/>
+                <set_value name="$SpawnPosition" exact="$Position"/>
+                <set_value name="$SpawnSafePos" exact="$SafePos"/>
+                <set_value name="$Range" min="$MinRange" max="$MaxRange" profile="increasing" scale="2"/>
+
+                <do_if value="$JumpBeacon.exists">
+                  <set_value name="$SpawnZone" exact="$JumpBeacon.zone"/>
+                  <set_value name="$SpawnPositionObject" exact="$JumpBeacon"/>
+                  <set_value name="$SpawnPosition" exact="position.[0,0,0]"/>
+                  <set_value name="$SpawnSafePos" exact="true"/>
+                  <set_value name="$Range" exact="1km"/>
+                  <debug_text text="'Attempting to Warp to JumpBeacon in ' + $SpawnZone.knownname" chance="$DebugChance"/>
+                </do_if>
+                <do_elseif value="$BoostZone">
+                  <set_value name="$SpawnZone" exact="$BoostZone"/>
+                  <set_value name="$SpawnPositionObject" exact="$SpawnZone"/>
+                  <get_zone_exit_pos position="$SpawnPosition" zone="$SpawnZone" destination="$Zone" radius="1km"/>
+                  <debug_text text="'Zone Exit Pos ' + $SpawnPosition" chance="$DebugChance"/>
+                  <set_value name="$SpawnSafePos" exact="true"/>
+                  <set_value name="$Range" exact="1km"/>
+                  <debug_text text="'Attempting to spawn in zone ' + $SpawnZone.knownname + ' to boost to ' + $Zone.knownname" chance="$DebugChance"/>
+                </do_elseif>
+                <do_elseif value="$DebugChance">
+                  <do_if value="$SpawnZone">
+                    <debug_text text="'Attempting to spawn in zone ' + $SpawnZone.knownname + ' as no other options were available'" chance="$DebugChance"/>
+                  </do_if>
+                  <do_elseif value="$SpawnSector">
+                    <debug_text text="'Attempting to spawn in sector ' + $SpawnSector.knownname" chance="$DebugChance"/>
+                  </do_elseif>
+                </do_elseif>
+
+                <do_if value="$Ship_Macro">
+                  <do_if value="$SpawnSafePos">
+                    <create_ship name="$Ship" groupname="$GroupCue.$LIB_Create_Ships_Result" dock="$Dock" zone="$SpawnZone" sector="$SpawnSector" macro="$Ship_Macro">
+                      <safepos object="$SpawnPositionObject" value="$SpawnPosition" exact="$Range" radius="$SafePosRadius" includefiringrange="$SafePosFireRange"/>
+                    </create_ship>
+                  </do_if>
+                  <do_else>
+                    <create_ship name="$Ship" groupname="$GroupCue.$LIB_Create_Ships_Result" dock="$Dock" zone="$SpawnZone" sector="$SpawnSector" macro="$Ship_Macro">
+                      <position object="$SpawnPositionObject" value="$SpawnPosition" exact="$Range"/>
+                    </create_ship>
+                  </do_else>
+                </do_if>
+                <do_elseif value="$Ship_Ref">
+                  <do_if value="$SpawnSafePos">
+                    <create_ship name="$Ship" groupname="$GroupCue.$LIB_Create_Ships_Result" dock="$Dock" zone="$SpawnZone" sector="$SpawnSector" ref="$Ship_Ref">
+                      <safepos object="$SpawnPositionObject" value="$SpawnPosition" exact="$Range" radius="$SafePosRadius" includefiringrange="$SafePosFireRange"/>
+                    </create_ship>
+                  </do_if>
+                  <do_else>
+                    <create_ship name="$Ship" groupname="$GroupCue.$LIB_Create_Ships_Result" dock="$Dock" zone="$SpawnZone" sector="$SpawnSector" ref="$Ship_Ref">
+                      <position object="$SpawnPositionObject" value="$SpawnPosition" exact="$Range"/>
+                    </create_ship>
+                  </do_else>
+                </do_elseif>
+                <do_else>
+                  <do_if value="$SpawnSafePos">
+                    <create_ship name="$Ship" groupname="$GroupCue.$LIB_Create_Ships_Result" dock="$Dock" zone="$SpawnZone" sector="$SpawnSector">
+                      <select faction="$Ship_CategoryFaction" size="$Ship_Category_Size" tags="$Ship_CategoryTags" required="false"/>
+                      <safepos object="$SpawnPositionObject" value="$SpawnPosition" exact="$Range" radius="$SafePosRadius" includefiringrange="$SafePosFireRange"/>
+                    </create_ship>
+                  </do_if>
+                  <do_else>
+                    <create_ship name="$Ship" groupname="$GroupCue.$LIB_Create_Ships_Result" dock="$Dock" zone="$SpawnZone" sector="$SpawnSector">
+                      <select faction="$Ship_CategoryFaction" size="$Ship_Category_Size" tags="$Ship_CategoryTags" required="false"/>
+                      <position object="$SpawnPositionObject" value="$SpawnPosition" exact="$Range"/>
+                    </create_ship>
+                  </do_else>
+                </do_else>
+              </do_else>
+
+              <do_if value="$Ship.exists">
+                <debug_text text="'Ship position ' + $Ship.position" chance="$DebugChance"/>
+
+                <do_if value="$Ship_Faction">
+                  <set_owner object="$Ship" faction="$Ship_Faction" overridenpc="true"/>
+                </do_if>
+
+                <!--Pilot-->
+                <do_if value="$Pilot_DoCreate">
+                  <do_if value="$Pilot_Essential">
+                    <do_if value="not $Ship.pilot.exists">
+                      <debug_text text="'Pilot was essential but does not exist. Destroy the $Ship'" chance="$DebugChance"/>
+                      <destroy_object object="$Ship"/>
+                      <continue/>
+                    </do_if>
+                  </do_if>
+                </do_if>
+                <do_else>
+                  <!--Remove existing pilot-->
+                  <do_if value="$Ship.pilot.exists">
+                    <!--TODO @Owen currently have to dismiss the entity, remove their claim to the seat and then kill them as the kill happens next frame.
+                    Would be better if $Pilot_DoCreate results in a ship not actually being created with a pilot-->
+                    <set_value name="$RemovedPilot" exact="$Ship.pilot"/>
+                    <dismiss_control_entity actor="$RemovedPilot" object="$Ship"/>
+                    <do_if value="$RemovedPilot.isclass.npc">
+                      <clear_actor_roomslot actor="$RemovedPilot"/>
+                    </do_if>
+                    <destroy_object object="$RemovedPilot"/>
+                    <remove_value name="$RemovedPilot"/>
+                  </do_if>
+                </do_else>
+              </do_if>
+
+              <do_else>
+                <debug_text text="'No ship definition found. Abort'" chance="$DebugChance"/>
+                <break/>
+              </do_else>
+
+            </do_all>
+            <debug_text text="'Ships created: ' + $GroupCue.$LIB_Create_Ships_Result.count + ' ' + $GroupCue.$LIB_Create_Ships_Result" chance="$DebugChance"/>
+            <signal_cue cue="Cleanup"/>
+          </actions>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+
+            <do_if value="md.$RML_Debugging">
+              <do_all exact="$ErrorList.count" counter="$Counter">
+                <do_if value="$ErrorList.{$Counter}" exact="-101">
+                  <set_value name="$FeedbackText" exact="'No EndComponent exists'"/>
+                </do_if>
+                <do_else>
+                  <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                </do_else>
+
+                <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+              </do_all>
+            </do_if>
+
+            <do_if value="$EndSignalCue">
+              <signal_cue cue="$EndSignalCue"/>
+            </do_if>
+            <cancel_cue cue="Start"/>
+          </actions>
+
+        </cue>
+      </cues>
+    </library>
+
+    <library name="GetDefinitionCost" purpose="run_actions">
+      <params>
+        <param name="DefinitionID"/>
+        <param name="DefinitionTable"/>
+        <param name="ShipStrengthTable"/>
+        <param name="DebugChance" default="0"/>
+        <param name="Depth" default="0" comment="internal."/>
+      </params>
+      <actions>
+        <debug_text text="'ID ' + $DefinitionID + ' Depth: ' + $Depth" chance="$DebugChance"/>
+        <set_value name="$LowerCost" exact="0"/>
+        <set_value name="$UpperCost" exact="0"/>
+        <do_if value="$Depth gt 15">
+          <debug_text text="'High recursion depth warning'" filter="error"/>
+          <return value="[$LowerCost, $UpperCost]"/>
+        </do_if>
+
+        <set_value name="$Definition" exact="null"/>
+        <do_if value="$DefinitionTable.{$DefinitionID}?">
+          <set_value name="$Definition" exact="$DefinitionTable.{$DefinitionID}"/>
+
+          <do_if value="typeof $Definition.$ship == datatype.macro">
+            <set_value name="$ShipCost" exact="$ShipStrengthTable.{$Definition.$ship}"/>
+            <set_value name="$LowerCost" operation="add" exact="$ShipCost"/>
+            <set_value name="$UpperCost" operation="add" exact="$ShipCost"/>
+            <debug_text text="$DefinitionID + ' - Macro: ' + $Definition.$ship + ' cost: ' + $ShipCost" chance="$DebugChance"/>
+          </do_if>
+          <do_elseif value="(typeof $Definition.$ship).isstring">
+            <get_ship_definition_macros id="$Definition.$ship" result="$DefinitionList"/>
+            <do_if value="not $DefinitionList or $DefinitionList.count == 0">
+              <debug_text text="'Ship definition ' + $Definition.$ship + ' does not exist or resolves to zero macros'" filter="error"/>
+            </do_if>
+            <do_for_each name="$ShipMacro" in="$DefinitionList">
+              <set_value name="$ShipCost" exact="$ShipStrengthTable.{$ShipMacro}"/>
+              <do_if value="not $Lowest? or $ShipCost lt $Lowest">
+                <set_value name="$Lowest" exact="$ShipCost"/>
+              </do_if>
+              <do_if value="not $Upper? or $ShipCost gt $Upper">
+                <set_value name="$Upper" exact="$ShipCost"/>
+              </do_if>
+              <debug_text text="$DefinitionID + ' - Possible Macro: ' + $ShipMacro + ' cost: ' + $ShipCost" chance="$DebugChance"/>
+            </do_for_each>
+
+            <set_value name="$LowerCost" operation="add" exact="$Lowest"/>
+            <set_value name="$UpperCost" operation="add" exact="$Upper"/>
+          </do_elseif>
+          <debug_text text="$DefinitionID + ' - Main ship: ' + ' Lowerbound ' + $LowerCost + ' Upperbound ' + $UpperCost" chance="$DebugChance"/>
+
+          <remove_value name="$Lowest"/>
+          <remove_value name="$Upper"/>
+          <do_if value="$Definition.$subordinates?">
+            <do_for_each name="$Subordinate" in="$Definition.$subordinates">
+              <do_if value="typeof $Subordinate == datatype.macro">
+                <set_value name="$ShipCost" exact="$ShipStrengthTable.{$Subordinate}"/>
+                <set_value name="$Lowest" operation="add" exact="$ShipCost"/>
+                <set_value name="$Upper" operation="add" exact="$ShipCost"/>
+              </do_if>
+              <do_elseif value="(typeof $Subordinate).isstring">
+                <do_if value="$DefinitionTable.{$Subordinate}?">
+                  <run_actions ref="GetDefinitionCost" result="$ResultList">
+                    <param name="DefinitionID" value="$Subordinate"/>
+                    <param name="DefinitionTable" value="$DefinitionTable"/>
+                    <param name="ShipStrengthTable" value="$ShipStrengthTable"/>
+                    <param name="DebugChance" value="$DebugChance"/>
+                    <param name="Depth" value="$Depth + 1"/>
+                  </run_actions>
+                  <set_value name="$Lowest" operation="add" exact="$ResultList.{1}"/>
+                  <set_value name="$Upper" operation="add" exact="$ResultList.{2}"/>
+                </do_if>
+                <do_else>
+                  <get_ship_definition_macros id="$Subordinate" result="$DefinitionList"/>
+                  <do_if value="not $DefinitionList or $DefinitionList.count == 0">
+                    <debug_text text="'Subordinate definition ' + $Subordinate + ' does not exist or resolves to zero macros'" filter="error"/>
+                  </do_if>
+                  <remove_value name="$LowestSubordinateDefCost"/>
+                  <remove_value name="$UpperSubordinateDefCost"/>
+                  <do_for_each name="$ShipMacro" in="$DefinitionList">
+                    <do_if value="$ShipMacro">
+                      <set_value name="$ShipCost" exact="$ShipStrengthTable.{$ShipMacro}"/>
+                      <do_if value="not $LowestSubordinateDefCost? or $ShipCost lt $LowestSubordinateDefCost">
+                        <set_value name="$LowestSubordinateDefCost" exact="$ShipCost"/>
+                      </do_if>
+                      <do_if value="not $UpperSubordinateDefCost? or $ShipCost gt $UpperSubordinateDefCost">
+                        <set_value name="$UpperSubordinateDefCost" exact="$ShipCost"/>
+                      </do_if>
+                    </do_if>
+                  </do_for_each>
+                  <set_value name="$Lowest" operation="add" exact="$LowestSubordinateDefCost"/>
+                  <set_value name="$Upper" operation="add" exact="$UpperSubordinateDefCost"/>
+                </do_else>
+              </do_elseif>
+            </do_for_each>
+            <set_value name="$LowerCost" operation="add" exact="if @$Definition.$subordinatesoptional then 0 else @$Lowest"/>
+            <set_value name="$UpperCost" operation="add" exact="@$Upper"/>
+          </do_if>
+        </do_if>
+        <debug_text text="'ID ' + $DefinitionID + ' Low: ' + $LowerCost + ' Upper: ' + $UpperCost" chance="$DebugChance"/>
+        <return value="[$LowerCost, $UpperCost]"/>
+      </actions>
+    </library>
+
+    <!--Result: [$LeadShip, $SpentPoints]-->
+    <library name="SpawnShipsByDefinition" purpose="run_actions">
+      <params>
+        <!--When adding parameters, add them to the recursive call within the actions-->
+        <param name="DefinitionID"/>
+        <param name="DefinitionTable"/>
+        <param name="ShipStrengthTable" default="null"/>
+        <param name="AvailablePoints" default="null"/>
+        <param name="Sector"/>
+        <param name="Position"/>
+        <param name="Rotation"/>
+        <param name="Owner"/>
+        <param name="ResultList" default="null" comment="List to receive all created ships"/>
+        <param name="EffectTable" default="null" comment="Table of effects to appear at the spawn position. Key can be ship macro or class. Value is the effect ID."/>
+        <param name="DebugChance" default="0"/>
+
+        <!--Internal-->
+        <param name="Depth" default="0"/>
+        <param name="Commander" default="null"/>
+      </params>
+      <actions>
+        <set_value name="$PointsParamValid" exact="typeof $AvailablePoints != datatype.null"/>
+        <do_if value="$PointsParamValid and not $ShipStrengthTable">
+          <debug_text text="'$AvailablePoints parameter was provided as non-null but without the $ShipStrengthTable parameter'" filter="error"/>
+          <set_value name="$PointsParamValid" exact="false"/>
+        </do_if>
+        <set_value name="$SpentPoints" exact="0"/>
+        <do_if value="$Depth gt 15">
+          <debug_text text="'High recursion depth warning'" filter="error"/>
+          <return value="[$LowerCost, $UpperCost]"/>
+        </do_if>
+
+        <set_value name="$SpawnedShip" exact="null"/>
+        <set_value name="$Definition" exact="null"/>
+        <do_if value="$DefinitionTable.{$DefinitionID}?">
+          <set_value name="$Definition" exact="$DefinitionTable.{$DefinitionID}"/>
+
+          <do_if value="typeof $Definition.$ship == datatype.macro">
+            <!--Create from macro-->
+            <do_if value="$Commander">
+              <create_ship name="$SpawnedShip" macro="$Definition.$ship" sector="$Commander.sector">
+                <owner exact="$Owner"/>
+                <safepos object="$Commander"/>
+                <rotation value="$Commander.rotation"/>
+              </create_ship>
+            </do_if>
+            <do_else>
+              <create_ship name="$SpawnedShip" macro="$Definition.$ship" sector="$Sector">
+                <owner exact="$Owner"/>
+                <safepos value="$Position"/>
+                <rotation value="$Rotation"/>
+              </create_ship>
+            </do_else>
+          </do_if>
+          <do_elseif value="(typeof $Definition.$ship).isstring">
+            <!--Create from ship definition-->
+            <do_if value="$Commander">
+              <create_ship name="$SpawnedShip" ref="$Definition.$ship" sector="$Commander.sector">
+                <owner exact="$Owner"/>
+                <safepos object="$Commander"/>
+                <rotation value="$Commander.rotation"/>
+              </create_ship>
+            </do_if>
+            <do_else>
+              <create_ship name="$SpawnedShip" ref="$Definition.$ship" sector="$Sector">
+                <owner exact="$Owner"/>
+                <safepos value="$Position"/>
+                <rotation value="$Rotation"/>
+              </create_ship>
+            </do_else>
+          </do_elseif>
+
+          <do_if value="$SpawnedShip">
+            <do_if value="$PointsParamValid">
+              <!--Spend the points-->
+              <!--TODO @Owen this could lead to $AvailablePoints dropping to negative. Destroy the ship in that case?-->
+              <set_value name="$SpentPoints" operation="add" exact="$ShipStrengthTable.{$SpawnedShip.macro}"/>
+              <debug_text text="'Depth: ' + $Depth + ' ' + $SpawnedShip.debugname + ' ' + $SpawnedShip.macro.id + ' cost ' + $ShipStrengthTable.{$SpawnedShip.macro}" chance="$DebugChance"/>
+              <set_value name="$AvailablePoints" operation="subtract" exact="$ShipStrengthTable.{$SpawnedShip.macro}"/>
+            </do_if>
+
+            <!--Check if an effect is defined for this macro or ship class-->
+            <do_if value="$EffectTable and $EffectTable.{$SpawnedShip.macro}? or $EffectTable.{$SpawnedShip.class}?">
+              <set_value name="$Effect" exact="null"/>
+              <do_for_each name="$EffectCriterion" in="$EffectTable">
+                <do_if value="typeof $EffectCriterion == datatype.macro and $SpawnedShip.macro.ismacro.{$EffectCriterion}">
+                  <set_value name="$Effect" exact="loop.value"/>
+                  <break/>
+                </do_if>
+                <do_elseif value="typeof $EffectCriterion == datatype.class and $SpawnedShip.isclass.{$EffectCriterion}">
+                  <set_value name="$Effect" exact="loop.value"/>
+                  <break/>
+                </do_elseif>
+              </do_for_each>
+              <do_if value="$Effect">
+                <add_effect object="$SpawnedShip.zone" effect="$Effect">
+                  <position object="$SpawnedShip"/>
+                </add_effect>
+              </do_if>
+            </do_if>
+            <do_if value="$Definition.$subordinates? and (not $PointsParamValid or $AvailablePoints gt 0)">
+              <do_for_each name="$Subordinate" in="$Definition.$subordinates">
+                <set_value name="$CreatedSubordinate" exact="null"/>
+                <do_if value="typeof $Subordinate == datatype.macro">
+                  <create_ship name="$CreatedSubordinate" macro="$Subordinate" sector="$SpawnedShip.sector">
+                    <owner exact="$Owner"/>
+                    <safepos object="$SpawnedShip"/>
+                    <rotation value="$SpawnedShip.rotation"/>
+                  </create_ship>
+                </do_if>
+                <do_elseif value="(typeof $Subordinate).isstring">
+                  <do_if value="$DefinitionTable.{$Subordinate}?">
+                    <!--Recursivly call SpawnShipsByDefinition to create the subordinate and its subordinates-->
+                    <run_actions ref="SpawnShipsByDefinition" result="$SubordinateResult">
+                      <param name="DefinitionID" value="$Subordinate"/>
+                      <param name="DefinitionTable" value="$DefinitionTable"/>
+                      <param name="ShipStrengthTable" value="$ShipStrengthTable"/>
+                      <param name="AvailablePoints" value="if $PointsParamValid then $AvailablePoints else null"/>
+                      <param name="Sector" value="$Sector"/>
+                      <param name="Position" value="null" comment="Use commander position"/>
+                      <param name="Rotation" value="null"/>
+                      <param name="Owner" value="$Owner"/>
+                      <param name="ResultList" value="$ResultList"/>
+                      <param name="EffectTable" value="$EffectTable"/>
+                      <param name="DebugChance" value="$DebugChance"/>
+
+                      <param name="Depth" value="$Depth + 1"/>
+                      <param name="Commander" value="$SpawnedShip"/>
+                    </run_actions>
+                    <set_value name="$CreatedSubordinate" exact="$SubordinateResult.{1}"/>
+                    <do_if value="$PointsParamValid">
+                      <set_value name="$SpentPoints" operation="add" exact="$SubordinateResult.{2}"/>
+                      <debug_text text="'Depth: ' + $Depth + ' ' + $CreatedSubordinate.debugname + ' and subordinates cost ' + $SubordinateResult.{2}" chance="$DebugChance"/>
+                      <set_value name="$AvailablePoints" operation="subtract" exact="$SubordinateResult.{2}"/>
+                    </do_if>
+                  </do_if>
+                  <do_else>
+                    <create_ship name="$CreatedSubordinate" ref="$Subordinate" sector="$SpawnedShip.sector">
+                      <owner exact="$Owner"/>
+                      <safepos object="$SpawnedShip"/>
+                      <rotation value="$SpawnedShip.rotation"/>
+                    </create_ship>
+                    <do_if value="$CreatedSubordinate">
+                      <do_if value="$ResultList">
+                        <append_to_list name="$ResultList" exact="$CreatedSubordinate"/>
+                      </do_if>
+                      <do_if value="$PointsParamValid">
+                        <set_value name="$SpentPoints" operation="add" exact="$ShipStrengthTable.{$CreatedSubordinate.macro}"/>
+                        <debug_text text="'Depth: ' + $Depth + ' subordinate ' + $CreatedSubordinate.debugname + ' ' + $CreatedSubordinate.macro.id + ' cost ' + $ShipStrengthTable.{$CreatedSubordinate.macro}" chance="$DebugChance"/>
+                        <set_value name="$AvailablePoints" operation="subtract" exact="$ShipStrengthTable.{$CreatedSubordinate.macro}"/>
+                      </do_if>
+                    </do_if>
+                  </do_else>
+                </do_elseif>
+                <do_if value="$CreatedSubordinate">
+                  <set_object_commander object="$CreatedSubordinate" commander="$SpawnedShip"/>
+                </do_if>
+              </do_for_each>
+            </do_if>
+          </do_if>
+        </do_if>
+        <do_if value="$PointsParamValid">
+          <debug_text text="'ID ' + $DefinitionID + ' spawned ship : ' + $SpawnedShip + ' ' + @$SpawnedShip.knownname + ' Spent points: ' + $SpentPoints" chance="$DebugChance"/>
+        </do_if>
+        <do_else>
+          <debug_text text="'ID ' + $DefinitionID + ' spawned ship : ' + $SpawnedShip + ' ' + @$SpawnedShip.knownname" chance="$DebugChance"/>
+        </do_else>
+        <do_if value="$ResultList and $SpawnedShip">
+          <append_to_list name="$ResultList" exact="$SpawnedShip"/>
+        </do_if>
+        <return value="[$SpawnedShip, $SpentPoints]"/>
+      </actions>
+    </library>
+
+
+  </cues>
+</mdscript>

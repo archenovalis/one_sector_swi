@@ -1,0 +1,1772 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<mdscript name="Signal_Leaks" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+
+  <cues>
+    <cue name="TriggerPopulation" instantiate="true">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+    </cue>
+
+    <!--Required variables:
+    - $LeakObject
+    
+    Result variables:
+    - $LeakLocations-->
+    <library name="GetLeakSlots">
+      <actions>
+        <find_signalleak_location name="$LeakLocations" container="$LeakObject" excludefilled="true" multiple="true"/>
+
+        <do_all exact="$LeakLocations.count" counter="$leak_i" reverse="true">
+          <!--Currently only interested in placing signal leaks on operational components-->
+          <do_if value="not $LeakLocations.{$leak_i}.component.isoperational">
+            <debug_text text="'Removing ' + $LeakLocations.{$leak_i} + ' as its component is not operational.'" chance="$DebugChance"/>
+            <remove_value name="$LeakLocations.{$leak_i}"/>
+          </do_if>
+        </do_all>
+        <debug_text text="'Station has ' + $LeakLocations.count + ' free leak locations'" chance="$DebugChance"/>
+      </actions>
+    </library>
+
+    <!--
+    Result:
+    table[$dataleakcount, $missionleakcount]-->
+    <library name="CalculateLeakCounts" purpose="run_actions">
+      <params>
+        <param name="LeakLocations"/>
+        <param name="DebugChance" default="0"/>
+      </params>
+      <actions>
+        <set_value name="$DataLeakCount" exact="0"/>
+        <set_value name="$MissionLeakCount" exact="0"/>
+        <!--TODO @Owen @Michael balancing of leak numbers based on the condition of the object and number of existing leaks-->
+        <do_if value="$LeakLocations.count">
+          <set_value name="$MaxLeaks" exact="8"/>
+          <do_if value="$LeakLocations.{1}.component.isclass.object">
+            <set_value name="$LeakObject" exact="$LeakLocations.{1}.component"/>
+          </do_if>
+          <do_else>
+            <set_value name="$LeakObject" exact="$LeakLocations.{1}.component.object"/>
+          </do_else>
+
+          <find_object_component name="$ExistingLeaks" object="$LeakObject" class="class.signalleak" multiple="true"/>
+          <debug_text text="'Station already has ' + $ExistingLeaks.count + ' leaks'" chance="$DebugChance"/>
+          <do_if value="$ExistingLeaks.count lt $MaxLeaks">
+            <set_value name="$LeakCount" min="1" max="[$LeakLocations.count / 2, $MaxLeaks - $ExistingLeaks.count].min" profile="increasing" scale="2"/>
+            <debug_text text="'initial leakcount will be ' + $LeakCount" chance="$DebugChance"/>
+            <set_value name="$DataLeakCount" exact="$LeakCount / 2"/>
+            <set_value name="$LeakCount" operation="subtract" exact="$DataLeakCount"/>
+            <do_if value="$LeakCount gt 0 and not @md.Signal_Leaks.Manager.$SuppressSignalLeakGeneration and 
+                   md.Signal_Leaks.Manager.$ExcludedMissionFactions.indexof.{$LeakObject.owner} == 0 and md.GenericMissions.Manager.$ExcludedOfferObjects.indexof.{$LeakObject} == 0">
+              <set_value name="$MissionLeakCount" min="1" max="$LeakCount" profile="increasing"/>
+            </do_if>
+            <debug_text text="'Station to get: ' + $DataLeakCount + ' dataleaks'" chance="$DebugChance"/>
+            <debug_text text="'Station to get: ' + $MissionLeakCount + ' mission leaks'" chance="$DebugChance"/>
+          </do_if>
+        </do_if>
+        <return value="table[$dataleakcount = $DataLeakCount, $missionleakcount = $MissionLeakCount]"/>
+      </actions>
+    </library>
+
+    <cue name="Manager" namespace="this" version="4">
+      <actions>
+        <create_group groupname="$PlayerSpace" />
+        <create_group groupname="$SectorObjects" />
+        <create_group groupname="$ObjectsWithLeaks" />
+        <create_group groupname="$Leaks" />
+        <set_value name="$CleanupTable" exact="table[]"/>
+        <set_value name="$DebugChance" exact="0" />
+
+        <!--Factions excluded from leak generation-->
+        <set_value name="$ExcludedLeakFactions" exact="[faction.player, faction.xenon, faction.khaak]" comment="Factions excluded from any type of leak generation"/>
+        <set_value name="$ExcludedMissionFactions" exact="[faction.player, faction.xenon, faction.khaak]" comment="Factions excluded from hosting mission signal leaks"/>
+        <create_group groupname="$ExcludedObjects" comment="Objects to be excluded from leak generation"/>
+      </actions>
+      <patch sinceversion="2" state="complete">
+        <set_value name="$PatchOrphanedLeaks" exact="true"/>
+      </patch>
+      <patch sinceversion="3">
+        <set_value name="$ExcludedLeakFactions" exact="[faction.player]"/>
+        <set_value name="$ExcludedMissionFactions" exact="[faction.player, faction.xenon, faction.khaak]"/>
+        <create_group groupname="$ExcludedObjects"/>
+      </patch>
+      <patch sinceversion="4">
+        <append_to_list name="$ExcludedLeakFactions" exact="faction.xenon"/>
+        <append_to_list name="$ExcludedLeakFactions" exact="faction.khaak"/>
+        
+        <do_if value="$ExcludedMissionFactions.indexof.{faction.xenon} == 0">
+          <append_to_list name="$ExcludedMissionFactions" exact="faction.xenon"/>
+        </do_if>
+        <do_if value="$ExcludedMissionFactions.indexof.{faction.khaak} == 0">
+          <append_to_list name="$ExcludedMissionFactions" exact="faction.khaak"/>
+        </do_if>
+        <do_if value="ObjectEntered.state == cuestate.cancelled">
+          <debug_text text="'Resetting cue ' + ObjectEntered + ' as it was cancelled'" filter="savegame"/>
+          <reset_cue cue="ObjectEntered"/>
+        </do_if>
+      </patch>
+      <cues>
+        <cue name="Manager_PatchOrphanedLeaks" onfail="cancel">
+          <conditions>
+            <check_value value="$PatchOrphanedLeaks?"/>
+          </conditions>
+          <delay exact="1ms"/>
+          <actions>
+            <remove_value name="$PatchOrphanedLeaks"/>
+          </actions>
+          <!--Have at least 2 frames pass just to have other patch code deal with leaks in low attention-->
+          <delay exact="1ms"/>
+          <actions>
+            <find_object_component name="this.$RemainingLeaks" class="class.signalleak" object="player.galaxy" multiple="true" recursive="true"/>
+            <debug_text text="'Found ' + this.$RemainingLeaks.count + ' leaks in the galaxy. Checking if any should be removed or tracked by the signal leak manager.'" filter="savegame"/>
+            <do_for_each name="this.$Leak" in="this.$RemainingLeaks">
+              <do_if value="this.$Leak.type == signalleaktype.claim">
+                <!--Ignore claim leaks-->
+                <continue/>
+              </do_if>
+              <do_elseif value="this.$Leak.macro == macro.dataleak_xs_vault_01_macro">
+                <!--Ignore leaks created for datavaults-->
+                <continue/>
+              </do_elseif>
+              <do_elseif value="$Leaks.indexof.{this.$Leak}">
+                <!--Ignore leaks which are already known-->
+                <continue/>
+              </do_elseif>
+              <do_elseif value="@$Patch_EMPLeaks.indexof.{this.$Leak}">
+                <!--Ignore leaks which are known by instances of ScanDataLeakGroup-->
+                <continue/>
+              </do_elseif>
+              <do_elseif value="@md.X4Ep1_Mentor_Subscriptions.Start.$Leaks.indexof.{this.$Leak}">
+                <!--Ignore leaks created by the mentor plot-->
+                <continue/>
+              </do_elseif>
+              <do_elseif value="this.$Leak.macro == macro.dataleak_xs_standard_01_macro">
+                <!--Orphaned bomb data leak-->
+                <debug_text text="'Orphaned bomb signal leak ' + this.$Leak + ' ' + this.$Leak.knownname + ' on ' + this.$Leak.object.knownname + ' will be removed'" filter="savegame"/>
+                <destroy_object object="this.$Leak"/>
+              </do_elseif>
+              <do_elseif value="this.$Leak.sector == player.sector">
+                <!--Take ownership of this leak so that it can be cleaned up later-->
+                <debug_text text="'Taking ownership of orphaned signal leak ' + this.$Leak + ' ' + this.$Leak.macro.name + ' of type ' + this.$Leak.type + ' on ' + this.$Leak.object.knownname" filter="savegame"/>
+                <add_to_group groupname="$Leaks" object="this.$Leak"/>
+                <add_to_group groupname="$ObjectsWithLeaks" object="this.$Leak.object"/>
+                <add_to_group groupname="$SectorObjects" object="this.$Leak.object"/>
+              </do_elseif>
+              <do_else>
+                <!--Orphaned leak outside of player sector-->
+                <debug_text text="'Orphaned signal leak ' + this.$Leak + ' ' + this.$Leak.knownname + ' on ' + this.$Leak.object.knownname + ' was outside of player sector and will be removed'" filter="savegame"/>
+                <destroy_object object="this.$Leak"/>
+              </do_else>
+            </do_for_each>
+            <remove_value name="$Patch_EMPLeaks"/>
+          </actions>
+        </cue>
+
+        <cue name="PlayerChangesSpace" instantiate="true">
+          <conditions>
+            <check_any>
+              <event_cue_signalled cue="md.Setup.Start" />
+              <event_cue_signalled cue="TriggerPopulation"/>
+              <event_object_changed_sector object="player.entity" />
+            </check_any>
+          </conditions>
+          <delay exact="1ms" comment="Delay so other systems can suppress the spawning of signal leaks e.g. a plot mission wants to enforce their leak is prominant"/>
+          <actions>
+            <!-- Update player space group, used by group listener cues -->
+            <clear_group group="$PlayerSpace" />
+            <do_if value="player.sector">
+              <add_to_group groupname="$PlayerSpace" object="player.sector" />
+              <!-- Queue objects that are not in player sector any more to be cleaned up, and add new objects -->
+              <!-- NOTE: Just to be safe, in case PrepareLeakCleanup removes a member, iterate in reverse -->
+              <do_all exact="$SectorObjects.count" counter="$i" reverse="true">
+                <signal_cue_instantly cue="PrepareLeakCleanup" param="$SectorObjects.{$i}" />
+              </do_all>
+              <!-- Find all relevant objects in the player's new sector -->
+              <clear_group group="$SectorObjects" />
+              <find_station groupname="$SectorObjects" multiple="true" excluded="$ExcludedObjects" checkoperational="false" space="$PlayerSpace.{1}">
+                <match owner="$ExcludedLeakFactions" negateownerfilter="true"/>
+              </find_station>
+
+              <do_all exact="$SectorObjects.count" counter="$i">
+                <do_if value="$ObjectsWithLeaks.indexof.{$SectorObjects.{$i}}">
+                  <do_if value="$CleanupTable.{$SectorObjects.{$i}}?">
+                    <debug_text text="'%s Removing queued signal leak cleanup for %s %s'.[player.age, $SectorObjects.{$i}, $SectorObjects.{$i}.knownname]" chance="@$DebugChance" />
+                    <remove_value name="$CleanupTable.{$SectorObjects.{$i}}"/>
+                  </do_if>
+                  <do_if value="event.object == TriggerPopulation">
+                    <!--If population was forced, attempt to populate objects which already have leaks-->
+                    <signal_cue_instantly cue="GenerateSignalLeaks" param="$SectorObjects.{$i}" />
+                  </do_if>
+                </do_if>
+                <do_elseif value="$SectorObjects.{$i}.attention ge attention.visible">
+                  <signal_cue_instantly cue="GenerateSignalLeaks" param="$SectorObjects.{$i}" />
+                </do_elseif>
+              </do_all>
+            </do_if>
+            <do_else>
+              <!--Player has no sector. Potentially in a super highway-->
+            </do_else>
+          </actions>
+        </cue>
+
+        <cue name="ObjectChangedAttention" instantiate="true">
+          <conditions>
+            <event_object_changed_attention group="$SectorObjects" />
+          </conditions>
+          <actions>
+            <debug_text text="event.object + ' ' + event.object.knownname + ' changed attention from ' + event.param2 + ' to ' + event.param" chance="@$DebugChance" />
+
+            <add_to_group groupname="$SectorObjects" object="event.object" />
+            <do_if value="event.param ge attention.visible and event.param2 lt attention.visible">
+              <signal_cue_instantly cue="GenerateSignalLeaks" param="event.object" />
+            </do_if>
+            <do_elseif value="event.param lt attention.visible and event.param2 ge attention.visible">
+              <signal_cue_instantly cue="PrepareLeakCleanup" param="event.object" />
+            </do_elseif>
+          </actions>
+        </cue>
+
+        <cue name="ObjectEntered" instantiate="true">
+          <conditions>
+            <event_object_entered group="$PlayerSpace" />
+            <check_value value="event.param.isrealclass.{class.station}" />
+            <check_value value="not $SectorObjects.indexof.{event.param} and not $ExcludedObjects.indexof.{event.param} and not $ExcludedLeakFactions.indexof.{event.param.owner}" />
+          </conditions>
+          <actions>
+            <debug_text text="event.param.knownname + ' entered player space'" chance="@$DebugChance" />
+            <add_to_group groupname="$SectorObjects" object="event.param" />
+            <do_if value="event.param.attention ge attention.visible and not $ObjectsWithLeaks.indexof.{event.param}">
+              <signal_cue_instantly cue="GenerateSignalLeaks" param="event.param" />
+            </do_if>
+          </actions>
+        </cue>
+
+        <cue name="RemoveSignalLeak" instantiate="true">
+          <conditions>
+            <event_player_signal_unlock_finished />
+            <check_value value="event.param.type == signalleaktype.data"/>
+          </conditions>
+          <delay exact="1ms"/>
+          <actions>
+            <destroy_object object="event.param"/>
+          </actions>
+        </cue>
+
+        <!--TODO @Owen do we actually want to remove signal leaks on wrecked objects?-->
+        <cue name="OnRemoveLargeObject" instantiate="true">
+          <conditions>
+            <event_object_destroyed group="$ObjectsWithLeaks" />
+          </conditions>
+          <actions>
+            <debug_text text="event.object.knownname + ' removed'" chance="@$DebugChance" />
+            <signal_cue_instantly cue="PrepareLeakCleanup" param="event.object" />
+          </actions>
+        </cue>
+
+        <!--TODO @Owen - handle state changing of objects? e.g. station construction > operational-->
+        <cue name="GenerateSignalLeaks" instantiate="true">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <actions>
+            <debug_text text="'%s Generate signal leaks for %s %s (attention level: %s)'.[player.age, event.param, event.param.knownname, event.param.attention]" chance="@$DebugChance" />
+            <add_to_group groupname="$ObjectsWithLeaks" object="event.param" />
+
+            <do_if value="$CleanupTable.{event.param}?">
+              <!--Removed any queued cleanup for this object-->
+              <debug_text text="'Removing a queued cleanup for ' + event.param + ' ' + event.param.knownname + ' and aborting creating new leaks'" chance="$DebugChance"/>
+              <remove_value name="$CleanupTable.{event.param}"/>
+              <!--As this object was set to be cleaned up, assume that it is already populated with leaks-->
+            </do_if>
+            <do_else>
+              <!-- Create Signal Leaks -->
+
+              <set_value name="$LeakObject" exact="event.param"/>
+              <include_actions ref="GetLeakSlots"/>
+              <run_actions ref="md.Signal_Leaks.CalculateLeakCounts" result="$LeakCountsTable">
+                <param name="LeakLocations" value="$LeakLocations"/>
+                <param name="DebugChance" value="$DebugChance"/>
+              </run_actions>
+              <set_value name="$DataLeakCount" exact="$LeakCountsTable.$dataleakcount"/>
+              <set_value name="$MissionLeakCount" exact="$LeakCountsTable.$missionleakcount"/>
+              <remove_value name="$LeakCountsTable"/>
+
+              <do_if value="$MissionLeakCount">
+                <!--Prison break disabled for 1.0
+                {GM_PrisonBreak__Trigger}          = table[$MissionType = missiontype.think, $Page = 30133, $TextOffset = [100], $Station = event.param, $debugchance = $DebugChance],-->
+
+                <!--A table of missions to attempt to trigger (no shady guy on selected station) -->
+                <!--TODO @Owen - a chance system to selecting missions (could simply be done by adding multiple of the same entries)-->
+                <set_value name="$GenericMissionTable" exact="table[
+                            {GM_Transport_Passengers__Trigger} = table[$MissionType = missiontype.transport, $Page = 30101, $TextOffset = [100, 200], $Station = event.param, $debugchance = $DebugChance],
+                            {GM_Assassinate__Trigger}          = table[$MissionType = missiontype.kill, $Page = 30134, $TextOffset = [100, 200], $Station = event.param, $debugchance = $DebugChance],
+                            {GM_Sabotage__Trigger}             = table[$MissionType = missiontype.destroy, $Page = 30144, $TextOffset = [1000, 1100, 1200], $Station = event.param, $debugchance = $DebugChance],
+                            {GM_HackPanel__Trigger}            = table[$MissionType = missiontype.hack, $Page = 30145, $TextOffset = [1000, 1100, 1200, 1300, 1400], $Station = event.param, $debugchance = $DebugChance],
+                            {GM_BoardShip__Trigger}            = table[$MissionType = missiontype.board, $Page = 30152, $TextOffset = [4000, 4100, 5000, 5100], $Station = event.param, $debugchance = $DebugChance],
+                             ]" />
+
+                <!-- {GM_Destroy_RarelyOnSight__Trigger} = table[$MissionType = missiontype.kill, $Page = 30154, $TextOffset = [1100, 1300], $Station = event.param, $debugchance = $DebugChance], -->
+
+                <!-- A table of missions to attempt to trigger (shady guy on selected station) -->
+                <set_value name="$ShadyGuyMissionTable" exact="table[
+                             {GM_BringItems__Trigger}       = table[$MissionType = missiontype.deliver, $Page = 30135, $TextOffset = [1000, 1100], $Station = event.param, $debugchance = $DebugChance],
+                             ]" />
+
+                <do_all exact="$MissionLeakCount" counter="$i">
+                  <set_value name="$Slot" exact="$LeakLocations.random"/>
+                  <remove_from_list name="$LeakLocations" exact="$Slot" multiple="false" />
+                  <do_if value="$i == 1 and $LeakObject.isclass.station and $LeakObject.controlentity.{controlpost.shadyguy}">
+                    <set_value name="$SelectedTable" exact="$ShadyGuyMissionTable.clone"/>
+                  </do_if>
+                  <do_else>
+                    <set_value name="$SelectedTable" exact="$GenericMissionTable.clone"/>
+                  </do_else>
+                  <signal_cue_instantly cue="PlaceMissionLeakOnSurface" param="[$Slot, $SelectedTable]" />
+                </do_all>
+              </do_if>
+
+              <do_all exact="$DataLeakCount">
+                <set_value name="$Slot" exact="$LeakLocations.random"/>
+                <remove_from_list name="$LeakLocations" exact="$Slot" multiple="false" />
+                <signal_cue_instantly cue="PlaceDataLeakOnSurface" param="$Slot" />
+              </do_all>
+
+              <remove_value name="$LeakLocations"/>
+            </do_else>
+          </actions>
+        </cue>
+
+        <!--event.param
+        either
+        [$componentslot, $missiontable]
+        OR
+        [$componentslot, $missiontable, $attemptcounter]-->
+        <cue name="PlaceMissionLeakOnSurface" instantiate="true" namespace="this">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <delay exact="5s" />
+          <actions>
+            <!--TODO @Owen - add script property $container.signalleak.{$componentslot}.component as another leak may have been placed in the time this one has been looking for a position-->
+            <do_if value="@md.Signal_Leaks.Manager.$DebugChance == 100">
+              <set_value name="$DebugChance" exact="100"/>
+            </do_if>
+            <do_if value="typeof event.param == datatype.componentslot">
+              <set_value name="$Slot" exact="event.param"/>
+            </do_if>
+            <do_else>
+              <set_value name="$Slot" exact="event.param.{1}"/>
+              <debug_text text="'Attempt %s for data leak placement at slot %s on component %s'.[event.param.{2}, $Slot, $Slot.component.knownname]" chance="@$DebugChance" />
+            </do_else>
+            <set_value name="$Component" exact="$Slot.component"/>
+            <do_if value="$Component and $Component.attention ge attention.visible">
+              <set_value name="$SurfacePos" exact="null"/>
+              <do_if value="($Component.isclass.object and $Component.isphysicsready) or (not $Component.isclass.object and @$Component.object.isphysicsready)">
+                <set_value name="$MissionLeakMacro" exact="macro.signalleak_s_standard_01_macro" />
+                <!-- the "floor" of the leak is at (center.y - max.y), we need to use the negative of that for the height -->
+                <!--do not tolerate neighbours as we're dealing with station modules and we don't want the leaks sandwiched between them-->
+                <find_object_surface posname="$SurfacePos" rotname="$SurfaceRot" object="$Component" height="$MissionLeakMacro.boundingbox.max.y - $MissionLeakMacro.boundingbox.center.y" tolerateneighbour="false">
+                  <!-- the rotation created by the normal would look away from the surface, we want a rotation that's looking parallel to the surface -->
+                  <offsetrotation pitch="-90deg" />
+                  <match surfaceelement="false">
+                    <match class="class.room" negate="true"/>
+                  </match>
+                </find_object_surface>
+                <do_if value="@$SurfacePos">
+                  <create_signal_leak name="$Leak" groupname="Manager.$Leaks" macro="$MissionLeakMacro" object="$Component" type="signalleaktype.voice">
+                    <position value="$SurfacePos" />
+                    <rotation value="$SurfaceRot" />
+                    <!-- TODO @Owen: voice page should match that of the mission-offering NPC -->
+                    <voice page="10101" lines="1000003"/>
+                  </create_signal_leak>
+                  <do_if value="$Leak">
+                    <debug_text text="'Created mission leak %s at slot %s'.[$Leak, $Slot]" chance="@$DebugChance" />
+                  </do_if>
+                  <do_else>
+                    <debug_text text="'Unable to create data leak at slot %s'.[$Slot]" filter="error" />
+                  </do_else>
+                  <signal_cue_instantly cue="MissionLeak" param="table[$Leak = $Leak, $MissionTable = event.param.{2}]"/>
+                </do_if>
+              </do_if>
+              <do_if value="not $SurfacePos">
+                <debug_text text="'Retrying mission leak placement at slot %s on component %s in 1 second'.[$Slot, $Component.knownname]" chance="@$DebugChance" />
+                <do_if value="@event.param.{3} lt 10">
+                  <signal_cue_instantly cue="static" param="[$Slot, event.param.{2}, @event.param.{3} + 1]" />
+                </do_if>
+              </do_if>
+            </do_if>
+          </actions>
+        </cue>
+
+        <!--event.param
+        either
+        $componentslot
+        OR
+        [$componentslot, $attemptcounter]-->
+        <cue name="PlaceDataLeakOnSurface" instantiate="true" namespace="this">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <delay exact="5s" />
+          <actions>
+            <!--TODO @Owen - add script property $container.signalleak.{$componentslot}.component as another leak may have been placed in the time this one has been looking for a position-->
+            <do_if value="@md.Signal_Leaks.Manager.$DebugChance == 100">
+              <set_value name="$DebugChance" exact="100"/>
+            </do_if>
+            <do_if value="typeof event.param == datatype.componentslot">
+              <set_value name="$Slot" exact="event.param"/>
+            </do_if>
+            <do_else>
+              <set_value name="$Slot" exact="event.param.{1}"/>
+              <debug_text text="'Attempt %s for data leak placement at slot %s on component %s'.[event.param.{2}, $Slot, $Slot.component.knownname]" chance="@$DebugChance" />
+            </do_else>
+            <set_value name="$Component" exact="$Slot.component"/>
+            <do_if value="$Component and $Component.attention ge attention.visible">
+              <set_value name="$SurfacePos" exact="null"/>
+              <do_if value="($Component.isclass.object and $Component.isphysicsready) or (not $Component.isclass.object and @$Component.object.isphysicsready)">
+                <set_value name="$DataLeakMacro" exact="macro.dataleak_s_standard_01_macro" />
+                <!-- the "floor" of the leak is at (center.y - max.y), we need to use the negative of that for the height -->
+                <!--do not tolerate neighbours as we're dealing with station modules and we don't want the leaks sandwiched between them-->
+                <find_object_surface posname="$SurfacePos" rotname="$SurfaceRot" object="$Component" height="$DataLeakMacro.boundingbox.max.y - $DataLeakMacro.boundingbox.center.y" tolerateneighbour="false">
+                  <!-- the rotation created by the normal would look away from the surface, we want a rotation that's looking parallel to the surface -->
+                  <offsetrotation pitch="-90deg" />
+                  <match surfaceelement="false">
+                    <match class="class.room" negate="true"/>
+                  </match>
+                </find_object_surface>
+                <do_if value="@$SurfacePos">
+                  <create_signal_leak name="$Leak" groupname="Manager.$Leaks" macro="$DataLeakMacro" type="signalleaktype.data" object="$Component">
+                    <position value="$SurfacePos" />
+                    <rotation value="$SurfaceRot" />
+                  </create_signal_leak>
+                  <do_if value="$Leak">
+                    <debug_text text="'Created data leak %s at slot %s on component %s'.[$Leak, $Slot, $Component.knownname]" chance="@$DebugChance" />
+                  </do_if>
+                  <do_else>
+                    <debug_text text="'Unable to create data leak at slot %s'.[$Slot]" filter="error" />
+                  </do_else>
+                </do_if>
+              </do_if>
+              <do_if value="not $SurfacePos">
+                <debug_text text="'Retrying data leak placement at slot %s on component %s in 1 second'.[$Slot, $Component.knownname]" chance="@$DebugChance" />
+                <do_if value="@event.param.{2} lt 10">
+                  <signal_cue_instantly cue="static" param="[$Slot, @event.param.{2} + 1]" />
+                </do_if>
+              </do_if>
+            </do_if>
+          </actions>
+        </cue>
+
+        <cue name="PrepareLeakCleanup" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <debug_text text="'%s Prepare cleanup of signal leak of %s %s'.[player.age, event.param, event.param.knownname]" chance="@$DebugChance" />
+
+            <set_value name="$CleanupTable.{event.param}" min="player.age + 2min" max="player.age + 3min"/>
+          </actions>
+        </cue>
+
+        <cue name="ProcessCleanup" instantiate="true" checkinterval="20s">
+          <conditions>
+            <check_value value="$CleanupTable.keys.count"/>
+          </conditions>
+          <actions>
+            <set_value name="$CleanupKeys" exact="$CleanupTable.keys.sorted"/>
+            <do_all exact="$CleanupKeys.count" counter="$i">
+              <do_if value="$CleanupTable.{$CleanupKeys.{$i}} le player.age">
+                <debug_text text="'Attempting to clean up signal leaks on ' + $CleanupKeys.{$i} + ' ' + $CleanupKeys.{$i}.knownname" chance="@$DebugChance"/>
+                <signal_cue_instantly cue="CleanupSignalLeaks" param="$CleanupKeys.{$i}"/>
+              </do_if>
+            </do_all>
+            <remove_value name="$CleanupKeys"/>
+          </actions>
+        </cue>
+
+        <!--event.param == Object-->
+        <cue name="CleanupSignalLeaks" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <do_if value="event.param.exists">
+              <do_all exact="$Leaks.count" counter="$i" reverse="true">
+                <do_if value="$Leaks.{$i}.hascontext.{event.param}">
+                  <debug_text text="'Removing signal leak on %s %s'.[event.param, event.param.knownname]" chance="@$DebugChance" />
+                  <destroy_object object="$Leaks.{$i}"/>
+                </do_if>
+              </do_all>
+              <remove_from_group group="$ObjectsWithLeaks" object="event.param"/>
+            </do_if>
+
+            <do_if value="$CleanupTable.{event.param}?">
+              <remove_value name="$CleanupTable.{event.param}"/>
+            </do_if>
+          </actions>
+        </cue>
+
+        <!--Cue handling mission related leaks and containing the references to the missions themselves
+        event.param == Signal Leak-->
+        <cue name="MissionLeak" instantiate="true" namespace="this">
+          <conditions>
+            <event_cue_signalled/>
+            <check_value value="event.param.$Leak.exists and event.param.$Leak.isclass.signalleak and event.param.$Leak.type == signalleaktype.voice"/>
+          </conditions>
+          <actions>
+            <set_value name="$Leak" exact="event.param.$Leak"/>
+            <set_value name="$MissionTable" exact="event.param.$MissionTable"/>
+            <set_value name="$RunningMission" exact="null"/>
+
+            <set_value name="$DebugChance" exact="0"/>
+          </actions>
+          <cues>
+            <cue name="Mission_Selector">
+              <actions>
+                <do_if value="$MissionTable.keys.count">
+                  <set_value name="$MissionTableKeys" exact="$MissionTable.keys.list" />
+                  <shuffle_list list="$MissionTableKeys" />
+                  <set_value name="$SelectedMission" exact="$MissionTableKeys.{1}"/>
+                  <debug_text text="'Leak ' + $Leak + ' attempting to spawn mission: ' + $SelectedMission" chance="$DebugChance"/>
+                  <set_value name="$MissionDefinition" exact="$MissionTable.{$SelectedMission}.clone"/>
+                  <set_value name="$MissionDefinition.$Leak" exact="$Leak" />
+                  <set_value name="$MissionDefinition.$ReportCue" exact="Mission_Report_Listener"/>
+                  <signal_cue_instantly cue="$SelectedMission" param="$MissionDefinition" />
+                  <remove_value name="$MissionTable.{$SelectedMission}"/>
+                </do_if>
+                <do_else>
+                  <!--No missions to select from-->
+                  <signal_cue_instantly cue="MissionLeak_Cleanup"/>
+                </do_else>
+              </actions>
+              <cues>
+                <cue name="Mission_Selector_No_Responce">
+                  <delay exact="1min"/>
+                  <actions>
+                    <assert value="false" text="'No response from signal leak mission ' + $SelectedMission + ' after a long amount of time. Aborting. [Owen]'"/>
+                    <signal_cue_instantly cue="MissionLeak_Cleanup"/>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="Mission_Report_Listener" instantiate="true">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <do_if value="$RunningMission">
+                  <!--Feedback while a mission was successfully running-->
+                  <do_if value="static.$EndFeedbackValue?">
+                    <!--Running mission has ended-->
+                    <debug_text text="'Running signal leak mission has ended. Mission: ' + $RunningMission + ' feedback value ' + static.$EndFeedbackValue + ' Leak: ' + @$Leak" chance="$DebugChance"/>
+                    <do_if value="static.$EndFeedbackValue.$ID == '$MISSION_SUCCEEDED' and @$RunningMissionInstance">
+                      <do_if value="$RunningMissionInstance.$Difficulty ge level.easy">
+                        <set_userdata relationstate="'relation_leak_mission_easy'" value="1"/>
+                      </do_if>
+                      <do_if value="$RunningMissionInstance.$Difficulty ge level.hard">
+                        <set_userdata relationstate="'relation_leak_mission_hard'" value="1"/>
+                      </do_if>
+                    </do_if>
+                    <signal_cue_instantly cue="MissionLeak_Cleanup"/>
+                  </do_if>
+                  <do_else>
+                    <do_if value="static.$FeedbackValue.$ID == '$MISSION_ACCEPTED'">
+                      <!--Mission accepted-->
+                      <debug_text text="'Signal leak mission: ' + $RunningMission + ' accepted. Destroying leak: ' + $Leak" chance="$DebugChance"/>
+                      <destroy_object object="$Leak"/>
+                    </do_if>
+                  </do_else>
+                </do_if>
+                <do_else>
+                  <!--Feedback while a mission was attempting to spawn-->
+                  <do_if value="static.$EndFeedbackValue?">
+                    <!--The mission ended during offer spawn attempt. Treat as failure-->
+                    <debug_text text="'Signal leak mission: ' + $SelectedMission + ' attempted to spawn but failed with error: ' + static.$EndFeedbackValue.$text + ' Leak: ' + @$Leak" chance="$DebugChance"/>
+                    <reset_cue cue="Mission_Selector"/>
+                  </do_if>
+                  <do_elseif value="static.$SetupFailed?">
+                    <remove_value name="static.$SetupFailed"/>
+                    <!--The mission variation setup failed before the GM was attempted to be called. Treat as failure-->
+                    <debug_text text="'Signal leak mission: ' + $SelectedMission + ' attempted to spawn but variant failed. Leak: ' + @$Leak" chance="$DebugChance"/>
+                    <reset_cue cue="Mission_Selector"/>
+                  </do_elseif>
+                  <do_else>
+                    <do_if value="static.$FeedbackValue.$ID == '$MISSION_ACCEPTED'">
+                      <!--Mission instantly accepted-->
+                      <set_value name="$RunningMission" exact="$SelectedMission"/>
+                      <debug_text text="'Signal leak mission: ' + $RunningMission + ' instantly accepted. Destroying leak: ' + @$Leak" chance="$DebugChance"/>
+                      <destroy_object object="$Leak"/>
+                      <cancel_cue cue="Mission_Selector"/>
+                    </do_if>
+                    <do_elseif value="static.$FeedbackValue.$ID == '$MISSION_GENERATED'">
+                      <!--Mission variation successfully generated-->
+                      <set_value name="$RunningMission" exact="$SelectedMission"/>
+                      <do_if value="event.param">
+                        <set_value name="$RunningMissionInstance" exact="@event.param.$Cue"/>
+                      </do_if>
+                      <debug_text text="'Signal leak mission: ' + $RunningMission + ' successfully selected a variant. Leak: ' + @$Leak" chance="$DebugChance"/>
+                      <cancel_cue cue="Mission_Selector"/>
+                    </do_elseif>
+                    <do_else>
+                      <!--Unknown report value but was not an error-->
+                    </do_else>
+                  </do_else>
+                </do_else>
+
+                <!--Clear the values for the next instance-->
+                <do_if value="static.$FeedbackValue?">
+                  <remove_value name="static.$FeedbackValue"/>
+                </do_if>
+                <do_if value="static.$EndFeedbackValue?">
+                  <remove_value name="static.$EndFeedbackValue"/>
+                </do_if>
+              </actions>
+            </cue>
+
+            <cue name="MissionLeak_Cleanup">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <debug_text text="'Cleaning up. Leak: ' + @$Leak + ' exists ' + $Leak.exists" chance="$DebugChance"/>
+                <do_if value="$Leak.exists">
+                  <!--The leak could have been destroyed at any time, even while the mission was running-->
+                  <destroy_object object="$Leak"/>
+                </do_if>
+                <cancel_cue cue="MissionLeak"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <!--Mission references-->
+        <cue name="GM_BringItems__Trigger" instantiate="true" namespace="this">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <actions>
+            <set_value name="$Definition" exact="event.param" />
+            <set_value name="$Page" exact="$Definition.$Page" />
+            <set_value name="$Station" exact="$Definition.$Station" />
+            <set_value name="$TextOffset" exact="$Definition.$TextOffset.random" />
+            <set_value name="$DebugChance" exact="$Definition.$debugchance" />
+
+            <set_value name="$Valid" exact="false"/>
+            <set_value name="$MissionDuration" exact="null"/>
+            <set_value name="$RewardObj" exact="null"/>
+            <set_value name="$RewardText" exact="null"/>
+            <set_value name="$Actor" exact="$Station.controlentity.{controlpost.shadyguy}"/>
+            <set_value name="$Difficulty" exact="level.easy"/>
+            <set_value name="$MissionLevel" exact="1"/>
+
+            <do_if value="$Actor">
+              <do_if value="$Station.hasrelation.dock.{faction.player}">
+                <!-- Timed illegal item delivery for shady guy unlock-->
+                <do_if value="$Page == 30135 and ($TextOffset == 1000 or $TextOffset == 1100)">
+                  <set_value name="$RewardObj" exact="$Actor"/>
+                  <set_value name="$RewardText" exact="{30135,106}" comment="'(Reward)Access to unsanctioned trade offers'"/>
+                  <set_value name="$MissionDuration" exact="1h"/>
+                  <set_value name="$DurationUntilBonusDecay" exact="0.5h"/>
+                  <set_value name="$DurationUntilBonusExpiry" exact="0.85h"/>
+                  <set_value name="$Valid" exact="1"/>
+                </do_if>
+                <do_else>
+                  <assert value="false" text="'Attempting to spawn a mission on ' + this + ' but the combination of Page: ' + $Page + ' and TextOffset: ' + $TextOffset + ' do not match any definitions [Lennart]'" />
+                </do_else>
+
+                <do_if value="$Valid == 1">
+                  <set_value name="$DeliveryItem" exact="[ware.inv_decryptionmodule, ware.inv_securitydecryptionsystem, ware.inv_unstablecrystal, ware.inv_agidevice_02, ware.inv_spaceflyeggs, ware.inv_spaceflycaviar].random" />
+                  <do_if value="$DeliveryItem == ware.inv_securitydecryptionsystem or $DeliveryItem == ware.inv_spaceflycaviar">
+                    <set_value name="$DeliveryAmount" min="1" max="3" />
+                  </do_if>
+                  <do_else>
+                    <set_value name="$DeliveryAmount" min="2" max="6" />
+                  </do_else>
+                  <set_value name="$VoiceTable" exact="table[$SignalLeakVoiceLine = 1000002]" comment="I'm taking a big risk by broadcasting, so if you decode this transmission, keep it to yourself. I have work that needs doing."/>
+                  <set_value name="$Valid" exact="2"/>
+                </do_if>
+              </do_if>
+
+              <do_else>
+                <debug_text text="'Station ' + $Station + ' ' + $Station.knownname + ' does not allow the player to dock - this mission cannot run here'" chance="$DebugChance" />
+              </do_else>
+            </do_if>
+            <do_else>
+              <debug_text text="'This station has no shady guy - this mission cannot run here'" chance="$DebugChance" />
+            </do_else>
+
+            <do_if value="$Valid != 2">
+              <set_value name="$Definition.$ReportCue.$SetupFailed" exact="true"/>
+              <signal_cue cue="$Definition.$ReportCue"/>
+              <cancel_cue cue="this" />
+            </do_if>
+          </actions>
+          <cues>
+            <cue name="GM_BringItems__Ref" ref="md.GM_BringItems.Start">
+              <param name="OfferObject"               value="$Definition.$Leak" />
+              <param name="Client"                    value="$Actor" />
+              <param name="MissionLevel"              value="$MissionLevel" />
+              <param name="Difficulty"                value="$Difficulty" />
+              <param name="Page"                      value="$Page" />
+              <param name="TextOffset"                value="$TextOffset" />
+              <param name="GenerateReward"            value="true" />
+              <param name="RewardObj"                 value="$RewardObj" comment="Reward = the shadyguy-actor"/>
+              <param name="RewardText"                value="$RewardText"/>
+              <param name="VoiceTable"                value="$VoiceTable" />
+              <param name="DeliveryNPC"               value="$Actor" />
+              <param name="DeliveryStation"           value="$Station" />
+              <param name="DeliveryItem"              value="$DeliveryItem" />
+              <param name="DeliveryAmount"            value="$DeliveryAmount" />
+              <param name="MissionDuration"           value="$MissionDuration" />
+              <param name="DurationUntilBonusDecay"   value="$DurationUntilBonusDecay"  comment="Mission duration until the bonus reward credits start to decay" />
+              <param name="DurationUntilBonusExpiry"  value="$DurationUntilBonusExpiry" comment="Mission duration until the bonus reward credits expire completely" />
+              <param name="ReportSignalCue"           value="$Definition.$ReportCue" />
+              <param name="DebugChance"               value="$DebugChance" />
+            </cue>
+
+            <!--Somewhat useless cue as there are no other subcues to keep the instance alive but better have it as a standard for missions which do.-->
+            <cue name="GM_BringItems__Cancelled">
+              <conditions>
+                <event_cue_cancelled cue="GM_BringItems__Ref"/>
+              </conditions>
+              <actions>
+                <cancel_cue cue="namespace"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="GM_PrisonBreak__Trigger" instantiate="true" namespace="this">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <actions>
+            <set_value name="$Definition" exact="event.param" />
+            <set_value name="$Page" exact="$Definition.$Page" />
+            <set_value name="$TextOffset" exact="$Definition.$TextOffset.random" />
+            <set_value name="$DebugChance" exact="$Definition.$debugchance" />
+
+            <set_value name="$Difficulty" exact="level.easy" />
+            <set_value name="$MissionLevel" exact="1" />
+
+            <set_value name="$Success" exact="false"/>
+            <do_if value="$Station.hasrelation.dock.{faction.player}">
+              <!-- This mission is specific enough that it will only run if a matching text offset is found. If not, the offer will abort with an error. -->
+              <do_if value="$Page == 30133 and $TextOffset == 100">
+                <set_value name="$PrisonStation" exact="$Definition.$Station" />
+
+                <set_value name="$StationPrimaryRace" exact="$PrisonStation.owner.primaryrace"/>
+                <do_if value="$StationPrimaryRace" exact="race.paranid">
+                  <set_value name="$CorridorMacro" exact="macro.room_par_corridor_01_macro" />
+                </do_if>
+                <do_elseif value="$StationPrimaryRace" exact="race.teladi">
+                  <set_value name="$CorridorMacro" exact="macro.room_tel_corridor_01_macro" />
+                </do_elseif>
+                <do_else>
+                  <set_value name="$CorridorMacro" exact="macro.room_arg_corridor_01_macro" />
+                </do_else>
+
+                <set_value name="$VoiceTable" exact="table[$SignalLeakVoiceLine = [1000002, 1000005].random]" />
+                <set_value name="$Success" exact="true"/>
+              </do_if>
+              <do_else>
+                <assert value="false" text="'Attempting to spawn a mission on ' + this + ' but the combination of Page: ' + $Page + ' and TextOffset: ' + $TextOffset + ' do not match any definitions [Lorraine]'" />
+              </do_else>
+
+              <do_if value="not $Success">
+                <set_value name="$Definition.$ReportCue.$SetupFailed" exact="true"/>
+                <signal_cue cue="$Definition.$ReportCue"/>
+                <cancel_cue cue="this" />
+              </do_if>
+            </do_if>
+          </actions>
+          <cues>
+            <cue name="GM_PrisonBreak__Ref" ref="md.GM_PrisonBreak.Start">
+              <param name="OfferObject" value="$Definition.$Leak" />
+              <param name="MissionLevel" value="$MissionLevel" />
+              <param name="Difficulty" value="$Difficulty" />
+              <param name="Page" value="$Page" />
+              <param name="TextOffset" value="$TextOffset" />
+              <param name="VoiceTable" value="$VoiceTable" />
+              <param name="PrisonStation" value="$PrisonStation" />
+              <param name="CorridorMacro" value="$CorridorMacro" />
+              <param name="ReportSignalCue" value="$Definition.$ReportCue" />
+              <param name="DebugChance" value="$DebugChance" />
+            </cue>
+
+            <!--Somewhat useless cue as there are no other subcues to keep the instance alive but better have it as a standard for missions which do.-->
+            <cue name="GM_PrisonBreak__Cancelled">
+              <conditions>
+                <event_cue_cancelled cue="GM_PrisonBreak__Ref"/>
+              </conditions>
+              <actions>
+                <cancel_cue cue="namespace"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="GM_Assassinate__Trigger" instantiate="true" namespace="this">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <actions>
+            <set_value name="$Definition" exact="event.param" />
+            <set_value name="$Station" exact="$Definition.$Station" />
+            <set_value name="$ClientOwner" exact="faction.criminal"/>
+            <set_value name="$Page" exact="$Definition.$Page" />
+            <set_value name="$TextOffset" exact="1100" />
+            <set_value name="$DebugChance" exact="$Definition.$debugchance" />
+
+            <set_value name="$Sector" exact="$Station.sector"/>
+            <set_value name="$Difficulty" exact="level.medium"/>
+            <set_value name="$MissionLevel" exact="1"/>
+
+            <set_value name="$Valid" exact="false"/>
+            <set_value name="$Success" exact="false"/>
+
+            <set_value name="$TargetFaction" exact="$Station.owner"/>
+
+            <!-- Find $TargetShip of $TargetFaction in maxdistance -->
+            <find_cluster_in_range name="$LocalClusters" object="player.entity" maxdistance="2" multiple="true"/>
+            <shuffle_list list="$LocalClusters"/>
+            <do_all exact="$LocalClusters.count" counter="$cluster_i">
+              <find_ship name="$PotentialTargetShips" space="$LocalClusters.{$cluster_i}" multiple="true" docked="false"
+                       owner="$TargetFaction" capturable="true" masstraffic="false" deployable="false">
+                <match_pilot class="class.npc" />
+                <match owner="faction.player" negate="true" comment="avoid assassination missions for player-npcs, but shouldn't happen"/>
+                <match_any>
+                  <match primarypurpose="purpose.trade"/>
+                  <match primarypurpose="purpose.build"/>
+                  <match primarypurpose="purpose.mine"/>
+                </match_any>
+              </find_ship>
+            </do_all>
+            <!-- Old Assassination Code with multiple ships & removing them from the zone-->
+            <debug_text text="'$PotentialTargetShips.count (before filter): ' + $PotentialTargetShips.count" chance="$DebugChance" />
+
+            <do_all exact="$PotentialTargetShips.count" counter="$ShipCounter" reverse="true">
+              <do_if value="$PotentialTargetShips.{$ShipCounter}.zone == $Station.zone">
+                <remove_value name="$PotentialTargetShips.{$ShipCounter}" />
+              </do_if>
+            </do_all>
+            <debug_text text="'$PotentialTargetShips.count (after filter): ' + $PotentialTargetShips.count" chance="$DebugChance" />
+
+            <do_if value="$PotentialTargetShips.count">
+              <set_value name="$AssassinationTargetShip" list="$PotentialTargetShips"/>
+              <!-- OLD USES $TargetShip CAREFUL-->
+              <set_value name="$AssassinationTarget" exact="$AssassinationTargetShip.controlentity.default" />
+
+              <!--Difficulty & Mission Level-->
+              <do_if value="$AssassinationTargetShip.exists">
+                <set_value name="$EnemyShip" exact="$AssassinationTargetShip"/>
+                <include_actions ref="md.GM_Assassinate.ConfigureDifficulty" comment="input: $MissionLevel, $EnemyShip; output: $MissionLevel"/>
+
+                <!-- CHECK for valid combinations -->
+                <set_value name="$ValidOffsets" exact="[1100]" comment="Generic Missions"/>
+                <!-- assassination offsets: 100 to 400, -->
+                <do_if value="$Station.owner == faction.argon or $Station.owner == faction.antigone">
+                  <append_to_list name="$ValidOffsets" exact="2100"/>
+                  <append_to_list name="$ValidOffsets" exact="2200"/>
+                  <append_to_list name="$ValidOffsets" exact="2300"/>
+                </do_if>
+                <do_elseif value="$Station.owner == faction.paranid or $Station.owner == faction.holyorder">
+                  <append_to_list name="$ValidOffsets" exact="3100"/>
+                  <append_to_list name="$ValidOffsets" exact="3200"/>
+                  <append_to_list name="$ValidOffsets" exact="3300"/>
+                </do_elseif>
+                <do_elseif value="$Station.owner == faction.teladi or $Station.owner == faction.ministry">
+                  <append_to_list name="$ValidOffsets" exact="4100"/>
+                  <append_to_list name="$ValidOffsets" exact="4200"/>
+                  <append_to_list name="$ValidOffsets" exact="4300"/>
+                </do_elseif>
+                <do_elseif value="md.$SplitFactions.indexof.{$Station.owner}">
+                  <append_to_list name="$ValidOffsets" exact="5100"/>
+                  <append_to_list name="$ValidOffsets" exact="5200"/>
+                  <append_to_list name="$ValidOffsets" exact="5300"/>
+                  <do_if value="md.$SplitCurbFactions.indexof.{$Station.owner}">
+                    <append_to_list name="$ValidOffsets" exact="5400"/>
+                  </do_if>
+                  <do_elseif value="md.$SplitPatriarchyFactions.indexof.{$Station.owner}">
+                    <append_to_list name="$ValidOffsets" exact="5500"/>
+                  </do_elseif>
+                </do_elseif>
+                <do_if value="$ValidOffsets.count">
+                  <set_value name="$TextOffset" exact="$ValidOffsets.random"/>
+                  <set_value name="$Valid" exact="true"/>
+                </do_if>
+                
+                <!-- 50% chance for foreign factions to offer missions on specific faction stations -->
+                <do_all exact="1" chance="50" comment="50% to chose a pirate case">
+                  <do_if value="$Station.owner == faction.teladi">
+                    <set_value name="$TextOffset" exact="[100, 200, 300, 400].random"/>
+                    <set_value name="$ClientOwner" exact="faction.scaleplate"/>
+                    <do_if value="not $ClientOwner.isrelationlocked">
+                      <set_value name="$ForeignSignalLeak"/>
+                    </do_if>
+                  </do_if>
+                  <!-- DLC_Pirate_GM_Assassinate__Trigger_patchmarker -->
+                  <!-- DLC_Split_GM_Assassinate__Trigger_patchmarker -->
+                  <do_if value="($Station.owner == faction.paranid) or ($Station.owner == faction.holyorder)">
+                    <set_value name="$TextOffset" exact="[100, 200, 300, 400].random"/>
+                    <set_value name="$ClientOwner" exact="faction.buccaneers"/>
+                    <do_if value="not $ClientOwner.isrelationlocked">
+                      <set_value name="$ForeignSignalLeak"/>
+                    </do_if>
+                  </do_if>
+                  <do_if value="($Station.owner == faction.argon) or ($Station.owner == faction.antigone)">
+                    <set_value name="$TextOffset" exact="[100, 200, 300, 400].random"/>
+                    <set_value name="$ClientOwner" exact="faction.hatikvah"/>
+                    <do_if value="not $ClientOwner.isrelationlocked">
+                      <set_value name="$ForeignSignalLeak"/>
+                    </do_if>
+                  </do_if>
+                </do_all>
+
+                <set_value name="$ClientRace" exact="[race.argon, race.paranid, race.teladi].random" comment="fallback for faction.criminal"/>
+                <set_value name="$ClientRace" exact="$Station.owner.primaryrace" chance="if $Station.owner.primaryrace then 100 else 0"/>
+                <set_value name="$ClientRace" exact="$ClientOwner.primaryrace"   chance="if $ClientOwner.primaryrace then 100 else 0"/>
+                <create_cue_actor cue="GM_Assassinate__Trigger" name="$Client">
+                  <select race="$ClientRace" faction="$ClientOwner"/>
+                  <owner exact="$ClientOwner" />
+                </create_cue_actor>
+
+              </do_if>
+
+            </do_if>
+            <do_if value="$Valid">
+              <set_value name="$VoiceTable" exact="table[$SignalLeakVoiceLine = 1000002]" />
+              <set_value name="$Success" exact="true"/>
+            </do_if>
+
+            <do_if value="not $Success">
+              <set_value name="$Definition.$ReportCue.$SetupFailed" exact="true"/>
+              <signal_cue cue="$Definition.$ReportCue"/>
+              <cancel_cue cue="this" />
+            </do_if>
+          </actions>
+          <cues>
+            <cue name="GM_Assassinate__Ref" ref="md.GM_Assassinate.Start">
+              <param name="ClientOwner"       value="$ClientOwner"/>
+              <param name="ForceNotorietyReward" value="if $ForeignSignalLeak? then true else false" comment="expecting Reward_Notoriety on foreign leaks"/>
+              <param name="OfferObject" value="$Definition.$Leak" />
+              <param name="MissionLevel" value="$MissionLevel" />
+              <param name="Difficulty" value="$Difficulty" />
+              <param name="Page" value="$Page" />
+              <param name="TextOffset" value="$TextOffset" />
+              <param name="VoiceTable" value="$VoiceTable" />
+              <param name="AssassinationTarget" value="$AssassinationTarget" />
+              <param name="ReportSignalCue" value="$Definition.$ReportCue" />
+              <param name="DebugChance" value="$DebugChance" />
+            </cue>
+
+            <!--Somewhat useless cue as there are no other subcues to keep the instance alive but better have it as a standard for missions which do.-->
+            <cue name="GM_Assassinate__Cancelled">
+              <conditions>
+                <event_cue_cancelled cue="GM_Assassinate__Ref"/>
+              </conditions>
+              <actions>
+                <cancel_cue cue="namespace"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Patch__DeadCueCountReport" onfail="cancel">
+          <conditions>
+            <check_value value="GM_Transport_Passengers__Trigger.$DeadCueCount?"/>
+          </conditions>
+          <actions>
+            <debug_text text="'Patch: Cleaned up ' + GM_Transport_Passengers__Trigger.$DeadCueCount + ' dead transport passenger signal leak mission cues'" filter="savegame"/>
+            <remove_value name="GM_Transport_Passengers__Trigger.$DeadCueCount"/>
+          </actions>
+        </cue>
+
+        <cue name="GM_Transport_Passengers__Trigger" instantiate="true" namespace="this" version="2">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <actions>
+            <set_value name="$Definition" exact="event.param" />
+            <set_value name="$Station" exact="$Definition.$Station" />
+            <set_value name="$Page" exact="$Definition.$Page" />
+            <set_value name="$TextOffset" exact="$Definition.$TextOffset.random" />
+            <set_value name="$DebugChance" exact="$Definition.$debugchance" />
+            <set_value name="$ClientOwner" exact="faction.civilian"/>
+
+            <set_value name="$RewardObj" exact="null"/>
+            <set_value name="$RewardText" exact="null"/>
+            <set_value name="$Difficulty" exact="level.veryeasy"/>
+            <set_value name="$MissionLevel" exact="1"/>
+
+            <set_value name="$Success" exact="false"/>
+            <do_if value="$Station.hasrelation.dock.{faction.player}">
+              <do_if value="$Page == 30101 and ($TextOffset == 100 or $TextOffset == 200)">
+
+                <do_all exact="1" chance="50" comment="50% to chose a pirate case">
+                  <do_if value="$Station.owner == faction.teladi">
+                    <set_value name="$ClientOwner" exact="faction.scaleplate"/>
+                  </do_if>
+                  <!-- DLC_Pirate_GM_Transport_Passengers__Trigger_patchmarker -->
+                  <!-- DLC_Split_GM_Transport_Passengers__Trigger_patchmarker -->
+                  <do_elseif value="($Station.owner == faction.paranid) or ($Station.owner == faction.holyorder)">
+                    <set_value name="$ClientOwner" exact="faction.buccaneers"/>
+                  </do_elseif>
+                  <do_elseif value="($Station.owner == faction.argon) or ($Station.owner == faction.antigone)">
+                    <set_value name="$ClientOwner" exact="faction.hatikvah"/>
+                  </do_elseif>
+                </do_all>
+
+                <!-- Set up character -->
+                <set_value name="$ClientRace" exact="[race.argon, race.paranid, race.teladi].random" comment="fallback for faction.civilian"/>
+                <set_value name="$ClientRace" exact="$Station.owner.primaryrace" chance="if $Station.owner.primaryrace then 100 else 0"/>
+                <set_value name="$ClientRace" exact="$ClientOwner.primaryrace"   chance="if $ClientOwner.primaryrace then 100 else 0"/>
+                <create_cue_actor cue="GM_Transport_Passengers__Trigger" name="$Client">
+                  <select race="$ClientRace" faction="$ClientOwner"/>
+                  <owner exact="$ClientOwner" />
+                </create_cue_actor>
+                <set_entity_type entity="$Client" type="entitytype.officer" />
+
+                <!-- Define starting location -->
+                <find_object_component name="$StartDockArea" object="$Station" class="class.walkablemodule" haswalkableroom="true"/>
+
+                <!-- Define target location -->
+                <find_station name="$PossibleTargetStations" space="$Station.sector" multiple="true">
+                  <match_relation_to faction="faction.player" comparison="not" relation="enemy" />
+                  <match_relation_to faction="$Station.owner" comparison="not" relation="enemy" />
+                </find_station>
+                <remove_from_list name="$PossibleTargetStations" exact="$Station" multiple="false" />
+
+                <do_if value="$PossibleTargetStations.count">
+                  <set_value name="$TargetStation" list="$PossibleTargetStations" />
+
+                  <!-- Set up the rest of the mission -->
+                  <set_value name="$VoiceTable" exact="table[$SignalLeakVoiceLine = 1000004]" />
+                  <set_value name="$Success" exact="true"/>
+                </do_if>
+                <do_else>
+                  <debug_text text="'There are no stations to use as a mission target in-sector - this mission cannot run here'" chance="$DebugChance" />
+                </do_else>
+              </do_if>
+              <do_else>
+                <assert value="false" text="'Attempting to spawn a mission on ' + this + ' but the combination of Page: ' + $Page + ' and TextOffset: ' + $TextOffset + ' do not match any definitions [Owen]'" />
+              </do_else>
+            </do_if>
+            <do_else>
+              <debug_text text="'Station ' + $Station + ' ' + $Station.knownname + ' does not allow the player to dock - this mission cannot run here'" chance="$DebugChance" />
+            </do_else>
+
+            <do_if value="not $Success">
+              <set_value name="$Definition.$ReportCue.$SetupFailed" exact="true"/>
+              <signal_cue cue="$Definition.$ReportCue"/>
+              <cancel_cue cue="this" />
+            </do_if>
+          </actions>
+          <patch sinceversion="2" state="complete">
+            <do_if value="GM_Transport_Passengers__Ref.state == cuestate.disabled">
+              <set_value name="static.$DeadCueCount" operation="add"/>
+              <cancel_cue cue="this"/>
+            </do_if>
+          </patch>
+          <cues>
+            <cue name="GM_Transport_Passengers__Ref" ref="md.GM_Transport_Passengers.Start">
+              <param name="OfferObject" value="$Definition.$Leak" />
+              <param name="MissionLevel" value="$MissionLevel" />
+              <param name="Difficulty" value="$Difficulty" />
+              <param name="Page" value="$Page" />
+              <param name="TextOffset" value="$TextOffset" />
+              <param name="VoiceTable" value="$VoiceTable" />
+              <param name="Client" value="$Client" />
+              <param name="GenerateReward" value="true" />
+              <param name="RewardObj" value="$RewardObj"/>
+              <param name="RewardText" value="$RewardText"/>
+              <param name="StartDockArea" value="$StartDockArea" />
+              <param name="TargetContainer" value="$TargetStation" />
+              <param name="RequestNewTargetCue" value="NewTargetRequest" />
+              <param name="ReportSignalCue" value="$Definition.$ReportCue" />
+              <param name="DebugChance" value="$DebugChance" />
+            </cue>
+
+            <cue name="GM_Transport_Passengers__Cancelled">
+              <conditions>
+                <event_cue_cancelled cue="GM_Transport_Passengers__Ref"/>
+              </conditions>
+              <actions>
+                <cancel_cue cue="namespace"/>
+              </actions>
+            </cue>
+
+            <cue name="NewTargetRequest" instantiate="true">
+              <conditions>
+                <event_cue_signalled />
+              </conditions>
+              <actions>
+                <!-- First check actual targetstation, then fallback to some other station -->
+                <find_object_component name="this.$DockArea" object="$TargetStation" class="class.walkablemodule" haswalkableroom="true" />
+                <do_if value="this.$DockArea">
+                  <set_value name="GM_Transport_Passengers__Ref.$TargetDockArea" exact="this.$DockArea"/>
+                </do_if>
+                <do_else>
+                  <find_station name="GM_Transport_Passengers__Ref.$TargetContainer" excluded="$Station" space="$Station.sector">
+                    <match_child class="class.walkablemodule" haswalkableroom="true"/>
+                  </find_station>
+                </do_else>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="GM_Sabotage__Trigger" instantiate="true" namespace="this">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <actions>
+            <set_value name="$Definition" exact="event.param" />
+            <set_value name="$Station" exact="$Definition.$Station" />
+            <set_value name="$ClientOwner" exact="faction.criminal"/>
+            <set_value name="$Page" exact="$Definition.$Page" />
+            <set_value name="$TextOffset" exact="$Definition.$TextOffset.random" />
+            <set_value name="$DebugChance" exact="$Definition.$debugchance" />
+            <set_value name="$EnemyFaction" exact="[faction.teladi, faction.argon].random"/>
+
+            <set_value name="$Difficulty" exact="level.medium" />
+            <set_value name="$MissionLevel" exact="1" />
+
+            <set_value name="$Success" exact="false"/>
+            <do_if value="$Page == 30144 and ($TextOffset == 1000 or $TextOffset == 1100 or $TextOffset == 1200)">
+
+              <!-- 50% chance for foreign factions to offer missions on specific faction stations -->
+              <do_all exact="1" chance="50" comment="50% to chose a pirate case">
+                <do_if value="$Station.owner == faction.teladi">
+                  <set_value name="$TextOffset"   exact="1200" comment="others don't fit"/>
+                  <set_value name="$ClientOwner"  exact="faction.scaleplate"/>
+                  <set_value name="$EnemyFaction" exact="faction.teladi"/>
+                </do_if>
+                <!-- DLC_Pirate_GM_Sabotage__Trigger_patchmarker -->
+                <!-- DLC_Split_GM_Sabotage__Trigger_patchmarker -->
+                <do_elseif value="($Station.owner == faction.paranid) or ($Station.owner == faction.holyorder)">
+                  <set_value name="$TextOffset"   exact="1200" comment="others don't fit"/>
+                  <set_value name="$ClientOwner" exact="faction.buccaneers"/>
+                  <set_value name="$EnemyFaction" exact="[faction.paranid, faction.holyorder].random"/>
+                </do_elseif>
+                <do_elseif value="($Station.owner == faction.argon) or ($Station.owner == faction.antigone)">
+                  <set_value name="$TextOffset"   exact="[1000, 1100, 1200].random"/>
+                  <set_value name="$ClientOwner" exact="faction.hatikvah"/>
+                  <set_value name="$EnemyFaction" exact="[faction.argon, faction.antigone].random"/>
+                </do_elseif>
+              </do_all>
+
+              <!-- Set up character -->
+              <set_value name="$ClientRace" exact="[race.argon, race.paranid, race.teladi].random" comment="fallback for faction.criminal"/>
+              <set_value name="$ClientRace" exact="$Station.owner.primaryrace" chance="if $Station.owner.primaryrace then 100 else 0"/>
+              <set_value name="$ClientRace" exact="$ClientOwner.primaryrace"   chance="if $ClientOwner.primaryrace then 100 else 0"/>
+              <create_cue_actor cue="GM_Sabotage__Trigger" name="$Client">
+                <select race="$ClientRace" faction="$ClientOwner"/>
+                <owner exact="$ClientOwner" />
+              </create_cue_actor>
+              <set_entity_type entity="$Client" type="entitytype.officer" />
+
+              <set_value name="$TargetClass"  exact="[class.turret]"/>
+              <include_actions ref="md.GM_Sabotage.Sabotage__Standard_Station_Lib" comment="input: $EnemyFaction, $TargetClass, $MissionLevel, output: $TargetObject, $TargetComponents, $MissionLevel (increased)"/>
+
+              <do_if value="@$TargetObject and @$TargetComponents.count">
+                <set_value name="$VoiceTable" exact="table[$SignalLeakVoiceLine = 1000002]" comment="TODO: @Owen, @Roger... matching voiceline" />
+                <set_value name="$Success" exact="true"/>
+              </do_if>
+              <do_else>
+                <debug_text text="'There are no targets to use in-sector - this mission cannot run here'" chance="$DebugChance" />
+              </do_else>
+            </do_if>
+            <do_else>
+              <assert value="false" text="'Attempting to spawn mission on ' + this + ' but the combination of Page: ' + $Page + ' and TextOffset: ' + $TextOffset + ' do not match any definitions [Lorraine]'" />
+            </do_else>
+
+            <do_if value="not $Success">
+              <set_value name="$Definition.$ReportCue.$SetupFailed" exact="true"/>
+              <signal_cue cue="$Definition.$ReportCue"/>
+              <cancel_cue cue="this" />
+            </do_if>
+          </actions>
+          <cues>
+            <cue name="Sabotage__Standard_Ref" ref="md.GM_Sabotage.Start">
+              <param name="OfferObject"         value="$Definition.$Leak" />
+              <param name="Client"              value="$Client" />
+              <param name="ReportSignalCue"     value="$Definition.$ReportCue" />
+              <param name="Page"                value="$Page"/>
+              <param name="TextOffset"          value="$TextOffset"/>
+              <param name="VoiceTable"          value="$VoiceTable" />
+              <param name="MissionLevel"        value="$MissionLevel"/>
+              <param name="Difficulty"          value="$Difficulty"/>
+              <param name="EnemyFaction"        value="$EnemyFaction"/>
+              <param name="PrimaryTarget"       value="$TargetObject"/>
+              <param name="TargetComponents"    value="$TargetComponents"/>
+              <param name="DebugChance"         value="$DebugChance"/>
+            </cue>
+
+            <!--Somewhat useless cue as there are no other subcues to keep the instance alive but better have it as a standard for missions which do.-->
+            <cue name="Sabotage__Cancelled">
+              <conditions>
+                <event_cue_cancelled cue="Sabotage__Standard_Ref"/>
+              </conditions>
+              <actions>
+                <cancel_cue cue="namespace"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="GM_BoardShip__Trigger" instantiate="true" namespace="this" version="2">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <actions>
+            <set_value name="$Definition" exact="event.param" />
+            <set_value name="$Station" exact="$Definition.$Station" />
+            <set_value name="$Page" exact="$Definition.$Page" />
+            <set_value name="$TextOffset" exact="$Definition.$TextOffset.random" />
+            <set_value name="$DebugChance" exact="$Definition.$debugchance" />
+
+            <set_value name="$PrimaryPurpose" exact="null"/>
+            <set_value name="$Difficulty" exact="level.hard"/>
+            <set_value name="$MissionLevel" exact="1"/>
+
+            <set_value name="$Success" exact="false"/>
+            <set_value name="$VoiceTable" exact="table[$SignalLeakVoiceLine = 1000002]" />
+            <set_value name="$Faction" exact="faction.criminal"/>
+
+            <!-- fallback for not pirates, ships which can be boarded so no XEN or KHA -->
+            <set_value name="$EnemyFactions" exact="[faction.scaleplate, faction.teladi, faction.ministry, faction.hatikvah, faction.antigone, faction.argon, faction.holyorder, faction.paranid, faction.alliance]"/>
+            <!-- DLC_Pirate_GM_BoardShip__Trigger_EnemyFactions_patchmarker -->
+            <!-- DLC_Split_GM_BoardShip__Trigger_EnemyFactions_patchmarker -->
+
+            <!-- 50% chance for foreign factions to offer missions on specific faction stations -->
+            <do_all exact="1" chance="50" comment="50% to chose a pirate case">
+              <do_if value="$Station.owner == faction.teladi">
+                <set_value name="$Faction"  exact="faction.scaleplate"/>
+              </do_if>
+              <!-- DLC_Pirate_GM_BoardShip__Trigger_patchmarker -->
+              <!-- DLC_Split_GM_BoardShip__Trigger_patchmarker -->
+              <do_elseif value="($Station.owner == faction.paranid) or ($Station.owner == faction.holyorder)">
+                <set_value name="$Faction"  exact="faction.buccaneers"/>
+              </do_elseif>
+              <do_elseif value="[faction.argon, faction.antigone].indexof.{$Station.owner}">
+                <set_value name="$Faction" exact="faction.hatikvah"/>
+              </do_elseif>
+            </do_all>
+            <remove_from_list name="$EnemyFactions" exact="$Faction"/>
+            <set_value name="$EnemyFaction" exact="$EnemyFactions.random"/>
+
+            <!--Board Ship type offered by pirate factions through Signal Leaks-->
+            <do_if value="$Page == 30152 and ($TextOffset == 5000 or $TextOffset == 5100)">
+              <!-- ship matching specifications -->
+              <include_actions ref="md.GM_BoardShip.Setup_FindSpecShip_Merchant"/>
+              <do_if value="$TargetShip or $TargetSpec">
+                <set_value name="$Success" exact="true"/>
+              </do_if>
+              <do_else>
+                <debug_text text="'There are no valid target ships to use in-sector - this mission cannot run here'" chance="$DebugChance" />
+              </do_else>
+            </do_if>
+            <do_elseif value="$Page == 30152 and ($TextOffset == 4000 or $TextOffset == 4100)">
+              <!-- specific ship -->
+              <do_if value="$TextOffset == 4100">
+                <set_value name="$PrimaryPurpose" exact="purpose.mine"/>
+              </do_if>
+              <include_actions ref="md.GM_BoardShip.Setup_FindEnemyShip"/>
+              <do_if value="$TargetShip or $TargetSpec">
+                <set_value name="$Success" exact="true"/>
+              </do_if>
+              <do_else>
+                <debug_text text="'There are no valid target ships to use in-sector - this mission cannot run here'" chance="$DebugChance" />
+              </do_else>
+            </do_elseif>
+            <do_elseif value="$Page == 30152 and ($TextOffset == 6100)">
+              <set_value name="$PrimaryPurpose" exact="[purpose.trade, purpose.mine].random"/>
+              <include_actions ref="md.GM_BoardShip.Setup_FindEnemyShip"/>
+              <do_if value="$TargetShip or $TargetSpec">
+                <set_value name="$Success" exact="true"/>
+              </do_if>
+              <do_else>
+                <debug_text text="'There are no valid target ships to use in-sector - this mission cannot run here'" chance="$DebugChance" />
+              </do_else>
+            </do_elseif>
+
+            <do_else>
+              <assert value="false" text="'Attempting to spawn mission on ' + this + ' but the combination of Page: ' + $Page + ' and TextOffset: ' + $TextOffset + ' do not match any definitions [Lorraine]'" />
+            </do_else>
+
+            <!-- Set up character -->
+            <set_value name="$ClientOwner" exact="$Faction" comment="other leak gms use $ClientOwner, rest is copypaste"/>
+            <set_value name="$ClientRace" exact="[race.argon, race.paranid, race.teladi].random" comment="fallback for faction.criminal"/>
+            <set_value name="$ClientRace" exact="$Station.owner.primaryrace" chance="if $Station.owner.primaryrace then 100 else 0"/>
+            <set_value name="$ClientRace" exact="$ClientOwner.primaryrace"   chance="if $ClientOwner.primaryrace then 100 else 0"/>
+            <create_cue_actor cue="GM_BoardShip__Trigger" name="$Client">
+              <select race="$ClientRace" faction="$Faction"/>
+              <owner exact="$Faction" />
+            </create_cue_actor>
+            <set_entity_type entity="$Client" type="entitytype.officer" />
+
+            <do_if value="not $Success">
+              <set_value name="$Definition.$ReportCue.$SetupFailed" exact="true"/>
+              <signal_cue cue="$Definition.$ReportCue"/>
+              <cancel_cue cue="this" />
+            </do_if>
+          </actions>
+          <patch sinceversion="2" comment="cancel bad mission setup, mantis#867">
+            <do_if value="($TextOffset == 6100) and ($TargetSpec != null)">
+              <cancel_cue cue="BoardShip__Standard_Ref" comment="cannot signal Cleanup from outside the library, "/>
+              <!--From internal CleanUp; No .exists check here as $Client may not be connected to gamegraph-->
+              <do_if value="$Client.isclass.npc and (not $PreexistingClient?)">
+                <destroy_object object="$Client" comment="cleanup the client we created with create_cue_actor"/>
+              </do_if>
+            </do_if>
+          </patch>
+          <cues>
+            <cue name="BoardShip__Standard_Ref" ref="md.GM_BoardShip.Start">
+              <param name="OfferObject"         value="$Definition.$Leak" />
+              <param name="Client"              value="$Client" />
+              <param name="ReportSignalCue"     value="$Definition.$ReportCue" />
+              <param name="Page"                value="$Page"/>
+              <param name="TextOffset"          value="$TextOffset"/>
+              <param name="VoiceTable"          value="$VoiceTable" />
+              <param name="MissionLevel"        value="$MissionLevel"/>
+              <param name="Difficulty"          value="$Difficulty"/>
+              <param name="Faction"             value="$Faction"/>
+              <param name="TargetShip"          value="$TargetShip" comment="pass either TargetShip or TargetSpecs!"/>
+              <param name="TargetSpec"          value="$TargetSpec"/>
+              <param name="DebugChance"         value="$DebugChance"/>
+            </cue>
+
+            <!--Somewhat useless cue as there are no other subcues to keep the instance alive but better have it as a standard for missions which do.-->
+            <cue name="BoardShip__Cancelled">
+              <conditions>
+                <event_cue_cancelled cue="BoardShip__Standard_Ref"/>
+              </conditions>
+              <actions>
+                <cancel_cue cue="namespace"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="GM_Destroy_RarelyOnSight__Trigger" instantiate="true" namespace="this">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <actions>
+            <set_value name="$Definition" exact="event.param" />
+            <set_value name="$Station" exact="$Definition.$Station" />
+            <set_value name="$Page" exact="$Definition.$Page" />
+            <set_value name="$TextOffset" exact="$Definition.$TextOffset.random" />
+            <set_value name="$DebugChance" exact="$Definition.$debugchance" />
+
+            <set_value name="$Difficulty" exact="level.medium"/>
+            <set_value name="$MissionLevel" exact="1"/>
+            <set_value name="$TargetSpec" exact="null"/>
+            <set_value name="$TargetCount" exact="null"/>
+
+            <set_value name="$Valid" exact="false"/>
+
+            <!-- Destroy single ship mission, offered by pirate factions through Signal Leaks-->
+            <do_if value="$Page == 30154 and ($TextOffset == 1100 or $TextOffset == 1300)">
+
+              <set_value name="$Faction" exact="[faction.hatikvah, faction.scaleplate].random"/>
+              <include_actions ref="md.GM_BoardShip.Setup_DetermineEnemyFaction_OfPirates"/>
+
+              <include_actions ref="md.GM_Destroy_RarelyOnSight.Setup_Merchant" comment="input: $EnemyFaction, output: $TargetSpec"/>
+              <include_actions ref="md.GM_Destroy_RarelyOnSight.ConfigureDifficulty" comment="input: $MissionLevel; output: $MissionLevel, $TargetCount"/>
+
+              <do_if value="$TargetSpec and $TargetCount and $MissionLevel">
+                <set_value name="$Valid" exact="true"/>
+
+                <!-- Set up character -->
+                <do_if value="$Faction == faction.scaleplate">
+                  <create_cue_actor cue="GM_Destroy_RarelyOnSight__Trigger" name="$Client">
+                    <select race="[race.argon, race.paranid, race.teladi]" faction="faction.scaleplate"/>
+                    <owner exact="faction.scaleplate" />
+                  </create_cue_actor>
+                </do_if>
+                <do_else>
+                  <create_cue_actor cue="GM_Destroy_RarelyOnSight__Trigger" name="$Client">
+                    <select race="race.argon" faction="faction.hatikvah"/>
+                    <owner exact="faction.hatikvah" />
+                  </create_cue_actor>
+                </do_else>
+
+                <set_entity_type entity="$Client" type="entitytype.officer" />
+                <set_value name="$VoiceTable" exact="table[$SignalLeakVoiceLine = 1000002]" comment="data leak signal - illegal opportunity"/>
+              </do_if>
+            </do_if>
+
+            <do_else>
+              <assert value="false" text="'Attempting to spawn mission on ' + this + ' but the combination of Page: ' + $Page + ' and TextOffset: ' + $TextOffset + ' do not match any definitions [Lorraine]'" />
+            </do_else>
+
+            <do_if value="not $Valid">
+              <set_value name="$Definition.$ReportCue.$SetupFailed" exact="true"/>
+              <signal_cue cue="$Definition.$ReportCue"/>
+              <cancel_cue cue="this" />
+            </do_if>
+          </actions>
+          <cues>
+            <cue name="Destroy_RarelyOnSight__Standard_Ref" ref="md.GM_Destroy_RarelyOnSight.Start">
+              <param name="OfferObject"         value="$Definition.$Leak"/>
+              <param name="Client"              value="$Client"/>
+              <param name="ReportSignalCue"     value="$Definition.$ReportCue"/>
+              <param name="Page"                value="$Page"/>
+              <param name="TextOffset"          value="$TextOffset"/>
+              <!--param name="VoiceTable"       value="$VoiceTable" /-->
+              <param name="MissionLevel"        value="$MissionLevel"/>
+              <param name="Difficulty"          value="$Difficulty"/>
+              <!--<param name="Faction"             value="$Faction"/>-->
+              <param name="TargetFaction"       value="$EnemyFaction"/>
+              <param name="TargetSpec"          value="$TargetSpec"/>
+              <param name="TargetCount"         value="$TargetCount"/>
+              <param name="DebugChance"         value="$DebugChance"/>
+            </cue>
+
+            <!--Somewhat useless cue as there are no other subcues to keep the instance alive but better have it as a standard for missions which do.-->
+            <cue name="Destroy_RarelyOnSight__Cancelled">
+              <conditions>
+                <event_cue_cancelled cue="Destroy_RarelyOnSight__Standard_Ref"/>
+              </conditions>
+              <actions>
+                <cancel_cue cue="namespace"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <library name="HackPanel__Standard_Station_Lib" purpose="run_actions">
+          <params>
+            <param name="PanelType"/>
+            <param name="ExcludedFactions" default="[]"/>
+            <param name="MaxDistance" default="2"/>
+          </params>
+          <actions>
+            <!-- We always want to exclude these factions. -->
+            <append_list_elements name="$ExcludedFactions" other="[faction.player, faction.xenon, faction.khaak]"/>
+
+            <find_cluster_in_range name="$LocalClusters" object="player.entity" maxdistance="$MaxDistance" multiple="true"/>
+            <find_station groupname="$LocalStations" space="$LocalClusters" multiple="true">
+              <match owner="$ExcludedFactions" negate="true"/>
+              <match_relation_to faction="faction.player" comparison="ge" relation="dock"/>
+              <match_dock size="tag.dock_s" walkable="true"/>
+            </find_station>
+            <do_for_each in="$LocalStations" name="$CurrentObject" reverse="true">
+              <do_if value="$CurrentObject.iscontrolpanelhacked.{$PanelType}">
+                <remove_from_group group="$LocalStations" object="$CurrentObject"/>
+              </do_if>
+            </do_for_each>
+
+            <create_group groupname="$TargetObjects"/>
+            <do_if value="$LocalStations.count">
+              <add_to_group groupname="$TargetObjects" object="$LocalStations.random"/>
+            </do_if>
+          
+            <return value="$TargetObjects"/>
+          </actions>
+        </library>
+
+        <cue name="GM_HackPanel__Trigger" instantiate="true" namespace="this">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <actions>
+            <set_value name="$Definition" exact="event.param" />
+            <set_value name="$Station" exact="$Definition.$Station" />
+            <set_value name="$Page" exact="$Definition.$Page" />
+            <set_value name="$TextOffset" exact="$Definition.$TextOffset.random" />
+            <set_value name="$DebugChance" exact="$Definition.$debugchance" />
+            <set_value name="$ClientOwner" exact="faction.criminal"/>
+
+            <set_value name="$Difficulty" exact="level.medium"/>
+            <set_value name="$MissionLevel" exact="1" />
+
+            <set_value name="$Success" exact="false"/>
+
+            <!-- 50% chance for foreign factions to offer missions on specific faction stations -->
+            <do_all exact="1" chance="50" comment="50% to chose a pirate case">
+              <!-- not 1300 for VIG FAF as it is about competitors' storage wares (vig might fit in some cases but barely) -->
+              <do_if value="$Station.owner == faction.teladi">
+                <set_value name="$TextOffset" exact="[1000, 1200, 1300, 1400].random"/>
+                <set_value name="$ClientOwner" exact="faction.scaleplate"/>
+              </do_if>
+              <!-- DLC_Pirate_GM_HackPanel__Trigger_patchmarker -->
+              <!-- DLC_Split_GM_HackPanel__Trigger_patchmarker -->
+              <do_elseif value="($Station.owner == faction.paranid) or ($Station.owner == faction.holyorder)">
+                <set_value name="$TextOffset" exact="[1000, 1200, 1400].random" comment="1300 does not fit as it's about a cargo storage competitor"/>
+                <set_value name="$ClientOwner" exact="faction.buccaneers"/>
+              </do_elseif>
+              <do_elseif value="($Station.owner == faction.argon) or ($Station.owner == faction.antigone)">
+                <set_value name="$TextOffset" exact="[1000, 1200, 1300, 1400].random"/>
+                <set_value name="$ClientOwner" exact="faction.hatikvah"/>
+              </do_elseif>            
+          </do_all>
+
+            <!-- Set up character -->
+            <set_value name="$ClientRace" exact="[race.argon, race.paranid, race.teladi].random" comment="fallback for faction.criminal"/>
+            <set_value name="$ClientRace" exact="$Station.owner.primaryrace" chance="if $Station.owner.primaryrace then 100 else 0"/>
+            <set_value name="$ClientRace" exact="$ClientOwner.primaryrace"   chance="if $ClientOwner.primaryrace then 100 else 0"/>
+            <create_cue_actor cue="GM_HackPanel__Trigger" name="$Client">
+              <select race="$ClientRace" faction="$ClientOwner"/>
+              <owner exact="$ClientOwner" />
+            </create_cue_actor>
+            
+            <do_if value="$Client" comment="Client not connected to gamegraph, so don't check for .exists">
+              <set_entity_type entity="$Client" type="entitytype.officer" />
+              <!-- Set Panel Type based on TextOffset -->
+              <do_if value="$Page == 30145 and ($TextOffset == 1000)">
+                <set_value name="$PanelType" exact="controlpaneltype.hack_all_turrets"/>
+              </do_if>
+              <do_elseif value="$Page == 30145 and ($TextOffset == 1100)">
+                <set_value name="$PanelType" exact="controlpaneltype.hack_engineer"/>
+              </do_elseif>
+              <do_elseif value="$Page == 30145 and ($TextOffset == 1200)">
+                <set_value name="$PanelType" exact="controlpaneltype.hack_shieldgenerators"/>
+              </do_elseif>
+              <do_elseif value="$Page == 30145 and ($TextOffset == 1300)">
+                <set_value name="$PanelType" exact="controlpaneltype.hack_storage"/>
+              </do_elseif>
+              <do_elseif value="$Page == 30145 and ($TextOffset == 1400)">
+                <set_value name="$PanelType" exact="controlpaneltype.hack_watchdogs"/>
+              </do_elseif>
+              <do_elseif value="$Page == 30145 and ($TextOffset == 5100)">
+                <set_value name="$PanelType" exact="controlpaneltype.hack_all_turrets"/>
+              </do_elseif>
+              <do_elseif value="$Page == 30145 and ($TextOffset == 5200)">
+                <set_value name="$PanelType" exact="controlpaneltype.hack_shieldgenerators"/>
+              </do_elseif>
+              <do_elseif value="$Page == 30145 and ($TextOffset == 5300)">
+                <set_value name="$PanelType" exact="controlpaneltype.hack_watchdogs"/>
+              </do_elseif>
+              <do_else>
+                <assert value="false" text="'Attempting to spawn mission on ' + this + ' but the combination of Page: ' + $Page + ' and TextOffset: ' + $TextOffset + ' do not match any definitions [Lorraine]'" />
+              </do_else>
+              <run_actions ref="HackPanel__Standard_Station_Lib" result="$TargetObjects">
+                <param name="PanelType" value="$PanelType"/>
+              </run_actions>
+              <do_if value="$TargetObjects.count">
+                <set_value name="$VoiceTable" exact="table[$SignalLeakVoiceLine = 1000002]" comment="TODO: @Owen, @Roger... matching voiceline" />
+                <set_value name="$Success" exact="true"/>
+              </do_if>
+              <do_else>
+                <debug_text text="'There are no targets to use in-sector - this mission cannot run here'" chance="$DebugChance" />
+              </do_else>              
+            </do_if>
+
+            <do_if value="not $Success">
+              <set_value name="$Definition.$ReportCue.$SetupFailed" exact="true"/>
+              <signal_cue cue="$Definition.$ReportCue"/>
+              <cancel_cue cue="this" />
+            </do_if>
+          </actions>
+          <cues>
+            <cue name="HackPanel__Standard_Ref" ref="md.GM_HackPanel.Start">
+              <param name="OfferObject"         value="$Definition.$Leak"/>
+              <param name="Client"              value="$Client"/>
+              <param name="ReportSignalCue"     value="$Definition.$ReportCue"/>
+              <param name="Page"                value="$Page"/>
+              <param name="TextOffset"          value="$TextOffset"/>
+              <param name="VoiceTable"          value="$VoiceTable" />
+              <param name="MissionLevel"        value="$MissionLevel"/>
+              <param name="Difficulty"          value="$Difficulty"/>
+              <param name="Faction"             value="$ClientOwner"/>
+              <param name="Targets_Param"       value="$TargetObjects"/>
+              <param name="PanelType"           value="$PanelType"/>
+              <param name="DebugChance" value="$DebugChance"/>
+            </cue>
+
+            <!--Somewhat useless cue as there are no other subcues to keep the instance alive but better have it as a standard for missions which do.-->
+            <cue name="HackPanel__Cancelled">
+              <conditions>
+                <event_cue_cancelled cue="HackPanel__Standard_Ref"/>
+              </conditions>
+              <actions>
+                <cancel_cue cue="namespace"/>
+              </actions>
+            </cue>
+
+          </cues>
+        </cue>
+      </cues>
+    </cue>
+
+    <cue name="ScanDataLeakGroup" instantiate="true" namespace="this" version="3">
+      <conditions>
+        <event_player_created_signal_leaks />
+        <check_value value="event.param.count"/>
+      </conditions>
+      <actions>
+        <do_if value="Manager.$DebugChance == 100">
+          <set_value name="$DebugChance" exact="100"/>
+        </do_if>
+        <add_to_group groupname="$PlayerCreatedLeaks" list="event.param" />
+        <set_value name="$NumLockedLeaks" exact="$PlayerCreatedLeaks.count" />
+
+        <set_value name="$LeakObject" exact="null"/>
+        <do_for_each name="$Leak" in="$PlayerCreatedLeaks">
+          <do_if value="$LeakObject">
+            <assert value="$Leak.object == $LeakObject" text="'A group of data leaks should be related to the same object. Multiple objects: ' + $LeakObject + ' and ' + $Leak.object + ' [Owen]'"/>
+          </do_if>
+          <do_else>
+            <set_value name="$LeakObject" exact="$Leak.object"/>
+          </do_else>
+        </do_for_each>
+        <debug_text text="'Managing ' + $PlayerCreatedLeaks.count + ' data leaks on object: ' + $LeakObject + ' ' + $LeakObject.knownname" chance="@$DebugChance"/>
+      </actions>
+      <patch sinceversion="2" state="complete">
+        <do_if value="$PlayerCreatedLeaks.count">
+          <do_if value="Manager.$Patch_EMPLeaks?">
+            <append_list_elements name="Manager.$Patch_EMPLeaks" other="$PlayerCreatedLeaks.list"/>
+          </do_if>
+          <do_else>
+            <set_value name="Manager.$Patch_EMPLeaks" exact="$PlayerCreatedLeaks.list"/>
+          </do_else>
+
+          <do_if value="Manager.$DebugChance == 100">
+            <set_value name="$DebugChance" exact="100"/>
+          </do_if>
+
+          <set_value name="$LeakObject" exact="null"/>
+          <do_for_each name="$Leak" in="$PlayerCreatedLeaks">
+            <do_if value="$LeakObject">
+              <assert value="$Leak.object == $LeakObject" text="'A group of data leaks should be related to the same object. Multiple objects: ' + $LeakObject + ' and ' + $Leak.object + ' [Owen]'"/>
+            </do_if>
+            <do_else>
+              <set_value name="$LeakObject" exact="$Leak.object"/>
+            </do_else>
+          </do_for_each>
+        </do_if>
+      </patch>
+      <patch sinceversion="3" state="complete">
+        <do_if value="not $PlayerCreatedLeaks.count">
+          <debug_text text="'Cleaning up data leak group instance which no longer has any leaks'" filter="savegame"/>
+          <cancel_cue cue="this"/>
+        </do_if>
+      </patch>
+      <cues>
+        <cue name="PlayerScannedLeak" instantiate="true">
+          <conditions>
+            <event_player_signal_unlock_finished />
+            <check_value value="$PlayerCreatedLeaks.indexof.{event.param}" />
+          </conditions>
+          <actions>
+            <remove_from_group group="$PlayerCreatedLeaks" object="event.param" />
+            <set_value name="$NumLockedLeaks" operation="subtract" />
+            <debug_text text="'Leak in chain unlocked. Remaining: ' + $NumLockedLeaks" />
+            <do_if value="event.param.module != null">
+              <!-- unlock the blueprint when all data leaks have been successfully unlocked -->
+              <!-- Note: if we change this to require fewer than the total number then we also have to update the LeakRemoved cue to not abort immediately, but only when there are not enough leaks left -->
+              <do_if value="$NumLockedLeaks == 0">
+                <set_value name="$BlueprintWare" exact="event.param.module.macro.ware" />
+                <set_value name="$Researched" exact="true" />
+                <do_if value="$BlueprintWare?">
+                  <set_value name="$ResearchPrecursors" exact="$BlueprintWare.research.requiredprecursors.list" />
+                  <do_all exact="$ResearchPrecursors.count" counter="$precursor_i">
+                    <do_if value="not $ResearchPrecursors.{$precursor_i}.research.unlocked">
+                      <set_value name="$Researched" exact="false" />
+                      <break />
+                    </do_if>
+                  </do_all>
+                </do_if>
+                <do_if value="$BlueprintWare? and not player.blueprints.{$BlueprintWare}.any.exists and not $BlueprintWare.hastag.noplayerblueprint and $Researched">
+                  <add_blueprints macros="event.param.module.macro" />
+                  <unlock_achievement name="HACK_BLUEPRINT" />
+                </do_if>
+                <do_elseif value="not event.param.module.container.hasrelation.enemy.{faction.player} and not event.param.module.container.haspermanenttradesubscription">
+                  <!--Permanent trade offers for this stations-->
+                  <add_trade_subscription object="event.param.module.container" />
+                  <show_notification text="{1015,79}" />
+                </do_elseif>
+                <do_else>
+                  <find_station name="$RevealedStation" space="player.sector" known="false" />
+                  <do_if value="$RevealedStation?">
+                    <set_known object="$RevealedStation" known="true" />
+                    <show_notification text="{1015,80}" />
+                  </do_if>
+                  <do_else>
+                    <show_notification text="{1015,81}" />
+                  </do_else>
+                </do_else>
+                <cancel_cue cue="ScanDataLeakGroup" />
+              </do_if>
+            </do_if>
+          </actions>
+        </cue>
+        <cue name="LeakRemoved" instantiate="true">
+          <conditions>
+            <event_object_destroyed group="$PlayerCreatedLeaks" />
+          </conditions>
+          <actions>
+            <!-- if a leak has been removed while it's still in the group then it has not been scanned - the group can no longer be fully scanned, so abort now -->
+            <debug_text text="event.object + ' ' + event.object.knownname + ' was destroyed. Destroying remaining data leaks.'" chance="@$DebugChance"/>
+            <destroy_group group="$PlayerCreatedLeaks"/>
+            <cancel_cue cue="ScanDataLeakGroup" />
+          </actions>
+        </cue>
+
+        <!-- When switching to low attention, give it some time before actually removing the data leaks -->
+        <cue name="ScanDataLeakGroup_LowAttention">
+          <conditions>
+            <event_object_changed_attention object="$LeakObject"/>
+            <check_value value="event.param lt attention.visible and event.param2 ge attention.visible"/>
+          </conditions>
+          <actions>
+            <debug_text text="$LeakObject + ' ' + $LeakObject.knownname + ' is no longer visible. Data leaks will soon be removed unless it returns to visible.'" chance="@$DebugChance"/>
+          </actions>
+          <delay min="60s" max="90s"/>
+          <actions>
+            <debug_text text="'Data leaks will now be removed as they have not been visible for some times. Object: ' + $LeakObject + ' ' + $LeakObject.knownname" chance="@$DebugChance"/>
+            <destroy_group group="$PlayerCreatedLeaks"/>
+            <cancel_cue cue="ScanDataLeakGroup" />
+          </actions>
+          <cues>
+            <cue name="ScanDataLeakGroup_HighAttention">
+              <conditions>
+                <event_object_changed_attention object="$LeakObject"/>
+                <check_value value="event.param ge attention.visible and event.param2 lt attention.visible"/>
+              </conditions>
+              <actions>
+                <debug_text text="$LeakObject + ' ' + $LeakObject.knownname + ' has returned to visible attention.'" chance="@$DebugChance"/>
+                <reset_cue cue="ScanDataLeakGroup_LowAttention"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+      </cues>
+    </cue>
+
+    <cue name="PlayerScannedClaimLeak" instantiate="true">
+      <conditions>
+        <check_any>
+          <event_player_signal_unlock_finished />
+          <event_player_repaired_signal_leak />
+        </check_any>
+        <check_value value="event.param.type == signalleaktype.claim" />
+      </conditions>
+      <actions>
+        <set_value name="$ship" exact="event.param2" />
+        <do_if value="$ship and $ship.canbeclaimed">
+          <set_owner object="$ship" faction="faction.player" />
+        </do_if>
+      </actions>
+    </cue>
+
+    <cue name="SignalLeakRepaired" instantiate="true">
+      <conditions>
+        <event_player_repaired_signal_leak />
+      </conditions>
+      <actions>
+        <do_if value="event.param2.isclass.object">
+          <set_value name="$RepairedObject" exact="event.param2" />
+        </do_if>
+        <do_else>
+          <set_value name="$RepairedObject" exact="event.param2.object" />
+        </do_else>
+        <!-- TODO @Lorraine: voice line and reward? event.param is the signal leak, event.param2 the component it was on -->
+      </actions>
+    </cue>
+  </cues>
+</mdscript>

@@ -1,0 +1,181 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_Map_Space" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+    <library name="MapSpace">
+      <params>
+        <param name="EndSignalCue" />
+        <param name="MissionCue" />
+        <param name="StartStep" default="1" />
+        <param name="UpdateBriefing" default="true" />
+        <param name="ObjectiveText" />
+        <param name="SpaceToMap" comment="Can only be an entire sector or an entire cluster at this time (may change in the future)" />
+        <param name="FeedbackValue" default="0" />
+        <param name="DebugChance" default="0" />
+      </params>
+      <actions>
+        <create_list name="$ErrorList" />
+
+        <do_if value="not $MissionCue">
+          <append_to_list name="$ErrorList" exact="-101" />
+        </do_if>
+        <do_if value="not $EndSignalCue">
+          <append_to_list name="$ErrorList" exact="-102" />
+        </do_if>
+
+        <do_if value="$UpdateBriefing" exact="true">
+          <do_if value="not $ObjectiveText">
+            <append_to_list name="$ErrorList" exact="-201" />
+          </do_if>
+        </do_if>
+
+        <do_if value="not $SpaceToMap">
+          <append_to_list name="$ErrorList" exact="-301" />
+        </do_if>
+      </actions>
+      <cues>
+        <cue name="SignalCleanUp" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count != 0" />
+          </conditions>
+          <actions>
+            <signal_cue cue="CleanUp" />
+          </actions>
+        </cue>
+
+        <library name="SpaceDiscovery">
+          <params>
+            <param name="SignalCue" />
+            <param name="Space" />
+          </params>
+          <conditions>
+            <event_object_changed_zone object="player.entity" />
+            <check_value value="not event.param.isclass.highway" />
+            <check_value value="player.entity.hascontext.{$Space}" />
+          </conditions>
+          <actions>
+            <!-- Find any unknown, non-temp zone in the given area -->
+            <find_zone name="$UnknownZone" space="$Space" normalzone="true">
+              <match knownto="faction.player" negate="true" />
+            </find_zone>
+            <do_if value="not $UnknownZone">
+              <!-- no unknown zones left - player has completed mission -->
+              <signal_cue_instantly cue="$SignalCue" param="$Space" />
+              <cancel_cue cue="this" />
+            </do_if>
+          </actions>
+          <cues>
+            <cue name="EnterUnknownZone">
+              <conditions>
+                <event_object_changed_attention object="$UnknownZone" />
+                <check_value value="event.param" min="attention.visible" />
+              </conditions>
+              <actions>
+                <!-- Repeat until all zones are known -->
+                <reset_cue cue="SpaceDiscovery" />
+              </actions>
+            </cue>
+          </cues>
+        </library>
+
+        <cue name="Start" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" exact="0" />
+          </conditions>
+          <actions>
+            <debug_text text="'RML_Map_Space: Mission library has passed all checks and has successfully started.'" chance="$DebugChance" />
+
+            <do_if value="$UpdateBriefing">
+              <update_mission cue="$MissionCue">
+                <briefing>
+                  <objective step="$StartStep" action="objective.custom" customaction="$ObjectiveText"/>
+                </briefing>
+              </update_mission>
+              <set_objective cue="$MissionCue" step="$StartStep" action="objective.custom" customaction="$ObjectiveText"/>
+            </do_if>
+          </actions>
+          <cues>
+            <cue name="SpaceDiscovery_Ref" ref="SpaceDiscovery">
+              <param name="SignalCue" value="PlayerDiscoveredSpace" />
+              <param name="Space" value="$SpaceToMap" />
+            </cue>
+
+            <cue name="PlayerDiscoveredSpace">
+              <conditions>
+                <event_cue_signalled />
+              </conditions>
+              <actions>
+                <debug_text text="'RML_Map_Space: Player discovered all of the given space.'" chance="$DebugChance" />
+                <set_value name="$FeedbackValue" exact="1" />
+                <signal_cue cue="CleanUp" />
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="CleanUp">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <actions>
+            <do_if value="$FeedbackValue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'RML_Map_Space: ERROR - MapSpace.CleanUp - $FeedbackValue is zero and no error values were set. Defaulting to -100'" chance="$DebugChance" />
+                <set_value name="$FeedbackValue" exact="-100" />
+              </do_if>
+              <do_else>
+                <set_value name="$FeedbackValue" exact="$ErrorList.{1}" />
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+                    <do_if value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'$MissionCue was not provided.'" />
+                    </do_if>
+
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-102">
+                      <set_value name="$FeedbackText" exact="'$EndSignalCue was not provided.'" />
+                    </do_elseif>
+
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-201">
+                      <set_value name="$FeedbackText" exact="'$UpdateBriefing was set to true but no $ObjectiveText was provided.'" />
+                    </do_elseif>
+
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-301">
+                      <set_value name="$FeedbackText" exact="'$SpaceToMap was not provided.'" />
+                    </do_elseif>
+
+                    <debug_text text="'RML_Map_Space: Mission Error. Feedback ID: ' + $ErrorLst.{$Counter} + ' - ' + $FeedbackText"  filter="error"/>
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+
+              <do_if value="$FeedbackValue" exact="1">
+                <set_value name="$FeedbackText" exact="'Space was successfully mapped out.'" />
+              </do_if>
+
+              <do_if value="$FeedbackValue" min="1">
+                <debug_text text="'RML_Map_Space: Mission successful. Feedback ID: ' + $FeedbackValue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_if>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'RML_Map_Space: Mission failed. Feedback ID: ' + $FeedbackValue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+
+            <do_if value="$EndSignalCue">
+              <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+              <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$FeedbackValue" />
+              <signal_cue cue="$EndSignalCue" />
+            </do_if>
+            <cancel_cue cue="MapSpace" />
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

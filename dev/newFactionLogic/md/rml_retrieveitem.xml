@@ -1,0 +1,294 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_RetrieveItem" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--
+    $feedbackvalue:
+    -104: $ItemWare is not allowed to be dropped
+    -103: $ItemWare is not an inventory ware
+    -102: $TargetShip is not defined, is not operational or has no pilot
+    -101: Cue parameters not defined
+    -100: Undefined failure. Defaulted to -100
+    -4: $ItemWare was collected by a non-player-owned ship
+    -3: $ItemWare container was destroyed
+    -2: $TargetShip failed to drop $ItemWare
+    -1: $NeedTargetShipAlive is true and $TargetShip was destroyed
+    1: Success, $ItemWare collected
+    -->
+    <library name="RetrieveItem">
+      <params>
+        <param name="EndSignalCue"/>
+        <param name="MissionCue"/>
+        <param name="StartStep" default="1" comment="Briefing step to start the mission on"/>
+        <param name="UpdateBriefing" default="true" comment="Update the briefing objective step when the objective is updated"/>
+        <param name="DebugChance" default="0" />
+
+        <param name="TargetShip"                            comment="Specific ship that contains the item"/>
+        <param name="NeedTargetShipAlive" default="false"   comment="Set to true to treat TargetShip destruction as mission failure (before item is dropped)"/>
+        <param name="TargetShieldPercent"                   comment="Maximal shield percentage required to drop item"/>
+        <param name="TargetHullPercent"                     comment="Maximal hull percentage required to drop item"/>
+        <param name="ItemWare"                              comment="Ware that should be dropped by TargetShip"/>
+      </params>
+      <actions>
+        <set_value name="$feedbackvalue" exact="0"/>
+        <create_list name="$ErrorList"/>
+
+        <do_if value="not $EndSignalCue or not $MissionCue">
+          <append_to_list name="$ErrorList" exact="-101"/>
+        </do_if>
+
+        <do_if value="not ($TargetShip.isoperational and $TargetShip.pilot)">
+          <append_to_list name="$ErrorList" exact="-102"/>
+        </do_if>
+
+        <do_if value="not @$ItemWare.isinventory">
+          <append_to_list name="$ErrorList" exact="-103"/>
+        </do_if>
+        <do_if value="not @$ItemWare.isdropallowed">
+          <append_to_list name="$ErrorList" exact="-104"/>
+        </do_if>
+        <!-- TODO: More RML-specific parameter checks -->
+
+      </actions>
+      <cues>
+
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="1"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup"/>
+          </actions>
+        </cue>
+
+        <cue name="StartMission" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="0"/>
+          </conditions>
+          <actions>
+            <do_if value="$UpdateBriefing">
+              <update_mission cue="$MissionCue">
+                <briefing>
+                  <objective step="$StartStep" action="objective.attack" object="$TargetShip"/>
+                  <objective step="$StartStep + 1" action="objective.collect" text="$ItemWare.name" />
+                </briefing>
+              </update_mission>
+            </do_if>
+            <set_objective cue="$MissionCue" step="$StartStep" action="objective.attack" object="$TargetShip" />
+          </actions>
+          <cues>
+
+            <!--<cue name="Cheat" instantiate="true">
+              <conditions>
+                <event_object_attacked object="$TargetShip" />
+                <check_value value="event.param.isplayerowned" />
+              </conditions>
+              <actions>
+                <set_object_shield object="$TargetShip" exact="0" />
+              </actions>
+            </cue>-->
+
+            <cue name="OnShipAttacked">
+              <conditions>
+                <check_any>
+                  <event_object_destroyed object="$TargetShip" comment="target was destroyed" />
+                  <event_object_abandoned object="$TargetShip" comment="pilot ejected (which we accept as 'was damaged enough')"/>
+                  <check_all>
+                    <!-- Attacked by player-owned ship and shield/hull values are low enough -->
+                    <event_object_attacked object="$TargetShip" />
+                    <debug_text text="'%s attacker=%s shield=%s hull=%s'.[event.object, event.param, $TargetShip.shieldpercentage, $TargetShip.hullpercentage]" debugchance="$DebugChance" />
+                    <check_value value="event.param.isplayerowned" />
+                    <check_value value="$TargetShip.shieldpercentage le $TargetShieldPercent" />
+                    <check_value value="$TargetShip.hullpercentage le $TargetHullPercent" />
+                  </check_all>
+                </check_any>
+              </conditions>
+              <actions>
+                <do_if value="$NeedTargetShipAlive and event.name == 'event_object_destroyed'">
+                  <set_value name="$feedbackvalue" exact="-1" comment="$NeedTargetShipAlive is true and $TargetShip was destroyed" />
+                  <signal_cue cue="Cleanup" />
+                  <cancel_cue cue="OnDropItem" />
+                  <cancel_cue cue="this" />
+                </do_if>
+                <do_else>
+                  <do_if value="event.name == 'event_object_abandoned'">
+                    <set_value name="$ShipAbandoned"/>
+                  </do_if>
+                  <signal_cue cue="OnDropItem" />
+                </do_else>
+              </actions>
+            </cue>
+
+            <!-- Separate cue for dropping item to allow for potential additional drop triggers in the script -->
+            <cue name="OnDropItem">
+              <conditions>
+                <event_cue_signalled />
+              </conditions>
+              <actions>
+                <cancel_cue cue="OnShipAttacked" />
+                <do_if value="$TargetShip.pilot">
+                  <!-- Workaround: Add inventory just to drop it right away -->
+                  <add_inventory entity="$TargetShip.pilot" ware="$ItemWare" exact="1" />
+                  <drop_inventory groupname="$dropgroup" object="$TargetShip.pilot" ware="$ItemWare" exact="1" />
+                </do_if>
+                <do_elseif value="$ShipAbandoned?">
+                  <signal_cue cue="OnLockboxDropped"/>
+                  <create_lockbox name="$Crate" groupname="$dropgroup" macro="macro.sm_gen_lockbox_common_01_macro" sector="$TargetShip.sector">
+                    <safepos object="$TargetShip" min="3m" max="5m"/>
+                  </create_lockbox>
+                  <add_cargo object="$Crate" ware="$ItemWare" exact="1"/>
+                </do_elseif>
+                <debug_text text="'Dropping item! $TargetShip=%s, $dropgroup=%s'.[$TargetShip, $dropgroup]" chance="$DebugChance" />
+                <set_value name="$ItemDrop" exact="@$dropgroup.{1}" />
+                <remove_value name="$dropgroup" />
+                <do_if value="$ItemDrop and not $ShipAbandoned?">
+                  <set_objective cue="$MissionCue" step="$StartStep + 1" action="objective.collect" text="$ItemWare.name" object="$ItemDrop" />
+                  <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep + 1"/>
+                </do_if>
+                <do_elseif value="$ItemDrop and $ShipAbandoned?">
+                  <set_objective cue="$MissionCue" action="objective.unlock" text="$ItemDrop.name" object="$ItemDrop" />
+                </do_elseif>
+                <do_else>
+                  <set_value name="$feedbackvalue" exact="-2" comment="$TargetShip failed to drop $ItemWare" />
+                  <signal_cue cue="Cleanup" />
+                  <cancel_cue cue="this" />
+                </do_else>
+              </actions>
+              <cues>
+                <cue name="OnDropDestroyedWaitState">
+                  <cues>
+                    <cue name="OnDropDestroyed_v2">
+                      <conditions>
+                        <event_object_destroyed object="$ItemDrop" />
+                      </conditions>
+                      <actions>
+                        <do_if value="event.param2 != killmethod.collected">
+                          <!-- Really destroyed, not collected: Failure -->
+                          <set_value name="$feedbackvalue" exact="-3" comment="$ItemWare container was destroyed" />
+                          <signal_cue cue="Cleanup" />
+                        </do_if>
+                        <do_elseif value="not event.param.isplayerowned">
+                          <!-- Collected by non-player-owned ship: Failure -->
+                          <set_value name="$feedbackvalue" exact="-4" comment="$ItemWare was collected by a non-player-owned ship" />
+                          <signal_cue cue="Cleanup" />
+                        </do_elseif>
+                        <do_else>
+                          <!-- Collected by player-owned ship: Success -->
+                          <set_value name="$feedbackvalue" exact="1" comment="success"/>
+                          <signal_cue cue="Cleanup"/>
+                        </do_else>
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="OnLockboxDropped">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <cues>
+                <cue name="OnLockboxDestroyed">
+                  <conditions>
+                    <event_object_dropped_objects object="$Crate"/>
+                  </conditions>
+                  <actions>
+                    <do_all exact="event.param.count" counter="$i">
+                      <add_to_group groupname="$DroppedObjects" object="event.param.{$i}"/>
+                    </do_all>
+                    <set_value name="$ItemDrop" exact="@$DroppedObjects.{1}"/>
+                    <remove_value name="$DroppedObjects" />
+                    <set_objective cue="$MissionCue" step="$StartStep + 1" action="objective.collect" text="$ItemWare.name" object="$ItemDrop" />
+                    <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep + 1"/>
+                    <reset_cue cue="OnDropDestroyedWaitState"/>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <!--TODO remove_objective-->
+
+            <do_if value="$feedbackvalue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'ERROR: Feedback value is 0 and no error values were set. Defaulting to -100'"/>
+                <set_value name="$feedbackvalue" exact="-100"/>
+              </do_if>
+              <do_else>
+                <set_value name="$feedbackvalue" exact="$ErrorList.{1}"/>
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+
+                    <do_if value="$ErrorList.{$Counter}" exact="-104">
+                      <set_value name="$FeedbackText" exact="'$ItemWare is not allowed to be dropped'"/>
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-103">
+                      <set_value name="$FeedbackText" exact="'$ItemWare is not an inventory ware'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-102">
+                      <set_value name="$FeedbackText" exact="'$TargetShip is not defined, is not operational or has no pilot'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'Cue parameters not defined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-100">
+                      <set_value name="$FeedbackText" exact="'Undefined failure. Defaulted to -100'"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                    </do_else>
+
+                    <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+
+              <do_if value="$feedbackvalue" exact="1">
+                <set_value name="$FeedbackText" exact="'Success, $TargetShip was found'"/>
+              </do_if>
+              <do_elseif value="$feedbackvalue" exact="-1">
+                <set_value name="$FeedbackText" exact="{30004,6020}" comment="'$NeedTargetShipAlive is true and $TargetShip was destroyed'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="-2">
+                <set_value name="$FeedbackText" exact="{30004,6085}" comment="'$TargetShip failed to drop $ItemWare'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="-3">
+                <set_value name="$FeedbackText" exact="{30004,6080}" comment="'$ItemWare container was destroyed'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="-4">
+                <set_value name="$FeedbackText" exact="{30004,6086}" comment="'$ItemWare was collected by a non-player-owned ship'"/>
+              </do_elseif>
+
+              <do_if value="$feedbackvalue" min="1">
+                <debug_text text="'Mission Successful. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_if>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission Failed. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+            <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$feedbackvalue"/>
+            <signal_cue cue="$EndSignalCue"/>
+            <cancel_cue cue="namespace"/>
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

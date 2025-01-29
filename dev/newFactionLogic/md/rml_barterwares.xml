@@ -1,0 +1,1214 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_BarterWares" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--
+    This RML is intended for use in Master-Missions.
+    It handles checking if the player transported (any) ware to the specified station
+    $feedbackvalue:
+    -103 $TargetStation is incorrectly defined.
+    -102 $Client parameter left undefined
+    -101 Cue parameters not defined
+    -100: Undefined failure. Defaulted to -100
+    -1: Station was destroyed (can't complete objectives)
+    1: supplies partially delivered
+    2: All supplies delivered -->
+
+    <library name="BarterWares" version="4">
+      <params>
+        <param name="EndSignalCue"/>
+        <param name="MissionCue"/>
+        <param name="StartStep" default="1" comment="Briefing step to start the mission on"/>
+        <param name="UpdateBriefing" default="true" comment="Update the briefing objective step when the objective is updated"/>
+        <param name="DebugChance" default="0" />
+        <!-- mission-specific -->
+        <param name="Text_MissionName" comment="Mission Name for Identification Purposes"/>
+        <param name="Client" />
+        <param name="TargetStation" />
+        <param name="WareDatasToReceive" />
+        <param name="IsReceiveFromFakeBuyOffer" default="false" />
+        <param name="WareDatasToGive" />
+        <param name="IsGiveFromFakeSellOffer" default="false" />
+      </params>
+      <actions>
+        <set_value name="$feedbackvalue" exact="0"/>
+        <create_list name="$ErrorList"/>
+
+        <do_if value="not $EndSignalCue or not $MissionCue">
+          <append_to_list name="$ErrorList" exact="-101"/>
+        </do_if>
+        <do_if value="not $Client">
+          <append_to_list name="$ErrorList" exact="-102"/>
+        </do_if>
+        <do_if value="not $TargetStation">
+          <append_to_list name="$ErrorList" exact="-103"/>
+        </do_if>
+      </actions>
+      <patch sinceversion="2">
+        <debug_text text="'patch sinceversion 2'" chance="$DebugChance" />
+        <set_value name="$IsReceiveFromFakeBuyOffer" exact="false" />
+        <set_value name="$IsGiveFromFakeSellOffer" exact="false" />
+      </patch>
+      <patch sinceversion="4">
+        <debug_text text="'patch sinceversion 4'" chance="$DebugChance" />
+        <set_value name="$MissionCue.$Cue_UpdateBriefing" exact="UpdateBriefing" />
+        <signal_cue cue="$MissionCue.$Cue_UpdateBriefing" />
+      </patch>
+      <cues>
+
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="1"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup"/>
+          </actions>
+        </cue>
+
+        <cue name="StartMission" onfail="cancel" version="4">
+          <conditions>
+            <check_value value="$ErrorList.count" min="0"/>
+          </conditions>
+          <actions>
+            <set_value name="$IsAllWaresDelivered" exact="false" />
+            <set_value name="$IsAllWaresCollected" exact="false" />
+            <!--
+            set $MissionCue.$Cue_UpdateBriefing for backward compatibility to 7.0.
+            with the removal of unnecessary cues, Transfer_Awaiting and Transfer_ConfirmCustscene, UpdateBriefing became unavailable in AwaitConfirmTransferWares instances.
+            from 7.1, $MissionCue.$Cue_UpdateBriefing is used to refer to the UpdateBriefing cue.
+            -->
+            <set_value name="$MissionCue.$Cue_UpdateBriefing" exact="UpdateBriefing" />
+            <signal_cue cue="$MissionCue.$Cue_UpdateBriefing" />
+          </actions>
+          <patch sinceversion="3">
+            <do_if value="not @$MissionCue.$Cue_AwaitConfirmTransferWares.exists">
+              <do_if value="@$AwaitConfirmTransferWaresCue.exists">
+                <set_value name="$MissionCue.$Cue_AwaitConfirmTransferWares" exact="$AwaitConfirmTransferWaresCue" />
+              </do_if>
+            </do_if>
+            <do_if value="not @$MissionCue.$Cue_AwaitConfirmTransferWares.exists">
+              <set_value name="$MissionCue.$IsTransfering" exact="false" />
+              <debug_text text="'patch sinceversion 3: invalid $MissionCue.$Cue_AwaitConfirmTransferWares, reset $MissionCue.$IsTransfering'" />
+            </do_if>
+          </patch>
+          <patch sinceversion="4">
+            <remove_value name="$MissionCue.$Cue_AwaitConfirmTransferWares" />
+            <remove_value name="$MissionCue.$IsTransfering" />
+          </patch>
+          <cues>
+            <cue name="CheckMissionStatus" checktime="player.age + 5s" checkinterval="5s" instantiate="true">
+              <conditions>
+                <check_value value="not player.isinconversation" />
+                <check_value value="not player.isinfullscreencutscene" />
+                <check_any>
+                  <check_value value="not @md.RML_BarterWares.AwaitConfirmTransferWares.$Cue_AwaitConfirmTransferWares_Active" />
+                  <check_all>
+                    <check_value value="@md.RML_BarterWares.AwaitConfirmTransferWares.$Cue_AwaitConfirmTransferWares_Active.state != cuestate.active" />
+                    <check_value value="@md.RML_BarterWares.AwaitConfirmTransferWares.$Cue_AwaitConfirmTransferWares_Active.state != cuestate.complete" />
+                  </check_all>
+                </check_any>
+              </conditions>
+              <actions>
+                <do_if value="not $IsAllWaresDelivered">
+                  <set_value name="$IsAllWaresDelivered" exact="DeliverWares_Completed.state != cuestate.waiting" />
+                </do_if>
+                <do_if value="not $IsAllWaresCollected">
+                  <set_value name="$IsAllWaresCollected" exact="CollectWares_Completed.state != cuestate.waiting" />
+                </do_if>
+                <debug_text text="'$IsAllWaresDelivered: ' + $IsAllWaresDelivered" chance="$DebugChance" />
+                <debug_text text="'$IsAllWaresCollected: ' + $IsAllWaresCollected" chance="$DebugChance" />
+                <do_if value="not $IsAllWaresDelivered">
+                  <include_actions ref="md.GM_BarterWares.GetWaresToReceive" comment="output: $WaresToReceive" />
+                  <run_actions ref="md.GM_BarterWares.GetBarteringShips" result="$Ships_Bartering">
+                    <param name="TargetStation" value="$TargetStation" />
+                    <param name="WaresInCargo" value="$WaresToReceive" />
+                    <param name="DebugChance" value="$DebugChance" />
+                  </run_actions>
+                  <debug_text text="'$Ships_Bartering.count: ' + $Ships_Bartering.count" chance="$DebugChance" />
+                  <do_if value="$Ships_Bartering.count">
+                    <create_group groupname="$StationGroup_Bartering" />
+                    <clear_group group="$StationGroup_Bartering" />
+                    <add_to_group groupname="$StationGroup_Bartering" object="$TargetStation" />
+                    <signal_cue_instantly cue="md.RML_BarterWares.AwaitConfirmTransferWares" param="table[
+                            $MissionCue                   = $MissionCue,
+                            $Cue_GetFromAndToGroups       = DeliverWares_GetFromAndToGroups,
+                            $Distance_Max                 = $TargetStation.size * 1.5,
+                            $WareDatasToTransfer_Total    = $WareDatasToReceive,
+                            $NPC                          = $Client,
+                            $Text_CutsceneTitle           = $Text_MissionName,
+                            $Text_InteractionTitle        = {30158,101},
+                            $Text_TransferXWareFromY      = {30158,102},
+                            $Text_TransferXWareToY        = {30158,103},
+                            $Cue_OnAwaitConfirmCutscene   = null,
+                            $Cue_OnRequestConfirmCutscene = null,
+                            $Cue_OnBeforeTransfer         = null,
+                            $Cue_OnTransfer               = null,
+                            $Cue_OnCancel                 = DeliverWares_Cancelled,
+                            $Cue_OnSuccess                = DeliverWares_Completed,
+                            $Cue_OnFailure                = Transfer_Failed,
+                            $To_IsIgnoreFreeStorage       = $IsReceiveFromFakeBuyOffer,
+                            $From_IsIgnoreAvailableCount =  $IsGiveFromFakeSellOffer,
+                            $DebugChance                  = $DebugChance,
+                    ]" />
+                  </do_if>
+                </do_if>
+                <do_elseif value="not $IsAllWaresCollected">
+                  <include_actions ref="md.GM_BarterWares.GetWaresToGive" comment="output: $WaresToGive" />
+                  <run_actions ref="md.GM_BarterWares.GetBarteringShips" result="$Ships_Bartering">
+                    <param name="TargetStation" value="$TargetStation" />
+                    <param name="WaresToBeAddedToCargo" value="$WaresToGive" />
+                    <param name="DebugChance" value="$DebugChance" />
+                  </run_actions>
+                  <debug_text text="'$Ships_Bartering.count: ' + $Ships_Bartering.count" chance="$DebugChance" />
+                  <do_if value="$Ships_Bartering.count">
+                    <create_group groupname="$StationGroup_Bartering" />
+                    <clear_group group="$StationGroup_Bartering" />
+                    <add_to_group groupname="$StationGroup_Bartering" object="$TargetStation" />
+                    <debug_text text="'$WareDatasToGive.count: ' + $WareDatasToGive.count" chance="$DebugChance" />
+                    <signal_cue_instantly cue="md.RML_BarterWares.AwaitConfirmTransferWares" param="table[
+                            $MissionCue                   = $MissionCue,
+                            $Cue_GetFromAndToGroups       = CollectWares_GetFromAndToGroups,
+                            $Distance_Max                 = $TargetStation.size * 1.5,
+                            $WareDatasToTransfer_Total    = $WareDatasToGive,
+                            $NPC                          = $Client,
+                            $Text_CutsceneTitle           = $Text_MissionName,
+                            $Text_InteractionTitle        = {30158,201},
+                            $Text_TransferXWareFromY      = {30158,202},
+                            $Text_TransferXWareToY        = {30158,203},
+                            $Cue_OnAwaitConfirmCutscene   = null,
+                            $Cue_OnRequestConfirmCutscene = null,
+                            $Cue_OnBeforeTransfer         = null,
+                            $Cue_OnTransfer               = null,
+                            $Cue_OnCancel                 = CollectWares_Cancelled,
+                            $Cue_OnSuccess                = CollectWares_Completed,
+                            $Cue_OnFailure                = Transfer_Failed,
+                            $To_IsIgnoreFreeStorage       = $IsReceiveFromFakeBuyOffer,
+                            $From_IsIgnoreAvailableCount  = $IsGiveFromFakeSellOffer,
+                            $DebugChance                  = $DebugChance,
+                    ]" />
+                  </do_if>
+                </do_elseif>
+              </actions>
+            </cue>
+
+            <cue name="DeliverWares_GetFromAndToGroups">
+              <conditions>
+                <event_cue_signalled />
+              </conditions>
+              <actions>
+                <debug_text text="event.name" chance="$DebugChance" />
+                <do_if value="@md.RML_BarterWares.AwaitConfirmTransferWares.$Cue_AwaitConfirmTransferWares_Active.exists">
+                  <debug_text text="'$Ships_Bartering.count (pre get): ' + $Ships_Bartering.count" chance="$DebugChance" />
+                  <include_actions ref="md.GM_BarterWares.GetWaresToReceive" comment="update always to allow for previous transfers" />
+                  <run_actions ref="md.GM_BarterWares.GetBarteringShips" result="$Ships_Bartering">
+                    <param name="TargetStation" value="$TargetStation" />
+                    <param name="WaresInCargo" value="$WaresToReceive" />
+                    <param name="DebugChance" value="$DebugChance" />
+                  </run_actions>
+                  <debug_text text="'$Ships_Bartering.count: ' + $Ships_Bartering.count" chance="$DebugChance" />
+                  <create_group groupname="$StationGroup_Bartering" />
+                  <clear_group group="$StationGroup_Bartering" />
+                  <add_to_group groupname="$StationGroup_Bartering" object="$TargetStation" />
+                  <set_value name="md.RML_BarterWares.AwaitConfirmTransferWares.$Cue_AwaitConfirmTransferWares_Active.$FromGroup" exact="$Ships_Bartering" />
+                  <set_value name="md.RML_BarterWares.AwaitConfirmTransferWares.$Cue_AwaitConfirmTransferWares_Active.$ToGroup" exact="$StationGroup_Bartering" />
+                </do_if>
+                <reset_cue cue="this" />
+              </actions>
+            </cue>
+
+            <cue name="CollectWares_GetFromAndToGroups">
+              <conditions>
+                <event_cue_signalled />
+              </conditions>
+              <actions>
+                <debug_text text="event.name" chance="$DebugChance" />
+                <do_if value="md.RML_BarterWares.AwaitConfirmTransferWares.$Cue_AwaitConfirmTransferWares_Active.exists">
+                  <create_group groupname="$StationGroup_Bartering" />
+                  <clear_group group="$StationGroup_Bartering" />
+                  <add_to_group groupname="$StationGroup_Bartering" object="$TargetStation" />
+                  <debug_text text="'$Ships_Bartering.count (pre get): ' + $Ships_Bartering.count" chance="$DebugChance" />
+                  <include_actions ref="md.GM_BarterWares.GetWaresToGive" comment="output: $WaresToGive" />
+                  <run_actions ref="md.GM_BarterWares.GetBarteringShips" result="$Ships_Bartering">
+                    <param name="TargetStation" value="$TargetStation" />
+                    <param name="WaresToBeAddedToCargo" value="$WaresToGive" />
+                    <param name="DebugChance" value="$DebugChance" />
+                  </run_actions>
+                  <debug_text text="'$Ships_Bartering.count: ' + $Ships_Bartering.count" chance="$DebugChance" />
+                  <set_value name="md.RML_BarterWares.AwaitConfirmTransferWares.$Cue_AwaitConfirmTransferWares_Active.$FromGroup" exact="$StationGroup_Bartering" />
+                  <set_value name="md.RML_BarterWares.AwaitConfirmTransferWares.$Cue_AwaitConfirmTransferWares_Active.$ToGroup" exact="$Ships_Bartering" />
+                </do_if>
+                <reset_cue cue="this" />
+              </actions>
+            </cue>
+
+            <cue name="DeliverWares_Cancelled">
+              <conditions>
+                <event_cue_signalled />
+              </conditions>
+              <actions>
+                <debug_text text="event.name" chance="$DebugChance" />
+                <reset_cue cue="this" />
+              </actions>
+            </cue>
+
+            <cue name="DeliverWares_Completed">
+              <conditions>
+                <event_cue_signalled />
+              </conditions>
+              <actions>
+                <debug_text text="event.name" chance="$DebugChance" />
+                <set_value name="$IsAllWaresDelivered" exact="true" />
+              </actions>
+            </cue>
+
+            <cue name="CollectWares_Cancelled">
+              <conditions>
+                <event_cue_signalled />
+              </conditions>
+              <actions>
+                <debug_text text="event.name" chance="$DebugChance" />
+                <reset_cue cue="this" />
+              </actions>
+            </cue>
+
+            <cue name="CollectWares_Completed">
+              <conditions>
+                <event_cue_signalled />
+              </conditions>
+              <actions>
+                <debug_text text="event.name" chance="$DebugChance" />
+                <set_value name="$IsAllWaresCollected" exact="true" />
+                <set_value name="$feedbackvalue" exact="2"/>
+                <signal_cue cue="Cleanup"/>
+              </actions>
+            </cue>
+
+            <cue name="Transfer_Failed">
+              <conditions>
+                <event_cue_signalled />
+              </conditions>
+              <actions>
+                <debug_text text="event.name" chance="$DebugChance" />
+                <set_value name="$feedbackvalue" exact="-1"/>
+                <signal_cue cue="Cleanup"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="UpdateBriefing">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <debug_text text="event.name + ' ' + event.param" chance="$DebugChance" />
+            <debug_text text="'$UpdateBriefing: ' + $UpdateBriefing" chance="$DebugChance" />
+            <do_if value="$UpdateBriefing">
+              <run_actions ref="md.GM_BarterWares.UpdateObjectives">
+                <param name="MissionCue" value="$MissionCue" />
+                <param name="WareDatasToReceive" value="$WareDatasToReceive" />
+                <param name="WareDatasToGive" value="$WareDatasToGive" />
+                <param name="TargetStation" value="$TargetStation" />
+                <param name="Client" value="$Client" />
+                <param name="IsAwaitingTransfer" value="@event.param.$IsAwaitingTransfer" />
+                <param name="ShipToDock" value="@event.param.$ShipToDock" />
+                <param name="PlayerToDockAt" value="@event.param.$PlayerToDockAt" />
+                <param name="DebugChance" value="$DebugChance" />
+              </run_actions>
+            </do_if>
+            <reset_cue cue="this" />
+          </actions>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <debug_text text="event.name" chance="$DebugChance" />
+            <do_if value="$feedbackvalue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'ERROR: Feedback value is 0 and no error values were set. Defaulting to -100'"/>
+                <set_value name="$feedbackvalue" exact="-100"/>
+              </do_if>
+              <do_else>
+                <set_value name="$feedbackvalue" exact="$ErrorList.{1}"/>
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+                    <do_if value="$ErrorList.{$Counter}" exact="-103">
+                      <set_value name="$FeedbackText" exact="'$TargetStation parameter left undefined'"/>
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-102">
+                      <set_value name="$FeedbackText" exact="'$Client parameter left undefined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'Cue parameters not defined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-100">
+                      <set_value name="$FeedbackText" exact="'Undefined failure. Defaulted to -100'"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                    </do_else>
+
+                    <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+
+              <do_if value="$feedbackvalue" exact="-2">
+                <set_value name="$FeedbackText" exact="{30004,6026}" comment="'Destination changed owner'"/>
+              </do_if>
+              <do_elseif value="$feedbackvalue" exact="-1">
+                <set_value name="$FeedbackText" exact="{30004,6028}" comment="'Station was destroyed'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="1">
+                <set_value name="$FeedbackText" exact="'supplies partially delivered'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="2">
+                <set_value name="$FeedbackText" exact="'All supplies delivered'"/>
+              </do_elseif>
+
+              <do_if value="$feedbackvalue" min="1">
+                <debug_text text="'Mission Successful. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_if>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission Failed. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+            <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$feedbackvalue"/>
+            <signal_cue cue="$EndSignalCue"/>
+            <cancel_cue cue="BarterWares"/>
+          </actions>
+        </cue>
+
+        <cue name="Debug_AddToPlayerShipRequiredWares" namespace="this">
+          <conditions>
+            <event_cue_signalled />
+            <!-- <check_any>
+              <check_all>
+                <check_value value="@player.target.isclass.ship" />
+                <check_value value="@player.target.isplayerowned" />
+              </check_all>
+              <check_value value="@player.ship.isplayerowned" />
+            </check_any> -->
+          </conditions>
+          <actions>
+            <debug_text text="event.name" />
+            <do_if value="@player.target.isclass.ship and player.target.isplayerowned">
+              <set_value name="$Ship" exact="player.target" />
+            </do_if>
+            <do_else>
+              <set_value name="$Ship" exact="player.ship" />
+            </do_else>
+            <do_if value="not $Ship">
+              <find_ship_by_true_owner name="$Ship" faction="faction.player" space="player.sector" />
+            </do_if>
+            <debug_text text="'$Ship: ' + $Ship" />
+            <do_if value="$Ship">
+              <debug_text text="'$Ship: ' + $Ship + ' ' + $Ship.knownname + ' ' + $Ship.idcode" />
+              <set_value name="$WareDatasToAdd" exact="this.parent.$WareDatasToReceive.clone" />
+              <do_for_each name="$WareData" in="$WareDatasToAdd">
+                <set_value name="$Ware" exact="$WareData.$Ware" />
+                <set_value name="$Count" exact="$WareData.$Count_Required - $WareData.$Count_Delivered" />
+                <do_if value="$Count gt $Ship.cargo.{$Ware}.free">
+                  <set_value name="$Count" exact="$Ship.cargo.{$Ware}.free" />
+                </do_if>
+                <do_if value="$Count ge 1">
+                  <add_wares object="$Ship" ware="$Ware" exact="$Count" />
+                  <debug_text text="'add_wares $Ware: ' + $Ware + ' $Count: ' + $Count" />
+                </do_if>
+              </do_for_each>
+            </do_if>
+            <reset_cue cue="this" />
+          </actions>
+        </cue>
+      </cues>
+    </library>
+    <!-- helpers -->
+    <cue name="AwaitConfirmTransferWares" namespace="this" instantiate="true" version="4"
+              comment="will wait for the player's cutscene interaction before
+              transfering all wares listed in: event.param.$WareDatasToTransfer_Total
+              from objects listed in: event.param.$FromGroup
+              to objects listed in: event.param.$ToGroup
+              however the wares can fit">
+      <conditions>
+        <event_cue_signalled />
+      </conditions>
+      <actions>
+        <set_value name="$MissionCue"                   exact="@event.param.$MissionCue" />
+        <create_group groupname="$FromGroup" />
+        <create_group groupname="$ToGroup" />
+        <set_value name="$Cue_GetFromAndToGroups"       exact="@event.param.$Cue_GetFromAndToGroups" />
+        <set_value name="$Distance_Max"                 exact="@event.param.$Distance_Max" />
+        <set_value name="$WareDatasToTransfer_Total"    exact="@event.param.$WareDatasToTransfer_Total" />
+        <set_value name="$NPC"                          exact="@event.param.$NPC" />
+        <set_value name="$Text_CutsceneTitle"           exact="@event.param.$Text_CutsceneTitle" />
+        <set_value name="$Text_InteractionTitle"        exact="@event.param.$Text_InteractionTitle" />
+        <set_value name="$Text_TransferXWareFromY"      exact="@event.param.$Text_TransferXWareFromY" />
+        <set_value name="$Text_TransferXWareToY"        exact="@event.param.$Text_TransferXWareToY" />
+        <set_value name="$Cue_OnAwaitConfirmCutscene"   exact="@event.param.$Cue_OnAwaitConfirmCutscene" />
+        <set_value name="$Cue_OnRequestConfirmCutscene" exact="@event.param.$Cue_OnRequestConfirmCutscene" />
+        <set_value name="$Cue_OnBeforeTransfer"         exact="@event.param.$Cue_OnBeforeTransfer" />
+        <set_value name="$Cue_OnTransfer"               exact="@event.param.$Cue_OnTransfer" />
+        <set_value name="$Cue_OnSuccess"                exact="@event.param.$Cue_OnSuccess" />
+        <set_value name="$Cue_OnFailure"                exact="@event.param.$Cue_OnFailure" />
+        <set_value name="$Cue_OnCancel"                 exact="@event.param.$Cue_OnCancel" />
+        <set_value name="$To_IsIgnoreFreeStorage"       exact="@event.param.$To_IsIgnoreFreeStorage" />
+        <set_value name="$From_IsIgnoreAvailableCount"  exact="@event.param.$From_IsIgnoreAvailableCount"  />
+        <set_value name="$DebugChance"                  exact="@event.param.$DebugChance" />
+        <debug_text text="event.name" chance="$DebugChance" />
+        <do_if value="
+                @$MissionCue.exists and
+                $Distance_Max and
+                @$WareDatasToTransfer_Total.count and
+                $NPC and $Text_CutsceneTitle and $Text_InteractionTitle and
+                $Cue_OnSuccess and $Cue_OnFailure">
+          <set_value name="AwaitConfirmTransferWares.static.$Cue_AwaitConfirmTransferWares_Active" exact="this" />
+          <set_value name="$Time_OkToSignalAwait" exact="0" />
+          <set_value name="$Time_OkToConfirmTransfer" exact="player.age" />
+          <do_if value="not $Text_TransferXWareFromY">
+            <set_value name="$Text_TransferXWareFromY" exact="{30158,302}" />
+          </do_if>
+          <do_if value="not $Text_TransferXWareToY">
+            <set_value name="$Text_TransferXWareToY" exact="{30158,303}" />
+          </do_if>
+          <set_value name="$ConfirmCutscene" exact="null" />
+        </do_if>
+        <do_else>
+          <assert value="false" text="'Missing required params [JoPaul]'"/>
+          <debug_text text="'$MissionCue: '                + $MissionCue" />
+          <debug_text text="'$Distance_Max: '              + $Distance_Max" />
+          <debug_text text="'$WareDatasToTransfer_Total: ' + $WareDatasToTransfer_Total" />
+          <debug_text text="'$NPC: '                       + $NPC" />
+          <debug_text text="'$Text_CutsceneTitle: '        + $Text_CutsceneTitle" />
+          <debug_text text="'$Text_InteractionTitle: '     + $Text_InteractionTitle" />
+          <debug_text text="'$Cue_OnSuccess: '             + $Cue_OnSuccess" />
+          <debug_text text="'$Cue_OnFailure: '             + $Cue_OnFailure" />
+          <debug_text text="'$Cue_OnCancel: '              + $Cue_OnCancel" />
+          <cancel_cue cue="this" />
+        </do_else>
+        <create_group groupname="$ShipsToTransfer" />
+      </actions>
+      <patch sinceversion="2">
+        <set_value name="$Time_OkToSignalAwait" exact="0" />
+      </patch>
+      <patch sinceversion="3">
+        <do_if value="$Cue_OnTransfer == UpdateBriefing">
+          <set_value name="$Cue_OnTransfer" exact="null" />
+        </do_if>
+      </patch>
+      <patch sinceversion="4">
+        <set_value name="$ConfirmCutscene" exact="null" />
+        <signal_cue_instantly cue="CancelTransfer" />
+      </patch>
+      <cues>
+        <cue name="AwaitConfirmTransferWares_EnsureOnlyOneInstance">
+          <conditions>
+            <event_cue_signalled cue="AwaitConfirmTransferWares.static" />
+          </conditions>
+          <actions>
+            <debug_text text="event.name" chance="$DebugChance" />
+            <signal_cue_instantly cue="CancelTransfer" />
+          </actions>
+        </cue>
+
+        <library name="GetFromAndToGroups">
+          <actions>
+            <debug_text text="'$FromGroup.count: ' + $FromGroup.count" chance="$DebugChance" />
+            <debug_text text="'$ToGroup.count: ' + $ToGroup.count" chance="$DebugChance" />
+            <do_if value="@$Cue_GetFromAndToGroups.state == cuestate.waiting">
+              <signal_cue_instantly cue="$Cue_GetFromAndToGroups" />
+            </do_if>
+            <debug_text text="'$FromGroup.count (post $Cue_GetFromAndToGroups): ' + $FromGroup.count" chance="$DebugChance" />
+            <debug_text text="'$ToGroup.count (post $Cue_GetFromAndToGroups): ' + $ToGroup.count" chance="$DebugChance" />
+          </actions>
+        </library>
+
+        <cue name="CheckStatus" checktime="player.age + 5s" checkinterval="5s" instantiate="true">
+          <conditions>
+            <check_value value="not player.isinconversation" />
+            <check_value value="not player.isinfullscreencutscene" />
+            <check_value value="ConfirmTransfer.state == cuestate.waiting" />
+          </conditions>
+          <actions>
+            <set_value name="$IsAllWaresTransfered" exact="true" comment="will be set to false below if not" />
+            <do_for_each name="$WareDataToTransfer" in="$WareDatasToTransfer_Total">
+              <debug_text text="'$WareDataToTransfer: ' + $WareDataToTransfer" chance="$DebugChance" />
+              <set_value name="$Ware" exact="$WareDataToTransfer.$Ware" />
+              <do_if value="$WareDataToTransfer.$Count_Required - $WareDataToTransfer.$Count_Delivered ge 1">
+                <set_value name="$IsAllWaresTransfered" exact="false" />
+                <break />
+              </do_if>
+            </do_for_each>
+            <debug_text text="'$IsAllWaresTransfered: ' + $IsAllWaresTransfered" chance="$DebugChance" />
+            <do_if value="$IsAllWaresTransfered">
+              <signal_cue_instantly cue="CompleteTransfer" />
+            </do_if>
+            <do_else>
+              <!-- STEP 1: check that there are from groups and to groups within range -->
+              <include_actions ref="GetFromAndToGroups" />
+              <create_group groupname="$ObjectsInRange" />
+              <clear_group group="$ObjectsInRange" />
+              <do_for_each name="$From" in="$FromGroup">
+                <do_for_each name="$To" in="$ToGroup">
+                  <do_if value="$From.distanceto.{$To} le $Distance_Max">
+                    <add_to_group groupname="$ObjectsInRange" object="$From" />
+                    <add_to_group groupname="$ObjectsInRange" object="$To" />
+                  </do_if>
+                </do_for_each>
+              </do_for_each>
+              <do_for_each name="$From" in="$FromGroup" reverse="true">
+                <do_if value="not $ObjectsInRange.indexof.{$From}">
+                  <remove_from_group group="$FromGroup" object="$From" />
+                </do_if>
+              </do_for_each>
+              <do_for_each name="$To" in="$ToGroup" reverse="true">
+                <do_if value="not $ObjectsInRange.indexof.{$To}">
+                  <remove_from_group group="$ToGroup" object="$To" />
+                </do_if>
+              </do_for_each>
+
+              <debug_text text="'$FromGroup.count: ' + $FromGroup.count" chance="$DebugChance" />
+              <debug_text text="'$ToGroup.count: ' + $ToGroup.count" chance="$DebugChance" />
+              <do_if value="(not $FromGroup.count) or (not $ToGroup.count)">
+                <signal_cue_instantly cue="CancelTransfer" />
+              </do_if>
+              <do_else>
+                <!-- STEP 2: get wares to transfer from fromgroup to togroup -->
+                <set_value name="$WareDatasToTransfer_Now" exact="[]" />
+                <do_for_each name="$WareDataToTransfer" in="$WareDatasToTransfer_Total">
+                  <debug_text text="'$WareDataToTransfer: ' + $WareDataToTransfer" chance="$DebugChance" />
+                  <set_value name="$Ware" exact="$WareDataToTransfer.$Ware" />
+                  <do_if value="typeof $Ware == datatype.ware">
+                    <set_value name="$Count_ThisTransfer" exact="$WareDataToTransfer.$Count_Required - $WareDataToTransfer.$Count_Delivered" />
+                    <debug_text text="'$Count_ThisTransfer: ' + $Count_ThisTransfer" chance="$DebugChance" />
+                    <do_if value="$Count_ThisTransfer ge 1">
+                      <do_for_each name="$From" in="$FromGroup">
+                        <!-- <do_if value="not @$From.speed"> -->
+                          <debug_text text="'$From.cargo.{$Ware}.count: ' + $From.cargo.{$Ware}.count" chance="$DebugChance" />
+                          <do_if value="$From.cargo.{$Ware}.count">
+                            <append_to_list name="$WareDatasToTransfer_Now" exact="table[$From = $From, $WareDataRecord = $WareDataToTransfer]" />
+                            <set_value name="$Count_ThisTransfer" operation="subtract" exact="$From.cargo.{$Ware}.count" />
+                          </do_if>
+                        <!-- </do_if> -->
+                      </do_for_each>
+                    </do_if>
+                  </do_if>
+                  <do_elseif value="$Ware.isclass.ship">
+                    <do_if value="$WareDataToTransfer.$Count_Delivered lt $WareDataToTransfer.$Count_Required">
+                      <set_value name="$WareDataToTransfer.$Count_Delivered" exact="$WareDataToTransfer.$Count_Required" />
+                      <add_to_group groupname="$ShipsToTransfer" object="$Ware" />
+                    </do_if>
+                  </do_elseif>
+                </do_for_each>
+
+                <!-- STEP 3: there are wares to transfer, signal confirm cutscene -->
+                <debug_text text="'$WareDatasToTransfer_Now: ' + $WareDatasToTransfer_Now" chance="$DebugChance" />
+                <debug_text text="'$ShipsToTransfer: ' + $ShipsToTransfer" chance="$DebugChance" />
+                <do_if value="$WareDatasToTransfer_Now.count">
+                  <do_if value="$Time_OkToConfirmTransfer and player.age ge $Time_OkToConfirmTransfer">
+                    <signal_cue_instantly cue="ConfirmTransfer" />
+                  </do_if>
+                  <do_elseif value="$Time_OkToSignalAwait and player.age ge $Time_OkToSignalAwait">
+                    <do_if value="ConfirmTransfer_Convo_Transfer.state == cuestate.waiting">
+                      <do_if value="$MissionCue.$Cue_UpdateBriefing.state == cuestate.waiting">
+                        <signal_cue_instantly cue="$MissionCue.$Cue_UpdateBriefing" param="table[$IsAwaitingTransfer = true]" />
+                      </do_if>
+                      <do_if value="@$Cue_OnAwaitConfirmCutscene.state == cuestate.waiting">
+                        <signal_cue_instantly cue="$Cue_OnAwaitConfirmCutscene" param="$WareDatasToTransfer_Now" />
+                      </do_if>
+                    </do_if>
+                  </do_elseif>
+                </do_if>
+                <do_elseif value="$ShipsToTransfer.count">
+                  <signal_cue_instantly cue="CompleteTransfer" />
+                </do_elseif>
+                <do_else>
+                  <signal_cue_instantly cue="CancelTransfer" />
+                </do_else>
+              </do_else>
+            </do_else>
+          </actions>
+        </cue>
+
+        <cue name="ConfirmTransfer">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <actions>
+            <debug_text text="event.name" chance="$DebugChance" />
+            <do_if value="$MissionCue.$Cue_UpdateBriefing.state == cuestate.waiting">
+              <signal_cue_instantly cue="$MissionCue.$Cue_UpdateBriefing" />
+            </do_if>
+            <do_if value="@$Cue_OnRequestConfirmCutscene.state == cuestate.waiting">
+              <signal_cue_instantly cue="$Cue_OnRequestConfirmCutscene" />
+            </do_if>
+            <play_cutscene result="$ConfirmCutscene" key="'ShowPilot'" targetmonitor="true" timeout="10s" caption="$Text_CutsceneTitle">
+              <interaction text="$Text_InteractionTitle" param="$NPC" param2="'confirm transfer'"/>
+              <param name="npcref" object="$NPC" />
+            </play_cutscene>
+            <debug_text text="'$ConfirmCutscene: ' + $ConfirmCutscene" chance="$DebugChance" />
+          </actions>
+          <cues>
+            <cue name="ConfirmTransfer_TimedOut">
+              <conditions>
+                <event_cutscene_stopped cutscene="$ConfirmCutscene" />
+              </conditions>
+              <actions>
+                <debug_text text="event.name" chance="$DebugChance" />
+                <set_value name="$ConfirmCutscene" exact="null" />
+                <do_if value="$MissionCue.$Cue_UpdateBriefing.state == cuestate.waiting">
+                  <signal_cue_instantly cue="$MissionCue.$Cue_UpdateBriefing" />
+                </do_if>
+                <set_value name="$Time_OkToSignalAwait" exact="player.age + 7s" />
+                <set_value name="$Time_OkToConfirmTransfer" exact="player.age + 15s" />
+                <reset_cue cue="ConfirmTransfer" />
+              </actions>
+            </cue>
+
+            <cue name="ConfirmTransfer_Confirmed">
+              <conditions>
+                <event_player_interaction param="$NPC" param2="'confirm transfer'" />
+              </conditions>
+              <actions>
+                <debug_text text="event.name" chance="$DebugChance" />
+                <stop_cutscene cutscene="$ConfirmCutscene" />
+                <set_value name="$ConfirmCutscene" exact="null" />
+                <!--
+                  STEP 3: start convo
+                -->
+                <include_actions ref="GetFromAndToGroups" />
+                <do_if value="(not $FromGroup.count) or (not $ToGroup.count)">
+                  <signal_cue_instantly cue="CancelTransfer" />
+                </do_if>
+                <do_else>
+                  <do_if value="@$Cue_OnBeforeTransfer.state == cuestate.waiting">
+                    <signal_cue_instantly cue="$Cue_OnBeforeTransfer" />
+                  </do_if>
+                  <start_conversation actor="$NPC" conversation="convo_barter_start"/>
+                </do_else>
+              </actions>
+            </cue>
+
+            <cue name="ConfirmTransfer_Convo">
+              <conditions>
+                <event_conversation_started actor="$NPC" conversation="convo_barter_start"/>
+              </conditions>
+              <actions>
+                <debug_text text="event.name" chance="$DebugChance" />
+                <!-- <speak actor="$NPC" line="[2001, 2002].random" /> -->
+              </actions>
+              <cues>
+                <cue name="ConfirmTransfer_Convo_Cancel">
+                  <conditions>
+                    <check_any>
+                      <!-- <event_conversation_finished actor="$NPC" /> -->
+                      <event_conversation_next_section actor="$NPC" section="g_cancel" />
+                    </check_any>
+                  </conditions>
+                  <actions>
+                    <debug_text text="event.name + ' event.param: ' + event.param" chance="$DebugChance" />
+                    <!-- <do_if value="event.param == 'g_cancel'">
+                      <speak actor="$NPC" line="[2007, 2008].random" />
+                    </do_if> -->
+                    <set_value name="$Time_OkToSignalAwait" exact="player.age + 7s" />
+                    <set_value name="$Time_OkToConfirmTransfer" exact="player.age + 15s" />
+                    <reset_cue cue="ConfirmTransfer" />
+                  </actions>
+                </cue>
+
+                <cue name="ConfirmTransfer_Convo_CheckStatusAndAddPlayerChoices">
+                  <conditions>
+                    <event_cue_signalled />
+                  </conditions>
+                  <actions>
+                    <set_value name="$IsMoreToTransfer" exact="false" />
+                    <include_actions ref="GetFromAndToGroups" />
+                    <!--
+                      STEP 4: add convo options for the transfer
+                    -->
+                    <do_for_each name="$WareDataToTransfer_Now" in="$WareDatasToTransfer_Now">
+                      <debug_text text="'$WareDataToTransfer_Now: ' + $WareDataToTransfer_Now" chance="$DebugChance" />
+                      <set_value name="$WareDataRecord" exact="$WareDataToTransfer_Now.$WareDataRecord" />
+                      <do_if value="$From_IsIgnoreAvailableCount"> 
+                        <set_value name="$Count_TransferTotal" exact="$WareDataRecord.$Count_Required - $WareDataRecord.$Count_Delivered" />
+                      </do_if>
+                      <do_else>
+                        <set_value name="$Count_TransferTotal" exact="$WareDataToTransfer_Now.$From.cargo.{$WareDataRecord.$Ware}.count" />
+                        <debug_text text="'$Count_TransferTotal: ' + $Count_TransferTotal" chance="$DebugChance" />
+                        <do_if value="$Count_TransferTotal ge $WareDataRecord.$Count_Required - $WareDataRecord.$Count_Delivered">
+                          <set_value name="$Count_TransferTotal" exact="$WareDataRecord.$Count_Required - $WareDataRecord.$Count_Delivered" />
+                          <debug_text text="'$Count_TransferTotal (adjusted based on required): ' + $Count_TransferTotal" chance="$DebugChance" />
+                        </do_if>
+                      </do_else>
+                      <do_if value="$Count_TransferTotal ge 1">
+                        <sort_group group="$ToGroup" sortbyvalue="@loop.element.cargo.{$WareDataRecord.$Ware}.free" sortdescending="true" />
+                        <do_for_each name="$To" in="$ToGroup">
+                          <debug_text text="'$To: ' + $To + ' ' + $To.knownname + ' ' + $To.idcode" chance="$DebugChance" />
+                          <debug_text text="'$WareDataToTransfer_Now.$From: ' + $WareDataToTransfer_Now.$From + ' ' + $WareDataToTransfer_Now.$From.knownname" chance="$DebugChance" />
+                          <set_value name="$Dist" exact="$WareDataToTransfer_Now.$From.distanceto.{$To}" />
+                          <set_value name="$IsDockingAllowed" exact="
+                            @$To.dockingallowed.{$WareDataToTransfer_Now.$From} or
+                            @$WareDataToTransfer_Now.$From.dockingallowed.{$To}
+                          " />
+                          <do_if value="$Dist le $Distance_Max and $IsDockingAllowed">
+                            <do_if value="$Count_TransferTotal ge 1">
+                              <do_if value="($To_IsIgnoreFreeStorage) or (not $To.isplayerowned)" comment="when transfering to an npc-owned container, just transfer the lot">
+                                <set_value name="$Count_ThisTransfer" exact="$Count_TransferTotal" />
+                              </do_if>
+                              <do_else>
+                                <set_value name="$Count_ThisTransfer" exact="$Count_TransferTotal" />
+                                <do_if value="$Count_ThisTransfer gt $To.cargo.{$WareDataRecord.$Ware}.free">
+                                  <set_value name="$Count_ThisTransfer" exact="$To.cargo.{$WareDataRecord.$Ware}.free" />
+                                </do_if>
+                              </do_else>
+                              <set_value name="$IsMoreToTransfer" exact="true" />
+                              <debug_text text="'    $WareDataToTransfer_Now: ' + $WareDataToTransfer_Now" chance="$DebugChance" />
+                              <do_if value="$ToGroup.count == 1 or (not $Text_TransferXWareToY)">
+                                <substitute_text text="$ConvoText_Transfer" source="$Text_TransferXWareFromY">
+                                  <replace string="'$COUNT$'" with="$Count_ThisTransfer"/>
+                                  <replace string="'$WARE$'" with="$WareDataRecord.$Ware.name"/>
+                                  <replace string="'$SHIP$'" with="$WareDataToTransfer_Now.$From.knownname"/>
+                                </substitute_text>
+                              </do_if>
+                              <do_else>
+                                <substitute_text text="$ConvoText_Transfer" source="$Text_TransferXWareToY">
+                                  <replace string="'$COUNT$'" with="$Count_ThisTransfer"/>
+                                  <replace string="'$WARE$'" with="$WareDataRecord.$Ware.name"/>
+                                  <replace string="'$SHIP$'" with="$To.knownname"/>
+                                </substitute_text>
+                              </do_else>
+                              <add_player_choice text="$ConvoText_Transfer" section="convo_barter_transfer" choiceparam="[$WareDataToTransfer_Now, $To]"/>
+                            </do_if>
+                          </do_if>
+                        </do_for_each>
+                      </do_if>
+                    </do_for_each>
+                    <do_if value="not $IsMoreToTransfer">
+                      <set_value name="$Time_OkToSignalAwait" exact="player.age + 7s" />
+                      <set_value name="$Time_OkToConfirmTransfer" exact="player.age + 15s" />
+                      <reset_cue cue="ConfirmTransfer" comment="do not complete the transfer during confirmation. let CheckStatus complete the full transfer (i.e. the full transfer cue named AwaitConfirmTransferWares)" />
+                    </do_if>
+                    <reset_cue cue="this" />
+                  </actions>
+                </cue>
+
+                <cue name="ConfirmTransfer_Convo_Transfer" version="2">
+                  <!--
+                    STEP 5: loop to wait for $Giver to be docked at $Receiver
+                  -->
+                  <conditions>
+                    <event_conversation_next_section actor="$NPC" section="convo_barter_transfer"/>
+                  </conditions>
+                  <actions>
+                    <debug_text text="event.name" chance="$DebugChance" />
+                    <set_value name="$WareDataToTransfer_Now" exact="event.param2.{1}" />
+                    <set_value name="$WareDataRecord" exact="$WareDataToTransfer_Now.$WareDataRecord" />
+                    <set_value name="$Giver" exact="$WareDataToTransfer_Now.$From" />
+                    <set_value name="$Receiver" exact="@event.param2.{2}" />
+                    <assert value="$Giver and $Receiver" text="'invalid $Giver (%s %s %s) and/or $Receiver (%s %s %s) vars [JoPaul]'.[$Giver, @$Giver.knownname, @$Giver.idcode, $Receiver, @$Receiver.knownname, @$Receiver.idcode]"/>
+                    <set_value name="$Count_TransferTotal" exact="$Giver.cargo.{$WareDataRecord.$Ware}.count" />
+                    <debug_text text="'$Giver: ' + $Giver + ' ' + $Giver.knownname + ' ' + $Giver.idcode" chance="$DebugChance" />
+                    <debug_text text="'$Receiver: ' + $Receiver + ' ' + @$Receiver.knownname + ' ' + @$Receiver.idcode" chance="$DebugChance" />
+                    <debug_text text="'$Count_TransferTotal: ' + $Count_TransferTotal" chance="$DebugChance" />
+                    <set_value name="$TradeOffer" exact="null" />
+                    <set_value name="$TradeOrder" exact="null" />
+                    <do_if value="$Count_TransferTotal ge $WareDataRecord.$Count_Required - $WareDataRecord.$Count_Delivered">
+                      <set_value name="$Count_TransferTotal" exact="$WareDataRecord.$Count_Required - $WareDataRecord.$Count_Delivered" />
+                      <debug_text text="'$Count_TransferTotal (adjusted based on required): ' + $Count_TransferTotal" chance="$DebugChance" />
+                    </do_if>
+                    <do_if value="$Count_TransferTotal lt 1">
+                      <reset_cue cue="ConfirmTransfer_Convo_Transfer" />
+                    </do_if>
+                  </actions>
+                  <patch sinceversion="2">
+                    <debug_text text="'patch sinceversion 2'" chance="$DebugChance" />
+                    <do_if value="$Order_DockGiverAtReceiver and $Order_DockGiverAtReceiver.exists">
+                      <cancel_order order="$Order_DockGiverAtReceiver" />
+                      <remove_value name="$Order_DockGiverAtReceiver" />
+                    </do_if>
+                    <do_if value="ConfirmTransfer_Convo_Transfer_TransferNow.state == cuestate.waiting">
+                      <signal_cue cue="ConfirmTransfer_Convo_Transfer_TransferNow" />
+                    </do_if>
+                    <set_value name="$TradeOffer" exact="null" />
+                    <set_value name="$TradeOrder" exact="null" />
+                  </patch>
+                  <cues>
+                    <cue name="ConfirmTransfer_Convo_Transfer_TransferNow">
+                      <conditions>
+                        <event_cue_signalled />
+                      </conditions>
+                      <actions>
+                        <!--
+                          STEP 6: transfer now
+                        -->
+                        <debug_text text="event.name" chance="$DebugChance" />
+                        <do_if value="($To_IsIgnoreFreeStorage) or (not $Receiver.isplayerowned)" comment="when transfering to an npc-owned container, just transfer the lot">
+                          <set_value name="$WareDataToTransfer_Now.$Count_Transfer" exact="$Count_TransferTotal" />
+                        </do_if>
+                        <do_else>
+                          <set_value name="$WareDataToTransfer_Now.$Count_Transfer" exact="$Count_TransferTotal" />
+                          <do_if value="$WareDataToTransfer_Now.$Count_Transfer gt $Receiver.cargo.{$WareDataRecord.$Ware}.free">
+                            <set_value name="$WareDataToTransfer_Now.$Count_Transfer" exact="$Receiver.cargo.{$WareDataRecord.$Ware}.free" />
+                          </do_if>
+                        </do_else>
+                        <debug_text text="'$WareDataToTransfer_Now: ' + $WareDataToTransfer_Now" chance="$DebugChance" />
+                      </actions>
+                    </cue>
+                    <cue name="ConfirmTransfer_Convo_Transfer_CheckOrders" checkinterval="1s" instantiate="true">
+                      <conditions>
+                        <check_value value="@$WareDataToTransfer_Now.$Count_Transfer ge 1" />
+                      </conditions>
+                      <actions>
+                        <!-- ensure that trade order and its accompanying docking order exist - in case one or both are removed -->
+                        <do_if value="not @$TradeOrder.exists">
+                          <debug_text text="'$TradeOrder.exists: ' + @$TradeOrder.exists" chance="$DebugChance" />
+                          <do_if value="$Giver.isclass.ship and ($Giver.pilot or $Giver == player.occupiedship)">
+                            <signal_cue cue="ConfirmTransfer_Convo_Transfer_CreateTradeOfferAndOrder" />
+                          </do_if>
+                          <do_elseif value="$Receiver.isclass.ship and ($Receiver.pilot or $Receiver == player.occupiedship)">
+                            <signal_cue cue="ConfirmTransfer_Convo_Transfer_CreateTradeOfferAndOrder" />
+                          </do_elseif>
+                        </do_if>
+                        <do_elseif value="$Giver.isclass.ship">
+                          <do_if value="@$Giver.dock.container != $Receiver">
+                            <do_if value="$Giver != player.occupiedship">
+                              <do_if value="(not ['DockAndWait', 'DockAt'].indexof.{@$Giver.order.id}) or $Giver.order.$destination != $Receiver">
+                                <debug_text text="'$Giver.order.id: ' + @$Giver.order.id + ' $destination: ' + @$Giver.order.$destination.knownname + ' ' + @$Giver.order.$destination.idcode" chance="$DebugChance" />
+                                <signal_cue cue="ConfirmTransfer_Convo_Transfer_CreateTradeOfferAndOrder" />
+                              </do_if>
+                            </do_if>
+                          </do_if>
+                        </do_elseif>
+                        <do_elseif value="$Receiver.isclass.ship">
+                          <do_if value="@$Receiver.dock.container != $Giver">
+                            <do_if value="$Receiver != player.occupiedship">
+                              <do_if value="(not ['DockAndWait', 'DockAt'].indexof.{@$Receiver.order.id}) or $Receiver.order.$destination != $Giver">
+                                <debug_text text="'$Receiver.order.id: ' + @$Receiver.order.id + ' $destination: ' + @$Receiver.order.$destination.knownname + ' ' + @$Receiver.order.$destination.idcode" chance="$DebugChance" />
+                                <signal_cue cue="ConfirmTransfer_Convo_Transfer_CreateTradeOfferAndOrder" />
+                              </do_if>
+                            </do_if>
+                          </do_if>
+                        </do_elseif>
+                      </actions>
+                    </cue>
+                    <cue name="ConfirmTransfer_Convo_Transfer_CreateTradeOfferAndOrder">
+                      <conditions>
+                        <check_any>
+                          <event_cue_signalled />
+                          <check_all>
+                            <check_any>
+                              <event_player_started_control />
+                              <event_player_stopped_control />
+                            </check_any>
+                            <check_value value="[$Giver, $Receiver].indexof.{event.param}" />
+                          </check_all>
+                          <!-- disabled, as this produced an infinite event thread.
+                          instead, the trade order and its accompanying dock order are checked in ConfirmTransfer_Convo_Transfer_CheckOrders -->
+                          <!-- <check_all>
+                            <check_any>
+                              <check_all>
+                                <event_object_order_cancelled object="$Giver" />
+                                <check_value value="$Giver.isclass.ship" />
+                              </check_all>
+                              <check_all>
+                                <event_object_order_cancelled object="$Receiver" />
+                                <check_value value="$Receiver.isclass.ship" />
+                              </check_all>
+                            </check_any>
+                            <check_any>
+                              <check_value value="event.param == $TradeOrder" />
+                              <check_all>
+                                <check_value value="['DockAndWait', 'DockAt'].indexof.{event.param.id}" />
+                                <check_value value="[$Giver, $Receiver].indexof.{event.param.$destination}" />
+                              </check_all>
+                            </check_any>
+                          </check_all> -->
+                        </check_any>
+                        <!-- $WareDataToTransfer_Now.$Count_Transfer is set at ConfirmTransfer_Convo_Transfer_TransferNow -->
+                        <check_value value="@$WareDataToTransfer_Now.$Count_Transfer ge 1" />
+                      </conditions>
+                      <actions>
+                        <debug_text text="event.name" chance="$DebugChance" />
+                        <signal_cue_instantly cue="ConfirmTransfer_Convo_Transfer_CleanOrders" />
+                        <do_if value="$Receiver.cargo.{$WareDataRecord.$Ware}.free">
+                          <do_if value="not $Receiver.isplayerowned" comment="on npc-owned containers, just transfer what's possible">
+                            <set_value name="$Count_ThisTransfer" exact="[$WareDataToTransfer_Now.$Count_Transfer, $Receiver.cargo.{$WareDataRecord.$Ware}.free].min" />
+                          </do_if>
+                          <do_else>
+                            <set_value name="$Count_ThisTransfer" exact="$WareDataToTransfer_Now.$Count_Transfer" />
+                          </do_else>
+                          <do_if value="$Giver.isclass.ship">
+                            <create_trade_offer name="$TradeOffer" object="$Receiver" buyer="$Receiver" ware="$WareDataRecord.$Ware" amount="$Count_ThisTransfer" price="0ct" virtual="false" virtualmoney="true" playeronly="false" />
+                            <do_if value="$Giver.pilot or player.occupiedship == $Giver">
+                              <create_trade_order name="$TradeOrder" object="$Giver" tradeoffer="$TradeOffer" amount="$Count_ThisTransfer" immediate="true" />
+                            </do_if>
+                          </do_if>
+                          <do_elseif value="$Receiver.isclass.ship">
+                            <create_trade_offer name="$TradeOffer" object="$Giver" seller="$Giver" ware="$WareDataRecord.$Ware" amount="$Count_ThisTransfer" price="0ct" virtual="false" virtualmoney="true" playeronly="false" />
+                            <do_if value="$Receiver.pilot or player.occupiedship == $Receiver">
+                              <create_trade_order name="$TradeOrder" object="$Receiver" tradeoffer="$TradeOffer" amount="$Count_ThisTransfer" immediate="true" />
+                            </do_if>
+                          </do_elseif>
+                          <debug_text text="'$Giver.cargo.{$WareDataRecord.$Ware}.count: ' + $Giver.cargo.{$WareDataRecord.$Ware}.count" chance="$DebugChance" />
+                          <debug_text text="'$Receiver.cargo.{$WareDataRecord.$Ware}.free: ' + $Receiver.cargo.{$WareDataRecord.$Ware}.free" chance="$DebugChance" />
+                          <debug_text text="'$Count_ThisTransfer: ' + $Count_ThisTransfer" chance="$DebugChance" />
+                          <do_if value="$DebugChance">
+                            <debug_text text="'$TradeOffer.buyer: ' + @$TradeOffer.buyer.knownname" />
+                            <debug_text text="'    $TradeOffer.seller: ' + @$TradeOffer.seller.knownname" />
+                            <debug_text text="'    $TradeOffer.isbuyoffer: ' + $TradeOffer.isbuyoffer" />
+                            <debug_text text="'    $TradeOffer.isselloffer: ' + $TradeOffer.isselloffer" />
+                            <debug_text text="'    $TradeOffer.ware: ' + $TradeOffer.ware" />
+                            <debug_text text="'    $TradeOffer.price: ' + $TradeOffer.price" />
+                          </do_if>
+                        </do_if>
+                        <signal_cue cue="ConfirmTransfer_Convo_Transfer_UpdateBriefing" />
+                        <do_if value="player.occupiedship and [$Giver, $Receiver].indexof.{player.occupiedship} and player.occupiedship.dock and [$Giver, $Receiver].indexof.{player.occupiedship.dock.container} and player.occupiedship.dock.dockstate == dockstate.default">
+                          <signal_cue cue="ConfirmTransfer_Convo_Transfer_Docked" />
+                        </do_if>
+                        <reset_cue cue="ConfirmTransfer_Convo_Transfer_CreateTradeOfferAndOrder" />
+                      </actions>
+                    </cue>
+                    <cue name="ConfirmTransfer_Convo_Transfer_UpdateBriefing">
+                      <conditions>
+                        <event_cue_signalled />
+                        <check_value value="$MissionCue.$Cue_UpdateBriefing.state == cuestate.waiting" />
+                      </conditions>
+                      <actions>
+                        <debug_text text="event.name" chance="$DebugChance" />
+                        <do_if value="$Giver.isclass.ship and $Giver.isplayerowned">
+                          <do_if value="$Giver == player.occupiedship">
+                            <signal_cue_instantly cue="$MissionCue.$Cue_UpdateBriefing" param="table[$PlayerToDockAt = $Receiver]" />
+                          </do_if>
+                          <do_elseif value="$Giver.assignedaipilot">
+                            <signal_cue_instantly cue="$MissionCue.$Cue_UpdateBriefing" param="table[$ShipToDock = $Giver]" />
+                          </do_elseif>
+                        </do_if>
+                        <do_elseif value="$Receiver.isclass.ship and $Receiver.isplayerowned">
+                          <do_if value="$Receiver == player.occupiedship">
+                            <signal_cue_instantly cue="$MissionCue.$Cue_UpdateBriefing" param="table[$PlayerToDockAt = $Giver]" />
+                          </do_if>
+                          <do_elseif value="$Receiver.assignedaipilot">
+                            <signal_cue_instantly cue="$MissionCue.$Cue_UpdateBriefing" param="table[$ShipToDock = $Receiver]" />
+                          </do_elseif>
+                        </do_elseif>
+                        <reset_cue cue="ConfirmTransfer_Convo_Transfer_UpdateBriefing" />
+                      </actions>
+                    </cue>
+                    <cue name="ConfirmTransfer_Convo_Transfer_Docked">
+                      <conditions>
+                        <check_any>
+                          <event_cue_signalled />
+                          <event_object_docked object="$Giver" />
+                          <event_object_docked object="$Receiver" />
+                        </check_any>
+                      </conditions>
+                      <actions>
+                        <debug_text text="event.name" chance="$DebugChance" />
+                        <do_if value="event.object == player.occupiedship or
+                          (
+                            player.occupiedship and
+                            [$Giver, $Receiver].indexof.{player.occupiedship} and
+                            player.occupiedship.dock and
+                            [$Giver, $Receiver].indexof.{player.occupiedship.dock.container} and
+                            player.occupiedship.dock.dockstate == dockstate.default)">
+                          <!-- at this time, there should be a trade order on the player's ship -->
+                          <create_trade_computer object="player.occupiedship" />
+                        </do_if>
+                        <do_if value="ConfirmTransfer_Convo_Transfer_UpdateBriefing.state == cuestate.waiting">
+                          <!-- updating briefing will change mission objective from "await dock" to "await barter wares" -->
+                          <signal_cue cue="ConfirmTransfer_Convo_Transfer_UpdateBriefing" />
+                        </do_if>
+                        <reset_cue cue="ConfirmTransfer_Convo_Transfer_Docked" />
+                      </actions>
+                    </cue>
+                    <cue name="ConfirmTransfer_Convo_Transfer_Complete">
+                      <conditions>
+                        <event_trade_completed seller="$Giver" />
+                      </conditions>
+                      <actions>
+                        <debug_text text="event.name" chance="$DebugChance" />
+                        <do_if value="$DebugChance">
+                          <debug_text text="'event.param.buyer: ' + @event.param.buyer.knownname" />
+                          <debug_text text="'    event.param.seller: ' + @event.param.seller.knownname" />
+                          <debug_text text="'    event.param.isbuyoffer: ' + event.param.isbuyoffer" />
+                          <debug_text text="'    event.param.isselloffer: ' + event.param.isselloffer" />
+                          <debug_text text="'    event.param.ware: ' + event.param.ware" />
+                          <debug_text text="'    event.param.price: ' + event.param.price" />
+                          <debug_text text="'    event.param.transferredamount: ' + event.param.transferredamount" />
+                          <debug_text text="'    event.param.destroyedamount: ' + event.param.destroyedamount" />
+                        </do_if>
+                        <set_value name="$Count_TransferTotal" operation="subtract" exact="$WareDataToTransfer_Now.$Count_Transfer" />
+                        <set_value name="$WareDataRecord.$Count_Delivered" operation="add" exact="$WareDataToTransfer_Now.$Count_Transfer" />
+                        <do_if value="$MissionCue.$Cue_UpdateBriefing.state == cuestate.waiting">
+                          <signal_cue_instantly cue="$MissionCue.$Cue_UpdateBriefing" />
+                        </do_if>
+                        <do_if value="$Cue_OnTransfer and $Cue_OnTransfer.state == cuestate.waiting">
+                          <signal_cue_instantly cue="$Cue_OnTransfer" param="$WareDataRecord" />
+                        </do_if>
+                        <signal_cue cue="ConfirmTransfer_Convo_Transfer_CleanUp" />
+                      </actions>
+                    </cue>
+                    <cue name="ConfirmTransfer_Convo_Transfer_CleanOrders">
+                      <conditions>
+                        <event_cue_signalled />
+                      </conditions>
+                      <actions>
+                        <debug_text text="event.name" chance="$DebugChance" />
+                        <do_if value="$Giver.isclass.ship">
+                          <do_if value="$TradeOffer">
+                            <remove_trade_offer object="$Receiver" tradeoffer="$TradeOffer" />
+                            <do_for_each name="$Order_InList" in="$Giver.orders.clone">
+                              <do_if value="['DockAndWait', 'DockAt'].indexof.{$Order_InList.id} and $Order_InList.$destination == $Receiver">
+                                <cancel_order order="$Order_InList" />
+                              </do_if>
+                            </do_for_each>
+                          </do_if>
+                        </do_if>
+                        <do_elseif value="$Receiver.isclass.ship">
+                          <do_if value="$TradeOffer">
+                            <remove_trade_offer object="$Giver" tradeoffer="$TradeOffer" />
+                            <do_for_each name="$Order_InList" in="$Receiver.orders.clone">
+                              <do_if value="['DockAndWait', 'DockAt'].indexof.{$Order_InList.id} and $Order_InList.$destination == $Giver">
+                                <cancel_order order="$Order_InList" />
+                              </do_if>
+                            </do_for_each>
+                          </do_if>
+                        </do_elseif>
+                        <do_if value="$TradeOrder">
+                          <cancel_order order="$TradeOrder" />
+                        </do_if>
+                        <reset_cue cue="ConfirmTransfer_Convo_Transfer_CleanOrders" />
+                      </actions>
+                    </cue>
+                    <cue name="ConfirmTransfer_Convo_Transfer_Destroyed">
+                      <conditions>
+                        <check_any>
+                          <event_object_destroyed object="$Giver" />
+                          <event_object_destroyed object="$Receiver" />
+                          <event_object_changed_owner object="$Giver" previous="faction.player" />
+                          <event_object_changed_owner object="$Receiver" previous="faction.player" />
+                        </check_any>
+                      </conditions>
+                      <actions>
+                        <debug_text text="event.name" chance="$DebugChance" />
+                        <signal_cue cue="ConfirmTransfer_Convo_Transfer_CleanUp" />
+                      </actions>
+                    </cue>
+                    <cue name="ConfirmTransfer_Convo_Transfer_CleanUp">
+                      <conditions>
+                        <event_cue_signalled />
+                      </conditions>
+                      <actions>
+                        <debug_text text="event.name" chance="$DebugChance" />
+                        <signal_cue cue="ConfirmTransfer_Convo_Transfer_CleanOrders" />
+                        <set_value name="AwaitConfirmTransferWares.static.$Cue_AwaitConfirmTransferWares_Active" exact="null" />
+                        <reset_cue cue="ConfirmTransfer" />
+                      </actions>
+                    </cue>
+                    <cue name="ConfirmTransfer_Convo_Transfer_RunOnce">
+                      <actions>
+                        <signal_cue cue="ConfirmTransfer_Convo_Transfer_TransferNow" />
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="ConfirmTransfer_Convo_RunOnce">
+                  <actions>
+                    <debug_text text="event.name" chance="$DebugChance" />
+                    <signal_cue cue="ConfirmTransfer_Convo_CheckStatusAndAddPlayerChoices" />
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="TransferShips">
+          <conditions>
+            <event_cue_signalled />
+            <check_value value="$ShipsToTransfer.count" />
+          </conditions>
+          <actions>
+            <debug_text text="event.name" chance="$DebugChance" />
+            <do_for_each name="$Ship" in="$ShipsToTransfer">
+              <set_owner object="$Ship" faction="faction.player" />
+            </do_for_each>
+            <!-- [$Component, $Offset, $TextOffset(optional), $ShowUnknownPath(optional)] -->
+            <signal_cue_instantly cue="md.Guidance.NewTarget" param="[$ShipsToTransfer.{1}, null]" />
+            <reset_cue cue="this" />
+          </actions>
+        </cue>
+
+        <cue name="CancelTransfer">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <actions>
+            <debug_text text="event.name" chance="$DebugChance" />
+            <do_if value="@$ConfirmCutscene">
+              <stop_cutscene cutscene="$ConfirmCutscene" />
+            </do_if>
+            <do_if value="@$Cue_OnCancel.state == cuestate.waiting">
+              <signal_cue_instantly cue="$Cue_OnCancel" />
+            </do_if>
+            <stop_cutscene key="$NPC.facecutscene" />
+            <cancel_cue cue="AwaitConfirmTransferWares" />
+          </actions>
+        </cue>
+
+        <cue name="CompleteTransfer">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <actions>
+            <debug_text text="event.name" chance="$DebugChance" />
+            <do_if value="@$ConfirmCutscene">
+              <stop_cutscene cutscene="$ConfirmCutscene" />
+            </do_if>
+            <debug_text text="'$Cue_OnSuccess: ' + $Cue_OnSuccess + ' ' + $Cue_OnSuccess.state" chance="$DebugChance" />
+            <do_if value="@$Cue_OnSuccess.state == cuestate.waiting">
+              <signal_cue_instantly cue="$Cue_OnSuccess" />
+            </do_if>
+            <stop_cutscene key="$NPC.facecutscene" />
+            <signal_cue_instantly cue="TransferShips" />
+            <cancel_cue cue="AwaitConfirmTransferWares" />
+          </actions>
+        </cue>
+
+        <cue name="FailTransfer">
+          <conditions>
+            <check_any>
+              <event_cue_signalled />
+              <event_object_destroyed group="$FromGroup"/>
+              <event_object_destroyed group="$ToGroup"/>
+            </check_any>
+          </conditions>
+          <actions>
+            <debug_text text="event.name" chance="$DebugChance" />
+            <do_if value="@$ConfirmCutscene">
+              <stop_cutscene cutscene="$ConfirmCutscene" />
+            </do_if>
+            <do_if value="@$Cue_OnFailure.state == cuestate.waiting">
+              <signal_cue_instantly cue="$Cue_OnFailure" />
+            </do_if>
+            <stop_cutscene key="$NPC.facecutscene" />
+            <cancel_cue cue="AwaitConfirmTransferWares" />
+          </actions>
+        </cue>
+      </cues>
+    </cue>
+  </cues>
+</mdscript>

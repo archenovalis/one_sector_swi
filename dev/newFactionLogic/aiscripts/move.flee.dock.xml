@@ -1,0 +1,236 @@
+<?xml version="1.0" encoding="iso-8859-1" ?>
+<aiscript name="move.flee.dock" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" version="4">
+  <!--  
+  
+  Flee to dock. This script will find a nearby friendly station (in this zone) and if it has a free dock, this ship will boost there to dock
+  
+  Only allow for small ships (not l or xl size) that do not have subordinates
+  
+  -->
+  <params>
+    <param name="attacker" default="null" comment="the attacker we are fleeing from" />
+    <param name="panic" default="false" />
+    <param name="alreadydocked" default="this.ship.dock"/>
+    <param name="space" default="this.zone"/>
+    <param name="urgent" default="false"/>
+    <param name="debugchance" default="0" />
+  </params>
+  <interrupts>
+    <handler ref="TargetInvalidHandler"/>
+    <handler>
+      <!-- important that the event is consumed by this handler. -->
+      <conditions>
+        <event_object_signalled object="this" param="'patch_flee_abort'"/>
+      </conditions>
+      <actions>
+        <do_if value="@$station">
+          <!-- must clean up docking request if we made one -->
+          <remove_docking_request ship="this.ship" container="$station" immediate="true"/>
+        </do_if>
+        <abort_called_scripts resume="undock"/>
+      </actions>
+    </handler>
+  </interrupts>
+  <patch sinceversion="1">
+    <do_if value="this.assignedcontrolled.subordinates.count">
+      <signal_objects object="this" param="'patch_flee_abort'"/>
+    </do_if>
+  </patch>
+  <patch sinceversion="2">
+    <set_value name="$space" exact="this.zone"/>
+    <set_value name="$urgent" exact="false"/>
+  </patch>
+  <patch sinceversion="4">
+    <do_if value="$station">
+      <signal_objects object="this" param="'patch_flee_abort'"/>
+    </do_if>
+  </patch>
+  <attention min="unknown">
+    <actions>
+
+      <do_if value="this.assignedcontrolled.iscapitalship">
+        <return value="false"/>
+      </do_if>
+
+      <do_if value="this.assignedcontrolled.subordinates.count and not @$attacker.isclass.celestialbody">
+        <return value="false"/>
+      </do_if>
+
+      <do_if value="$alreadydocked">
+        <resume label="checkifsafe"/>
+      </do_if>
+
+      <label name="search" />
+
+      <do_if value="@$attacker.isoperational and not $attacker.isclass.celestialbody and $attacker.maxradarrange">
+        <find_station name="$stations" functional="true" space="$space" sortbydistanceto="this.assignedcontrolled" multiple="true">
+          <match_relation_to object="this" relation="neutral" comparison="ge" />
+          <match_distance object="$attacker" min="$attacker.maxradarrange"/>
+        </find_station>
+      </do_if>
+      <do_else>
+        <find_station name="$stations" functional="true" space="$space" sortbydistanceto="this.assignedcontrolled" multiple="true">
+          <match_relation_to object="this" relation="neutral" comparison="ge" />
+        </find_station>
+      </do_else>
+
+      <do_if value="not $stations.count">
+        <debug_text text="'no stations ' + $stations" chance="$debugchance" />
+        <return value="false "/>
+      </do_if>
+
+      <debug_text text="'found '+ $stations.count + ' potential targets, finding closest one.'" chance="$debugchance" />
+
+      <!-- if we must dock, we have to stop towing before we request docking. -->
+      <stop_towing_object ship="this.assignedcontrolled"/>
+
+      <do_if value="$urgent">
+        <do_for_each name="$locstation" in="$stations">
+          <request_docking ship="this.assignedcontrolled" container="$locstation" queuedresult="$queuedresult" grantedresult="$grantedresult"/>
+          <do_if value="$grantedresult">
+            <set_value name="$station" exact="$locstation"/>
+            <break/>
+          </do_if>
+          <do_if value="$queuedresult and not @$queuedstation">
+            <set_value name="$queuedstation" exact="$locstation"/>
+          </do_if>
+        </do_for_each>
+        <do_if value="@$queuedstation">
+          <do_if value="not @$station">
+            <set_value name="$station" exact="$queuedstation"/>
+          </do_if>
+        </do_if>
+        <do_for_each name="$locstation" in="$stations">
+          <do_if value="$locstation != @$station">
+            <remove_docking_request ship="this.assignedcontrolled" container="$locstation" immediate="true"/>
+          </do_if>
+        </do_for_each>
+      </do_if>
+      <do_else>
+        <set_value name="$station" exact="$stations.{1}"/>
+        <request_docking ship="this.assignedcontrolled" container="$station" queuedresult="$queuedresult" grantedresult="$grantedresult"/>
+      </do_else>
+      <remove_value name="$stations"/>
+
+      <!-- Dock the drones -->
+      <run_script name="'lib.recall.subordinates'">
+        <!-- NB: timeout -1 means we signal recall but won't wait for anyone to get back. they should try to catch up. -->
+        <param name="timeout" value="-1s" comment="recall drones"/>
+      </run_script>
+
+      <do_if value="@$station">
+        <debug_text text="'requested dock at %s %s %s. result: %s'.[@$station.idcode, @$station.knownname, $station, if $grantedresult then 'granted' else if $queuedresult then 'queued' else 'denied']" chance="$debugchance"/>
+
+        <do_if value="this.assignedcontrolled.assigneddock.exists">
+          <do_if value="not this.assignedcontrolled.zone.isclass.highway">
+            <get_docking_approach_pos position="$approachpos" rotation="$approachrot" dock="this.assignedcontrolled.assigneddock" ship="this.assignedcontrolled" />
+
+            <do_if value="this.attention ge attention.visible">
+              <debug_text text="'only set spline on high attention'" chance="$debugchance" />
+              <set_flight_control_model object="this.assignedcontrolled" flightcontrolmodel="flightcontrolmodel.spline" />
+            </do_if>
+
+            <!-- boost to it -->
+            <debug_text text="'move to approachpos'" chance="$debugchance" />
+            <move_to object="this.assignedcontrolled" destination="this.assignedcontrolled.assigneddock" forcesteering="false" finishonapproach="true" forceposition="false" forcerotation="false" boost="true" travel="true">
+              <position value="$approachpos" />
+              <rotation value="$approachrot" />
+              <interrupt_after_time time="10min"/>
+              <interrupt>
+                <conditions>
+                  <event_object_destroyed object="$attacker" check="false"/>
+                </conditions>
+              </interrupt>
+            </move_to>
+          </do_if>
+        </do_if>
+        <do_else>
+          <debug_text text="'dock not assigned'" chance="$debugchance"/>
+          <remove_docking_request ship="this.assignedcontrolled" container="$station" immediate="true"/>
+          <return value="false"/>
+        </do_else>
+      </do_if>
+      <do_else>
+        <return value="false"/>
+      </do_else>
+
+      <label name="dock" />
+
+      <do_if value="not $attacker.isoperational">
+        <remove_docking_request ship="this.ship" container="$station" immediate="true"/>
+        <return value="true" />
+      </do_if>
+
+      <debug_text text="'dock at station %1'.[$station.knownname]" chance="$debugchance" />
+
+      <!-- NB: has to be a run_script because the Flee order is critical at this point. TODO: reevaluate and consider creating a DockAt order and an Undock order further below if Flee does not have to be critical. order.dock will also take care of cleaning up docking requests if docking fails -->
+      <!-- dockfollowers will be ignored if $callerid resolves to null -->
+      <run_script name="'order.dock'" result="$docked">
+        <param name="destination" value="$station"/>
+        <param name="dockfollowers" value="@$attacker.isclass.celestialbody"/>
+        <param name="noattackresponse" value="true"/>
+        <param name="callerid" value="@this.assignedcontrolled.order"/>
+        <param name="internalorder" value="true"/>
+        <param name="recallsubordinates" value="false"/>
+      </run_script>
+
+      <do_if value="not $docked">
+        <return value="false"/>
+      </do_if>
+
+      <label name="checkifsafe" />
+
+      <do_if value="@$attacker.isclass.celestialbody">
+        <debug_text text="'fled from celestial body in cluster %s.\ndocked: %s'.[$attacker.cluster, this.assignedcontrolled.dock]" chance="$debugchance"/>
+        <do_if value="$attacker.phase.current.id != 'calm'">
+          <debug_text text="'waiting for all clear.'" chance="$debugchance"/>
+          <wait sinceversion="2">
+            <interrupt>
+              <conditions>
+                <event_object_signalled object="this.assignedcontrolled" param="'tide_phasechange'"/>
+                <check_value value="event.param2.{2} == $attacker"/>
+                <check_value value="event.param2.{1} == 'calm'"/>
+              </conditions>
+              <actions>
+                <debug_text text="'all clear.'" chance="$debugchance"/>
+              </actions>
+            </interrupt>
+          </wait>
+        </do_if>
+      </do_if>
+      <do_else>
+        <set_value name="$safechecks" exact="1"/>
+        <do_while value="($safechecks le 3) and $attacker.isoperational and $attacker.cansee.{this.assignedcontrolled}">
+          <set_value name="$safechecks" operation="add" exact="1"/>
+          <!-- if we are still not sure if it is safe after 3 waits, just risk it -->
+          <wait min="1min" max="2min">
+            <interrupt>
+              <conditions>
+                <check_any>
+                  <event_object_destroyed object="$attacker" check="false"/>
+                  <event_object_changed_zone object="$attacker" check="false"/>
+                  <event_object_changed_zone object="this.ship" />
+                </check_any>
+              </conditions>
+            </interrupt>
+          </wait>
+          <debug_text text="'wait for %1 to go away'.[$attacker.knownname]" chance="$debugchance" />
+        </do_while>
+      </do_else>
+
+      <label name="undock" />
+
+      <run_script name="'move.undock'" />
+
+      <debug_text text="'stop running/hiding'" chance="$debugchance" />
+      <return value="true"/>
+
+    </actions>
+  </attention>
+  <on_abort>
+    <do_if value="@$station">
+      <!-- must clean up docking request if we made one -->
+      <remove_docking_request ship="this.ship" container="$station" immediate="true"/>
+    </do_if>
+  </on_abort>
+</aiscript>

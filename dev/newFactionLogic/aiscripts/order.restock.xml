@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="utf-8"?>
+<aiscript name="order.restock" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" priority="3" version="1">
+  <!-- NB: possible limitation. this assumes that all the ammo a ship needs or all the units a ship needs can be acquired from a single station.
+            if we ever go with special ammo or special units only being available in some stations, that will have to be supported.
+
+            Stations that can only repair but not resupply are supported.
+            Stations that can only supply ammo or units are supported.
+
+            In those cases, where the ship needs to repair and resupply both ammo and units, this.ship will
+              first go in for just repairs,
+              then resupply just ammo,
+              then resupply just units.
+
+            In an ideal scenario, this.ship will go in for repairs and completely resupply all in one go.
+              Hopefully, most cases will fall under this ideal case. -->
+
+  <!-- to do: IMPORTANT: change from handling units via macro when add_build_to_modify_ship can handle categories and mks. -->
+
+  <!-- to do: remaining problem: if any order creates an order with the immediate flag set, the called order runs, then the calling script runs from the beginning.
+                normally, this is not a problem. however, in this case, that means that the checks will be done all over again and, since the ship just finished repairing and/or resupplying, it shouldn't have to.
+
+                fix will be to move away from using immediate orders for this. however, a case remains where immediate orders are desirable.
+                deal with that. -->
+  <order id="Resupply" name="{1041, 191}" description="{1041, 192}" category="internal">
+    <params>
+      <param name="repair" text="{1041, 10098}" type="bool" default="true" comment="Repair. Should the ship also repair?"/>
+      <param name="hullpercent" text="{1041, 10046}" type="number" default="100" advanced="true" comment="Hull repair percent">
+        <input_param name="max" value="100"/>
+        <input_param name="min" value="this.ship.hullpercentage"/>
+        <input_param name="startvalue" value="this.ship.hullpercentage"/>
+      </param>
+      <param name="damagedcomponents" type="list" default="[]" advanced="true" text="{1041, 10122}" comment="Subcomponents to repair">
+        <input_param name="type" value="'object'"/>
+        <input_param name="class" value="[class.destructible]"/>
+        <input_param name="context" value="this.object"/>
+      </param>
+      <param name="repairall" type="bool" default="true" advanced="true" text="{1041, 10100}" comment="Repair everything"/>
+      <param name="repaircost" type="internal" default="this.ship.repairprice" text="{1041, 10099}" comment="Repair cost"/>
+      <param name="resupply_ammo" text="{1041, 10101}" type="bool" default="true" comment="Restock ammo. Should the ship stock up on ammunition?"/>
+      <param name="resupply_units" text="{1041, 10103}" type="bool" default="true" comment="Restock units. Should the ship stock up on units?"/>
+      <param name="restock_subordinates" text="{1041, 10102}" type="internal" default="this.ship.isjobship" comment="Restock subordinates. Should the ship place build orders to replace subordinates"/>
+      <param name="param_station" default="null" type="object" advanced="true" text="{1041, 10027}" comment="Destination. Should a ship resupply at a particular station? May be rejected if passed in station fails validity checks. (Optional)">
+        <input_param name="class" value="[class.station]"/>
+      </param>
+      <param name="urgent" type="internal" text="{1041, 10138}" default="true" comment="Urgent. Is there an urgent need to repair or resupply? This will increase the range of the search to include the whole galaxy and make the resulting restock orders immediate. Expensive, use sparingly."/>
+      <param name="blacklist_stations" text="{1041, 10120}" type="list" default="[]" advanced="true" comment="Stations to avoid. List of stations that should not be considered for repair or resupply.">
+        <input_param name="type" value="'object'"/>
+        <input_param name="class" value="[class.station]"/>
+      </param>
+      <param name="internalorder" type="bool" default="false" advanced="true" text="{1041, 10159}" comment="Order results from an automated behavior."/>
+      <param name="onlyuseresupplierships" default="this.ship.isplayerowned" type="internal"/>
+      <param name="debugchance" type="bool" default="0" advanced="true" text="{1041, 10086}" comment="Print debug output">
+        <input_param name="truevalue" value="100"/>
+      </param>
+    </params>
+    <requires>
+      <match shiptype="shiptype.lasertower" negate="true"/>
+      <match class="class.spacesuit" negate="true"/>
+    </requires>
+  </order>
+  <!-- to do: determine if any further interrupts are needed. add here as necessary. -->
+  <interrupts>
+    <handler ref="AttackHandler"/>
+    <handler ref="MissileLockHandler" />
+    <handler ref="ScannedHandler"/>
+    <handler ref="InspectedHandler"/>
+    <handler ref="FoundAbandonedHandler"/>
+    <handler ref="TideHandler"/>
+  </interrupts>
+  <init>
+    <set_command command="command.resupply"/>
+  </init>
+  <patch sinceversion="1">
+    <!-- patched to true since that is safer. if no path is possible, order should be called again with the proper flag set. -->
+    <set_value name="$internalorder" exact="this.isplayerowned"/>
+  </patch>
+  <attention min="unknown">
+    <actions>
+      <set_value name="$debugchance_interrupt" exact="$debugchance"/>
+      <set_value name="$internalorder_interrupt" exact="$internalorder"/>
+      <!-- everything here moved to interrupt.restock under interrupt action: ResupplyCheck. -->
+      <include_interrupt_actions ref="ResupplyCheck"/>
+
+      <!-- NB: there is currently a case where, if two orders both complete with no blocking actions, the order that is associated with this script is either the current order or the next order and neither is removed from the queue. -->
+      <do_if value="this.assignedcontrolled.order.id == 'Resupply'">
+        <cancel_order order="this.assignedcontrolled.order"/>
+      </do_if>
+      <do_elseif value="this.assignedcontrolled.nextorder.id == 'Resupply'">
+        <cancel_order order="this.assignedcontrolled.nextorder"/>
+      </do_elseif>
+
+      <!-- short wait to allow order-related events to fire. -->
+      <wait exact="1ms"/>
+
+    </actions>
+  </attention>
+</aiscript>

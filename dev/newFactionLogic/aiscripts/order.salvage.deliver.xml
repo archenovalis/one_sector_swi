@@ -1,0 +1,483 @@
+<?xml version="1.0" encoding="utf-8"?>
+<aiscript name="order.salvage.deliver" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" version="5">
+  <order id="SalvageDeliver" name="{1041,811}" description="{1041,812}" category="internal" allowinloop="false">
+    <params>
+      <param name="tradedeal" type="trade" text="{1041, 10130}" comment="Trade">
+        <input_param name="playerreadonly" value="true"/>
+      </param>
+      <param name="destination" type="object" text="{1041,10027}" comment="Destination. Object" default="if @$tradedeal then $tradedeal.buyer else null">
+        <input_param name="class" value="[class.station]"/>
+      </param>
+      <param name="internalorder" type="internal" default="not this.ship.isplayerowned" comment="Will be passed on to move.generic for blacklist enforcement."/>
+      <param name="debugchance" type="bool" default="0" advanced="true" text="{1041,10086}" comment="Print debug output">
+        <input_param name="truevalue" value="100"/>
+      </param>
+    </params>
+    <requires>
+      <match shiptype="shiptype.tug"/>
+    </requires>
+    <location condition="$destination.isoperational" object="$destination"/>
+  </order>
+  <interrupts>
+    <handler ref="SectorChangeHandler"/>
+    <handler ref="TargetInvalidHandler"/>
+    <handler ref="AttackHandler"/>
+    <handler ref="MissileLockHandler" />
+    <handler ref="ScannedHandler"/>
+    <handler ref="InspectedHandler"/>
+    <handler ref="FoundAbandonedHandler"/>
+    <handler ref="FoundLockboxHandler"/>
+    <handler ref="ResupplyHandler"/>
+    <handler ref="TideHandler"/>
+    <handler>
+      <conditions>
+        <event_object_towed_recyclable_near_furnace object="this.assignedcontrolled"/>
+        <check_value value="event.param.container == $destination"/>
+      </conditions>
+      <actions>
+        <!-- overwrite $processingmodule. where we were initially going doesn't matter anymore. -->
+        <set_value name="$processingmodule" exact="event.param"/>
+        <debug_text text="'event_object_towed_recyclable_near_furnace. towedobject distance to furnacestartpos: %sm'.[$towedobject.distanceto.[$processingmodule, $processingmodule.furnacestartpos]]" chance="$debugchance"/>
+        <abort_called_scripts resume="drop"/>
+      </actions>
+    </handler>
+    <handler>
+      <conditions>
+        <event_object_processingmodule_available object="$destination" />
+        <check_value value="this.$QueuedAt? and this.$QueuedAt.{1} == event.object"/>
+        <check_value value="$destination.tradenpc.exists"/>
+      </conditions>
+      <actions>
+        <debug_text text="'processing module on %s became available, checking the queue, we are currently at position %s.'.[$destination.debugname, @$destination.tradenpc.$ProcessorQueue.indexof.{this.assignedcontrolled}]" chance="$debugchance"/>
+        <set_value name="$processingmodule" exact="event.param"/>
+        <set_value name="$reservationdata" exact="@$destination.tradenpc.$ReservedProcessingModules.{$processingmodule}"/>
+        <do_if value="$reservationdata">
+          <!-- module has an entry, see if there's actually a ship there or if the timeout has passed -->
+          <do_if value="$reservationdata.$Reserver.isoperational and $reservationdata.$Reserver != this.assignedcontrolled">
+            <do_if value="$reservationdata.$Timeout gt player.age and @$reservationdata.$Reserver.pilot.$QueuedAt.{2} == $processingmodule">
+              <!-- there still is somebody else who has reserved this processing module and they still have time -->
+              <set_value name="$processingmodule" exact="null"/>
+            </do_if>
+            <do_else>
+              <debug_text text="'throwing %s out of the reservation table (timeout or module mismatch) and freeing up module %s, reservationdata: %s, QueuedAt: %s'.[$reservationdata.$Reserver.debugname, $processingmodule, $reservationdata, @$reservationdata.$Reserver.pilot.$QueuedAt]" chance="$debugchance"/>
+              <remove_value name="$destination.tradenpc.$ReservedProcessingModules.{$processingmodule}"/>
+              <!-- inform the previous reserver that their reservation has been revoked due to timeout -->
+              <signal_objects object="$reservationdata.$Reserver" param="'processingmodule_reservation_timeout'" param2="$processingmodule"/>
+            </do_else>
+          </do_if>
+        </do_if>
+
+        <do_if value="$processingmodule">
+          <!-- if we are here then it looks like the module is currently not reserved for anybody, see if we are allowed to reserve it -->
+          <do_if value="$destination.tradenpc.$ProcessorQueue?">
+            <do_while value="$destination.tradenpc.$ProcessorQueue.count">
+              <set_value name="$deliverer" exact="$destination.tradenpc.$ProcessorQueue.{1}"/>
+              <do_if value="not $deliverer.isoperational or not $deliverer.pilot or ($deliverer.pilot.$QueuedAt.{1}.isoperational and @$deliverer.pilot.$QueuedAt.{1} != $destination) or @$deliverer.pilot.$QueuedAt.{2}">
+                <debug_text text="'throwing %s out of the queue, $QueuedAt: %s'.[$deliverer, $deliverer.pilot.$QueuedAt]" chance="$debugchance"/>
+                <!-- the queued ship is no longer operational, is going somewhere else or already has a processing module assigned, remove it from the queue and restart queue validation -->
+                <remove_value name="$destination.tradenpc.$ProcessorQueue.{1}" />
+                <continue/>
+              </do_if>
+              <do_if value="$deliverer == this.assignedcontrolled">
+                <debug_text text="'we are next in line, go for it.'" chance="$debugchance"/>
+                <!-- we are the first valid ship in the queue -->
+                <set_value name="$moduleassigned"/>
+                <remove_value name="$destination.tradenpc.$ProcessorQueue.{1}" />
+              </do_if>
+              <break />
+            </do_while>
+            <do_if value="not $destination.tradenpc.$ProcessorQueue.count">
+              <debug_text text="'nobody else in queue, go for it.'" chance="$debugchance"/>
+              <set_value name="$moduleassigned" comment="if the queue is empty, consider us assigned whether we were in the queue or not"/>
+              <remove_value name="$destination.tradenpc.$ProcessorQueue"/>
+            </do_if>
+          </do_if>
+          <do_else>
+            <debug_text text="'there is no queue, go for it.'" chance="$debugchance"/>
+            <set_value name="$moduleassigned" comment="if there is no queue, consider us assigned whether we were in the queue or not"/>
+          </do_else>
+          <do_if value="$moduleassigned?">
+            <remove_value name="$moduleassigned"/>
+            <set_value name="this.$QueuedAt" exact="[null, $processingmodule]"/>
+            <debug_text text="'%s has been cleared to deliver to %s and will now block that module. Reservation data: %s'.[this.assignedcontrolled.debugname, $processingmodule.debugname, @$destination.tradenpc.$ReservedProcessingModules.{$processingmodule}]" chance="$debugchance"/>
+            <do_if value="not $destination.tradenpc.$ReservedProcessingModules?">
+              <set_value name="$destination.tradenpc.$ReservedProcessingModules" exact="table[]"/>
+            </do_if>
+            <set_value name="$destination.tradenpc.$ReservedProcessingModules.{$processingmodule}" exact="table[$Reserver = this.assignedcontrolled, $Timeout = player.age + 10min]"/>
+            <abort_called_scripts resume="movetodrop"/>
+          </do_if>
+        </do_if>
+        <do_else>
+          <debug_text text="'%s has already been reserved by someone else'.[event.param.debugname]" chance="$debugchance"/>
+          <set_value name="$processingmodule" exact="null"/>
+        </do_else>
+      </actions>
+    </handler>
+    <handler>
+      <conditions>
+        <event_object_signalled object="this.assignedcontrolled" param="'processingmodule_reservation_timeout'"/>
+        <check_value value="this.$QueuedAt.{2} == event.param2"/>
+      </conditions>
+      <actions>
+        <debug_text text="'%s has lost the reservation for module %s on %s due to timeout'.[this.assignedcontrolled.debugname, event.param2, $destination.debugname]" chance="$debugchance"/>
+        <set_value name="this.$QueuedAt" exact="[$destination, null]"/>
+        <remove_value name="$processingmodule"/>
+        <abort_called_scripts resume="movetodrop"/>
+      </actions>
+    </handler>
+  </interrupts>
+  <init>
+    <set_value name="$towedobject" exact="@this.assignedcontrolled.towedobject"/>
+  </init>
+  <patch sinceversion="2">
+    <do_if value="not $towedobject.exists or not $towedobject.canbetowed or (@$towedobject.tugship != this.assignedcontrolled) or (@$towedobject.salvageclaimants.count and not $towedobject.salvageclaimants.indexof.{this.assignedcontrolled}) or not @$towedobject.recyclingwares.remaining.count">
+      <debug_text text="'%s%s%s%s%s'.[$towedobject.exists, $towedobject.canbetowed, (not @$towedobject.tugship or $towedobject.tugship == this.assignedcontrolled), (not @$towedobject.salvageclaimants.count or $towedobject.salvageclaimants.indexof.{this.assignedcontrolled}), @$towedobject.recyclingwares.remaining.count]" chance="0"/>
+      <debug_text text="'PATCH: delivering invalid object %s %s %s. dropping and resetting.'.[@$towedobject.macro, @$towedobject.knownname, @$towedobject]" filter="savegame"/>
+      <stop_towing_object ship="this.assignedcontrolled"/>
+      <set_value name="$towedobject" exact="null"/>
+      <!-- change something harmless to reset and restart the script -->
+      <edit_order_param order="this.assignedcontrolled.order" param="'debugchance'" value="$debugchance"/>
+    </do_if>
+  </patch>
+  <patch sinceversion="3">
+    <do_if value="$processingmodule? and ($destination.processingmodules.count gt 1)">
+      <set_value name="$processingmodule" exact="$destination.processingmodules.random"/>
+    </do_if>
+  </patch>
+  <attention min="unknown">
+    <actions>
+
+      <do_if value="not $towedobject">
+        <debug_text text="'Not towing an object. Aborting.'" chance="$debugchance"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <label name="start"/>
+
+      <debug_text text="'Towing %s %s to %s in sector %s.'.[@$towedobject.class, $towedobject.debugname, @$destination.debugname, @$destination.sector.knownname]" chance="$debugchance"/>
+
+      <do_if value="not this.assignedcontrolled.hascontext.{$destination.zone} and this.bboxdistanceto.{$destination} gt 10km">
+        <run_script name="'move.generic'" result="$movesuccess">
+          <param name="destination" value="$destination"/>
+          <param name="endintargetzone" value="true"/>
+          <param name="strictblacklist" value="$internalorder"/>
+          <param name="debugchance" value="$debugchance"/>
+        </run_script>
+        <do_if value="not $movesuccess">
+          <do_if value="@this.assignedcontrolled.order.isrunning">
+            <set_order_failed order="this.assignedcontrolled.order" text="{1045,101}" comment="Unable to reach destination." recurring="$internalorder"/>
+          </do_if>
+          <debug_text text="'Unable to reach destination. Aborting.'" chance="$debugchance"/>
+          <resume label="finish"/>
+        </do_if>
+      </do_if>
+
+      <label name="movetodrop"/>
+
+      <do_if value="not $towedobject.exists">
+        <resume label="finish"/>
+      </do_if>
+
+      <do_if value="not $tradedeal.exists">
+        <resume label="finish"/>
+      </do_if>
+
+      <do_if value="$destination.processingmodules.count == 0">
+        <debug_text text="'destination has no operational processing modules. Aborting.'" filter="error"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <set_command command="command.trade" param="$destination"/>
+
+      <set_value name="$canbeprocessed" exact="false"/>
+      <do_if value="@$processingmodule.isoperational">
+        <set_value name="$reservationdata" exact="@$destination.tradenpc.$ReservedProcessingModules.{$processingmodule}"/>
+        <do_if value="not $reservationdata or not $reservationdata.$Reserver.isoperational or $reservationdata.$Reserver == this.assignedcontrolled">
+          <!-- if we already have a processingmodule, check if it can process our $towedobject and only if it cannot do so, try to find a different one, if there are others -->
+          <can_process_recyclable_object module="$processingmodule" object="$towedobject" result="$canbeprocessed" trade="$tradedeal"/>
+        </do_if>
+        <remove_value name="$reservationdata"/>
+      </do_if>
+      <do_if value="not $canbeprocessed">
+        <do_for_each name="$checkmodule" in="$destination.processingmodules">
+          <set_value name="$reservationdata" exact="@$destination.tradenpc.$ReservedProcessingModules.{$checkmodule}"/>
+          <do_if value="not $reservationdata or not $reservationdata.$Reserver.isoperational or $reservationdata.$Reserver == this.assignedcontrolled or $reservationdata.$Timeout lt player.age">
+            <do_if value="not @$processingmodule or $checkmodule != @$processingmodule" comment="skip the one we checked above, if it exists">
+              <can_process_recyclable_object module="$checkmodule" object="$towedobject" result="$canbeprocessed" trade="$tradedeal"/>
+              <do_if value="$canbeprocessed">
+                <set_value name="$processingmodule" exact="$checkmodule"/>
+                <debug_text text="'%s seems to be available, deliver scrap to that'.[$processingmodule]" chance="$debugchance"/>
+                <break />
+              </do_if>
+            </do_if>
+          </do_if>
+        </do_for_each>
+        <remove_value name="$reservationdata"/>
+        <do_if value="not $canbeprocessed">
+          <!-- no processing module available right now, join the queue -->
+          <set_value name="$reservationdata" exact="if $processingmodule? then @$destination.tradenpc.$ReservedProcessingModules.{$processingmodule} else null"/>
+          <do_if value="$reservationdata">
+            <do_if value="$reservationdata.$Reserver == this.assignedcontrolled or not $reservationdata.$Reserver.isoperational">
+              <!-- remove entry for this module -->
+              <debug_text text="'%s had a reservation for module %s and it is being revoked by %s, reservationdata: %s'.[$reservationdata.$Reserver.debugname, $processingmodule, this.assignedcontrolled.debugname, $reservationdata]" chance="$debugchance"/>
+              <remove_value name="$destination.tradenpc.$ReservedProcessingModules.{$processingmodule}"/>
+            </do_if>
+            <do_elseif value="$reservationdata.$Timeout lt player.age">
+              <debug_text text="'throwing %s out of the reservation table (timeout) and freeing up module %s, reservationdata: %s, QueuedAt: %s'.[$reservationdata.$Reserver.debugname, $processingmodule, $reservationdata, @$reservationdata.$Reserver.pilot.$QueuedAt]" chance="$debugchance"/>
+              <remove_value name="$destination.tradenpc.$ReservedProcessingModules.{$processingmodule}"/>
+              <!-- inform reserver that they've been thrown out of the reservation table -->
+              <signal_objects object="$reservationdata.$Reserver" param="'processingmodule_reservation_timeout'" param2="$processingmodule"/>
+            </do_elseif>
+            <do_if value="$destination.tradenpc.$ReservedProcessingModules.keys.count == 0">
+              <!-- there is nothing left, remove table -->
+              <debug_text text="'0 entries left in table, remove it'" chance="$debugchance"/>
+              <remove_value name="$destination.tradenpc.$ReservedProcessingModules"/>
+            </do_if>
+          </do_if>
+          <remove_value name="$processingmodule"/>
+          <append_to_list name="$destination.tradenpc.$ProcessorQueue" exact="this.assignedcontrolled" create="true" unique="true"/>
+          <set_value name="this.$QueuedAt" exact="[$destination, null]"/>
+          <debug_text text="'no processor available for %s, joined the queue at position %s.'.[this.assignedcontrolled.debugname, $destination.tradenpc.$ProcessorQueue.indexof.{this.assignedcontrolled}]" chance="$debugchance"/>
+
+          <!-- we know we cannot deliver the towed object right now, so just wait there, if a processor becomes available to us this wait will be aborted -->
+          <set_command_action commandaction="commandaction.waitingtodock"/>
+          <wait min="1min" max="3min" sinceversion="5" />
+          <resume label="movetodrop"/>
+        </do_if>
+      </do_if>
+      <remove_value name="$canbeprocessed"/>
+
+      <debug_text text="'moving to available processor ' + $processingmodule" chance="$debugchance"/>
+      <!-- mark the processor as reserved -->
+      <debug_text text="'%s has found available processor %s and is now blocking it'.[this.assignedcontrolled.debugname, $processingmodule]" chance="$debugchance"/>
+      <do_if value="not $destination.tradenpc.$ReservedProcessingModules?">
+        <set_value name="$destination.tradenpc.$ReservedProcessingModules" exact="table[]" />
+      </do_if>
+      <set_value name="$destination.tradenpc.$ReservedProcessingModules.{$processingmodule}" exact="table[$Reserver = this.assignedcontrolled, $Timeout = player.age + 10min]"/>
+      <set_value name="$queueindex" exact="@$destination.tradenpc.$ProcessorQueue.indexof.{this.assignedcontrolled}"/>
+      <do_if value="$queueindex gt 0">
+        <debug_text text="'%s removed itself from the assignment queue of %s in %s.'.[this.assignedcontrolled.debugname, $destination.debugname, @$destination.sector.knownname]" chance="$debugchance"/>
+        <remove_value name="$destination.tradenpc.$ProcessorQueue.{$queueindex}"/>
+      </do_if>
+      <remove_value name="$queueindex"/>
+      <set_value name="this.$QueuedAt" exact="[null, $processingmodule]"/>
+      <move_to object="this.assignedcontrolled" destination="$processingmodule" uselocalhighways="false" finishonapproach="true" commandaction="true" travel="true">
+        <position value="$processingmodule.furnacestartpos"/>
+      </move_to>
+      <!-- move to the furnacestartpos to make sure we're close enough - otherwise we might still be too far away when finishing the approach out of traveldrive movement -->
+      <move_to object="this.assignedcontrolled" destination="$processingmodule" uselocalhighways="false" finishonapproach="false" commandaction="true" travel="false" sinceversion="4" forceposition="false">
+        <position value="$processingmodule.furnacestartpos"/>
+      </move_to>
+
+      <label name="drop"/>
+
+      <do_if value="not $processingmodule.isoperational and @$destination.tradenpc.$ReservedProcessingModules">
+        <do_if value="$destination.tradenpc.$ReservedProcessingModules.{$processingmodule}?">
+          <debug_text text="'%s is not operational and will be removed from the reservation table of %s'.[$processingmodule, $destination.debugname]" chance="$debugchance"/>
+          <remove_value name="$destination.tradenpc.$ReservedProcessingModules.{$processingmodule}" />
+          <do_if value="$destination.tradenpc.$ReservedProcessingModules.keys.count == 0">
+            <debug_text text="'0 entries left in table, remove it'" chance="$debugchance"/>
+            <remove_value name="$destination.tradenpc.$ReservedProcessingModules" />
+          </do_if>
+        </do_if>
+        <resume label="movetodrop"/>
+      </do_if>
+
+      <do_if value="not $towedobject.exists">
+        <resume label="finish"/>
+      </do_if>
+
+      <do_if value="$towedobject.distanceto.[$processingmodule, $processingmodule.furnacestartpos] gt 1km">
+        <debug_text text="'more than 1km from drop-off position, trying new move_to with safepos'" chance="$debugchance" />
+        <get_safe_pos result="$endpos" zone="$processingmodule.zone" object="$processingmodule" value="$processingmodule.furnacestartpos" radius="this.assignedcontrolled.size/2m" ignored="this.assignedcontrolled" />
+        <move_to object="this.assignedcontrolled" destination="$processingmodule.zone" uselocalhighways="false" finishonapproach="true" commandaction="true">
+          <position value="$endpos"/>
+        </move_to>
+      </do_if>
+
+      <stop_moving object="this.assignedcontrolled"/>
+
+      <do_if value="not $towedobject.exists">
+        <resume label="finish"/>
+      </do_if>
+
+      <do_if value="not $tradedeal.exists">
+        <resume label="finish"/>
+      </do_if>
+
+      <debug_text text="'request processing of towed scrap.'" chance="$debugchance"/>
+      <debug_text text="'processingmodule is operational: %s. distance from scrap to furnacestartpos: %sm'.[$processingmodule.isoperational, $towedobject.distanceto.[$processingmodule, $processingmodule.furnacestartpos]]" chance="$debugchance"/>
+      <do_if value="this.assignedcontrolled.towedobject and $processingmodule.isoperational and (this.assignedcontrolled.towedobject.distanceto.[$processingmodule, $processingmodule.furnacestartpos] le 1km)">
+        <execute_recyclable_trade module="$processingmodule" tradepartner="this.assignedcontrolled" trade="$tradedeal" result="$success" />
+        <do_if value="$success">
+          <debug_text text="'recyclable has been dropped, cleaning up and moving away.'" chance="$debugchance"/>
+        </do_if>
+        <do_else>
+          <debug_text text="'%s failed to process recyclable - resource buffer probably not empty. trying again.'.[this.assignedcontrolled.debugname]" chance="$debugchance"/>
+          <append_to_list name="$destination.tradenpc.$ProcessorQueue" exact="this.assignedcontrolled" create="true" unique="true"/>
+          <set_value name="this.$QueuedAt" exact="[$destination, null]"/>
+          <debug_text text="'we\'ve re-entered the queue at position %s.'.[$destination.tradenpc.$ProcessorQueue.indexof.{this.assignedcontrolled}]" chance="$debugchance"/>
+          <!-- TODO: increment fail counter and abort after X attempts -->
+          <!-- send the idle movement to a safepos, as we are likely right where the furnace is and don't want to use that as anchor position -->
+          <!-- if a processor becomes available and we are next in the queue the idle movement will be aborted -->
+          <get_safe_pos result="$endpos" zone="this.assignedcontrolled.zone" object="this.assignedcontrolled" radius="this.assignedcontrolled.size" direction="quadrant.front" directionobject="this.assignedcontrolled" min="1km" max="10km" />
+          <run_script name="'move.idle'" sinceversion="1">
+            <param name="Min" value="1min" />
+            <param name="Max" value="3min" />
+            <param name="Offset" value="$endpos" />
+          </run_script>
+          <resume label="start"/>
+        </do_else>
+        <do_if value="$internalorder">
+          <clear_recurring_order_failure object="this.assignedcontrolled" id="this.assignedcontrolled.order.id"/>
+        </do_if>
+        <remove_value name="$success"/>
+      </do_if>
+      <do_else>
+        <debug_text text="'delivery failed. trying again. distance to furnace was: %s'.[@this.assignedcontrolled.towedobject.distanceto.[$processingmodule, $processingmodule.furnacestartpos]]" chance="$debugchance"/>
+        <set_value name="this.$QueuedAt" exact="[$destination, null]"/>
+        <do_if value="@$destination.tradenpc.$ReservedProcessingModules">
+          <set_value name="$reservationdata" exact="@$destination.tradenpc.$ReservedProcessingModules.{$processingmodule}"/>
+          <do_if value="$reservationdata and (not @$reservationdata.$Reserver.isoperational or $reservationdata.$Timeout lt player.age)">
+            <!-- remove entry for this module -->
+            <debug_text text="'%s failed to deliver scrap, removing reservation for module %s: %s'.[this.assignedcontrolled.debugname, $processingmodule, $reservationdata]" chance="$debugchance"/>
+            <remove_value name="$destination.tradenpc.$ReservedProcessingModules.{$processingmodule}"/>
+            <do_if value="$destination.tradenpc.$ReservedProcessingModules.keys.count == 0">
+              <!-- there is nothing left, remove table -->
+              <debug_text text="'0 entries in table, remove it'" chance="$debugchance"/>
+              <remove_value name="$destination.tradenpc.$ReservedProcessingModules"/>
+            </do_if>
+            <do_if value="$reservationdata.$Reserver != this.assignedcontrolled">
+              <remove_value name="$processingmodule"/>
+            </do_if>
+          </do_if>
+        </do_if>
+        <resume label="movetodrop"/>
+      </do_else>
+
+      <label name="finish"/>
+
+      <!-- make sure the processing module is no longer marked as reserved -->
+      <set_value name="$queueentity" exact="@$destination.tradenpc"/>
+      <set_value name="$clearmodule" exact="@$processingmodule"/>
+      <do_all exact="2">
+        <do_if value="$queueentity">
+          <!-- clean up $ReservedProcessingModules -->
+          <do_if value="$queueentity.$ReservedProcessingModules?">
+            <do_for_each name="$checkmodule" valuename="$reservationdata" in="$queueentity.$ReservedProcessingModules">
+              <do_if value="$reservationdata.$Reserver == this.assignedcontrolled or not $reservationdata.$Reserver.isoperational">
+                <remove_value name="$queueentity.$ReservedProcessingModules.{$checkmodule}"/>
+              </do_if>
+              <do_elseif value="$reservationdata.$Timeout lt player.age">
+                <debug_text text="'throwing %s out of the reservation table (timeout) and freeing up module %s, reservationdata: %s, QueuedAt: %s'.[$reservationdata.$Reserver.debugname, $checkmodule, $reservationdata, @$reservationdata.$Reserver.pilot.$QueuedAt]" chance="$debugchance"/>
+                <remove_value name="$queueentity.$ReservedProcessingModules.{$checkmodule}"/>
+                <!-- inform reserver that they've been thrown out of the reservation table -->
+                <signal_objects object="$reservationdata.$Reserver" param="'processingmodule_reservation_timeout'" param2="$checkmodule"/>
+              </do_elseif>
+              <!--<do_elseif value="@$clearmodule and $checkmodule == $clearmodule">
+                <assert value="false" text="'%s thought it had a reservation for processing module %s but it was reserved for %s!'.[this.assignedcontrolled.debugname, $clearmodule, $reservationdata.$Reserver.debugname]"/>
+              </do_elseif>-->
+            </do_for_each>
+            <do_if value="$queueentity.$ReservedProcessingModules.keys.count == 0">
+              <debug_text text="'0 entries left in reservation table, remove it (finish)'" chance="$debugchance"/>
+              <remove_value name="$queueentity.$ReservedProcessingModules"/>
+            </do_if>
+          </do_if>
+
+          <!-- clean up $ProcessorQueue (should already have happened in the event handler, but check it anyway so we don't leave stale data if something goes wrong) -->
+          <set_value name="$queueindex" exact="if $queueentity.$ProcessorQueue? then $queueentity.$ProcessorQueue.indexof.{this.assignedcontrolled} else 0"/>
+          <do_if value="$queueindex gt 0">
+            <debug_text text="'removed %s  from the queue of %s in %s.'.[this.assignedcontrolled.debugname, $queueentity.container.debugname, @$queueentity.sector.knownname]" chance="$debugchance"/>
+            <remove_value name="$queueentity.$ProcessorQueue.{$queueindex}"/>
+            <!-- remove queue variable if empty -->
+            <do_if value="$queueentity.$ProcessorQueue.count == 0">
+              <remove_value name="$queueentity.$ProcessorQueue"/>
+            </do_if>
+          </do_if>
+        </do_if>
+
+        <!-- deal with the second pass, in case our blackboard has a data discrepancy -->
+        <do_if value="not this.$QueuedAt? or this.$QueuedAt.{1} == $destination or not this.$QueuedAt.{1}.isoperational">
+          <!-- destination matches this.$QueuedAt data, so we're done with the cleanup after the first pass -->
+          <break />
+        </do_if>
+        <do_else>
+          <assert value="false" text="'Unexpected discrepancy between this.$QueuedAt.{1} = %s in %s and $destination = %s in %s'.[@this.$QueuedAt.{1}.debugname, @this.$QueuedAt.{1}.sector.knownname, $destination.debugname, @$destination.sector.knownname]"/>
+          <set_value name="$queueentity" exact="@this.$QueuedAt.{1}.tradenpc"/>
+          <do_if value="this.$QueuedAt.{2} != $processingmodule">
+            <set_value name="$clearmodule" exact="@this.$QueuedAt.{2}"/>
+          </do_if>
+        </do_else>
+      </do_all>
+      <remove_value name="this.$QueuedAt"/>
+
+      <do_if value="this.assignedcontrolled.towedobject">
+        <stop_towing_object ship="this.assignedcontrolled"/>
+      </do_if>
+      <!-- let the ship move to a safe position when it ends the delivery order to ensure it's not "in the way" of others trying to deliver -->
+      <get_safe_pos result="$endpos" sector="this.assignedcontrolled.sector" object="this.assignedcontrolled" radius="this.assignedcontrolled.size/2m" direction="quadrant.front" directionobject="this.assignedcontrolled" min="1km" max="5km" />
+      <move_to object="this.assignedcontrolled" destination="this.assignedcontrolled.sector" uselocalhighways="false" finishonapproach="true" travel="true" commandaction="true" sinceversion="4">
+        <position value="$endpos"/>
+      </move_to>
+
+    </actions>
+  </attention>
+  <on_abort>
+    <do_if value="this.assignedcontrolled.isoperational">
+      <stop_moving object="this.assignedcontrolled"/>
+    </do_if>
+    <!-- make sure the processing module is no longer marked as reserved -->
+    <set_value name="$queueentity" exact="@$destination.tradenpc"/>
+    <set_value name="$clearmodule" exact="@$processingmodule"/>
+    <do_all exact="2">
+      <do_if value="$queueentity">
+        <!-- clean up $ReservedProcessingModules -->
+        <do_if value="$queueentity.$ReservedProcessingModules?">
+          <do_for_each name="$checkmodule" valuename="$reservationdata" in="$queueentity.$ReservedProcessingModules">
+            <do_if value="$reservationdata.$Reserver == this.assignedcontrolled or not $reservationdata.$Reserver.isoperational">
+              <remove_value name="$queueentity.$ReservedProcessingModules.{$checkmodule}"/>
+            </do_if>
+            <do_elseif value="$reservationdata.$Timeout lt player.age">
+              <debug_text text="'throwing %s out of the reservation table (timeout) and freeing up module %s, reservationdata: %s, QueuedAt: %s'.[$reservationdata.$Reserver.debugname, $checkmodule, $reservationdata, @$reservationdata.$Reserver.pilot.$QueuedAt]" chance="$debugchance"/>
+              <remove_value name="$queueentity.$ReservedProcessingModules.{$checkmodule}"/>
+              <!-- inform reserver that they've been thrown out of the reservation table -->
+              <signal_objects object="$reservationdata.$Reserver" param="'processingmodule_reservation_timeout'" param2="$checkmodule"/>
+            </do_elseif>
+            <!--<do_elseif value="@$clearmodule and $checkmodule == $clearmodule">
+              <assert value="false" text="'%s thought it had a reservation for processing module %s but it was reserved for %s!'.[this.assignedcontrolled.debugname, $clearmodule, $reservationdata.$Reserver.debugname]"/>
+            </do_elseif>-->
+          </do_for_each>
+          <do_if value="$queueentity.$ReservedProcessingModules.keys.count == 0">
+            <debug_text text="'0 entries left in reservation table, remove it (abort)'" chance="$debugchance"/>
+            <remove_value name="$queueentity.$ReservedProcessingModules"/>
+          </do_if>
+        </do_if>
+
+        <!-- clean up $ProcessorQueue (should already have happened in the event handler, but check it anyway so we don't leave stale data if something goes wrong) -->
+        <set_value name="$queueindex" exact="if $queueentity.$ProcessorQueue? then $queueentity.$ProcessorQueue.indexof.{this.assignedcontrolled} else 0"/>
+        <do_if value="$queueindex gt 0">
+          <debug_text text="'removed %s  from the queue of %s in %s.'.[this.assignedcontrolled.debugname, $queueentity.container.debugname, @$queueentity.sector.knownname]" chance="$debugchance"/>
+          <remove_value name="$queueentity.$ProcessorQueue.{$queueindex}"/>
+          <!-- remove queue variable if empty -->
+          <do_if value="$queueentity.$ProcessorQueue.count == 0">
+            <remove_value name="$queueentity.$ProcessorQueue"/>
+          </do_if>
+        </do_if>
+      </do_if>
+
+      <!-- deal with the second pass, in case our blackboard has a data discrepancy -->
+      <do_if value="not this.$QueuedAt? or this.$QueuedAt.{1} == $destination or not this.$QueuedAt.{1}.isoperational">
+        <!-- destination matches this.$QueuedAt data, so we're done with the cleanup after the first pass -->
+        <break />
+      </do_if>
+      <do_else>
+        <assert value="false" text="'Unexpected discrepancy between this.$QueuedAt.{1} = %s in %s and $destination = %s in %s'.[@this.$QueuedAt.{1}.debugname, @this.$QueuedAt.{1}.sector.knownname, $destination.debugname, @$destination.sector.knownname]"/>
+        <set_value name="$queueentity" exact="@this.$QueuedAt.{1}.tradenpc"/>
+        <do_if value="this.$QueuedAt.{2} != $processingmodule">
+          <set_value name="$clearmodule" exact="@this.$QueuedAt.{2}"/>
+        </do_if>
+      </do_else>
+    </do_all>
+    <remove_value name="this.$QueuedAt"/>
+  </on_abort>
+</aiscript>

@@ -1,0 +1,191 @@
+<?xml version="1.0" encoding="iso-8859-1" ?>
+<aiscript name="move.unpark" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" version="1">
+  <!--
+  
+  Make a ship leave its parking position and disconnect from the tradeoffer location.  
+  
+  Important: 
+    Undock script will redirect to 'move.unpark' if necessary
+    Do NOT use 'move.unpark' directly, instead use 'move.undock'
+  
+  -->
+  <params>
+    <param name="quick" default="false" />
+    <param name="debugchance" default="0"/>
+  </params>
+  <interrupts>
+    <handler>
+      <conditions>
+        <event_object_signalled object="this.assignedcontrolled" param="'unpark_reset'"/>
+      </conditions>
+      <actions>
+        <abort_called_scripts resume="start"/>
+      </actions>
+    </handler>
+    <handler ref="TargetInvalidHandler"/>
+  </interrupts>
+  <init>
+    <set_command_action commandaction="commandaction.undocking" />
+  </init>
+  <patch sinceversion="1">
+    <do_if value="$approachpos and $undockfrom">
+      <!-- necessary to restart unparking because we are changing the position reference and, if ship is currently in movement with the wrong position, movement will simply continue. -->
+      <signal_objects object="this.assignedcontrolled" param="'unpark_reset'"/>
+      <debug_text text="'PATCH: restarting unpark'" filter="savegame"/>
+    </do_if>
+  </patch>
+  <attention min="unknown">
+    <actions>
+
+      <label name="start" />
+
+      <do_if value="this.ship.assigneddock">
+        <do_if value="this.ship.parkedat">
+          <set_value name="$parked" exact="this.ship.parkedat"/>
+          <disconnect_from_trade_location ship="this.ship" result="$result"/>
+          <debug_text text="'%s %s %s immediately unparked from %s %s %s. result: %s'.[@this.ship.idcode, @this.ship.knownname, this.ship, @$parked.idcode, @$parked.knownname, $parked, $result]" chance="0"/>
+        </do_if>
+        <do_else>
+          <assert value="this.ship.dock != null" text="'Do not use move.unpark script directly. Instead use move.undock'" />
+          <debug_text text="'Error: Do not use move.unpark script directly. Instead use move.undock'" />
+        </do_else>
+      </do_if>
+      <do_else>
+        <set_value name="$parked" exact="this.ship.parkedat" />
+        <do_if value="$parked.exists">
+          <!-- Detacth from trade locations -->
+          <detach_from_masstraffic object="this.ship" wait="true" >
+            <interrupt_after_time time="5min" />
+          </detach_from_masstraffic>
+          <!-- Set the info action again -->
+          <set_command_action commandaction="commandaction.undocking" />
+
+          <!-- HACK: this should find the nearest slot which *should* be the one that we are parked at -->
+          <do_if value="$parked.isclass.container">
+            <set_value name="$undockfrom" exact="$parked" />
+          </do_if>
+          <do_else>
+            <set_value name="$undockfrom" exact="$parked.container" />
+          </do_else>
+          <do_if value="$undockfrom.isoperational">
+            <find_tradeoffer_parking_slot name="$freeslot" object="$undockfrom" refobject="this.ship" includeoccupied="true" />
+          </do_if>
+          <do_if value="@$freeslot">
+            <set_avoid_collisions object="this.ship" bigobjects="false" smallobjects="false" />
+            <get_trade_parking_pos ship="this.ship" tradedock="$freeslot" space="$undockfrom" approach="true" position="$approachpos" quadrant="$quadrant" />
+            <!-- translate approachpos to undockfrom's zone. otherwise, the position moves if undockfrom moves -->
+            <set_value name="$refspace" exact="$undockfrom.zone"/>
+            <create_position name="$unparkpos" space="$refspace" value="$approachpos" object="$undockfrom"/>
+
+            <!-- NB: $undockfrom can get destroyed within this time. only use references to the zone from this point on. -->
+            <wait min="1s" max="3s" />
+
+            <do_if value="($quadrant == quadrant.left) or ($quadrant == quadrant.right)">
+              <move_strafe object="this.ship" destination="$refspace" commandaction="false">
+                <position value="$unparkpos"/>
+                <!-- <rotation value="$approachrot" /> -->
+              </move_strafe>
+              <set_value name="$unparkquadrants" exact="[$quadrant.inverse, quadrant.front]"/>
+            </do_if>
+            <do_elseif value="$quadrant == quadrant.front">
+              <move_to object="this.ship" destination="$refspace" reverse="true" commandaction="false">
+                <position value="$unparkpos" />
+                <!-- <rotation value="$approachrot" /> -->
+              </move_to>
+              <set_value name="$unparkquadrants" exact="[quadrant.back, quadrant.none]"/>
+            </do_elseif>
+            <do_else>
+              <move_to object="this.ship" destination="$refspace" commandaction="false">
+                <position value="$unparkpos" />
+                <!-- <rotation value="$approachrot" /> -->
+              </move_to>
+              <set_value name="$unparkquadrants" exact="[$quadrant.inverse, quadrant.none]"/>
+            </do_else>
+            <reset_avoid_collisions object="this.ship"/>
+          </do_if>
+
+          <do_if value="@$quick">
+            <disconnect_from_trade_location ship="this.ship" />
+            <resume label="finish"/>
+          </do_if>
+
+          <!-- just in case, move to a safepos -->
+          <do_if value="$parked.exists">
+            <do_if value="$undockfrom.exists">
+              <set_value name="$directionangle" min="25deg" max="45deg"/>
+              <!--Don't ignore this ship. Use it to avoid finding a safepos in the parking position.-->
+              <get_safe_pos object="this.ship" radius="this.ship.size * 1.5" zone="this.zone" directionobject="this.ship" direction="$unparkquadrants.{1}" direction2="$unparkquadrants.{2}" angle="$directionangle" result="$safepos"/>
+              <move_to destination="this.zone" object="this.ship" uselocalhighways="false" forceposition="false" commandaction="false">
+                <position value="$safepos"/>
+                <interrupt_after_time time="1min" />
+              </move_to>
+            </do_if>
+          </do_if>
+
+          <disconnect_from_trade_location ship="this.ship" />
+
+          <!-- experimental code - in case the move_to action was interrupted before reaching the safepos, we wait for that to finish before returning -->
+          <do_if value="$safepos?">
+            <!-- check if the current position is safe enough to end the script -->
+            <set_value name="$testsafepos" exact="$safepos" />
+            <do_while value="(not $arrivedatend?) and (this.ship.distanceto.{$testsafepos} gt this.ship.size)">
+              <wait min="30s" max="1min">
+                <interrupt>
+                  <conditions>
+                    <check_any>
+                      <event_object_arrived_at_waypoint object="this.ship" />
+                      <event_object_approaching_waypoint object="this.ship" />
+                    </check_any>
+                  </conditions>
+                  <actions>
+                    <set_value name="$arrivedatend" exact="true" />
+                    <break />
+                  </actions>
+                </interrupt>
+              </wait>
+              <get_safe_pos object="this.ship" radius="this.ship.size" ignored="this.ship" zone="this.zone" allowyaxis="false" result="$testsafepos"/>
+            </do_while>
+            <do_if value="not $arrivedatend?">
+              <debug_text text="'The ship did not reach its original unpark safepos but it is now in a safe position. ' + this.ship.distanceto.{$safepos} + 'm away from orginal safepos. Station was : ' + $undockfrom.knownname" chance="$debugchance"/>
+            </do_if>
+            <remove_value name="$arrivedatend" />
+            <remove_value name="$testsafepos" />
+            <remove_value name="$safepos" />
+          </do_if>
+        </do_if>
+        <!-- not parked, do nothing? -->
+      </do_else>
+
+      <label name="finish"/>
+
+      <!-- Safety delete Blackboard variable -->
+      <remove_value name="this.$reevaluate_parking" />
+
+      <do_if value="@$undockfrom.isoperational">
+        <!-- let others know that we have successfully unparked and the next one in the queue may proceed -->
+        <debug_text text="'send signal to %1(%2)'.[@$undockfrom.knownname, $undockfrom]" chance="$debugchance" />
+        <signal_objects object="$undockfrom" param="'parkingqueue_next'" />
+        <do_if value="@this.$unparkreleasesignal">
+          <debug_text text="'unparking. sending release signal.'" chance="$debugchance"/>
+          <signal_objects object="$undockfrom" param="this.$unparkreleasesignal.{1}" param2="@this.$unparkreleasesignal.{2}"/>
+        </do_if>
+      </do_if>
+
+      <do_if value="@this.$unparkreleasesignal">
+        <remove_value name="this.$unparkreleasesignal"/>
+      </do_if>
+
+    </actions>
+  </attention>
+  <on_abort>
+    <disconnect_from_trade_location ship="this.ship" />
+    <!-- Safety delete Blackboard variable -->
+    <remove_value name="this.$reevaluate_parking" />
+    <do_if value="@this.$unparkreleasesignal">
+      <do_if value="@$undockfrom.isoperational">
+        <signal_objects object="$undockfrom" param="this.$unparkreleasesignal.{1}" param2="@this.$unparkreleasesignal.{2}"/>
+      </do_if>
+      <remove_value name="this.$unparkreleasesignal"/>
+    </do_if>
+  </on_abort>
+</aiscript>

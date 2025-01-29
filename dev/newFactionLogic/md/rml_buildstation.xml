@@ -1,0 +1,919 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_BuildStation" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--
+    This RML is intended for use in Master-Missions. 
+    It handles checking if the player built the specified station.
+    
+    $feedbackvalue:
+    -104 invalid position params. either all or none should be provided
+    -103 $StationSpecs is incorrectly defined.
+    -102 $Station is incorrectly defined.
+    -101 Cue parameters not defined
+    -100: Undefined failure. Defaulted to -100
+    -3: Station was moved
+    -2: Station changed owner
+    -1: Station was destroyed
+    1: supplies partially delivered 
+    2: All supplies delivered -->
+    <library name="GenerateVoiceTable">
+      <actions>
+        <set_value name="$VoiceTable.$CustomNotification"  exact="6014" comment="(Option to change the TransferNotification Line)" chance="if $VoiceTable.$CustomNotification? then 0 else 100"/>
+      </actions>
+    </library>
+
+    <library name="BuildStation" version="5">
+      <!--TODO @Owen canclaimownership parameter handling-->
+      <params>
+        <param name="EndSignalCue"/>
+        <param name="MissionCue"/>
+        <param name="StartStep" default="1" comment="Briefing step to start the mission on"/>
+        <param name="UpdateBriefing" default="true" comment="Update the briefing objective step when the objective is updated"/>
+        <param name="DebugChance" default="0" />
+
+        <param name="Objective"        default="objective.build_station"/>
+        <param name="ObjectiveText"    default="null" comment="The text for the mission objective."/>
+        <param name="Station"          default="null" comment="The relevant plot (which is an 'empty' station)"/>
+        <param name="StationSpecs"                    comment="What the station should look like"/>
+        <param name="PlotSector"       default="null" comment="Sector in which the station should enhabit"/>
+        <param name="PlotOffset"       default="null" comment="Offset in the sector in which the station should have"/>
+        <param name="PlotRange"        default="null" comment="Maximum plot distance from the location"/>
+        <param name="PlotSize"         default="null" comment="x/y/z minimum plot size"/>
+        <param name="Faction"          default="null" comment="The faction to which it needs to be delivered"/>
+        <param name="DefenceStation"   default="false"  comment="To check for ownership claim requirement"/>
+
+        <!-- Transfer Call Logic -->
+        <param name="Client"            default="null"  comment="client who wants the station. Will start a conversation for a station transfer."/>
+        <param name="Text_MissionName"  default="null" comment="Mission Name for Identification Purposes; Required if a Client for transfer was set"/>
+        <param name="VoiceTable"        default="table[]" comment="Table, usually populated by the mission, keys can have a value of 0 (=stay silent)"/>
+        <param name="Text_AcceptTransfer" default="{1001,2305}"             comment="Player choice text to initiate transfer, previously {30221,6156}"/>
+        <param name="Text_RejectTransfer" default="{30221,6157}"  comment="Player choice text to reject transfer"/>
+
+        <!--Result variables-->
+        <param name="ResultTable" default="null" comment="Result keys:
+               $BuiltStation = (component) The built station"/>
+      </params>
+      <actions>
+        <set_value name="$feedbackvalue" exact="0"/>
+        <create_list name="$ErrorList"/>
+
+        <do_if value="not $EndSignalCue or not $MissionCue">
+          <append_to_list name="$ErrorList" exact="-101"/>
+        </do_if>
+        <!--<do_if value="not $Station">
+          <append_to_list name="$ErrorList" exact="-102"/>
+        </do_if>-->
+        <do_if value="$Client and not $Text_MissionName">
+          <append_to_list name="$ErrorList" exact="-105"/>
+        </do_if>
+        <do_if value="not $Client and $Text_MissionName">
+          <append_to_list name="$ErrorList" exact="-105"/>
+        </do_if>
+        <do_if value="typeof $StationSpecs != datatype.table">
+          <append_to_list name="$ErrorList" exact="-103" />
+        </do_if>
+        <do_elseif value="$StationSpecs.keys.count" max="0">
+          <append_to_list name="$ErrorList" exact="-103" />
+        </do_elseif>
+        <do_else>
+          <do_if value="$PlotSector.exists and $PlotOffset and $PlotRange and $PlotSize">
+            <!--valid-->
+          </do_if>
+          <do_elseif value="not $PlotSector.exists and not $PlotOffset and not $PlotRange and not $PlotSize">
+            <!--valid-->
+          </do_elseif>
+          <do_else>
+            <append_to_list name="$ErrorList" exact="-104" />
+          </do_else>
+        </do_else>
+
+        <include_actions ref="GenerateVoiceTable"/>
+
+        <create_group groupname="$ValidStations"/>
+
+      </actions>
+      <patch sinceversion="2">
+        <set_value name="$DefenceStation" exact="false"/>
+      </patch>
+      <patch sinceversion="3">
+        <set_value name="$Objective" exact="objective.build_station"/>
+      </patch>
+      <patch sinceversion="4">
+        <create_group groupname="$ValidStations"/>
+      </patch>
+      <patch sinceversion="5">
+        <set_value name="$Client" exact="null"/>
+        <set_value name="$Text_MissionName" exact="null"/>
+        <set_value name="$VoiceTable" exact="table[]"/>
+        <set_value name="$Text_AcceptTransfer" exact="{1001,2305}"/>
+        <set_value name="$Text_RejectTransfer" exact="{30221,6157}"/>
+      </patch>
+      <cues>
+
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="1"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup"/>
+          </actions>
+        </cue>
+
+        <cue name="StartMission" onfail="cancel" version="2">
+          <conditions>
+            <check_value value="$ErrorList.count" min="0"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="UpdateBriefing"/>
+          </actions>
+          <patch sinceversion="2">
+            <do_if value="(parent.name == 'Ch_4_Build_Station_Build_Station_Ref') and (CheckMissionStatus.state == cuestate.waiting)" comment="Fix blocker in ConvertOps storyline">
+              <signal_cue_instantly cue="UpdateBriefing" param="table[$silent = false]" comment="param sets UpdateSilent which defaults to true"/>
+            </do_if>
+          </patch>
+          <cues>
+
+            <cue name="CheckMissionAtStart">
+              <actions>
+                <signal_cue cue="CheckMissionStatus" comment="in case we built the station (or cheated it) and then buy the plot-license"/>
+              </actions>
+            </cue>
+
+            <cue name="DebugBuildStation" instantiate="true">
+              <conditions>
+                <event_cue_signalled comment="manually trigger for testing TradeCompleted-cue"/>
+              </conditions>
+              <actions>
+
+                <reward_player money="1000000000Cr" comment="lots of money"/>
+
+                <create_ship name="$ship" macro="ship_arg_xl_builder_01_a_macro" zone="player.zone">
+                  <owner exact="faction.player" overridenpc="true"/>
+                  <pilot>
+                    <select faction="faction.argon" tags="[tag.commander]"/>
+                  </pilot>
+                  <units>
+                    <unit category="unitcategory.build" mk="2" exact="30" />
+                  </units>
+                  <safepos x="-450m" y="-100m" z="-1000m" />
+                </create_ship>
+                <add_cargo object="$ship" ware="ware.energycells" exact="9000"/>
+                <add_cargo object="$ship" ware="ware.foodrations" exact="2000"/>
+                <add_cargo object="$ship" ware="ware.hullparts" exact="20000"/>
+                <add_cargo object="$ship" ware="ware.claytronics" exact="3000"/>
+
+                <!-- Manually place the station using the map, assign the above ship to be the builder and then go to 
+                debugmodules "construction and trade", submenu "build process" and press '9' (while hovering over station) to cheat required wares -->
+
+              </actions>
+            </cue>
+
+            <cue name="CheckMissionStatus" instantiate="true">
+              <conditions>
+                <check_any>
+                  <event_cue_signalled/>
+                  <check_all>
+                    <event_player_build_finished_components comment="check each time a module is completed"/>
+                    <check_value value="event.param.buildanchor.isclass.station"/>
+                  </check_all>
+                  <event_player_paid_build_plot_changed/>
+                </check_any>
+              </conditions>
+              <actions>
+                <do_if value="event.name == 'event_player_build_finished_components'" comment="event_cue_signalled might not provide event.param so it would be null">
+                  <set_value name="this.$CheckStation" exact="event.param.buildanchor"/>
+                  <debug_text text="'CheckMissionStatus: module=' + event.param.name + ' Station=' + $Station.name" chance="$DebugChance"/>
+                </do_if>
+
+                <include_actions ref="Set_ValidStations" comment="Populates $ValidStations with all valid player stations, signals UpdateBriefing"/>
+
+                <do_if value="$ValidStations.count">
+                  <!-- Client Transfer -->
+                  <do_if value="$Client">
+                    <signal_cue cue="TransferInteractiveNotificationTrigger" comment="call repeatedly"/>
+                  </do_if>
+                  <!-- Cleanup if no Transfer through Client handling -->
+                  <do_else>
+                    <set_value name="this.$StationBuilt" exact="if (this.$CheckStation? and $ValidStations.indexof.{this.$CheckStation}) then this.$CheckStation else $ValidStations.{1}"/>
+                    <include_actions ref="TransferStation" comment="Transfers Station Ownership and Completes the RML; requires this.$StationBuilt"/>
+                  </do_else>
+                </do_if>
+                <do_else>
+                  <!--signal_cue cue="UpdateBriefing" comment="todo: ideally only trigger when something relevant for the mission was changed, not on every (other) module constructed"/-->
+                </do_else>
+              </actions>
+            </cue>
+
+            <cue name="CheckGuidance" comment="Update briefing on guidance change" instantiate="true">
+              <conditions>
+                <check_any>
+                  <event_guidance_enabled   cue="$MissionCue"/>
+                  <event_guidance_disabled  cue="$MissionCue"/>
+                </check_any>
+              </conditions>
+              <actions>
+                <include_actions ref="Set_ValidStations" comment="Populates $ValidStations with all valid player stations, signals UpdateBriefing"/>
+              </actions>
+            </cue>
+
+            <cue name="CheckMissionFailure_StationProvided" onfail="cancel">
+              <conditions>
+                <check_value value="$Station"/>
+                <check_value value="not $Client"/>
+              </conditions>
+              <cues>
+                <cue name="CheckMissionStatusFail_v2">
+                  <conditions>
+                    <event_object_destroyed object="$Station"/>
+                  </conditions>
+                  <actions>
+                    <set_value name="$feedbackvalue" exact="-1"/>
+                    <signal_cue cue="Cleanup"/>
+                  </actions>
+                </cue>
+
+                <cue name="CheckMissionFailure_Ownerchange_v2" instantiate="true">
+                  <conditions>
+                    <event_object_changed_true_owner object="$Station"/>
+                    <check_value value="$Faction and event.param != $Faction"/>
+                  </conditions>
+                  <actions>
+                    <set_value name="$feedbackvalue" exact="-2"/>
+                    <signal_cue cue="Cleanup"/>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+            <cue name="CheckMissionStatusFail" comment="deprecated"></cue>
+            <cue name="CheckMissionFailure_Ownerchange" instantiate="true" comment="deprecated">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+            </cue>
+
+            <cue name="StationPosition" onfail="cancel">
+              <conditions>
+                <check_value value="$Station? and $PlotSector.exists and $PlotOffset and $PlotRange and $PlotSize"/>
+              </conditions>
+              <cues>
+                <cue name="StationPosition_Init">
+                  <actions>
+                    <signal_cue_instantly cue="StationPosition_Check" param="$Station"/>
+                  </actions>
+                </cue>
+
+                <cue name="StationPosition_Check" instantiate="true">
+                  <conditions>
+                    <check_any>
+                      <event_cue_signalled/>
+                      <event_player_build_plot_changed comment="$Station"/>
+                      <event_player_paid_build_plot_changed comment="$Station"/>
+                    </check_any>
+                  </conditions>
+                  <actions>
+                    <!-- Validate Location -->
+                    <run_actions ref="StationPosition_Check_Lib" result="$PositionValid">
+                      <param name="PositionCheckStation" value="event.param"/>
+                      <param name="DebugChance"     value="$DebugChance"/>
+                      <param name="PlotSector"      value="$PlotSector"/>
+                      <param name="PlotOffset"      value="$PlotOffset"/>
+                      <param name="PlotRange"       value="$PlotRange"/>
+                      <param name="PlotSize"        value="$PlotSize"/>
+                    </run_actions>
+
+                    <do_if value="($Station == event.param) and (not $PositionValid)">
+                      <set_value name="$feedbackvalue" exact="-3"/>
+                      <signal_cue cue="Cleanup"/>
+                      <cancel_cue cue="StationPosition"/>
+                    </do_if>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <!-- we can not just trust the first check to complete and then check for all,
+                 as the player might not want to expand the first station picked by the RML to be built up to fit the requirements.
+                
+                 we need logic to check for all possible stations
+            -->
+
+            <library name="Set_ValidStations" purpose="include_actions">
+              <actions>
+                <!-- Populate $ValidStations, check for correct location and matching StationSpecs -->
+                <create_group groupname="$ValidStations" comment="clear previous group"/>
+                <run_actions ref="CheckStations" result="$ValidStationsFound">
+                  <param name="StationSpecs"    value="$StationSpecs"/>
+                  <param name="DefenceStation"  value="$DefenceStation"/>
+                  <param name="DebugChance"     value="$DebugChance"/>
+                  <param name="PlotSector"      value="$PlotSector"/>
+                  <param name="PlotOffset"      value="$PlotOffset"/>
+                  <param name="PlotRange"       value="$PlotRange"/>
+                  <param name="PlotSize"        value="$PlotSize"/>
+                  <param name="Client"          value="$Client"/>
+                  <param name="Station"         value="$Station"/>
+                </run_actions>
+
+                <add_to_group groupname="$ValidStations" group="$ValidStationsFound"/>
+
+                <signal_cue_instantly cue="UpdateBriefing"/>
+              </actions>
+            </library>
+
+            <library name="CheckStations" purpose="run_actions">
+              <params>
+                <param name="StationSpecs"/>
+                <param name="DefenceStation"/>
+                <param name="DebugChance"/>
+                <param name="PlotSector"/>
+                <param name="PlotOffset"/>
+                <param name="PlotRange"/>
+                <param name="PlotSize"/>
+                <param name="Client"/>
+                <param name="Station"/>
+              </params>
+              <actions>
+
+                <do_if value="$Station and (not $Client)" comment="checking for a specific station, i.e. upkeep.xml">
+                  <set_value name="$StationsPlayer" exact="[$Station]"/>
+                </do_if>
+                <do_else>
+                  <find_station_by_true_owner faction="faction.player" name="$StationsPlayer" multiple="true" space="if $PlotSector.exists then $PlotSector else player.galaxy"/>
+                </do_else>
+
+                <!-- Validate Location -->
+                <create_group groupname="$Stations_ValidPosition"/>
+                <do_if value="$PlotSector.exists and $PlotOffset and $PlotRange and $PlotSize">
+                  <do_for_each in="$StationsPlayer" name="$station">
+                    <run_actions ref="StationPosition_Check_Lib" result="$PositionValid">
+                      <param name="PositionCheckStation" value="$station"/>
+                      <param name="DebugChance"     value="$DebugChance"/>
+                      <param name="PlotSector"      value="$PlotSector"/>
+                      <param name="PlotOffset"      value="$PlotOffset"/>
+                      <param name="PlotRange"       value="$PlotRange"/>
+                      <param name="PlotSize"        value="$PlotSize"/>
+                    </run_actions>
+                    <do_if value="$PositionValid">
+                      <add_to_group groupname="$Stations_ValidPosition" object="$station"/>
+                    </do_if>
+                  </do_for_each>
+                </do_if>
+                <do_else>
+                  <add_to_group groupname="$Stations_ValidPosition" list="$StationsPlayer"/>
+                </do_else>
+
+                <create_group groupname="$Stations_Matching"/>
+                <do_for_each in="$Stations_ValidPosition" name="$station">
+                  <run_actions ref="md.LIB_Generic.CheckStationMatches" result="$stationmatches">
+                    <param name="Station"         value="$station"/>
+                    <param name="StationSpecs"    value="$StationSpecs"/>
+                    <param name="DefenceStation"  value="$DefenceStation"/>
+                    <param name="DebugChance"     value="$DebugChance"/>
+                  </run_actions>
+                  <do_if value="$stationmatches">
+                    <add_to_group groupname="$Stations_Matching" object="$station"/>
+                  </do_if>
+                </do_for_each>
+
+                <return value="$Stations_Matching"/>
+              </actions>
+            </library>
+
+            <library name="StationPosition_Check_Lib" purpose="run_actions">
+              <params>
+                <param name="PositionCheckStation"/>
+                <param name="DebugChance"/>
+                <param name="PlotSector"/>
+                <param name="PlotOffset"/>
+                <param name="PlotRange"/>
+                <param name="PlotSize"/>
+              </params>
+              <actions>
+                <set_value name="$Station" exact="$PositionCheckStation"/>
+
+                <set_value name="$PlotExtents" exact="$Station.paidbuildplot.max" comment="New Plot size"/>
+                <set_value name="$PositionValid" exact="false"/>
+                <do_if value="(($PlotExtents.x * 2) ge $PlotSize.x) and (($PlotExtents.y * 2) ge $PlotSize.y) and (($PlotExtents.z * 2) ge $PlotSize.z)">
+                  <do_if value="$Station.sector == $PlotSector">
+                    <do_if value="$Station.distanceto.[$PlotSector, $PlotOffset]" max="$PlotRange + $PlotExtents.length">
+                      <set_value name="$PositionValid" exact="true"/>
+                    </do_if>
+                    <do_else>
+                      <debug_text text="'Station is too far away (dist=' + $Station.distanceto.[$PlotSector, $PlotOffset]+' max-range: ' + $PlotRange + ')'" chance="$DebugChance"/>
+                    </do_else>
+                  </do_if>
+                  <do_else>
+                    <debug_text text="'Station is not in requested sector'" chance="$DebugChance"/>
+                  </do_else>
+                </do_if>
+                <do_else>
+                  <debug_text text="'Paid plot is too small (%s,%s,%s required %s,%s,%s)'.[$PlotExtents.x, $PlotExtents.y, $PlotExtents.z, $PlotSize.x, $PlotSize.y, $PlotSize.z]" chance="$DebugChance"/>
+                </do_else>
+                <return value="$PositionValid"/>
+              </actions>
+            </library>
+
+            <library name="TransferStation" purpose="include_actions">
+              <actions>
+                <set_value name="$EndSignalCue.$StationBuilt" exact="this.$StationBuilt" comment="for consistency with rml_claimplot"/>
+                <do_if value="$ResultTable">
+                  <set_value name="$ResultTable.$BuiltStation" exact="this.$StationBuilt"/>
+                </do_if>
+
+                <do_if value="$Faction">
+                  <run_actions ref="md.LIB_Generic.TransferStationOwnership">
+                    <param name="Station" value="this.$StationBuilt"/>
+                    <param name="Faction" value="$Faction"/>
+                  </run_actions>
+                </do_if>
+
+                <set_value name="$feedbackvalue" exact="1" comment="station completed"/>
+                <signal_cue cue="Cleanup" />
+              </actions>
+            </library>
+
+            <!-- objective: activate mission to initiate transfer ? -->
+
+            <cue name="TransferConversationLogic" onfail="cancel">
+              <conditions>
+                <check_value value="$Client"/>
+              </conditions>
+              <cues>
+
+                <cue name="TransferInteractiveNotificationTrigger">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <!-- we expect $ValidStations to be up to date at this point as CheckMissionStatus runs this before calling this cue and is the only caller -->
+                    <add_to_group groupname="$ValidStations_Old" group="$ValidStations"/>
+
+                    <!-- 1-time instant trigger -->
+                    <signal_cue cue="TransferInteractiveNotification"/>
+
+                  </actions>
+                  <cues>
+                    <!-- repeat after a while, in case user missed it the first time -->
+                    <!-- ugly case: mission active, player gets call, doesn't know to deactivate mission to not getting bothered further -->
+                    <cue name="TransferInteractiveNotification_Repeat">
+                      <delay exact="30min"/>
+                      <actions>
+                        <signal_cue cue="TransferInteractiveNotification"/>
+                        <reset_cue cue="this"/>
+                      </actions>
+                    </cue>
+
+                    <cue name="TransferInteractiveNotification_MapClosed" instantiate="true">
+                      <conditions>
+                        <event_ui_triggered screen="'MapMenu'" control="'menu_close'"/>
+                        <!-- will trigger a call if guidance just got enabled and the map closed -->
+                      </conditions>
+                      <actions>
+                        <reset_cue cue="TransferInteractiveNotification_Repeat"/>
+                        <signal_cue cue="TransferInteractiveNotification"/>
+                      </actions>
+                    </cue>
+
+                    <cue name="TransferInteractiveNotification_StationCompleted" instantiate="true">
+                      <conditions>
+                        <event_player_build_finished_components comment="check each time a module is completed"/>
+                        <check_value value="event.param3.isexpansion"/>
+                      </conditions>
+                      <actions>
+                        <include_actions ref="Set_ValidStations" comment="Populates $ValidStations with all valid player stations, signals UpdateBriefing"/>
+                        <do_for_each in="$ValidStations" name="$station">
+                          <!-- check if we have a new valid station which was not valid before -->
+                          <do_if value="not $ValidStations_Old.indexof.{$station}">
+                            <reset_cue cue="TransferInteractiveNotification_Repeat"/>
+                            <signal_cue cue="TransferInteractiveNotification"/>
+                            <create_group groupname="$ValidStations_Old" comment="clear group"/>
+                            <add_to_group groupname="$ValidStations_Old" group="$ValidStations"/>
+                            <break/>
+                          </do_if>
+                        </do_for_each>
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="TransferInteractiveNotification" instantiate="true">
+                  <conditions>
+                    <event_cue_signalled/>
+                    <check_value value="$MissionCue.hasguidance"          comment="will be retriggered, so fine if skipped"/>
+                    <check_value value="not player.isinconversation"      comment="will be retriggered, so fine if skipped"/>
+                    <check_value value="not player.isinfullscreenmenu"    comment="will be retriggered, so fine if skipped"/>
+                    <check_value value="not player.isscreenshotmode"      comment="will be retriggered, so fine if skipped"/>
+                  </conditions>
+                  <actions>
+                    <!-- CheckStations required since the cue signalling this is not the only event activating this cue -->
+                    <include_actions ref="Set_ValidStations" comment="Populates $ValidStations with all valid player stations, signals UpdateBriefing"/>
+
+                    <!-- If ValidStations, Client Calls -->
+                    <do_if value="$ValidStations.count">
+                      <set_value name="$Event_Timeout" exact="md.$InteractiveMissionOfferTimeout"/>
+                      <play_cutscene result="this.$TransferNotification" key="'ShowPilot'" targetmonitor="true" timeout="$Event_Timeout" caption="$Text_MissionName">
+                        <interaction text="{1002,13004}" param="$Client" param2="'RML_BuildStation_InteractiveNotification_Callback'"/>
+                        <param name="npcref" object="$Client" />
+                      </play_cutscene>
+                      <!--set_entity_traits entity="$Client" customhandler="true"/-->
+                    </do_if>
+                  </actions>
+                  <cues>
+                    <cue name="TransferNotification_Speak">
+                      <delay exact="1s"/>
+                      <actions>
+                        <speak actor="$Client" line="if typeof $VoiceTable.$CustomNotification == datatype.list then $VoiceTable.$CustomNotification.random else $VoiceTable.$CustomNotification"
+                               chance="if $VoiceTable.$CustomNotification == 0 then 0 else 100" comment="We need to perform a transfer"/>
+                        <!--<do_if value="not $MissionCue.hasguidance">
+                          <set_value name="$TemporaryGuidance"/>
+                          <activate_mission cue="$MissionCue"/>
+                        </do_if>-->
+                      </actions>
+                    </cue>
+                    <cue name="TransferNotification_Interact">
+                      <conditions>
+                        <event_player_interaction param="$Client" param2="'RML_BuildStation_InteractiveNotification_Callback'"/>
+                      </conditions>
+                      <actions>
+                        <stop_cutscene cutscene="parent.$TransferNotification"/>
+                        <start_conversation actor="$Client" conversation="Deliver_TransferOwnership"/>
+                      </actions>
+                    </cue>
+                    <cue name="TransferNotification_Cutscene_Stopped">
+                      <conditions>
+                        <event_cutscene_stopped cutscene="parent.$TransferNotification"/>
+                      </conditions>
+                      <actions>
+                        <cancel_cue cue="TransferInteractiveNotification"/>
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="TransferConversationStart" instantiate="true">
+                  <conditions>
+                    <event_conversation_started actor="$Client" comment="players initiating the conversation can also trigger the transfer"/>
+                    <check_value value="$ValidStations.count"/>
+                  </conditions>
+                  <actions>
+                    <include_actions ref="Set_ValidStations" comment="Populates $ValidStations with all valid player stations, signals UpdateBriefing"/>
+
+                    <do_if value="$ValidStations.count">
+                      <add_player_choice text="$Text_AcceptTransfer" position="left" section="transfer_select_station" />
+                      <add_player_choice text="$Text_RejectTransfer" position="right" section="transfer_decline" />
+                    </do_if>
+                  </actions>
+                </cue>
+
+
+                <cue name="TransferFleetConversationNextSection" instantiate="true">
+                  <conditions>
+                    <event_conversation_next_section actor="$Client" />
+                  </conditions>
+                  <actions>
+                    <include_actions ref="Set_ValidStations" comment="Populates $ValidStations with all valid player stations, signals UpdateBriefing"/>
+
+                    <!-- Select Station -->
+                    <do_if value="event.param == 'transfer_select_station'">
+                      <do_for_each in="$ValidStations" name="$station">
+                        <debug_text text="'Select from $ValidStations: ' + $station + ' ' + $station.name" chance="$DebugChance"/>
+                      </do_for_each>
+                      <open_conversation_menu menu="PlatformUndockMenu" param="[0, 0, null, 'transferplayerstation', [ $ValidStations ]]" comment="add ship does not meet requirements to last string"/>
+                    </do_if>
+                    <!-- Transfer Selected Station -->
+                    <do_elseif value="event.param == 'c_transferplayerstation_stationselected'">
+                      <debug_text text="'Selected Station: ' + event.param2 + ' ' + event.param2.name" chance="$DebugChance"/>
+
+                      <include_actions ref="Set_ValidStations" comment="Populates $ValidStations with all valid player stations, signals UpdateBriefing"/>
+                      <do_if value="$ValidStations.indexof.{event.param2} and event.param2.isoperational" comment="still valid and alive">
+                        <set_value name="this.$StationBuilt" exact="event.param2"/>
+                        <include_actions ref="TransferStation" comment="Transfers Station Ownership and Completes the RML; requires this.$StationBuilt"/>
+                        <set_value name="$Station" exact="event.param2" comment="set correct station to fix the briefing steps before cleanup"/>
+                        <signal_cue_instantly cue="UpdateBriefing"/>                        
+                      </do_if>
+                    </do_elseif>
+                    <!-- CANCEL -->
+                    <do_elseif value="event.param == 'g_cancel'">
+                      <!-- F > Transfer (selection menu) > X > g_cancel
+                           F > ESC > g_cancel -->
+                      <debug_text text="' ' + event.param" chance="$DebugChance"/>
+                    </do_elseif>
+                    <!-- FINISH -->
+                    <do_elseif value="event.param == 'g_finished'">
+                      <!-- F > Transfer (selection menu) > ESC/Arrow Left > g_finish -->
+                      <debug_text text="' ' + event.param" chance="$DebugChance"/>
+                    </do_elseif>
+                    <!-- DECLINE -->
+                    <do_elseif value="event.param == 'transfer_decline'">
+                      <!-- Reject Transfer -->
+                      <debug_text text="' ' + event.param" chance="$DebugChance"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$feedbackvalue" exact="-1" comment="fail"/>
+                      <signal_cue cue="Cleanup"/>
+                    </do_else>
+
+                  </actions>
+                </cue>
+
+              </cues>
+            </cue>
+
+          </cues>
+        </cue>
+
+        <library name="UpdateBriefingObjective" purpose="include_actions" comment="input = $ObjectiveBuildText (or not defined)">
+          <actions>
+            <do_if value="$ObjectiveBuildText?">
+              <update_mission cue="$MissionCue">
+                <briefing>
+                  <objective step="$Counter" action="$Objective" text="$ObjectiveBuildText" object="$Station"/>
+                </briefing>
+              </update_mission>
+              <remove_value name="$ObjectiveBuildText"/>
+              <set_value name="$Counter" exact="1" operation="add"/>
+            </do_if>
+          </actions>
+        </library>
+
+        <cue name="UpdateBriefing" instantiate="true" comment="Called each time a briefing-update is needed">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <set_value name="$UpdateSilent" exact="if event.param.$silent? then event.param.$silent else true" comment="default null"/>
+
+            <do_if value="$UpdateBriefing">
+
+              <!-- module construction details case -->
+              <set_value name="$Counter" exact="$StartStep"/>
+              <do_all counter="$stage" exact="2">
+                <do_if value="$stage == 2">
+                  <set_value name="$NextCounter" exact="$Counter"/>
+                </do_if>
+
+                <debug_text text="'Twice %s'.[$stage]" chance="$DebugChance"/>
+                <do_if value="$DefenceStation">
+                  <!-- see mission briefing {30120, 300}, "To be a valid Defence Station, one of the Defence Modules must be an Administrative Centre." -->
+                  <debug_text text="'DefenseStation'" chance="$DebugChance"/>
+                  <do_if value="$stage == 1 and $Station.canclaimownership">
+                    <set_value name="$ObjectiveBuildText" exact="{20104,40001}" comment="objective done"/>
+                  </do_if>
+                  <do_elseif value="$stage == 2 and not $Station.canclaimownership">
+                    <set_value name="$ObjectiveBuildText" exact="{20104,40001}" comment="objective incomplete"/>
+                  </do_elseif>
+                  <include_actions ref="UpdateBriefingObjective" comment="input: $ObjectiveBuildText, output=$ObjectiveBuildText-removed and $Counter incremented"/>
+                </do_if>
+
+
+                <debug_text text="'Station=%s class=%s'.[$Station, $Station.class]" chance="$DebugChance"/>
+
+                <do_if value="$StationSpecs.$solidstorage? and (typeof $StationSpecs.$solidstorage).isnumeric and $StationSpecs.$solidstorage gt 0">
+                  <debug_text text="'SolidStorage'" chance="$DebugChance"/>
+                  <set_value name="$SolidCapacity" exact="if $Station.isoperational then $Station.cargo.capacity.solid else 0" comment=".cargo.capacity on new station gives script error"/>
+                  <do_if value="$stage == 1 and $SolidCapacity ge $StationSpecs.$solidstorage">
+                    <set_value name="$ObjectiveBuildText" exact="{30004, 2003}"/>
+                  </do_if>
+                  <do_elseif value="$stage == 2 and $SolidCapacity lt $StationSpecs.$solidstorage">
+                    <set_value name="$ObjectiveBuildText" exact="{30004, 2003} + ' ' + ($StationSpecs.$solidstorage - $SolidCapacity)"/>
+                  </do_elseif>
+                  <include_actions ref="UpdateBriefingObjective" comment="input: $ObjectiveBuildText, output=$ObjectiveBuildText-removed and $Counter incremented"/>
+                </do_if>
+
+                <do_if value="$StationSpecs.$containerstorage? and (typeof $StationSpecs.$containerstorage).isnumeric and $StationSpecs.$containerstorage gt 0">
+                  <debug_text text="'ContainerStorage'" chance="$DebugChance"/>
+                  <set_value name="$ContainerCapacity" exact="if $Station.isoperational then $Station.cargo.capacity.container else 0" comment=".cargo.capacity on new station gives script error"/>
+                  <do_if value="$stage == 1 and $ContainerCapacity ge $StationSpecs.$containerstorage">
+                    <set_value name="$ObjectiveBuildText" exact="{30004, 2004}"/>
+                  </do_if>
+                  <do_elseif value="$stage == 2 and $ContainerCapacity lt $StationSpecs.$containerstorage">
+                    <set_value name="$ObjectiveBuildText" exact="{30004, 2004} + ' ' + ($StationSpecs.$containerstorage - $ContainerCapacity)"/>
+                  </do_elseif>
+                  <include_actions ref="UpdateBriefingObjective" comment="input: $ObjectiveBuildText, output=$ObjectiveBuildText-removed and $Counter incremented"/>
+                </do_if>
+
+                <do_if value="$StationSpecs.$liquidstorage? and (typeof $StationSpecs.$liquidstorage).isnumeric and $StationSpecs.$liquidstorage gt 0">
+                  <debug_text text="'LiquidStorage'" chance="$DebugChance"/>
+                  <set_value name="$LiquidCapacity" exact="if $Station.isoperational then $Station.cargo.capacity.liquid else 0" comment=".cargo.capacity on new station gives script error"/>
+                  <do_if value="$stage == 1 and $LiquidCapacity ge $StationSpecs.$liquidstorage">
+                    <set_value name="$ObjectiveBuildText" exact="{30004, 2005}" comment="Liquid storage done"/>
+                  </do_if>
+                  <do_elseif value="$stage == 2 and $LiquidCapacity lt $StationSpecs.$liquidstorage">
+                    <set_value name="$ObjectiveBuildText" exact="{30004, 2005} + ' ' + ($StationSpecs.$liquidstorage - $LiquidCapacity)" comment="Liquid storage todo"/>
+                  </do_elseif>
+                  <include_actions ref="UpdateBriefingObjective" comment="input: $ObjectiveBuildText, output=$ObjectiveBuildText-removed and $Counter incremented"/>
+                </do_if>
+
+                <do_if value="$StationSpecs.$containedmacros? and $StationSpecs.$containedmacros.count">
+                  <do_all exact="$StationSpecs.$containedmacros.count" counter="$gtt_i">
+                    <set_value name="this.$MacroDef" exact="$StationSpecs.$containedmacros.{$gtt_i}"/>
+                    <do_if value="this.$MacroDef.{1} gt 0" comment="Check that the definition wants a positive amount">
+                      <assert value="typeof this.$MacroDef.{2} == datatype.macro" text="'Invalid macro definition. ' + this.$MacroDef.{2} + ' is not a macro.'"/>
+                      <do_if value="typeof this.$MacroDef.{2} == datatype.macro">
+                        <find_object_component name="$ResultComponents" object="$Station" macro="this.$MacroDef.{2}" multiple="true"/>
+                        <debug_text text="'Checking if station has macro: ' + this.$MacroDef.{2} + '. Requires: ' + this.$MacroDef.{1} + ' - has ' + $ResultComponents.count" chance="$DebugChance"/>
+                        <do_if value="$stage == 1 and $ResultComponents.count ge this.$MacroDef.{1}">
+                          <set_value name="$ObjectiveBuildText" exact="this.$MacroDef.{2}.name + ' (' +  $ResultComponents.count + ' / ' + this.$MacroDef.{1} + ')'"/>
+                        </do_if>
+                        <do_elseif value="$stage == 2 and $ResultComponents.count lt this.$MacroDef.{1}">
+                          <set_value name="$ObjectiveBuildText" exact="this.$MacroDef.{2}.name + ' (' +  $ResultComponents.count + ' / ' + this.$MacroDef.{1} + ')'"/>
+                        </do_elseif>
+                      </do_if>
+                    </do_if>
+                    <include_actions ref="UpdateBriefingObjective" comment="input: $ObjectiveBuildText, output=$ObjectiveBuildText-removed and $Counter incremented"/>
+                  </do_all>
+                </do_if>
+
+                <do_if value="$StationSpecs.$containedclasses? and $StationSpecs.$containedclasses.count">
+                  <do_all exact="$StationSpecs.$containedclasses.count" counter="$gtt_i">
+                    <set_value name="this.$ClassDef" exact="$StationSpecs.$containedclasses.{$gtt_i}"/>
+                    <do_if value="this.$ClassDef.{1} gt 0" comment="Check that the definition wants a positive amount">
+                      <assert value="typeof this.$ClassDef.{2} == datatype.class" text="'Invalid class definition. ' + this.$ClassDef.{2} + ' is not a class.'"/>
+                      <do_if value="typeof this.$ClassDef.{2} == datatype.class">
+                        <find_object_component name="$ResultComponents" object="$Station" class="this.$ClassDef.{2}" multiple="true"/>
+                        <debug_text text="'Checking if station has class: ' + this.$ClassDef.{2} + '. Requires: ' + this.$ClassDef.{1} + ' - has ' + $ResultComponents.count" chance="$DebugChance"/>
+                        <do_if value="$stage == 1 and $ResultComponents.count ge this.$ClassDef.{1}">
+                          <set_value name="$ObjectiveBuildText" exact="(if this.$ClassDef.{1} == 1 then this.$ClassDef.{3} else this.$ClassDef.{4}) + ' (' + $ResultComponents.count + ' / ' + this.$ClassDef.{1} + ')'"/>
+                        </do_if>
+                        <do_elseif value="$stage == 2 and $ResultComponents.count lt this.$ClassDef.{1}">
+                          <set_value name="$ObjectiveBuildText" exact="(if this.$ClassDef.{1} == 1 then this.$ClassDef.{3} else this.$ClassDef.{4}) + ' (' + $ResultComponents.count + ' / ' + this.$ClassDef.{1} + ')'"/>
+                        </do_elseif>
+                      </do_if>
+                    </do_if>
+                    <include_actions ref="UpdateBriefingObjective" comment="input: $ObjectiveBuildText, output=$ObjectiveBuildText-removed and $Counter incremented"/>
+                  </do_all>
+                </do_if>
+
+                <do_if value="$StationSpecs.$products? and $StationSpecs.$products.count">
+                  <do_all exact="$StationSpecs.$products.count" counter="$gtt_i">
+                    <set_value name="this.$ProductDef" exact="$StationSpecs.$products.{$gtt_i}"/>
+                    <do_if value="this.$ProductDef.{1} gt 0" comment="Check that the definition wants a positive amount">
+                      <assert value="typeof this.$ProductDef.{2} == datatype.ware" text="'Invalid product definition. ' + this.$ProductDef.{2} + ' is not a ware.'"/>
+                      <do_if value="typeof this.$ProductDef.{2} == datatype.ware">
+                        <find_object_component name="$ResultComponents" object="$Station" multiple="true">
+                          <match_products wares="this.$ProductDef.{2}"/>
+                        </find_object_component>
+                        <debug_text text="'Checking if station has production: ' + this.$ProductDef.{2} + '. Requires: ' + this.$ProductDef.{1} + ' - has ' + $ResultComponents.count" chance="$DebugChance"/>
+                        <!-- TODO: objective is probably unclear -->
+                        <do_if value="$stage == 1 and $ResultComponents.count ge this.$ProductDef.{1}">
+                          <set_value name="$ObjectiveBuildText" exact="{30004, 2002} + ' ' + this.$ProductDef.{2} + ' (' + $ResultComponents.count + '/' + this.$ProductDef.{1} + ')'"/>
+                        </do_if>
+                        <do_elseif value="$stage == 2 and $ResultComponents.count lt this.$ClassDef.{1}">
+                          <set_value name="$ObjectiveBuildText" exact="{30004, 2002} + ' ' + this.$ProductDef.{2} + ' (' + $ResultComponents.count + '/' + this.$ProductDef.{1} + ')'"/>
+                        </do_elseif>
+                      </do_if>
+                    </do_if>
+                    <include_actions ref="UpdateBriefingObjective" comment="input: $ObjectiveBuildText, output=$ObjectiveBuildText-removed and $Counter incremented"/>
+                  </do_all>
+                </do_if>
+
+                <do_if value="$StationSpecs.$builtclasses? and $StationSpecs.$builtclasses.count">
+                  <do_all exact="$StationSpecs.$builtclasses.count" counter="$gtt_i">
+                    <set_value name="this.$ClassDef" exact="$StationSpecs.$builtclasses.{$gtt_i}"/>
+                    <do_if value="this.$ClassDef.{1} gt 0" comment="Check that the definition wants a positive amount">
+                      <assert value="typeof this.$ClassDef.{2} == datatype.class" text="'Invalid class definition. ' + this.$ClassDef.{2} + ' is not a class.'"/>
+                      <do_if value="typeof this.$ClassDef.{2} == datatype.class">
+                        <find_object_component name="$ResultComponents" object="$Station" module="true" canbuildclass="this.$ClassDef.{2}" multiple="true"/>
+                        <debug_text text="'Checking if station can build class: ' + this.$ClassDef.{2} + '. Requires: ' + this.$ClassDef.{1} + ' - has ' + $ResultComponents.count" chance="$DebugChance"/>
+                        <do_if value="this.$ClassDef.{2} == class.ship_xs">
+                          <set_value name="$BuiltClassesText" exact="{1001,52}"/>
+                        </do_if>
+                        <do_elseif value="this.$ClassDef.{2} == class.ship_s">
+                          <set_value name="$BuiltClassesText" exact="{1001,51}"/>
+                        </do_elseif>
+                        <do_elseif value="this.$ClassDef.{2} == class.ship_m">
+                          <set_value name="$BuiltClassesText" exact="{1001,50}"/>
+                        </do_elseif>
+                        <do_elseif value="this.$ClassDef.{2} == class.ship_l">
+                          <set_value name="$BuiltClassesText" exact="{1001,49}"/>
+                        </do_elseif>
+                        <do_elseif value="this.$ClassDef.{2} == class.ship_xl">
+                          <set_value name="$BuiltClassesText" exact="{1001,48}"/>
+                        </do_elseif>
+                        <do_else>
+                          <debug_text text="'Unknown ProductDef'"/>
+                        </do_else>
+                        
+                        <do_if value="$stage == 1 and $ResultComponents.count ge this.$ClassDef.{1}">
+                          <set_value name="$ObjectiveBuildText" exact="{30004, 2006} + ' ' + $BuiltClassesText + ' (' + $ResultComponents.count + '/' + this.$ClassDef.{1} + ')'"/>
+                        </do_if>
+                        <do_elseif value="$stage == 2 and $ResultComponents.count lt this.$ClassDef.{1}">
+                          <set_value name="$ObjectiveBuildText" exact="{30004, 2006} + ' ' + $BuiltClassesText + ' (' + $ResultComponents.count + '/' + this.$ClassDef.{1} + ')'"/>
+                        </do_elseif>
+                      </do_if>
+                    </do_if>
+                    <include_actions ref="UpdateBriefingObjective" comment="input: $ObjectiveBuildText, output=$ObjectiveBuildText-removed and $Counter incremented"/>
+                  </do_all>
+                </do_if>
+              </do_all>
+
+              <debug_text text="'$StartStep=%s NextCounter=%s $Counter=%s'.[$StartStep, $NextCounter, $Counter]" chance="$DebugChance"/>
+              <set_objective_from_briefing cue="$MissionCue" step="if ($Counter != $NextCounter) then $NextCounter else ($NextCounter - 1)" comment="go back to the last completed objective (leaving the ones after that as 'incomplete')"/>
+              <set_value name="$EndSignalCue.$FinalStep" exact="$Counter - 1"/>
+
+              <!-- special case for transfer of existing station matching criteria (client will call player, but only if mission is active) -->
+              <do_if value="$Client and $ValidStations.count ">
+                <do_if value="not $MissionCue.hasguidance">
+                  <set_value name="this.$Objective"         exact="objective.activate"/>
+                  <set_value name="this.$NextObjectiveText" exact="$Text_MissionName"/>
+                </do_if>
+                <do_elseif value="$MissionCue.hasguidance">
+                  <set_value name="this.$Objective"         exact="objective.await"/>
+                  <set_value name="this.$NextObjectiveText" exact="$Client.name"/>
+                </do_elseif>
+                <!-- station transfer case -->
+                <set_value name="$EndSignalCue.$FinalStep" exact="$Counter - 1 + 1"/>
+                <update_mission cue="$MissionCue">
+                  <briefing>
+                    <objective step="$EndSignalCue.$FinalStep" action="this.$Objective" text="this.$NextObjectiveText" group="$ValidStations" silent="$UpdateSilent"/>
+                  </briefing>
+                </update_mission>
+                <set_objective cue="$MissionCue" step="$EndSignalCue.$FinalStep" action="this.$Objective" text="this.$NextObjectiveText" group="$ValidStations" silent="$UpdateSilent"/>
+              </do_if>
+            </do_if>
+            
+          </actions>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <!--TODO remove_objective-->
+
+            <do_if value="$feedbackvalue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'ERROR: Feedback value is 0 and no error values were set. Defaulting to -100'"/>
+                <set_value name="$feedbackvalue" exact="-100"/>
+              </do_if>
+              <do_else>
+                <set_value name="$feedbackvalue" exact="$ErrorList.{1}"/>
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+                    <do_if value="$ErrorList.{$Counter}" exact="-104">
+                      <set_value name="$FeedbackText" exact="'invalid position params. either all or none should be provided'"/>
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-103">
+                      <set_value name="$FeedbackText" exact="'$StationSpecs is incorrectly defined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-102">
+                      <set_value name="$FeedbackText" exact="'$Station parameter left undefined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'Cue parameters not defined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-100">
+                      <set_value name="$FeedbackText" exact="'Undefined failure. Defaulted to -100'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-105">
+                      <set_value name="$FeedbackText" exact="'Client and Text_MissionName mismatch, either both or none should be provided.'"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                    </do_else>
+
+                    <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+
+              <do_if value="$feedbackvalue" exact="-3">
+                <set_value name="$FeedbackText" exact="{30004,6045}" comment="'Station plot no longer matches criteria'"/>
+              </do_if>
+              <do_elseif value="$feedbackvalue" exact="-2">
+                <set_value name="$FeedbackText" exact="{30004,6026}" comment="'Station changed owner'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="-1">
+                <set_value name="$FeedbackText" exact="{30004,6028}" comment="'Station was destroyed'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="1">
+                <set_value name="$FeedbackText" exact="'Station Completed'"/>
+              </do_elseif>
+
+              <do_if value="$feedbackvalue" min="1">
+                <debug_text text="'Mission Successful. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_if>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission Failed. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+            <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$feedbackvalue"/>
+            <signal_cue cue="$EndSignalCue"/>
+            <cancel_cue cue="BuildStation"/>
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

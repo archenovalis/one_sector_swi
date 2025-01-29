@@ -1,0 +1,181 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_Restock_Drones" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--
+    $feedbackvalue:
+    -103: Both $CommanderObject nor $CommanderEntity exist. Only pass one to avoid confusion
+    -102: Neither $CommanderObject nor $CommanderEntity exist
+    -101: EndSignalCue or MissionCue not defined
+    -100: Undefined failure. Defaulted to -100
+    -1: Object destroyed
+    1: Subordinate assigned-->
+
+    <library name="RestockDrones" namespace="this">
+      <params>
+        <param name="EndSignalCue"/>
+        <param name="MissionCue"/>
+        <param name="StartStep" default="1" comment="Briefing step to start the mission"/>
+        <param name="UpdateBriefing" default="true" comment="Update the briefing objective step when the objective is updated"/>
+
+        <!--Commander params-->
+        <param name="CommanderObject" default="null" comment="Object for the subordinate to be assigned to (do not combine with $CommanderEntity)"/>
+        <param name="Assignment" default="null" comment="Assignment for the subordinate"/>
+
+        <param name="CommanderEntity" default="null" comment="Entity for the subordinate to be assigned to (do not combine with $CommanderObject)"/>
+
+        <!--Subordinate params-->
+        <param name="ObjectiveText" default="null"/>
+
+        <param name="DebugChance" default="0"/>
+      </params>
+      <actions>
+        <set_value name="$feedbackvalue" exact="0"/>
+        <create_list name="$ErrorList"/>
+
+        <do_if value="not $EndSignalCue or not $MissionCue">
+          <append_to_list name="$ErrorList" exact="-101"/>
+        </do_if>
+        <do_if value="not $CommanderObject.exists and not $CommanderEntity.exists">
+          <append_to_list name="$ErrorList" exact="-102"/>
+        </do_if>
+        <do_if value="$CommanderObject.exists and $CommanderEntity.exists">
+          <append_to_list name="$ErrorList" exact="-103"/>
+        </do_if>
+
+        <do_if value="$ErrorList.count == 0">
+          <do_if value="$CommanderObject.exists">
+            <set_value name="$Object" exact="$CommanderObject"/>
+          </do_if>
+          <do_elseif value="$CommanderEntity.exists">
+            <set_value name="$Object" exact="$CommanderEntity"/>
+          </do_elseif>
+        </do_if>
+      </actions>
+      <cues>
+
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count != 0" />
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup" />
+          </actions>
+        </cue>
+
+        <cue name="StartMission" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count == 0" />
+          </conditions>
+          <actions>
+            <!--Check existing subordinates-->
+            <do_if value="false">
+              <set_value name="$feedbackvalue" exact="2"/>
+              <signal_cue cue="Cleanup"/>
+            </do_if>
+          </actions>
+          <cues>
+            <cue name="UpdateGuidance">
+              <actions>
+                <do_if value="$UpdateBriefing">
+                  <update_mission cue="$MissionCue">
+                    <briefing>
+                      <objective step="$StartStep" action="objective.custom" customaction="{1004,28}" text="$ObjectiveText" object="$Object"/>
+                    </briefing>
+                  </update_mission>
+                </do_if>
+                <set_objective cue="$MissionCue" step="$StartStep" action="objective.custom" customaction="{1004,28}" text="$ObjectiveText" object="$Object"/>
+              </actions>
+            </cue>
+
+            <cue name="DronesRestocked" instantiate="true" checkinterval="5s">
+              <conditions>
+                <check_value value="$Object.units.{unitcategory.transport}.count ge 1"/>
+              </conditions>
+              <actions>
+                <set_value name="$feedbackvalue" exact="1"/>
+                <signal_cue cue="Cleanup"/>
+              </actions>
+            </cue>
+
+            <cue name="ObjectDestroyed">
+              <conditions>
+                <event_object_destroyed object="$Object"/>
+              </conditions>
+              <actions>
+                <set_value name="$feedbackvalue" exact="-1"/>
+                <signal_cue cue="Cleanup"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <!--TODO remove_objective-->
+            <do_if value="$feedbackvalue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'ERROR: Feedback value is 0 and no error values were set. Defaulting to -100'"/>
+                <set_value name="$feedbackvalue" exact="-100"/>
+              </do_if>
+              <do_else>
+                <set_value name="$feedbackvalue" exact="$ErrorList.{1}"/>
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+                    <do_if value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'EndSignalCue or MissionCue not defined'"/>
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-102">
+                      <set_value name="$FeedbackText" exact="'Neither $CommanderObject nor $CommanderEntity exist'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-103">
+                      <set_value name="$FeedbackText" exact="'Both $CommanderObject nor $CommanderEntity exist. Only pass one to avoid confusion'"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                    </do_else>
+
+                    <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+
+              <do_if value="$feedbackvalue" exact="1">
+                <set_value name="$FeedbackText" exact="'Subordinate assigned'"/>
+              </do_if>
+              <do_elseif value="$feedbackvalue" exact="2">
+                <set_value name="$FeedbackText" exact="'Subordinate already was assigned'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="-1">
+                <set_value name="$FeedbackText" exact="{30004,6027}" comment="'$Object destroyed'"/>
+              </do_elseif>
+
+              <do_if value="$feedbackvalue" min="1">
+                <debug_text text="'Mission Successful. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_if>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission Failed. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+            <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$feedbackvalue"/>
+            <signal_cue cue="$EndSignalCue"/>
+            <cancel_cue cue="RestockDrones"/>
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

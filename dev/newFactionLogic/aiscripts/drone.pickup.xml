@@ -1,0 +1,131 @@
+<?xml version="1.0" encoding="iso-8859-1" ?>
+<!--
+this script sends a drone to pick up an object (crate or rock)
+-->
+<aiscript name="drone.pickup" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd">
+  <params>
+    <param name="target" />
+    <param name="stayactive" default="true" />
+    <param name="debugchance" default="0"/>
+  </params>
+  <interrupts>
+    <handler ref="TargetInvalidHandler" />
+    <handler comment="target destroyed">
+      <conditions>
+        <check_any>
+          <event_object_destroyed object="$target" />
+          <event_object_picked_up object="$target"/>
+        </check_any>
+        <check_value value="event.param" exact="this.ship" negate="true" />
+      </conditions>
+      <actions>
+        <debug_text text="'target lost. %s'.[event.name]" chance="$debugchance"/>
+        <abort_called_scripts resume="targetlost" />
+      </actions>
+    </handler>
+  </interrupts>
+  <attention min="visible">
+    <actions>
+
+      <label name="start" />
+
+      <!-- Check if it exists or it is already picked up. -->
+      <do_if value="not $target.exists or @$target.ship">
+        <resume label="targetlost" />
+      </do_if>
+
+      <set_value name="this.$pickuptarget" exact="$target"/>
+      <!--<set_command_action commandaction="commandaction.flyingto" param="$target"/>-->
+
+      <!-- this will default to generic steering behaviour until the drone is close enough to the target -->
+      <move_to object="this.ship" destination="$target" finishonapproach="true" forcesteering="true" />
+      <do_if value="not $target.exists or @$target.ship">
+        <resume label="targetlost" />
+      </do_if>
+
+      <!-- disable collision and collision avoidance -->
+      <disable_collisions_between object="this.ship" target="$target" />
+      <set_avoid_collisions object="this.ship" bigobjects="false" smallobjects="false" />
+      <move_to object="this.ship" destination="$target" flightbehaviour="flightbehaviour.pickup" forcesteering="true" />
+
+      <do_if value="not $target.exists or @$target.ship">
+        <resume label="targetlost" />
+      </do_if>
+
+      <debug_text text="player.age+' prepare pickup'" chance="$debugchance"/>
+
+      <do_if value="$target.isdeployable">
+        <debug_text text="'deactivating %s %s %s prior to collection.'.[@$target.idcode, @$target.knownname, $target]" chance="$debugchance"/>
+        <set_object_active object="$target" activate="false"/>
+      </do_if>
+
+      <!-- this starts the StopAndAlign movement of the target object which stops rotation and aligns it for pickup -->
+      <pickup_target ship="this.ship" target="$target" prepare="true" />
+
+      <do_if value="not $target.exists or @$target.ship">
+        <resume label="targetlost" />
+      </do_if>
+
+      <!-- start pickup animation on drone -->
+      <set_object_active object="this.ship" activate="true"/>
+
+      <!-- wait for activate animation to finish -->
+      <wait exact="4s" />
+
+      <do_if value="not $target.exists or @$target.ship">
+        <resume label="targetlost" />
+      </do_if>
+
+      <!-- pick up object -->
+      <pickup_target ship="this.ship" target="$target" />
+      <do_if value="$target.parent" exact="this.ship">
+        <set_owner object="$target" faction="this.ship.owner"/>
+      </do_if>
+      <do_else>
+        <debug_text text="player.age + ' $target is not connected properly.'" chance="$debugchance"/>
+        <resume label="targetlost"/>
+      </do_else>
+
+      <!-- if the drone should remain in activated state (ore collector), skip this. Otherwise deactivate and wait for that animation to finish before returning -->
+      <do_if value="not $stayactive">
+        <wait exact="250ms" />
+        <set_object_active object="this.ship" activate="false"/>
+        <wait exact="3s" />
+      </do_if>
+
+      <!-- yay, we picked up the object -->
+      <!-- restore collision avoidance -->
+      <reset_avoid_collisions object="this.ship"/>
+      <return value="true" />
+
+      <!-- something went wrong, the target does no longer exist -->
+      <label name="targetlost" />
+      <debug_text text="player.age+' target lost'" chance="$debugchance"/>
+      <reset_avoid_collisions object="this.ship"/>
+      <stop_moving object="this.ship"/>
+      <return value="false" />
+
+    </actions>
+  </attention>
+  <attention min="unknown">
+    <actions>
+      <label name="start" />
+      <do_if value="this.ship.pickedupobject.exists">
+        <reset_avoid_collisions object="this.ship"/>
+        <return value="true" />
+      </do_if>
+      <label name="targetlost" />
+      <reset_avoid_collisions object="this.ship"/>
+      <return value="false" />
+    </actions>
+  </attention>
+  <on_abort>
+    <do_if value="$target.exists">
+      <enable_collisions_between object="this.ship" target="$target" />
+    </do_if>
+    <set_object_active object="this.ship" activate="false"/>
+    <reset_avoid_collisions object="this.ship"/>
+    <stop_moving object="this.ship"/>
+  </on_abort>
+</aiscript>
+

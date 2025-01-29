@@ -1,0 +1,246 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_Deliver_Units" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--
+      WARNING: 
+        This RML is strongly player focused and should NOT be used for delivering units to an object which is NPC-owned.
+        Background: The RML periodically checks $Object.units.{$UnitType}.count, and while the player can move those units around in the UI, he can't deliver them to an NPC object.
+      $feedbackvalue:
+      -104 Object owner is non-player
+      -103 No valid entries in UnitTable
+      -102 No Object exists
+      -101 Cue parameters not defined
+      -100: Undefined failure. Defaulted to -100
+      -2: Destination changed owner
+      -1: Destination destroyed
+      1: Passengers Successfully transported
+    -->
+
+    <library name="DeliverUnits">
+      <params>
+        <param name="EndSignalCue"/>
+        <param name="MissionCue"/>
+        <param name="StartStep" default="1" comment="Briefing step to start the mission on"/>
+        <param name="UpdateBriefing" default="true" comment="Update the briefing objective step when the objective is updated"/>
+        
+        <param name="UnitTable_Master" comment="Table of wanted units. Will be cloned to $UnitTable"/>
+        <param name="Object" comment="Object to deliver the units to"/>
+
+        <param name="DebugChance" default="0"/>
+      </params>
+      <actions>
+        <set_value name="$feedbackvalue" exact="0"/>
+        <create_list name="$ErrorList"/>
+        
+        <do_if value="not $EndSignalCue or not $MissionCue">
+          <append_to_list name="$ErrorList" exact="-101"/>
+        </do_if>
+        <do_elseif value="not $Object.exists">
+          <append_to_list name="$ErrorList" exact="-102"/>
+        </do_elseif>
+
+        <do_if value="$Object.exists and $Object.owner != faction.player">
+          <append_to_list name="$ErrorList" exact="-104"/>
+        </do_if>
+
+        <set_value name="$UnitTable" exact="$UnitTable_Master.clone"/>
+        <set_value name="$Keys" exact="$UnitTable.keys.list"/>
+        <do_all exact="$Keys.count" counter="$i" reverse="true">
+          <!--Currently disable passing a macro: Can get confusing if macros use the same name.-->
+          <!--and typeof $Keys.{$i} != datatype.macro-->
+          <do_if value="typeof $Keys.{$i} != datatype.unitcategory">
+            <debug_text text="'Removing ' + $Keys.{$i} + ' from the $UnitTable as it is not a unitcategory'"/>
+            <remove_value name="$UnitTable.{$Keys.{$i}}"/>
+          </do_if>
+          <do_elseif value="not (typeof $UnitTable.{$Keys.{$i}}).isnumeric or not $UnitTable.{$Keys.{$i}}">
+            <debug_text text="'Removing ' + $Keys.{$i} + ' from the $UnitTable as it didnt have a valid value'"/>
+            <remove_value name="$UnitTable.{$Keys.{$i}}"/>
+          </do_elseif>
+        </do_all>
+        
+        <do_if value="not $UnitTable.keys.count">
+          <append_to_list name="$ErrorList" exact="-103"/>
+        </do_if>
+      </actions>
+      <cues>
+
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="1"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup"/>
+          </actions>
+        </cue>
+
+        <cue name="StartMission" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="0"/>
+          </conditions>
+          <cues>
+            <cue name="SetObjective" instantiate="true" checkinterval="5s">
+              <actions>
+                <set_value name="$SortedUnitTable" exact="table[]"/>
+                <set_value name="$Keys" exact="$UnitTable.keys.list"/>
+                <do_all exact="$Keys.count" counter="$i">
+                  <set_value name="$UnitType" exact="$Keys.{$i}"/>
+                  <do_if value="typeof $UnitType == datatype.unitcategory">
+                    <set_value name="$SortedUnitTable.{$UnitType}" exact="[$UnitTable.{$UnitType} - $Object.units.{$UnitType}.count, 0].max"/>
+                  </do_if>
+                  <!--<do_elseif value="typeof $UnitType == datatype.macro">
+                    <set_value name="$SortedUnitTable.[{$UnitType}]" exact="[$Amount - $Object.units.{$UnitType}.count, 0].max"/>
+                  </do_elseif>-->
+                  <do_else>
+                    <assert value="false" text="'$UnitType ' + $UnitType + ' is not a unitcategory [Owen]'"/>
+                  </do_else>
+                </do_all>
+
+                <set_value name="$BriefingText" exact="null"/>
+                <set_value name="$ObjectiveSet" exact="false"/>
+                <set_value name="$Keys" exact="$SortedUnitTable.keys.sorted"/>
+                <!--Reverse to go from highest to lowest-->
+                <do_all exact="$Keys.count" counter="$i">
+                  <do_if value="$i == 1 or $UpdateBriefing">
+                    <!--UnitType can be a macro or unitcategory-->
+                    <set_value name="$UnitType" exact="$Keys.{$i}"/>
+                    <set_value name="$Amount" exact="$SortedUnitTable.{$UnitType}"/>
+                    <substitute_text text="$BriefingText" source="{1004,1023}" comment="(acquire)$AMOUNT$ x $DRONE$ for $OBJECT$">
+                      <replace string="'$AMOUNT$'" with="$UnitTable.{$UnitType}" comment="Use $UnitTable here as the briefing has the initial goal, not the current objective"/>
+                      <replace string="'$DRONE$'" with="$UnitType.name"/>
+                      <replace string="'$OBJECT$'" with="$Object.knownname"/>
+                    </substitute_text>
+
+                    <do_if value="$UpdateBriefing">
+                      <update_mission cue="$MissionCue">
+                        <briefing>
+                          <objective step="$StartStep + ($i - 1)" action="objective.acquire_units" text="$BriefingText" object="$Object"/>
+                        </briefing>
+                      </update_mission>
+                    </do_if>
+                    <do_if value="not $ObjectiveSet and $Amount gt 0">
+                      <set_value name="$ObjectiveSet" exact="true"/>
+                      <substitute_text text="$ObjectiveText" source="{1004,1023}" comment="(deliver)$AMOUNT$ x $DRONE$ to $OBJECT$">
+                        <replace string="'$AMOUNT$'" with="$Amount"/>
+                        <replace string="'$DRONE$'" with="$UnitType.name"/>
+                        <replace string="'$OBJECT$'" with="$Object.knownname"/>
+                      </substitute_text>
+                      <do_if value="player.controlled and $Object == player.controlled">
+                        <set_objective cue="$MissionCue" step="$StartStep + ($i - 1)" action="objective.acquire_units" text="$ObjectiveText" silent="true"/>
+                      </do_if>
+                      <do_else>
+                        <set_objective cue="$MissionCue" step="$StartStep + ($i - 1)" action="objective.acquire_units" text="$ObjectiveText" object="$Object" silent="true"/>
+                      </do_else>
+                      <remove_value name="$ObjectiveText"/>
+                    </do_if>
+                  </do_if>
+                </do_all>
+                <remove_value name="$BriefingText"/>
+
+                <do_if value="$Keys.count gt 0">
+                  <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep + $Keys.count"/>
+                </do_if>
+
+                <do_if value="not $ObjectiveSet">
+                  <set_value name="$feedbackvalue" exact="1"/>
+                  <signal_cue cue="Cleanup"/>
+                </do_if>
+              </actions>
+            </cue>
+
+            <cue name="ObjectDestroyed">
+              <conditions>
+                <event_object_destroyed object="$Object"/>
+              </conditions>
+              <actions>
+                <set_value name="$feedbackvalue" exact="-1"/>
+                <signal_cue cue="Cleanup"/>
+              </actions>
+            </cue>
+
+            <cue name="OwnerChanged">
+              <conditions>
+                <event_object_changed_true_owner object="$Object"/>
+                <check_value value="event.param" exact="faction.player" negate="true"/>
+              </conditions>
+              <actions>
+                <set_value name="$feedbackvalue" exact="-2"/>
+                <signal_cue cue="Cleanup"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <!--TODO remove_objective-->
+
+            <do_if value="$feedbackvalue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'ERROR: Feedback value is 0 and no error values were set. Defaulting to -100'"/>
+                <set_value name="$feedbackvalue" exact="-100"/>
+              </do_if>
+              <do_else>
+                <set_value name="$feedbackvalue" exact="$ErrorList.{1}"/>
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+                    <do_if value="$ErrorList.{$Counter}" exact="-103">
+                      <set_value name="$FeedbackText" exact="'No valid entries in UnitTable'"/>
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-102">
+                      <set_value name="$FeedbackText" exact="'No Object exists'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'Cue parameters not defined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-100">
+                      <set_value name="$FeedbackText" exact="'Undefined failure. Defaulted to -100'"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                    </do_else>
+
+                    <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+
+              <do_if value="$feedbackvalue" exact="-2">
+                <set_value name="$FeedbackText" exact="{30004,6026}" comment="'Object changed owner'"/>
+              </do_if>
+              <do_elseif value="$feedbackvalue" exact="-1">
+                <set_value name="$FeedbackText" exact="{30004,6027}" comment="'Object destroyed'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="1">
+                <set_value name="$FeedbackText" exact="'Units successfully delivered'"/>
+              </do_elseif>
+
+              <do_if value="$feedbackvalue" min="1">
+                <debug_text text="'Mission Successful. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_if>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission Failed. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+            <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$feedbackvalue"/>
+            <signal_cue cue="$EndSignalCue"/>
+            <cancel_cue cue="DeliverUnits"/>
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

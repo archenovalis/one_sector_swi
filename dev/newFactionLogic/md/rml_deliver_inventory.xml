@@ -1,0 +1,636 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_Deliver_Inventory" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+    <!--
+    $FeedbackValue:
+    Mission Errors <= -100
+    -108: $PlacementTable was not a valid cue
+    -107: Invalid params to construct interior
+    -106: No valid wares to deliver
+    -105: $WaresTableParam is not valid
+    -104: $DeliveryObject does not exist
+    -103: $DeliveryNPC is not a valid NPC
+    -102: $EndSignalCue was not defined
+    -101: $MissionCue was not defined
+    -100: Undefined error. Defaulted to -100 
+    
+    Player Failures <= -1
+    -3: Delivery object was destroyed or Dock unreachable
+    -2: NPC was destroyed
+    -1: Undefined failure. Defaulted to -1
+    
+    Player Success
+    1: Player successfully delivered all necessary wares
+    
+    *** Please note that player failure in this RML does not indicate complete mission failure. It is
+    up to the caller to decide how to handle different failure cases. ***
+    
+    You can signal instance of Deliver_Inventory cue with the following:
+    event.param.{1} = 'set_passive'
+    event.param.{2} = (bool) passive value
+    -->
+
+    <library name="Deliver_Inventory" version="4">
+      <params>
+        <param name="EndSignalCue"/>
+        <param name="MissionCue" />
+        <param name="StartStep"       default="1"     comment="Briefing step to start the mission on." />
+        <param name="UpdateBriefing"  default="true"  comment="Update the briefing objective step when the objective is updated." />
+        <param name="IsPassive"       default="false" comment="If true, do not set as the current objective but add the delivery conversation options if the player holds the item"/>
+
+        <!--Delivery params-->
+        <param name="WaresTableParam"       comment="Table of ware amounts. Key = ware (Inventory wares only),
+               Value = Totalamount OR [Totalamount, Remainingamount] (used for patching where delivery is partially achieved)"/>
+        <param name="DeliveryNPC"           comment="The NPC to which the items should be delivered." />
+        <param name="DeliveryObject"        default="null" comment="The object on which to point to before the NPC is placed. Also used to create the interior with the below parameters" />
+        <param name="AcquireObjectiveObject" default="null" comment="Object to guide player to during the acquire objective"/>
+        <param name="ProgressBarText"       comment="Text to be displayed next to the ware delivery progress bar e.g. ('Delivered')"/>
+        <param name="ConversationOptionText" comment="Text to be displayed for the conversation option (can substitute $AMOUNT$ and $WARE$)"/>
+        <param name="ConversationTipText"   comment="Text to be displayed as the tooltip if the option is not selectable"/>
+        <param name="ConversationOptionText_BatchDelivery" default="{1002,3000413}" comment="Text to be displayed for the batch delivery conversation option"/>
+        <!-- ************************************************************************************************************************************************************************ -->
+        <!-- If the mission is to manage placing the delivery NPC, all of these parameters must be passed in together -->
+        <!-- Room, corridor and door definitions could be provided by the caller through get_room_definition -->
+        <param name="PlaceNPC"              default="true"  comment="Should the NPC be placed by this library. If true, the following should be set."/>
+        <param name="DeliveryNPCSlotTags"   default="[tag.npc_generic]"  comment="NPC slot tags to help position the DeliveryNPC" />
+        <param name="PlacementTable"        default="table[$cue = namespace, $priority = 50]"  comment="Table containing the owning cue and priority of placing the NPC vs other missions"/>
+        
+        <param name="DeliveryRoomMacro"     default="null"  comment="The dynamic interior room the DeliveryNPC should be placed in, if not placed already" />
+        <param name="DeliveryCorridorMacro" default="null"  comment="The dynamic interior corridor leading to DeliveryRoomMacro" />
+        <param name="DeliveryDoor"          default="null"  comment="Door macro slot connection" />
+        <param name="DeliveryInteriorName"  default="null"  comment="The name of the dynamic interior the DeliveryNPC should used, if not placed already" />
+
+        <param name="CleanUpNPC"            default="true"  comment="Should the RML remove room and NPC after it is finished? Set to false if they're still needed."/>
+        <!-- ************************************************************************************************************************************************************************ -->
+        <param name="DebugChance"           default="0"/>
+      </params>
+      <actions>
+        <set_value name="$FeedbackValue" exact="0" />
+        <create_list name="$ErrorList"/>
+        <do_if value="typeof $MissionCue != datatype.cue">
+          <append_to_list name="$ErrorList" exact="-101" />
+        </do_if>
+        <do_if value="typeof $EndSignalCue != datatype.cue">
+          <append_to_list name="$ErrorList" exact="-102" />
+        </do_if>
+        <do_if value="not $DeliveryNPC.isclass.npc">
+          <append_to_list name="$ErrorList" exact="-103" />
+        </do_if>
+        <do_if value="$PlaceNPC and not $DeliveryObject.exists">
+          <append_to_list name="$ErrorList" exact="-104" />
+        </do_if>
+        <do_if value="typeof $WaresTableParam != datatype.table">
+          <append_to_list name="$ErrorList" exact="-105"/>
+        </do_if>
+        <do_else>
+          <set_value name="$WaresTable" exact="table[]"/>
+          <do_all exact="$WaresTableParam.keys.count" counter="$i">
+            <set_value name="$Ware" exact="$WaresTableParam.keys.{$i}"/>
+            <do_if value="typeof $WaresTableParam.{$Ware} == datatype.list">
+              <set_value name="$TotalAmount" exact="$WaresTableParam.{$Ware}.{1}"/>
+              <set_value name="$RemainingAmount" exact="$WaresTableParam.{$Ware}.{2}"/>
+            </do_if>
+            <do_else>
+              <set_value name="$TotalAmount" exact="$WaresTableParam.{$Ware}"/>
+              <set_value name="$RemainingAmount" exact="$TotalAmount"/>
+            </do_else>
+            <do_if value="typeof $Ware == datatype.ware and $Ware.isinventory and $TotalAmount gt 0">
+              <do_if value="not $WaresTable.{$Ware}?">
+                <set_value name="$WaresTable.{$Ware}" exact="[0, 0]"/>
+              </do_if>
+              <set_value name="$WaresTable.{$Ware}.{1}" operation="add" exact="$TotalAmount"/>
+              <set_value name="$WaresTable.{$Ware}.{2}" operation="add" exact="$RemainingAmount"/>
+              <debug_text text="'Deliver ware to: ' + $DeliveryNPC + ' ' + $DeliveryNPC.knownname + ' - Ware: ' + $Ware.id + ' - ' + ($TotalAmount - $RemainingAmount) + ' of ' + $TotalAmount + ' delivered'" chance="$DebugChance"/>
+            </do_if>
+          </do_all>
+
+          <do_if value="not $WaresTable.keys.count">
+            <append_to_list name="$ErrorList" exact="-106" />
+          </do_if>
+        </do_else>
+
+        <set_value name="$HasValidInteriorParams" exact="false"/>
+        <do_if value="$PlaceNPC">
+          <do_if value="typeof $PlacementTable != datatype.table or not $PlacementTable.$cue.exists or not (typeof $PlacementTable.$priority).isnumeric">
+            <debug_text text="'$PlacementTable invalid: ' + $PlacementTable" filter="error"/>
+            <append_to_list name="$ErrorList" exact="-107"/>
+          </do_if>
+          <do_else>
+            <do_if value="$DeliveryRoomMacro or $DeliveryCorridorMacro or $DeliveryDoor or $DeliveryInteriorName">
+              <!--An interior param was passed. Validate them-->
+              <set_value name="$HasValidInteriorParams" exact="true"/>
+              <do_if value="typeof $DeliveryRoomMacro != datatype.macro">
+                <debug_text text="'$DeliveryRoomMacro invalid: ' + $DeliveryRoomMacro" filter="error"/>
+                <set_value name="$HasValidInteriorParams" exact="false"/>
+              </do_if>
+              <do_elseif value="typeof $DeliveryCorridorMacro != datatype.macro">
+                <debug_text text="'$DeliveryCorridorMacro invalid: ' + $DeliveryCorridorMacro" filter="error"/>
+                <set_value name="$HasValidInteriorParams" exact="false"/>
+              </do_elseif>
+              <do_elseif value="typeof $DeliveryDoor != datatype.macroslot">
+                <debug_text text="'$DeliveryDoor invalid: ' + $DeliveryDoor" filter="error"/>
+                <set_value name="$HasValidInteriorParams" exact="false"/>
+              </do_elseif>
+              <do_elseif value="typeof $DeliveryInteriorName != datatype.string">
+                <debug_text text="'$DeliveryInteriorName invalid: ' + $DeliveryInteriorName" filter="error"/>
+                <set_value name="$HasValidInteriorParams" exact="false"/>
+              </do_elseif>
+              <do_if value="not $HasValidInteriorParams">
+                <!--Interior parameters were incomplete-->
+                <append_to_list name="$ErrorList" exact="-107" />
+              </do_if>
+            </do_if>
+          </do_else>
+        </do_if>
+      </actions>
+      <patch sinceversion="2" state="complete">
+        <set_value name="$PlacementTable" exact="table[$cue = namespace, $priority = 50]"/>
+        <set_value name="$DeliveryNPCSlotTags" exact="[$DeliveryNPCSlot]"/>
+        <set_value name="$Room" exact="null"/>
+      </patch>
+      <patch sinceversion="3" state="complete">
+        <set_value name="$IsPassive" exact="false"/>
+      </patch>
+      <patch sinceversion="4" state="complete">
+        <set_value name="$AcquireObjectiveObject" exact="null"/>
+      </patch>
+      <cues>
+        <cue name="Signal_Clean_Up" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" />
+          </conditions>
+          <actions>
+            <signal_cue cue="Clean_Up" />
+          </actions>
+        </cue>
+
+        <cue name="Start_Delivery" onfail="cancel" version="2">
+          <conditions>
+            <check_value value="$ErrorList.count == 0" />
+          </conditions>
+          <actions>
+            <set_value name="$LastObjectiveObject" exact="null"/>
+            <do_if value="$CleanUpNPC">
+              <signal_cue_instantly cue="md.RML_Deliver_Inventory.Instanced_Clean_Up_Helper" param="namespace"/>
+            </do_if>
+          </actions>
+          <patch sinceversion="2" state="complete">
+            <debug_text text="'attempt to patch'"/>
+            <signal_cue_instantly cue="md.RML_Deliver_Inventory.Instanced_Clean_Up_Helper" param="namespace"/>
+          </patch>
+          <cues>
+            <!--Patch for if the interior was previously created by a library. It can now be managed by this RML.-->
+            <cue name="Init_Manager_Patch" onfail="cancel">
+              <conditions>
+                <check_value value="$InteriorTable?"/>
+              </conditions>
+              <actions>
+                <do_if value="$InteriorTable.$Patch_Interior and $InteriorTable.$Patch_Corridor and $InteriorTable.$Patch_Room">
+                  <set_value name="$Interior" exact="$InteriorTable.$Patch_Interior"/>
+                  <set_value name="$Corridor" exact="$InteriorTable.$Patch_Corridor"/>
+                  <set_value name="$Room" exact="$InteriorTable.$Patch_Room"/>
+                  <debug_text text="'Mission has a room generated from an outdated library. Make the interior persistent. Interior: ' + $Interior + ' ' + $Interior.knownname" filter="savegame"/>
+                  <set_dynamic_interior_persistent object="$Interior.object" interior="$Interior" persistent="true"/>
+                </do_if>
+                <do_else>
+                  <create_dynamic_interior object="$DeliveryObject" name="$DeliveryInteriorName" corridor="$DeliveryCorridorMacro" door="$DeliveryDoor" room="$DeliveryRoomMacro" roomname="$Room" corridorname="$Corridor" interiorname="$Interior" persistent="true"/>
+                </do_else>
+                <include_actions ref="PlaceNPC"/>
+              </actions>
+            </cue>
+
+            <library name="PlaceNPC">
+              <actions>
+                <!--Signal placement manager with the new requests-->
+                <signal_cue_instantly cue="md.NPC_Instantiation.NPC_Placement_Manager" param="['add_definition', $DeliveryNPC, 
+                                          table[
+                                          $requestercue = $PlacementTable.$cue,
+                                          $priority = $PlacementTable.$priority,
+                                          $location = if $Room? then $Room else $DeliveryObject,
+                                          $slottags = $DeliveryNPCSlotTags,
+                                          $debugchance = $DebugChance,
+                                          $debugcaller = if $DebugChance == 100 then this else null]
+                                          ]"/>
+              </actions>
+            </library>
+
+            <library name="CheckFinishedWares" purpose="run_actions">
+              <params>
+                <param name="WaresTable"/>
+              </params>
+              <actions>
+                <!--Find all items which have been delivered already-->
+                <set_value name="$FinishedWares" exact="[]"/>
+                <do_all exact="$WaresTable.keys.count" counter="$i">
+                  <set_value name="$Ware" exact="$WaresTable.keys.{$i}" />
+                  <do_if value="$WaresTable.{$Ware}.{2} le 0">
+                    <append_to_list name="$FinishedWares" exact="$Ware"/>
+                  </do_if>
+                </do_all>
+                <return value="$FinishedWares"/>
+              </actions>
+            </library>
+
+            <cue name="Init_Manager">
+              <actions>
+                <do_if value="$PlaceNPC">
+                  <do_if value="$HasValidInteriorParams">
+                    <create_dynamic_interior object="$DeliveryObject" name="$DeliveryInteriorName" corridor="$DeliveryCorridorMacro" door="$DeliveryDoor" room="$DeliveryRoomMacro" roomname="$Room" corridorname="$Corridor" interiorname="$Interior" persistent="true"/>
+                  </do_if>
+                  <include_actions ref="PlaceNPC"/>
+                </do_if>
+                <do_else>
+                  <debug_text text="'Deliver item to ' + ' ' + $DeliveryNPC + ' ' + $DeliveryNPC.knownname + ' but placement of the NPC will not be done by this RML'" chance="$DebugChance"/>
+                </do_else>
+              </actions>
+              <cues>
+                <cue name="Init_Objectives">
+                  <delay exact="50ms"/>
+                  <actions>
+                    <signal_cue cue="UpdateBriefing"/>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="UpdateBriefing" instantiate="true">
+              <conditions>
+                <check_any>
+                  <event_cue_signalled />
+                  <check_all>
+                    <event_cue_signalled cue="Deliver_Inventory"/>
+                    <check_value value="event.param == 'update_briefing'"/>
+                  </check_all>
+                  <event_object_changed_attention object="$DeliveryNPC"/>
+                  <event_inventory_added object="player.entity"/>
+                  <event_inventory_removed object="player.entity"/>
+                </check_any>
+              </conditions>
+              <actions>
+                <run_actions ref="CheckFinishedWares" result="$FinishedWares">
+                  <param name="WaresTable" value="$WaresTable"/>
+                </run_actions>
+
+                <!--Even if all wares are delivered, update the briefing so the steps are up to date-->
+                <set_value name="$SetObjective" exact="$FinishedWares.count lt $WaresTable.keys.count and not $IsPassive"/>
+                <set_value name="$DoneStep" exact="$StartStep"/>
+                <set_value name="$RemainingStep" exact="$StartStep + $FinishedWares.count"/>
+                <do_all exact="$WaresTable.keys.count" counter="$i">
+                  <set_value name="$Ware" exact="$WaresTable.keys.{$i}" />
+                  <set_value name="$TotalAmount" exact="$WaresTable.{$Ware}.{1}" />
+                  <set_value name="$RemainingAmount" exact="$WaresTable.{$Ware}.{2}" />
+                  <substitute_text text="$ObjectiveText" source="{30004, 1053}" comment="$WARENAME$ \($COUNT$ / $TOTAL$\)">
+                    <replace string="'$WARENAME$'" with="$Ware.name" />
+                    <replace string="'$COUNT$'" with="if player.entity.inventory.{$Ware}.count ge $RemainingAmount then ( $TotalAmount - $RemainingAmount ) 
+                                                    else player.entity.inventory.{$Ware}.count" />
+                    <replace string="'$TOTAL$'" with="if player.entity.inventory.{$Ware}.count ge $RemainingAmount then $TotalAmount
+                                                    else $RemainingAmount" />
+                  </substitute_text>
+                  <do_if value="$FinishedWares.indexof.{$Ware}">
+                    <do_if value="$UpdateBriefing and not $IsPassive">
+                      <update_mission cue="$MissionCue">
+                        <briefing>
+                          <objective step="$DoneStep" action="objective.deliver" text="$ObjectiveText" encyclopedia="$Ware" />
+                        </briefing>
+                      </update_mission>
+                    </do_if>
+                    <set_value name="$DoneStep" operation="add"/>
+                  </do_if>
+                  <do_else>
+                    <do_if value="$UpdateBriefing and not $IsPassive">
+                      <update_mission cue="$MissionCue">
+                        <briefing>
+                          <objective step="$RemainingStep" action="objective.deliver" text="$ObjectiveText" encyclopedia="$Ware" />
+                        </briefing>
+                      </update_mission>
+                    </do_if>
+                    <do_if value="$SetObjective">
+                      <set_value name="$ObjectiveObject" exact="if $DeliveryNPC.exists then $DeliveryNPC else $DeliveryObject"/>
+                      <do_if value="$WaresTable.keys.count - $FinishedWares.count gt 1">
+                        <!--More than one ware remaining to be delivered. Use 'Deliver: Items' as the objective-->
+                        <set_objective cue="$MissionCue" step="$RemainingStep" action="objective.deliver" text="$ObjectiveText" object="$ObjectiveObject" silent="$ObjectiveObject == $LastObjectiveObject"/>
+                      </do_if>
+                      <do_else>
+                        <do_if value="player.entity.inventory.{$Ware}.count ge $RemainingAmount">
+                          <do_if value="$TotalAmount gt 1">
+                            <set_objective cue="$MissionCue" step="$RemainingStep" action="objective.deliver" text="$ObjectiveText" object="$ObjectiveObject" silent="$ObjectiveObject == $LastObjectiveObject" encyclopedia="$Ware">
+                              <progress text="$ProgressBarText" progress="$TotalAmount - $RemainingAmount" max="$TotalAmount" />
+                            </set_objective>
+                          </do_if>
+                          <do_else>
+                            <set_objective cue="$MissionCue" step="$RemainingStep" action="objective.deliver" text="$ObjectiveText" object="$ObjectiveObject" silent="$ObjectiveObject == $LastObjectiveObject" encyclopedia="$Ware"/>
+                          </do_else>
+                        </do_if>
+                        <do_else>
+                          <do_if value="$AcquireObjectiveObject.exists">
+                            <set_value name="$ObjectiveObject" exact="$AcquireObjectiveObject"/>
+                            <set_objective cue="$MissionCue" action="objective.acquire_ware" text="$ObjectiveText" object="$AcquireObjectiveObject" silent="$ObjectiveObject == $LastObjectiveObject" encyclopedia="$Ware"/>
+                          </do_if>
+                          <do_else>
+                            <set_objective cue="$MissionCue" action="objective.acquire_ware" text="$ObjectiveText" silent="$ObjectiveObject == $LastObjectiveObject" encyclopedia="$Ware"/>
+                          </do_else>
+                        </do_else>
+                      </do_else>
+                      <set_value name="$LastObjectiveObject" exact="$ObjectiveObject"/>
+                      <remove_value name="$ObjectiveObject"/>
+                      <set_value name="$SetObjective" exact="false"/>
+                    </do_if>
+                    <set_value name="$RemainingStep" operation="add"/>
+                  </do_else>
+                </do_all>
+
+                <set_value name="$EndSignalCue.$FinalStep" exact="$RemainingStep - 1"/>
+
+                <do_if value="$FinishedWares.count ge $WaresTable.keys.count">
+                  <!--Finished-->
+                  <set_value name="$FeedbackValue" exact="1" />
+                  <signal_cue cue="Clean_Up"/>
+                </do_if>
+              </actions>
+            </cue>
+
+            <cue name="DeliveryNPCConversation_CollectChoices" instantiate="true">
+              <conditions>
+                <!-- Note: Signal is on a global cue, so all active mission instances are signalled at the same time! -->
+                <event_cue_signalled cue="md.NPC_Missions.DeliveryNPCConversation_CollectChoices" />
+                <!-- event.param == [ $DeliveryNPC, $PlayerChoices ] -->
+                <check_value value="event.param.{1} == $DeliveryNPC" />
+              </conditions>
+              <actions>
+                <!-- determine if we still need to deliver multiple items, if so add a batch delivery option that transfers as many of the required items as are currently available -->
+                <set_value name="this.$RemainingWares" exact="0"/>
+                <set_value name="this.$AvailableWares" exact="0"/>
+                <set_value name="$ConversationBatchTipText" exact="''"/>
+                <do_all exact="$WaresTable.keys.count" counter="$i">
+                  <set_value name="$Ware" exact="$WaresTable.keys.{$i}" />
+                  <set_value name="$RemainingAmount" exact="$WaresTable.{$Ware}.{2}" />
+                  <do_if value="$RemainingAmount gt 0">
+                    <set_value name="this.$RemainingWares" operation="add"/>
+                    <do_if value="player.entity.inventory.{$Ware}.count gt 0">
+                      <set_value name="this.$AvailableWares" operation="add"/>
+                      <debug_text text="'- %s req=%s inv=%s'.[$Ware, $RemainingAmount, player.entity.inventory.{$Ware}.count]" chance="0"/>
+                      <set_value name="$ConversationBatchTipText" exact="$ConversationBatchTipText + '%sx %s\n'.[[$RemainingAmount, player.entity.inventory.{$Ware}.count].min, $Ware ]"/>
+                    </do_if>
+                  </do_if>
+                </do_all>
+                <do_if value="(this.$RemainingWares gt 0) and (this.$AvailableWares gt 0)" comment="if there are multiple wares to deliver, and we can at least deliver 1">
+                  <debug_text text="'Batch Delivery dialog option'" chance="0"/>
+                  <append_to_list name="event.param.{2}" exact="table[ $cue = $MissionCue, $text = $ConversationOptionText_BatchDelivery, $allpossiblewares = 1, $selectable = true, $tooltip = $ConversationBatchTipText ]" />
+                  <remove_value name="$ConversationBatchTipText"/>
+                </do_if>
+
+                <!-- add dialog option for specific wares -->
+                <do_all exact="$WaresTable.keys.count" counter="$i">
+                  <set_value name="$Ware" exact="$WaresTable.keys.{$i}" />
+                  <debug_text text="'ConversationChoice: Collect %s'.[$Ware.name]" chance="0"/>
+                  <!--<set_value name="$TotalAmount" exact="$WaresTable.{$Ware}.{1}" />-->
+                  <set_value name="$RemainingAmount" exact="$WaresTable.{$Ware}.{2}" />
+                  <do_if value="$RemainingAmount gt 0">
+                    <set_value name="$AmountInInventory" exact="player.entity.inventory.{$Ware}.count" />
+                    <do_if value="$AmountInInventory or not $IsPassive">
+                      <set_value name="$DeliveryStepCount" exact="[$AmountInInventory, $RemainingAmount].min" />
+                      <!--TODO @Owen check if NPC is close enough to give items-->
+                      <set_value name="$Selectable" exact="$AmountInInventory != 0" />
+                      <substitute_text text="$ConversationOption" source="$ConversationOptionText">
+                        <replace string="'$AMOUNT$'" with="$DeliveryStepCount" />
+                        <replace string="'$WARE$'" with="$Ware.name" />
+                      </substitute_text>
+                      <append_to_list name="event.param.{2}" exact="table[ $cue = $MissionCue, $text = $ConversationOption, $ware = $Ware, $amount = $DeliveryStepCount, $selectable = $Selectable, $tooltip = if $Selectable then '' else $ConversationTipText ]" />
+                    </do_if>
+                  </do_if>
+                </do_all>
+              </actions>
+            </cue>
+
+            <cue name="DeliveryNPCConversation_Next" instantiate="true">
+              <conditions>
+                <event_conversation_next_section actor="$DeliveryNPC" section="c_giveItems" />
+                <check_value value="event.param2.$cue == $MissionCue" />
+              </conditions>
+              <actions>
+
+                <do_if value="event.param2.$allpossiblewares?">
+                  <!-- batch delivery -->
+                  <debug_text text="'Batch delivery'" chance="0"/>
+                  <do_all exact="$WaresTable.keys.count" counter="$i">
+                    <set_value name="$Ware" exact="$WaresTable.keys.{$i}"/>
+                    <set_value name="$WareInfo" exact="$WaresTable.{$Ware}"/>
+                    <set_value name="$RemainingAmount" exact="$WareInfo.{2}" />
+                    <set_value name="$AmountInInventory" exact="player.entity.inventory.{$Ware}.count" />
+                    <do_if value="($RemainingAmount gt 0) and ($AmountInInventory gt 0)">
+                      <set_value name="$DeliveryStepCount" exact="[$AmountInInventory, $RemainingAmount].min" />
+                      <add_inventory entity="player.entity" ware="$Ware" exact="-$DeliveryStepCount" />
+                      <set_value name="$WareInfo.{2}" operation="subtract" exact="$DeliveryStepCount" />
+                      <set_value name="$DeliveryNPC.$TradeDone" exact="true" comment="Make trader more friendly towards player" />
+                    </do_if>
+                  </do_all>
+                </do_if>
+                <do_else>
+                  <!-- specific delivery -->
+                  <set_value name="$Ware" exact="event.param2.$ware"/>
+                  <assert value="$WaresTable.{$Ware}?" text="'Player attempting to deliver ware ' + event.param2.$ware + ' which the mission does not want [Owen]'"/>
+                  <set_value name="$WareInfo" exact="$WaresTable.{$Ware}"/>
+                  <do_if value="$WareInfo">
+                    <set_value name="$AmountInInventory" exact="player.entity.inventory.{$Ware}.count" />
+                    <!-- Do not deliver more than promised in the player choice text, even if inventory magically grew in the meantime -->
+                    <set_value name="$DeliveryStepCount" exact="[$AmountInInventory, $WareInfo.{2}, event.param2.$amount].min" />
+                    <add_inventory entity="player.entity" ware="$Ware" exact="-$DeliveryStepCount" />
+                    <set_value name="$WareInfo.{2}" operation="subtract" exact="$DeliveryStepCount" />
+                    <set_value name="$DeliveryNPC.$TradeDone" exact="true" comment="Make trader more friendly towards player" />
+                  </do_if>
+                </do_else>
+
+                <!-- check completion -->
+                <run_actions ref="CheckFinishedWares" result="$FinishedWares">
+                  <param name="WaresTable" value="$WaresTable"/>
+                </run_actions>
+                <do_if value="$WareInfo.{2} gt 0 or $FinishedWares.count != $WaresTable.keys.count">
+                  <add_npc_line line="[2013,2110,2111].random" comment="thanks randomised" />
+                </do_if>
+                <signal_cue cue="UpdateBriefing"/>
+                
+              </actions>
+            </cue>
+
+            <cue name="NPCKilled">
+              <conditions>
+                <event_object_destroyed object="$DeliveryNPC"/>
+              </conditions>
+              <actions>
+                <set_value name="$FeedbackValue" exact="-2" />
+                <signal_cue cue="Clean_Up"/>
+              </actions>
+            </cue>
+
+            <cue name="DeliveryObjectDestroyed">
+              <conditions>
+                <event_object_destroyed object="$DeliveryObject" check="false"/>
+              </conditions>
+              <actions>
+                <set_value name="$FeedbackValue" exact="-3" />
+                <signal_cue cue="Clean_Up"/>
+              </actions>
+            </cue>
+
+            <cue name="DeliveryObjectDockDestroyed" checkinterval="10s">
+              <conditions>
+                <check_all>
+                  <check_value value="$DeliveryObject.exists and $DeliveryObject.isrealclass.station"/>
+                  <count_object_components object="$DeliveryObject" class="class.walkablemodule" haswalkableroom="true" checkoperational="true" exact="0"/>
+                </check_all>
+              </conditions>
+              <actions>
+                <set_value name="$FeedbackValue" exact="-3" />
+                <signal_cue cue="Clean_Up"/>
+              </actions>
+            </cue>
+
+            <cue name="SetPassive" instantiate="true">
+              <conditions>
+                <event_cue_signalled cue="Deliver_Inventory"/>
+                <check_value value="typeof event.param == datatype.list and event.param.{1} == 'set_passive'"/>
+              </conditions>
+              <actions>
+                <set_value name="$IsPassive" exact="event.param.{2}"/>
+                <signal_cue cue="UpdateBriefing"/>
+              </actions>
+            </cue>
+
+          </cues>
+        </cue>
+
+        <cue name="Clean_Up">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <do_if value="$FeedbackValue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'$FeedbackValue is 0 and there are no reported errors: Defaulting to $FeedbackValue -100...'" filter="error"/>
+                <set_value name="$FeedbackValue" exact="-100" />
+              </do_if>
+              <do_else>
+                <set_value name="$FeedbackValue" exact="$ErrorList.{1}" />
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+                    <do_if value="$ErrorList.{$Counter}" exact="-108">
+                      <set_value name="$FeedbackText" exact="'$PlacementTable was not a valid cue'" />
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-107">
+                      <set_value name="$FeedbackText" exact="'Invalid params to construct interior'" />
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-106">
+                      <set_value name="$FeedbackText" exact="'No valid wares to deliver'" />
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-105">
+                      <set_value name="$FeedbackText" exact="'$WaresTableParam is not valid'" />
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-104">
+                      <set_value name="$FeedbackText" exact="'$DeliveryObject does not exist'" />
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-103">
+                      <set_value name="$FeedbackText" exact="'$DeliveryNPC is not a valid NPC'" />
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-102">
+                      <set_value name="$FeedbackText" exact="'$EndSignalCue was not defined'" />
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'$MissionCue was not defined'" />
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-100">
+                      <set_value name="$FeedbackText" exact="'Undefined error. Defaulted to -100'" />
+                    </do_elseif>
+
+                    <debug_text text="'Mission Error. $FeedbackValue: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" chance="$DebugChance" />
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+
+              <do_if value="$FeedbackValue" exact="1">
+                <set_value name="$FeedbackText" exact="'Player successfully delivered all necessary wares'" />
+              </do_if>
+              <do_elseif value="$FeedbackValue" exact="-2">
+                <set_value name="$FeedbackText" exact="{30004,6044}" comment="'Contact was killed'" />
+              </do_elseif>
+              <do_elseif value="$FeedbackValue" exact="-3">
+                <set_value name="$FeedbackText" exact="{30004,6040}" comment="'Dock unreachable'" />
+              </do_elseif>
+
+              <do_if value="$FeedbackValue" min="1">
+                <debug_text text="'Mission successful. $FeedbackValue: ' + $FeedbackValue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_if>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission failed. $FeedbackValue: ' + $FeedbackValue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+            <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$FeedbackValue" />
+            <signal_cue cue="$EndSignalCue" />
+            <cancel_cue cue="Deliver_Inventory" />
+          </actions>
+        </cue>
+      </cues>
+    </library>
+
+    <!--In the case that the RML is cancelled, its own cleanup cue will not activate, so some cleanup is move outside to this instanced cue.
+    event.param == RML namespace-->
+    <cue name="Instanced_Clean_Up_Helper" instantiate="true" namespace="this">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <do_if value="typeof event.param == datatype.cue and event.param.exists">
+          <set_value name="$OwnerCue" exact="event.param"/>
+          <debug_text text="'Waiting for owner cue ' + $OwnerCue + ' to be cancelled.'" chance="$OwnerCue.$DebugChance"/>
+        </do_if>
+        <do_else>
+          <debug_text text="'Cue parameter ' + event.param + ' was invalid'" filter="error"/>
+          <cancel_cue cue="this"/>
+        </do_else>
+      </actions>
+      <cues>
+        <cue name="Instanced_Clean_Up_Helper_Trigger">
+          <conditions>
+            <event_cue_cancelled cue="$OwnerCue"/>
+          </conditions>
+          <actions>
+            <!--At this point, we still have access to the $OwnerCue's variables.-->
+            <debug_text text="'Owner cue ' + $OwnerCue + ' has been cancelled. Cleaning up.'" chance="$OwnerCue.$DebugChance"/>
+
+            <!--Remove the placement request from $OwnerCue on $DeliveryNPC-->
+            <do_if value="$OwnerCue.$DeliveryNPC.isclass.npc">
+              <signal_cue_instantly cue="md.NPC_Instantiation.NPC_Placement_Manager" param="['remove_request', $OwnerCue.$DeliveryNPC, $OwnerCue.$PlacementTable.$cue]"/>
+            </do_if>
+
+            <!--If the interior was created by $OwnerCue, make sure it gets cleaned up when possible-->
+            <do_if value="@$OwnerCue.$Interior.exists">
+              <signal_cue_instantly cue="md.NPC_Instantiation.RemoveMissionInterior" param="[$OwnerCue.$Interior, $OwnerCue.$DebugChance]"/>
+            </do_if>
+
+            <cancel_cue cue="namespace"/>
+          </actions>
+        </cue>
+
+        <cue name="Instanced_Clean_Up_Helper_Orphaned" checkinterval="5s">
+          <conditions>
+            <check_value value="not $OwnerCue.exists"/>
+          </conditions>
+          <actions>
+            <debug_text text="'Owner cue no longer exists. Should have been caught elsewhere.'" filter="error"/>
+            <cancel_cue cue="namespace"/>
+          </actions>
+        </cue>
+      </cues>
+    </cue>
+
+  </cues>
+</mdscript>

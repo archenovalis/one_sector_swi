@@ -1,0 +1,167 @@
+<?xml version="1.0" encoding="iso-8859-1" ?>
+<aiscript name="move.flee.boost" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" version="3">
+  <!--  
+  
+  Flee using boost. 
+  Check if htere are any obstacles in front:
+  - If not, fly quickly on straight line
+  - if htere is something in the middle (XL, L or station) rotate to aim on the opposite direction and boost there
+  
+  -->
+  <params>
+    <param name="attacker" default="null"/>
+    <param name="maxdistance" default="20km" comment="maximum distance to move" />
+    <param name="maxboostduration" default="[(20km / [this.ship.maxspeed, 1m].max)s, 30s].max" comment="maximum duration of boost movement. this may be shortened within the script."/>
+    <param name="debugchance" default="0" />
+  </params>
+  <interrupts>
+    <handler ref="TargetInvalidHandler"/>
+  </interrupts>
+  <patch sinceversion="1">
+    <set_value name="$attacker" exact="null"/>
+  </patch>
+  <patch sinceversion="2">
+    <set_value name="$alreadytravelling" exact="this.assignedcontrolled.travel.active"/>
+  </patch>
+  <patch sinceversion="3">
+    <create_position name="$finalpos" z="$maxdistance" object="this.assignedcontrolled" space="this.assignedcontrolled.sector"/>
+    <do_if value="@$attacker.isoperational and not $attacker.isclass.celestialbody">
+      <is_in_quadrant result="$infront" front="true" object="this.assignedcontrolled" target="$attacker"/>
+      <do_if value="$infront">
+        <set_value name="$maxdistance" exact="$maxdistance + this.assignedcontrolled.distanceto.{$attacker}"/>
+      </do_if>
+    </do_if>
+
+    <set_value name="$boost" exact="true"/>
+    <set_value name="$maxboostduration" exact="[this.assignedcontrolled.boost.maxduration * 0.9, $maxboostduration].min"/>
+    <do_if value="$alreadytravelling or (this.assignedcontrolled.shieldpercentage lt 50)">
+      <set_value name="$boost" exact="false"/>
+      <set_value name="$maxboostduration" exact="[($maxdistance / [this.ship.maxspeed, 1m].max)s, $maxboostduration].min"/>
+    </do_if>
+  </patch>
+  <attention min="unknown">
+    <actions>
+      <set_value name="$alreadytravelling" exact="this.assignedcontrolled.travel.active"/>
+      <!-- Return false if it can't boost -->
+      <do_if value="not $alreadytravelling and not this.assignedcontrolled.boost.available">
+        <debug_text text="'this ship cannot boost'" chance="$debugchance" />
+        <return value="false" />
+      </do_if>
+
+      <!-- set them in spline if is on visile attention level -->
+      <do_if value="this.attention ge attention.visible">
+        <debug_text text="'only set spline on high attention'" chance="$debugchance" />
+        <set_flight_control_model object="this.ship" flightcontrolmodel="flightcontrolmodel.spline" />
+      </do_if>
+
+      <!-- Find the obstacles in front of this ship -->
+      <do_if value="this.sector">
+        <find_gravidar_contact object="this.ship" class="[class.ship_l, class.ship_xl, class.station]" groupname="$obstacles" multiple="true" >
+          <match_context macro="this.sector.macro"/>
+          <match_is_in_view_of vertical="25deg" horizontal="25deg" object="this.ship" />
+          <match_distance max="$maxdistance" object="this.ship" />
+        </find_gravidar_contact>
+        <do_if value="$attacker.isoperational and not $obstacles.indexof.{$attacker}">
+          <add_to_group groupname="$obstacles" object="$attacker"/>
+        </do_if>
+        <do_for_each name="$locobstacle" in="$obstacles" reverse="true">
+          <do_if value="$locobstacle.sector != this.sector">
+            <remove_from_group group="$obstacles" object="$locobstacle"/>
+          </do_if>
+        </do_for_each>
+      </do_if>
+
+      <create_position name="$finalpos" z="$maxdistance" object="this.assignedcontrolled" space="this.assignedcontrolled.sector"/>
+      <do_if value="@$attacker.isoperational and not $attacker.isclass.celestialbody">
+        <is_in_quadrant result="$infront" front="true" object="this.assignedcontrolled" target="$attacker"/>
+        <do_if value="$infront">
+          <set_value name="$maxdistance" exact="$maxdistance + this.assignedcontrolled.distanceto.{$attacker}"/>
+        </do_if>
+      </do_if>
+
+      <set_value name="$boost" exact="true"/>
+      <set_value name="$maxboostduration" exact="[this.assignedcontrolled.boost.maxduration * 0.9, $maxboostduration].min"/>
+      <do_if value="$alreadytravelling or (this.assignedcontrolled.shieldpercentage lt 50)">
+        <set_value name="$boost" exact="false"/>
+        <set_value name="$maxboostduration" exact="[($maxdistance / [this.ship.maxspeed, 1m].max)s, $maxboostduration].min"/>
+      </do_if>
+
+      <!--  Try to fly in the oposite direction of the average positions of the enemies -->
+      <do_if value="@$obstacles.count and (@$infront or not this.assignedcontrolled.iscapitalship)">
+        <set_value name="$x" exact="0"/>
+        <set_value name="$y" exact="0"/>
+        <set_value name="$z" exact="0"/>
+        <!-- Add all positions -->
+        <do_all exact="$obstacles.count" counter="$i">
+          <create_position name="$enemypos" space="this.ship" object="$obstacles.{$i}" />
+          <set_value name="$x" exact="$enemypos.x" operation="add" />
+          <set_value name="$y" exact="$enemypos.y" operation="add" />
+          <set_value name="$z" exact="$enemypos.z" operation="add" />
+        </do_all>
+        <!-- resultpos is the average position of all enemies -->
+        <debug_text text="'x:%1, y:%2, z:%3'.[$x, $y, $z]" chance="$debugchance" />
+        <create_position name="$resultpos" x="$x / ($obstacles.count * 1)" y="$y / ($obstacles.count * 1)" z="$z / ($obstacles.count * 1)" />
+        <debug_text text="'resultpos %1'.[$resultpos]" chance="$debugchance" />
+
+        <!-- Go in opposite direction of resultpos [x,y,z] -->
+        <set_value name="$distfactor" exact="$maxdistance / [this.ship.distanceto.{$resultpos}, 0.1m].max" />
+        <debug_text text="'dist factor %1, dist %2'.[$distfactor, this.ship.distanceto.{$resultpos}]" chance="$debugchance" />
+        <set_value name="$result_x" exact="$resultpos.x * -$distfactor"/>
+        <set_value name="$result_y" exact="$resultpos.y * -$distfactor"/>
+        <set_value name="$result_z" exact="$resultpos.z * -$distfactor"/>
+        <do_if value="this.assignedcontrolled.iscapitalship">
+          <!-- avoid sharp turns since they take time. move forward towards a 30 degree angle away from opponents. important to keep moving. -->
+          <debug_text text="'pre\n$result_x: %s\n$result_y: %s\n$result_z: %s'.[$result_x, $result_y, $result_z]" chance="0"/>
+          <set_value name="$result_x" exact="sgn($result_x) * abs(tan(30deg) * $maxdistance)"/>
+          <set_value name="$result_y" exact="sgn($result_y) * abs(tan(30deg) * $maxdistance)"/>
+          <set_value name="$result_z" exact="$maxdistance"/>
+          <debug_text text="'post\n$result_x: %s\n$result_y: %s\n$result_z: %s'.[$result_x, $result_y, $result_z]" chance="0"/>
+        </do_if>
+        <!-- Final position in the opposite direction -->
+        <create_position name="$finalpos" x="$result_x"
+                                          y="$result_y"
+                                          z="$result_z" object="this.assignedcontrolled" space="this.assignedcontrolled.sector"/>
+
+        <do_if value="@$attacker.isoperational" chance="$debugchance">
+          <do_if value="@$infront">
+            <create_position name="$finalpos_reltoship" space="this.assignedcontrolled" x="$result_x" y="$result_y" z="$result_z"/>
+            <create_orientation name="$finalheading" orientation="look_at" refposition="$finalpos_reltoship">
+              <position object="this.assignedcontrolled" space="this.assignedcontrolled"/>
+            </create_orientation>
+            <debug_text text="'final heading: %s'.[$finalheading]"/>
+          </do_if>
+        </do_if>
+
+        <debug_text text="'finalpos %1, distfactor %2, dist %3'.[$finalpos, $distfactor, this.ship.distanceto.{$resultpos}]" chance="$debugchance" />
+        <debug_text text="'start move. this pos %1, final pos %2'.[this.ship.position, $finalpos]" chance="$debugchance" />
+
+        <!-- Move to orient toward finalpos. immediately interrupt, but do not abort path in the following movement. -->
+        <set_value name="$keeppath"/>
+        <set_value name="$alreadyboosted"/>
+        <set_value name="$maxdistance" exact="[$maxdistance - this.assignedcontrolled.distanceto.[this.assignedcontrolled.sector, $finalpos], 1km].max"/>
+        <!-- short movement straight forward to get moving, otherwise capital ships tend to turn in place despite the spline -->
+        <move_to object="this.assignedcontrolled" destination="this.assignedcontrolled.sector" abortpath="true" forceposition="false" finishonapproach="true" forcerotation="false" avoid="false" boost="$boost" travel="true" sinceversion="3">
+          <position object="this.assignedcontrolled" z="this.assignedcontrolled.size"/>
+          <interrupt_after_time time="1s"/>
+        </move_to>
+        <move_to object="this.assignedcontrolled" destination="this.assignedcontrolled.sector" abortpath="false" forceposition="false" finishonapproach="true" forcerotation="false" avoid="false" boost="$boost" travel="true">
+          <position value="$finalpos"/>
+        </move_to>
+      </do_if>
+
+      <debug_text text="player.age + ' %1 (%2) starting flee boost.'.[this.ship.knownname, this.ship]" chance="$debugchance"/>
+      <set_value name="$startpos" exact="this.ship.position" chance="$debugchance"/>
+      <set_value name="$startzone" exact="this.zone" chance="$debugchance"/>
+
+      <!-- Move straight forward, base on the previous rotation -->
+      <move_to object="this.assignedcontrolled" destination="this.assignedcontrolled.sector" abortpath="not $keeppath?" forceposition="false" finishonapproach="false" boost="$boost and not $alreadyboosted?" travel="true">
+        <position object="this.assignedcontrolled" z="$maxdistance" />
+        <interrupt_after_time time="$maxboostduration" />
+      </move_to>
+      <debug_text text="player.age + ' %1 (%2) done fleeing. moved %3 meters away from starting position to zone: %6. startzone: %7 startzone size: %5 maxdistance: %4 max boost duration: %8'.[this.ship.knownname, this.ship, this.ship.distanceto.{$startpos}, $maxdistance, $startzone.size, this.zone.knownname, $startzone.knownname, $maxboostduration]" chance="$debugchance"/>
+
+      <return value="true" />
+
+    </actions>
+  </attention>
+</aiscript>

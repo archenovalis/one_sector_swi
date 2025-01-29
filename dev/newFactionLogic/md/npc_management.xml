@@ -1,0 +1,754 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="NPC_Management" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+    <cue name="NPC_Management" namespace="this">
+      <actions>
+        <set_value name="$DebugChance" exact="0" comment="TODO (@Lorraine): Remember to turn this off for release builds" />
+
+        <!-- This table will track whether an object is already active in a usecase or not as well as the priority of their current usecase (int value) -->
+        <set_value name="$TrackedObjects" exact="table[]" />
+      </actions>
+      <cues>
+        <cue name="Base" instantiate="true" namespace="this">
+          <conditions>
+            <event_object_signalled object="player.entity" param="'npc_management'" />
+          </conditions>
+          <actions>
+            
+            <!-- Usecase Management Table:
+                 - holds as much information as can be gathered by the calling script about the usecase that needs to be managed
+                 - first element ($Usecase) should always be a string representing which usecase needs to be managed as seen below
+                 - second element ($Priority) should always be an int value representing the priority that the usecase takes
+                 - third element ($Objects) should always be another table of objects (i.e. ships / stations) that will be involved in the usecase
+                 - nth element includes other important information about the usecase (usecase-dependent)
+            -->
+            <set_value name="$DebugChance" exact="NPC_Management.$DebugChance"/>
+            <set_value name="$Usecase" exact="event.param2.$Usecase" />
+            <set_value name="$Priority" exact="event.param2.$Priority" />
+            <debug_text text="'NPC_Management signalled to handle ' + $Usecase + ' usecase with priority ' + $Priority" chance="$DebugChance" />
+
+            <!-- Check to see whether usecase can proceed. It can if the objects involved are currently free, otherwise it cannot -->
+            <set_value name="$UsecaseCanProceed" exact="true" />
+            <set_value name="$Objects" exact="event.param2.$Objects.clone" />
+            <debug_text text="'$Objects involved in this usecase are:'" chance="$DebugChance" />
+            <do_all exact="$Objects.keys.count" counter="$ObjectCounter">
+              <set_value name="$ObjectKey" exact="$Objects.keys.{$ObjectCounter}" />
+              <set_value name="$Object" exact="$Objects.{$ObjectKey}" />
+              <debug_text text="$ObjectCounter + ': ' + $Object.knownname + ' ({' + $Object + '})'" chance="$DebugChance" />
+
+              <do_all exact="NPC_Management.$TrackedObjects.keys.count" counter="$TrackedObjectCounter">
+                <set_value name="$TrackedObject" exact="NPC_Management.$TrackedObjects.keys.{$TrackedObjectCounter}" />
+                <do_if value="$TrackedObject" exact="$Object">
+                  <debug_text text="'One of the objects involved in this usecase is already being tracked - usecase will not proceed unless priority of new case is higher'" chance="$DebugChance" />
+
+                  <set_value name="$OldPriority" exact="NPC_Management.$TrackedObjects.{$TrackedObject}" />
+                  <do_if value="$Priority le $OldPriority">
+                    <debug_text text="'$Priority is not high enough for new usecase to take precidence - usecase will not proceed'" chance="$DebugChance" />
+                    <set_value name="$UsecaseCanProceed" exact="false" />
+                    <break />
+                  </do_if>
+                  <do_else>
+                    <debug_text text="'$Priority is high enough for new usecase to take precidence - usecase will proceed'" chance="$DebugChance" />
+                  </do_else>
+                </do_if>
+              </do_all>
+            </do_all>
+
+            <!-- If the usecase can proceed, then pass the original information onto the specific usecase for processing -->
+            <do_if value="$UsecaseCanProceed">
+              <debug_text text="'Usecase can proceed'" chance="$DebugChance" />
+              <!-- Ask all usecases to check if objects might need to be freed up -->
+              <do_all exact="$Objects.keys.count" counter="$ObjectCounter">
+                <add_to_group groupname="$CheckObjects" object="$Objects.{$Objects.keys.{$ObjectCounter}}" />
+              </do_all>
+              <signal_cue_instantly cue="Exit" param="$CheckObjects" />
+
+              <!-- Make sure to track the objects -->
+              <do_all exact="$Objects.keys.count" counter="$ObjectCounter">
+                <set_value name="$ObjectKey" exact="$Objects.keys.{$ObjectCounter}" />
+                <set_value name="$Object" exact="$Objects.{$ObjectKey}" />
+
+                <debug_text text="'Now tracking ' + $Object.knownname + ' ({' + $Object + '}) with priority ' + $Priority" chance="$DebugChance" />
+                <set_value name="NPC_Management.$TrackedObjects.{$Object}" exact="$Priority" />
+              </do_all>
+
+              <!-- DEBUG CHECK -->
+              <do_if value="$DebugChance" min="100">
+                <do_if value="not NPC_Management.$TrackedObjects.keys.count">
+                  <debug_text text="'$TrackedObjects now empty'" />
+                </do_if>
+                <do_else>
+                  <debug_text text="'$TrackedObjects now contains:'" />
+                  <do_all exact="NPC_Management.$TrackedObjects.keys.count" counter="$TrackedObjectCounter">
+                    <debug_text text="$TrackedObjectCounter + ': ' + NPC_Management.$TrackedObjects.keys.{$TrackedObjectCounter}.knownname + ' ({' + NPC_Management.$TrackedObjects.keys.{$TrackedObjectCounter} + '}) - ' + NPC_Management.$TrackedObjects.{NPC_Management.$TrackedObjects.keys.{$TrackedObjectCounter}}" />
+                  </do_all>
+                </do_else>
+              </do_if>
+
+              <!-- Then pass information onto correct usecase -->
+              <do_if value="$Usecase" exact="'docking'">
+                <set_value name="$UsecaseCue" exact="Usecase_Docking" />
+              </do_if>
+              <do_elseif value="$Usecase" exact="'undocking'">
+                <set_value name="$UsecaseCue" exact="Usecase_Undocking" />
+              </do_elseif>
+              <!-- Fallback usecase -->
+              <do_else>
+                <set_value name="$UsecaseCue" exact="Usecase_Idle" />
+              </do_else>
+              <signal_cue_instantly cue="$UsecaseCue" param="event.param2" />
+            </do_if>
+          </actions>
+        </cue>
+
+        <cue name="Exit" instantiate="true">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <actions>
+            <debug_text text="'Exit cue signalled'" chance="$DebugChance" />
+          </actions>
+        </cue>
+
+        <cue name="Usecase_Docking" instantiate="true" namespace="this">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <actions>
+            <set_value name="$DebugChance" exact="NPC_Management.$DebugChance"/>
+            <debug_text text="'Managing NPCs for docking usecase'" chance="$DebugChance" />
+
+            <!-- Start tracking objects involved in this usecase -->
+            <do_all exact="event.param.$Objects.keys.count" counter="$ObjectCounter">
+              <add_to_group groupname="$InvolvedObjects" object="event.param.$Objects.{event.param.$Objects.keys.{$ObjectCounter}}" />
+            </do_all>
+            <set_value name="$DockObject" exact="event.param.$Objects.$DockObject" />
+            <set_value name="$DockTarget" exact="event.param.$Objects.$DockTarget" />
+            <set_value name="$QueuedResult" exact="event.param.$QueuedResult" />
+            <set_value name="$GrantedResult" exact="event.param.$GrantedResult" />
+
+            <!-- Start tracking NPCs involved in this usecase -->
+            <!-- Identify the commander of $DockObject -->
+            <set_value name="$InvolvedNPCs" exact="table[]" />
+            <set_value name="$DockObjectCommander" exact="$DockObject.controlentity.default" />
+            <debug_text text="'$DockObjectCommander: ' + $DockObjectCommander.name + ' ({' + $DockObjectCommander + '})'" chance="$DebugChance" />
+            <set_value name="$InvolvedNPCs.{$DockObjectCommander}" exact="$DockObject.chair.{chairtype.pilot}.roomslot" />
+            <!-- Identify the commander / manager of $DockTarget -->
+            <do_if value="$DockTarget.isclass.ship">
+              <set_value name="$DockTargetCommander" exact="$DockTarget.controlentity.default" />
+              <debug_text text="'$DockTargetCommander: ' + $DockTargetCommander.name + ' ({' + $DockTargetCommander + '})'" chance="$DebugChance" />
+              <set_value name="$InvolvedNPCs.{$DockTargetCommander}" exact="$DockTarget.chair.{chairtype.pilot}.roomslot" />
+            </do_if>
+            <do_elseif value="$DockTarget.isclass.station">
+              <set_value name="$DockTargetCommander" exact="$DockTarget.controlentity.{controlpost.manager}" />
+              <!-- TODO (@Lorraine): Actually identify whether $DockTarget has a commander or not (station edge-cases, i.e. station under construction, might mean a manager is not present) -->
+              <debug_text text="'$DockTargetCommander: ' + $DockTargetCommander.name + ' ({' + $DockTargetCommander + '})'" chance="$DebugChance" />
+              <set_value name="$InvolvedNPCs.{$DockTargetCommander}" exact="$DockTarget.chair.{chairtype.manager}.roomslot" />
+            </do_elseif>
+
+            <!-- Create a list to hold NPCs that need to be instantiated later -->
+            <create_list name="$NPCsToInstantiate" />
+
+            <set_value name="$DockObjectHasCommsOfficer" exact="false" />
+            <set_value name="$DockTargetHasCommsOfficer" exact="false" />
+            <!-- $DockObject -->
+            <!-- First see whether or not $DockObject can even support a comms officer -->
+            <do_if value="$DockObject.chair.{chairtype.navigation}.exists" comment="TODO (@Lorraine): Swap this out for chairtype.comms when it exists?">
+              <debug_text text="'A comms chair exists on $DockObject'" chance="$DebugChance" />
+              <set_value name="$CommsChairSlot" exact="$DockObject.chair.{chairtype.navigation}.roomslot" comment="TODO (@Lorraine): Swap this out for chairtype.comms when it exists?" />
+
+              <!-- If there is a chair for comms, is there already someone sitting in it (or on their way)? -->
+              <do_if value="$DockObject.chair.{chairtype.navigation}.entity" comment="TODO (@Lorraine): Swap this out for chairtype.comms when it exists?">
+                <debug_text text="'Someone is already sat in that chair - they will act as $DockObjectComms'" chance="$DebugChance" />
+                <set_value name="$DockObjectComms" exact="$DockObject.chair.{chairtype.navigation}.entity" comment="TODO (@Lorraine): Swap this out for chairtype.comms when it exists?" />
+                <set_value name="$InvolvedNPCs.{$DockObjectComms}" exact="$CommsChairSlot" comment="Tells the state machine to move the NPC to the specified roomslot" />
+                <set_value name="$DockObjectHasCommsOfficer" exact="true" />
+              </do_if>
+
+              <!-- Else, we can either instantiate a new entity or find someone in the same room who can fulfil that role -->
+              <do_else>
+                <debug_text text="'Someone needs to fill the chair'" chance="$DebugChance" />
+
+                <!-- Is there anyone in the room that can fulfil the role -->
+                <set_value name="$CommanderRoom" exact="$DockObjectCommander.room" />
+                <find_object_component name="$ServicePersonnel" entityrole="entityrole.service" object="$CommanderRoom" multiple="true" />
+                <do_if value="$ServicePersonnel.count">
+                  <!-- There are service personnel in the room that can fulfil the role -->
+                  <debug_text text="'There are service personnel in room who could fulfil the role'" chance="$DebugChance" />
+                  <set_value name="$PersonnelAvailableInRoom" exact="true" />
+                </do_if>
+                <do_else>
+                  <debug_text text="'There are no service personnel in room to fulfil the role'" chance="$DebugChance" />
+                  <set_value name="$PersonnelAvailableInRoom" exact="false" />
+
+                  <!-- Is there anyone in the ship that can fulfil the role -->
+                  <do_if value="$DockObject.people.service.count">
+                    <debug_text text="'There are service personnel on ship who could fulfil the role'" chance="$DebugChance" />
+                    <set_value name="$PersonnelAvailableInShip" exact="true" />
+                  </do_if>
+                  <do_else>
+                    <debug_text text="'There are no service personnel on ship who could fulfil the role'" chance="$DebugChance" />
+                    <set_value name="$PersonnelAvailableInShip" exact="false" />
+                  </do_else>
+                </do_else>
+
+                <!-- Create a random number between 1 and 100 to decide whether or not to use the personnel who are already there. TOHIT value == 60 -->
+                <set_value name="$ToHit" min="1" max="100" />
+                <debug_text text="'$ToHit result: ' + $ToHit" chance="$DebugChance" />
+
+                <!-- Service personnel from room used to fulfil role -->
+                <do_if value="$PersonnelAvailableInRoom and $ToHit le 60">
+                  <debug_text text="'A service person from room will fulfil the role'" chance="$DebugChance" />
+                  <set_value name="$DockObjectComms" list="$ServicePersonnel" />
+                  <set_value name="$InvolvedNPCs.{$DockObjectComms}" exact="$CommsChairSlot" comment="Tells the state machine to move the NPC to the specified roomslot" />
+                  <set_value name="$DockObjectHasCommsOfficer" exact="true" />
+                </do_if>
+
+                <!-- Service personnel brought in to fulfil role -->
+                <do_elseif value="$PersonnelAvailableInShip">
+                  <debug_text text="'A service person from ship will be instantiated to fulfil the role'" chance="$DebugChance" />
+                  <find_npc_waypoint name="$SpawnSlot" object="$CommanderRoom.slotcontext" tags="tag.npctransport" />
+                  <set_value name="$NPC" exact="$DockObject.people.service.list.random" />
+                  <set_value name="$NPCInfo" exact="table[$Container = $DockObject, $Template = $NPC, $SpawnSlot = $SpawnSlot, $TargetSlot = $CommsChairSlot]" />
+                  <append_to_list name="$NPCsToInstantiate" exact="$NPCInfo" />
+
+                  <set_value name="$DockObjectComms" exact="null" comment="Set to null so that it can still be safely checked after the NPC is instantiated" />
+                </do_elseif>
+              </do_else>
+            </do_if>
+            <!-- TODO (@Lorraine): Identify whether $DockObject can / does have a helmsperson (capship case) -->
+            <!-- $DockTarget -->
+            <!-- If $DockTargetCommander does not exist, we're entering a different subcase anyway, so there is no point checking for other staff -->
+            <do_if value="$DockTargetCommander">
+              <debug_text text="'$DockTarget has a commander, so we can also check for other staff'" chance="$DebugChance" />
+
+              <!-- First check whether or not $DockTarget even supports a comms officer -->
+              <do_if value="$DockTarget.chair.{chairtype.navigation}.exists" comment="TODO (@Lorraine): Swap this out for chairtype.comms when it exists?">
+                <debug_text text="'A comms chair exists on $DockTarget'" chance="$DebugChance" />
+                <set_value name="$CommsChairSlot" exact="$DockTarget.chair.{chairtype.navigation}.roomslot" comment="TODO (@Lorraine): Swap this out for chairtype.comms when it exists?" />
+
+                <!-- If there is a chair for comms, is there already someone sitting in it (or on their way)? -->
+                <do_if value="$DockObject.chair.{chairtype.navigation}.entity" comment="TODO (@Lorraine): Swap this out for chairtype.comms when it exists?">
+                  <debug_text text="'Someone is already sat in that chair - they will act as $DockTargetComms'" chance="$DebugChance" />
+                  <set_value name="$DockTargetComms" exact="$DockTarget.chair.{chairtype.navigation}.entity" comment="TODO (@Lorraine): Swap this out for chairtype.comms when it exists?" />
+                  <set_value name="$InvolvedNPCs.{$DockTargetComms}" exact="$CommsChairSlot" />
+                  <set_value name="$DockTargetHasCommsOfficer" exact="true" />
+                </do_if>
+
+                <!-- Else, we can either instantiate a new entity or find someone in the same room who can fulfil that role -->
+                <do_else>
+                  <debug_text text="'Someone needs to fill the chair'" chance="$DebugChance" />
+
+                  <!-- Is there anyone in the room that can fulfil the role? -->
+                  <set_value name="$CommanderRoom" exact="$DockTargetCommander.room" />
+                  <find_object_component name="$ServicePersonnel" entityrole="entityrole.service" object="$CommanderRoom" multiple="true" />
+                  <do_if value="$ServicePersonnel.count">
+                    <!-- There are service personnel in the room that can fulfil the role -->
+                    <debug_text text="'There are service personnel in room who could fulfil the role'" chance="$DebugChance" />
+                    <set_value name="$PersonnelAvailableInRoom" exact="true" />
+                  </do_if>
+                  <do_else>
+                    <debug_text text="'There are no service personnel in room to fulfil the role'" chance="$DebugChance" />
+                    <set_value name="$PersonnelAvailableInRoom" exact="false" />
+
+                    <!-- Is there anyone in the ship that can fulfil the role? -->
+                    <do_if value="$DockTarget.people.service.count">
+                      <debug_text text="'There are service personnel on ship who could fulfil the role'" chance="$DebugChance" />
+                      <set_value name="$PersonnelAvailableInShip" exact="true" />
+                    </do_if>
+                    <do_else>
+                      <debug_text text="'There are no service personnel on ship who could fulfil the role'" chance="$DebugChance" />
+                      <set_value name="$PersonnelAvailableInShip" exact="false" />
+                    </do_else>
+                  </do_else>
+
+                  <!-- Create a random number between 1 and 100 to decide whether or not to use the personnel who are already tzhere. TOHIT value == 60 -->
+                  <set_value name="$ToHit" min="1" max="100" />
+                  <debug_text text="'$ToHit result: ' + $ToHit" chance="$DebugChance" />
+
+                  <!-- Service personnel from room used to fulfil role -->
+                  <do_if value="$PersonnelAvailableInRoom and $ToHit le 60">
+                    <debug_text text="'A service person from room will fulfil the role'" chance="$DebugChance" />
+                    <set_value name="$DockTargetComms" list="$ServicePersonnel" />
+                    <set_value name="$InvolvedNPCs.{$DockTargetComms}" exact="$CommsChairSlot" />
+                    <set_value name="$DockTargetHasCommsOfficer" exact="true" />
+                  </do_if>
+
+                  <!-- Service personnel from ship used to fulfil role -->
+                  <do_elseif value="$PersonnelAvailableInShip">
+                    <debug_text text="'A service person from ship will be instantiated to fulfil the role'" chance="$DebugChance" />
+                    <find_npc_waypoint name="$SpawnSlot" object="$CommanderRoom.slotcontext" tags="tag.npctransport" />
+                    <set_value name="$NPC" exact="$DockObject.people.service.list.random" />
+                    <set_value name="$NPCInfo" exact="table[$Container = $DockTarget, $Template = $NPC, $SpawnSlot = $SpawnSlot, $TargetSlot = $CommsChairSlot]" />
+                    <append_to_list name="$NPCsToInstantiate" exact="$NPCInfo" />
+
+                    <set_value name="$DockTargetComms" exact="null" comment="Set to null so that it can still be safely checked after the NPC is instantiated" />
+                  </do_elseif>
+                </do_else>
+              </do_if>
+            </do_if>
+
+            <!-- Instantiate NPCs as necessary -->
+            <do_if value="$NPCsToInstantiate.count">
+              <debug_text text="'Instantiating necessary NPCs'" chance="$DebugChance" />
+              <!-- Result saved to Usecase_Docking.$InstantiatedNPCs -->
+              <signal_cue_instantly cue="md.NPC_Instantiation.InstantiateForUsecase" param="[Usecase_Docking, $NPCsToInstantiate]" />
+            </do_if>
+
+            <!-- Add the instantiated NPCs to the NPCs involved in this usecase (even if they don't have a role yet) -->
+            <!-- TODO (@Lorraine): Despair! -->
+            <do_if value="this.$InstantiatedNPCs? and this.$InstantiatedNPCs.count">
+              <do_all exact="this.$InstantiatedNPCs.count" counter="$NPCCounter">
+                <set_value name="$NPC" exact="this.$InstantiatedNPCs.{$NPCCounter}" />
+                <debug_text text="'NPC instantiated: ' + $NPC.knownname + ' ({' + $NPC + '})'" chance="$DebugChance" />
+                <!-- Find the original NPC information -->
+                <do_all exact="$NPCsToInstantiate.count" counter="$InstantiatedNPCCounter">
+                  <set_value name="$NPCInfo" exact="$NPCsToInstantiate.{$InstantiatedNPCCounter}" />
+                  <do_if value="$NPCInfo.$Template" exact="$NPC.npctemplate">
+                    <debug_text text="'We have found correct NPC information'" chance="$DebugChance" />
+                    <set_value name="$InvolvedNPCs.{$NPC}" exact="$NPCInfo.$TargetSlot" />
+                    <break />
+                  </do_if>
+                </do_all>
+              </do_all>
+            </do_if>
+
+            <!-- Signal all NPCs to get into correct position -->
+            <debug_text text="'Signalling NPCs to get into position:'" chance="$DebugChance" />
+            <do_all exact="$InvolvedNPCs.keys.count" counter="$NPCCounter">
+              <set_value name="$NPC" exact="$InvolvedNPCs.keys.{$NPCCounter}" />
+              <set_value name="$Slot" exact="$InvolvedNPCs.{$NPC}" />
+              <debug_text text="$NPCCounter + ': ' + $NPC.name + ' ({' + $NPC + '}); ' + $Slot" chance="$DebugChance" />
+
+              <set_value name="$Parameters" exact="table[$Slot = $Slot, $DebugChance = $DebugChance]" />
+              <signal_objects object="$NPC" param="'npc_to_post'" param2="$Parameters" />
+            </do_all>
+
+            <!-- Start tracking whether involved NPCs are in position -->
+            <set_value name="$AllNPCsInPosition" exact="false" />
+          </actions>
+          <cues>
+            <!-- Cues checking to see whether all NPCs are in place -->
+            <cue name="Docking_CheckNPCPositions">
+              <actions>
+                <set_value name="$NPCsInTransit" exact="false" />
+
+                <do_all exact="$InvolvedNPCs.keys.count" counter="$NPCCounter">
+                  <set_value name="$NPC" exact="$InvolvedNPCs.keys.{$NPCCounter}" />
+                  <set_value name="$Slot" exact="$InvolvedNPCs.{$NPC}" />
+
+                  <do_if value="$NPC.roomslot != $Slot or $NPC.isintransit">
+                    <debug_text text="'$NPC ' + $NPC.name + ' ({' + $NPC + '}) is still in transit'" chance="$DebugChance" />
+                    <set_value name="$NPCsInTransit" exact="true" />
+                    <break />
+                  </do_if>
+                </do_all>
+
+                <do_if value="not $NPCsInTransit">
+                  <debug_text text="'There are no NPCs in transit!'" chance="$DebugChance" />
+                  <set_value name="$AllNPCsInPosition" exact="true" />
+                </do_if>
+              </actions>
+              <cues>
+                <cue name="Docking_CheckReset" onfail="cancel">
+                  <conditions>
+                    <check_value value="$AllNPCsInPosition" exact="false" />
+                  </conditions>
+                  <delay exact="1ms" />
+                  <actions>
+                    <reset_cue cue="Docking_CheckNPCPositions" />
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="Docking_NPCsInPosition" checkinterval="1s">
+              <conditions>
+                <check_value value="$AllNPCsInPosition" />
+              </conditions>
+              <actions>
+                <debug_text text="'All NPCS are now in position!'" chance="$DebugChance" />
+
+                <!-- Considering that NPCs could have been instantiated to fulfil roles, check to see whether necessary positions have been filled -->
+                <do_if value="$DockObject.chair.{chairtype.navigation}.entity and not $DockObjectComms" comment="TODO (@Lorraine): Swap this out for chair.comms when it exists">
+                  <debug_text text="'Setting up newly created comms entity to fulfil role for $DockObject'" chance="$DebugChance" />
+                  <set_value name="$DockObjectComms" exact="$DockObject.chair.{chairtype.navigation}.entity" comment="TODO (@Lorraine): Swap this out for chair.comms when it exists" />
+                  <set_value name="$DockObjectHasCommsOfficer" exact="true" />
+                </do_if>
+                <!-- TODO (@Lorraine): Add check for helmsperson on capital ship -->
+                <do_if value="$DockTarget.chair.{chairtype.navigation}.entity and not $DockTargetComms" comment="TODO (@Lorraine): Swap this out for chair.comms when it exists">
+                  <debug_text text="'Setting up newly created comms entity to fulfil role for $DockTarget'" chance="$DebugChance" />
+                  <set_value name="$DockTargetComms" exact="$DockTarget.chair.{chairtype.navigation}.entity" comment="TODO (@Lorraine): Swap this out for chair.comms when it exists" />
+                  <set_value name="$DockTargetHasCommsOfficer" exact="true" />
+                </do_if>
+
+                <!-- Workout which sub-usecase we are entering -->
+                <do_if value="$DockObjectHasCommsOfficer and $DockTargetHasCommsOfficer">
+                  <!-- Both objects have a comms officer that can handle the direct communication between $DockObject and $DockTarget -->
+                  <debug_text text="'Both objects have a comms officer that can handle direct communication between $DockObject and $DockTarget'" chance="$DebugChance" />
+                  <set_value name="$Subcase" exact="1" />
+                </do_if>
+                <do_elseif value="$DockObjectHasCommsOfficer">
+                  <!-- Only $DockObject has a comms officer to handle direct communication with $DockTarget -->
+                  <debug_text text="'Only $DockObject has a comms officer to handle direct communication with $DockTarget'" chance="$DebugChance" />
+                  <set_value name="$Subcase" exact="2" />
+                </do_elseif>
+                <do_elseif value="$DockTargetHasCommsOfficer">
+                  <!-- Only $DockTarget has a comms officer to handle direct communication with $DockObject -->
+                  <debug_text text="'Only $DockTarget has a comms officer to handle direct communication with $DockObject'" chance="$DebugChance" />
+                  <set_value name="$Subcase" exact="3" />
+                </do_elseif>
+                <do_else>
+                  <!-- Neither object has a comms officer to handle direct communication between $DockObject and $DockTarget -->
+                  <debug_text text="'Neither object has a comms officer to handle direct communication between $DockObject and $DockTarget'" chance="$DebugChance" />
+                  <set_value name="$Subcase" exact="4" />
+                </do_else>
+                <debug_text text="'Entering subcase ' + $Subcase" chance="$DebugChance" />
+
+                <!-- Activate the usecase by signalling the correct NPC with the right parameters -->
+                <!-- SUBCASE 1 -->
+                <do_if value="$Subcase" exact="1">
+                  <set_value name="$Parameters" exact="table[$DockObjectCommander = $DockObjectCommander,
+													 $DockTargetCommander = $DockTargetCommander,
+													 $DockObjectComms = $DockObjectComms,
+													 $DockTargetComms = $DockTargetComms,
+													 $QueuedResult = $QueuedResult,
+													 $GrantedResult = $GrantedResult,
+													 $DebugChance = $DebugChance]" />
+
+                  <do_if value="$DockObjectCommander" exact="player.entity">
+                    <!-- In this case, "the player orders $DockObjectComms to request docking permission" and $DockObjectComms contacts $DockTargetComms -->
+                    <set_value name="$Parameters.$ConversationTarget" exact="$DockTargetComms" />
+                    <signal_objects object="$DockObjectComms" param="'dock_request_ordered'" param2="$Parameters" />
+                  </do_if>
+                  <do_else>
+                    <!-- In this case, $DockObjectCommander orders $DockObjectComms to request docking permission -->
+                    <set_value name="$Parameters.$ConversationTarget" exact="$DockObjectComms" />
+                    <signal_objects object="$DockObjectCommander" param="'order_dock_request'" param2="$Parameters" />
+                  </do_else>
+                </do_if>
+
+                <!-- SUBCASE 2 -->
+                <do_elseif value="$Subcase" exact="2">
+                  <set_value name="$Parameters" exact="table[$DockObjectCommander = $DockObjectCommander,
+													 $DockTargetCommander = $DockTargetCommander,
+													 $DockObjectComms = $DockObjectComms,
+													 $QueuedResult = $QueuedResult,
+													 $GrantedResult = $GrantedResult,
+													 $DebugChance = $DebugChance]" />
+
+                  <do_if value="$DockObjectCommander" exact="player.entity">
+                    <!-- In this case, "the player orders $DockObjectComms to request docking permission" and $DockObjectComms directly contacts $DockTargetCommander -->
+                    <set_value name="$Parameters.$ConversationTarget" exact="$DockTargetCommander" />
+                    <signal_objects object="$DockObjectComms" param="'dock_request_ordered'" param2="$Parameters" />
+                  </do_if>
+                  <do_else>
+                    <!-- In this case, $DockObjectCommander orders $DockObjectComms to request docking permission -->
+                    <set_value name="$Parameters.$ConversationTarget" exact="$DockObjectComms" />
+                    <signal_objects object="$DockObjectCommander" param="'order_dock_request'" param2="$Parameters" />
+                  </do_else>
+                </do_elseif>
+
+                <!-- SUBCASE 3 -->
+                <do_elseif value="$Subcase" exact="3">
+                  <set_value name="$Parameters" exact="table[$DockObjectCommander = $DockObjectCommander,
+													 $DockTargetCommander = $DockTargetCommander,
+													 $DockTargetComms = $DockTargetComms,
+													 $QueuedResult = $QueuedResult,
+													 $GrantedResult = $GrantedResult,
+													 $DebugChance = $DebugChance]" />
+
+                  <do_if value="$DockObjectCommander" exact="player.entity">
+                    <!-- In this case, "the player contacts $DockTargetComms to request docking permission" and $DockTargetComms responds -->
+                    <set_value name="$Parameters.$ConversationTarget" exact="$DockObjectCommander" />
+                    <signal_objects object="$DockTargetComms" param="'dock_requested'" param2="$Parameters" />
+                  </do_if>
+                  <do_else>
+                    <!-- In this case, $DockObjectCommander contacts $DockTargetComms to request docking permission -->
+                    <set_value name="$Parameters.$ConversationTarget" exact="$DockTargetComms" />
+                    <signal_objects object="$DockObjectCommander" param="'request_dock'" param2="$Parameters" />
+                  </do_else>
+                </do_elseif>
+
+                <!-- SUBCASE 4 -->
+                <do_elseif value="$Subcase" exact="4">
+                  <set_value name="$Parameters" exact="table[$DockObjectCommander = $DockObjectCommander,
+													 $DockTargetCommander = $DockTargetCommander,
+													 $QueuedResult = $QueuedResult,
+													 $GrantedResult = $GrantedResult,
+													 $DebugChance = $DebugChance]" />
+
+                  <do_if value="$DockObjectCommander" exact="player.entity">
+                    <!-- In this case, "the player directly contacts $DockTargetCommander to request docking permission" and $DockTargetCommander responds -->
+                    <set_value name="$Parameters.$ConversationTarget" exact="$DockObjectCommander" />
+                    <signal_objects object="$DockTargetCommander" param="'dock_requested'" param2="$Parameters" />
+                  </do_if>
+                  <do_else>
+                    <!-- In this case, $DockObjectCommander directly contacts $DockTargetCommander to request docking permission -->
+                    <set_value name="$Parameters.$ConversationTarget" exact="$DockTargetCommander" />
+                    <signal_objects object="$DockObjectCommander" param="'request_dock'" param2="$Parameters" />
+                  </do_else>
+                </do_elseif>
+              </actions>
+            </cue>
+
+            <!--  Clean-up Listener -->
+            <cue name="Exit_Docking">
+              <conditions>
+                <check_any>
+                  <check_all>
+                    <event_cue_signalled cue="Exit" />
+                    <check_any exact="event.param.count" counter="$ObjectCounter" comment="event.param == a list of objects to be freed up">
+                      <check_value value="$InvolvedObjects.indexof.{event.param.{$ObjectCounter}}" />
+                    </check_any>
+                  </check_all>
+                  <event_cue_signalled />
+                </check_any>
+              </conditions>
+              <actions>
+                <debug_text text="'Freeing up docking usecase'" chance="$DebugChance" />
+
+                <!-- Free up all of the objects being tracked for this usecase -->
+                <do_all exact="NPC_Management.$TrackedObjects.keys.count" counter="$TrackedObjectCounter" reverse="true">
+                  <set_value name="$TrackedObject" exact="NPC_Management.$TrackedObjects.keys.{$TrackedObjectCounter}" />
+                  <do_if value="$InvolvedObjects.indexof.{$TrackedObject}">
+                    <remove_value name="NPC_Management.$TrackedObjects.{$TrackedObject}" />
+                    <remove_from_group group="$InvolvedObjects" object="$TrackedObject" />
+                  </do_if>
+                </do_all>
+
+                <!-- Free up all of the NPCs used in this usecase -->
+                <do_all exact="$InvolvedNPCs.keys.count" counter="$NPCCounter">
+                  <signal_objects object="$InvolvedNPCs.keys.{$NPCCounter}" param="'npc_state_reinit'" />
+                </do_all>
+                <remove_value name="$InvolvedNPCs" />
+
+                <do_if value="$InvolvedObjects.count">
+                  <remove_value name="$InvolvedObjects" />
+                </do_if>
+
+                <!-- DEBUG CHECK -->
+                <do_if value="$DebugChance" min="100">
+                  <do_if value="not NPC_Management.$TrackedObjects.keys.count">
+                    <debug_text text="'$TrackedObjects now empty'" />
+                  </do_if>
+                  <do_else>
+                    <debug_text text="'$TrackedObjects now contains:'" />
+                    <do_all exact="NPC_Management.$TrackedObjects.keys.count" counter="$TrackedObjectCounter">
+                      <debug_text text="$TrackedObjectCounter + ': ' + NPC_Management.$TrackedObjects.keys.{$TrackedObjectCounter}.knownname + ' ({' + NPC_Management.$TrackedObjects.keys.{$TrackedObjectCounter} + '}) - ' + NPC_Management.$TrackedObjects.{NPC_Management.$TrackedObjects.keys.{$TrackedObjectCounter}}" />
+                    </do_all>
+                  </do_else>
+
+                  <do_if value="$InvolvedObjects?">
+                    <debug_text text="'$InvolvedObjects contains:'" />
+                    <do_all exact="$InvolvedObjects.count" counter="$ObjectCounter">
+                      <debug_text text="$ObjectCounter + ': ' + $InvolvedObjects.{$ObjectCounter}.knownname + ' ({' + $InvolvedObjects.{$ObjectCounter} + '})'" />
+                    </do_all>
+                  </do_if>
+                </do_if>
+
+                <!-- As the usecase has been freed up, the usecase should be cancelled -->
+                <cancel_cue cue="Usecase_Docking" />
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Usecase_Undocking" instantiate="true" namespace="this">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <actions>
+            <set_value name="$DebugChance" exact="NPC_Management.$DebugChance"/>
+            <debug_text text="'Managing NPCs for undocking usecase'" chance="$DebugChance" />
+            <!-- TODO (@Lorraine): Implement full version of this usecase -->
+
+            <!-- Start tracking objects involved in this usecase -->
+            <do_all exact="event.param.$Objects.keys.count" counter="$ObjectCounter">
+              <add_to_group groupname="$InvolvedObjects" object="event.param.$Objects.{event.param.$Objects.keys.{$ObjectCounter}}" />
+            </do_all>
+            <set_value name="$UndockingObject" exact="event.param.$Objects.$UndockingObject" />
+
+            <!-- Start tracking NPCs involved in this usecase -->
+            <set_value name="$InvolvedNPCs" exact="table[]" />
+            <set_value name="$UndockingObjectCommander" exact="$UndockingObject.controlentity.default" />
+            <debug_text text="'$UndockingObjectCommander: ' + $UndockingObjectCommander.name + ' ({' + $UndockingObjectCommander + '})'" chance="$DebugChance" />
+            <do_if value="$UndockingObject.iscapitalship">
+              <set_value name="$InvolvedNPCs.{$UndockingObjectCommander}" exact="$UndockingObjectCommander.room.controlposition.{controlposition.pilot}.roomslot" comment="TODO (@Lorraine): ...Eh? Not sure this is the best way of handling this in the world." />
+            </do_if>
+            <do_else>
+              <set_value name="$InvolvedNPCs.{$UndockingObjectCommander}" exact="$UndockingObject.controlposition.{controlposition.pilot}.roomslot" />
+            </do_else>
+
+            <!-- Signal all NPCs to get into correct position -->
+            <do_all exact="$InvolvedNPCs.keys.count" counter="$NPCCounter">
+              <set_value name="$NPC" exact="$InvolvedNPCs.keys.{$NPCCounter}" />
+              <set_value name="$Slot" exact="$InvolvedNPCs.{$NPC}" />
+
+              <set_value name="$Parameters" exact="table[$Slot = $Slot, $DebugChance = $DebugChance]" />
+              <signal_objects object="$NPC" param="'npc_to_post'" param2="$Parameters" />
+            </do_all>
+
+            <!-- Start tracking whether involved NPCs are in position -->
+            <set_value name="$AllNPCsInPosition" exact="false" />
+          </actions>
+          <cues>
+            <cue name="Undocking_CheckNPCPositions">
+              <actions>
+                <set_value name="$NPCsInTransit" exact="false" />
+
+                <do_all exact="$InvolvedNPCs.keys.count" counter="$NPCCounter">
+                  <set_value name="$NPC" exact="$InvolvedNPCs.keys.{$NPCCounter}" />
+                  <set_value name="$Slot" exact="$InvolvedNPCs.{$NPC}" />
+
+                  <debug_text text="'$NPC: ' + $NPC.name + ' ({' + $NPC + '})'" chance="$DebugChance" />
+                  <debug_text text="'$Slot: ' + $Slot" chance="$DebugChance" />
+
+                  <do_if value="$NPC.roomslot != $Slot or $NPC.isintransit">
+                    <debug_text text="'$NPC is either in wrong slot or is still on their way'" chance="$DebugChance" />
+                    <set_value name="$NPCsInTransit" exact="true" />
+                    <break />
+                  </do_if>
+                </do_all>
+
+                <do_if value="not $NPCsInTransit">
+                  <debug_text text="'There are no NPCs in transit!'" chance="$DebugChance" />
+                  <set_value name="$AllNPCsInPosition" exact="true" />
+                </do_if>
+              </actions>
+              <cues>
+                <cue name="Undocking_CheckReset" onfail="cancel">
+                  <conditions>
+                    <check_value value="$AllNPCsInPosition" exact="false" />
+                  </conditions>
+                  <delay exact="1ms" />
+                  <actions>
+                    <do_if value="@$NPC.exists">
+                      <reset_cue cue="Undocking_CheckNPCPositions" />
+                    </do_if>
+                    <do_else>
+                      <signal_cue_instantly cue="Exit_Undocking" param="$InvolvedObjects" />
+                    </do_else>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="Undocking_NPCsInPosition" checkinterval="1s">
+              <conditions>
+                <check_value value="$AllNPCsInPosition" />
+              </conditions>
+              <actions>
+                <debug_text text="'All NPCs are now in position!'" chance="$DebugChance" />
+
+                <set_value name="$Parameters" exact="table[$DebugChance = $DebugChance]" />
+                <signal_objects object="$UndockingObjectCommander" param="'manage_undock'" param2="$Parameters" />
+              </actions>
+              <cues>
+                <cue name="Undock_ShipUndocked">
+                  <conditions>
+                    <event_object_undocked object="$UndockingObject" />
+                  </conditions>
+                  <actions>
+                    <debug_text text="'$UndockingObject has undocked - finishing usecase'" chance="$DebugChance" />
+                    <signal_cue_instantly cue="Exit_Undocking" param="$InvolvedObjects" />
+                  </actions>
+                </cue>
+                <cue name="Undock_ShipKilled">
+                  <conditions>
+                    <event_object_destroyed object="$UndockingObject" />
+                  </conditions>
+                  <actions>
+                    <debug_text text="'$UndockingObject was killed - finishing usecase'" chance="$DebugChance" />
+                    <signal_cue_instantly cue="Exit_Undocking" param="$InvolvedObjects" />
+                  </actions>
+                </cue>
+                <cue name="Undock_NPCKilled" checkinterval="60s">
+                  <conditions>
+                    <check_value value="not @$NPC.exists" />
+                  </conditions>
+                  <actions>
+                    <signal_cue_instantly cue="Exit_Undocking" param="$InvolvedObjects" />
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <!-- Clean-up Listener -->
+            <cue name="Exit_Undocking">
+              <conditions>
+                <check_any>
+                  <check_all>
+                    <event_cue_signalled cue="Exit" />
+                    <check_any exact="event.param.count" counter="$ObjectCounter" comment="event.param == a list of objects to be freed up">
+                      <check_value value="$InvolvedObjects.indexof.{event.param.{$ObjectCounter}}"/>
+                    </check_any>
+                  </check_all>
+                  <event_cue_signalled />
+                </check_any>
+              </conditions>
+              <actions>
+                <debug_text text="'Freeing up undocking usecase'" chance="$DebugChance" />
+
+                <!-- Free up all of the objects being tracked for this usecase -->
+                <do_all exact="NPC_Management.$TrackedObjects.keys.count" counter="$TrackedObjectCounter" reverse="true">
+                  <set_value name="$TrackedObject" exact="NPC_Management.$TrackedObjects.keys.{$TrackedObjectCounter}" />
+                  <do_if value="$InvolvedObjects.indexof.{$TrackedObject}">
+                    <remove_value name="NPC_Management.$TrackedObjects.{$TrackedObject}" />
+                    <remove_from_group group="$InvolvedObjects" object="$TrackedObject" />
+                  </do_if>
+                </do_all>
+
+                <!-- Free up all of the NPCs used in this usecase -->
+                <do_for_each name="$InvolvedNPC" in="$InvolvedNPCs">
+                  <do_if value="$InvolvedNPC.exists">
+                    <signal_objects object="$InvolvedNPC" param="'npc_state_reinit'" />
+                  </do_if>
+                </do_for_each>
+                <remove_value name="$InvolvedNPCs" />
+
+                <do_if value="not $InvolvedObjects.count">
+                  <remove_value name="$InvolvedObjects" />
+                </do_if>
+
+                <!-- DEBUG CHECK -->
+                <do_if value="$DebugChance" min="100">
+                  <do_if value="not NPC_Management.$TrackedObjects.keys.count">
+                    <debug_text text="'$TrackedObjects now empty'" />
+                  </do_if>
+                  <do_else>
+                    <debug_text text="'$TrackedObjects now contains:'" />
+                    <do_for_each name="$TrackedObj" in="NPC_Management.$TrackedObjects">
+                      <debug_text text="$TrackedObj.knownname + ' ({' + $TrackedObj + '}) - ' + NPC_Management.$TrackedObjects.{$TrackedObj}" />
+                    </do_for_each>
+                  </do_else>
+
+                  <do_if value="$InvolvedObjects?">
+                    <debug_text text="'$InvolvedObjects contains:'" />
+                    <do_all exact="$InvolvedObjects.count" counter="$ObjectCounter">
+                      <debug_text text="$ObjectCounter + ': ' + $InvolvedObjects.{$ObjectCounter}.knownname + ' ({' + $InvolvedObjects.{$ObjectCounter} + '})'" />
+                    </do_all>
+                  </do_if>
+                </do_if>
+
+                <!-- As the usecase has been freed up, the usecase should be cancelled -->
+                <cancel_cue cue="Usecase_Undocking" />
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Usecase_Idle" instantiate="true">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <actions>
+            <debug_text text="'Managing NPCs for idle usecase'" chance="$DebugChance" />
+
+            <!-- TODO (@Lorraine): Implement idle usecase handling -->
+          </actions>
+        </cue>
+      </cues>
+    </cue>
+  </cues>
+</mdscript>

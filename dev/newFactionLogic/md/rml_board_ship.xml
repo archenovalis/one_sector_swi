@@ -1,0 +1,371 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_BoardShip" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--
+    This RML is intended for use in Master-Missions. 
+    It handles checking if the player boarded the ship. Target can be specified with $TargetShip (GM_BoardShip) or non-specified with $TargetSpec (HL_BoardRare).
+    
+    $feedbackvalue:
+    -104 Both $TargetShip and $TargetSpec defined
+    -103 Neither $TargetShip nor $TargetSpec defined
+    -101 Cue parameters not defined
+    -100: Undefined failure. Defaulted to -100
+    -2: $TargetShip was destroyed by non-player (this can not happen for $TargetSpec!)
+    -1: $TargetShip was destroyed by player (this can not happen for $TargetSpec!)
+    1: Ship Boarded
+    -->
+    <library name="BoardShip" version="2">
+      <params>
+        <param name="EndSignalCue"/>
+        <param name="MissionCue"/>
+        <param name="StartStep" default="1" comment="Briefing step to start the mission on"/>
+        <param name="UpdateBriefing" default="true" comment="Update the briefing objective step when the objective is updated"/>
+        <param name="DebugChance" default="0" />
+
+        <param name="ObjectiveText"                   comment="The text for the mission objective."/>
+        <param name="TargetShip"    default="null"    comment="Need to pass in either TargetShip or TargetSpec"/>
+        <param name="TargetSpec"    default="null"    comment="example: table[$macro = macro.ship_arg_xl_carrier_01_a_macro, $equipment = [macro.engine_arg_xl_allround_01_mk1_macro, turret_arg_m_gatling_02_mk1_macro], $wares = table[{ware.energycells} = 420], $ammo = table[{ware.countermeasure_flares_01} = 2], $mods = [ware.mod_weapon_damage_01_mk1]]"/>
+
+      </params>
+      <actions>
+        <set_value name="$feedbackvalue" exact="0"/>
+        <create_list name="$ErrorList"/>
+
+        <do_if value="not $EndSignalCue or not $MissionCue">
+          <append_to_list name="$ErrorList" exact="-101"/>
+        </do_if>
+        <do_if value="not ($TargetShip or $TargetSpec)">
+          <append_to_list name="$ErrorList" exact="-103"/>
+        </do_if>
+        <do_if value="$TargetShip and $TargetSpec">
+          <append_to_list name="$ErrorList" exact="-104"/>
+        </do_if>
+      </actions>
+      <patch sinceversion="2" state="complete">
+        <do_if value="$TargetSpec">
+          <!--Patching $TargetSpec from a list to a table. However, this means that the caller (if they passed a list ref) would still have the old specs as we can't modify it from here. Shouldn't adversly affect current cases.
+          The RML will patch its own specs-->
+          <set_value name="$OldSpecs" exact="$TargetSpec"/>
+          <set_value name="$TargetSpec" exact="table[]"/>
+          <do_if value="$OldSpecs.{1}? and $OldSpecs.{1}">
+            <set_value name="$TargetSpec.$macro" exact="$OldSpecs.{1}"/>
+          </do_if>
+          <do_if value="$OldSpecs.{2}? and $OldSpecs.{2}.count">
+            <set_value name="$TargetSpec.$equipment" exact="$OldSpecs.{2}.clone"/>
+          </do_if>
+          <do_if value="$OldSpecs.{3}? and $OldSpecs.{3}.count">
+            <do_all exact="$OldSpecs.{3}.count" counter="$i">
+              <do_if value="$OldSpecs.{3}.{$i}.isammo">
+                <do_if value="not $TargetSpec.$ammo?">
+                  <set_value name="$TargetSpec.$ammo" exact="table[]"/>
+                </do_if>
+                <set_value name="$TargetSpec.$ammo.{$OldSpecs.{3}.{$i}.objectmacro}" exact="1" comment="OldSpecs had no ware amount data. Default to 1"/>
+              </do_if>
+              <do_else>
+                <do_if value="not $TargetSpec.$wares?">
+                  <set_value name="$TargetSpec.$wares" exact="table[]"/>
+                </do_if>
+                <set_value name="$TargetSpec.$wares.{$OldSpecs.{3}.{$i}}" exact="1" comment="OldSpecs had no ware amount data. Default to 1"/>
+              </do_else>
+            </do_all>
+          </do_if>
+          <do_if value="$OldSpecs.{4}? and $OldSpecs.{4}.count">
+            <set_value name="$TargetSpec.$mods" exact="$OldSpecs.{4}.clone"/>
+          </do_if>
+          <debug_text text="'Patch: Target specs converted from list: ' + $OldSpecs + ' to table: ' + $TargetSpec" filter="savegame"/>
+          <!--Do not remove $OldSpecs, for patch validation-->
+        </do_if>
+      </patch>
+      <cues>
+
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="1"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup"/>
+          </actions>
+        </cue>
+
+        <cue name="StartMission" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="0"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="UpdateBriefing"/>
+          </actions>
+          <cues>
+
+            <cue name="DebugBoardTargetShip" instantiate="true">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <set_owner object="$TargetShip" faction="faction.player" />
+              </actions>
+            </cue>
+
+            <cue name="DebugBoardTargetSpec" instantiate="true">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <!-- Create ship with the specs we are looking for, and transfer ownership to player (instant-win) -->
+                <!-- example: "[macro.ship_arg_xl_carrier_01_a_macro, [macro.engine_arg_xl_allround_01_mk1_macro], [ware.countermeasure_flares_01], [ware.mod_weapon_damage_01_mk1]]" -->
+
+                <!--generate_loadout macro="$TargetSpec.$macro" level="1" result="$loadout" comment="default loadout"/-->
+                <generate_loadout macro="$TargetSpec.$macro" macros="if $TargetSpec.$equipment? then $TargetSpec.$equipment else []" level="1" result="$loadout"/>
+
+                <create_ship name="$TargetSpec_Ship" zone="player.zone" macro="$TargetSpec.$macro">
+                  <pilot group="argon.pilot">
+                    <owner exact="faction.argon"/>
+                  </pilot>
+                  <loadout loadout="$loadout.{1}"/>
+                  <owner exact="faction.argon"/>
+                  <position object="player.ship" exact="4km"/>
+                </create_ship>
+
+                <do_if value="$TargetSpec.$equipment?">
+                  <do_all exact="$TargetSpec.$equipment.count" counter="$UpgradeCounter" comment="engines, boosters, shields, ...">
+                    <!-- TODO -->
+                  </do_all>
+                </do_if>
+
+                <do_if value="$TargetSpec.$ammo?">
+                  <do_all exact="$TargetSpec.$ammo.count" counter="$AmmoCounter" comment="flares and such">
+                    <!-- TODO -->
+                  </do_all>
+                </do_if>
+
+                <do_if value="$TargetSpec.$wares?">
+                  <do_all exact="$TargetSpec.$wares.count" counter="$WaresCounter" comment="wares">
+                    <!-- TODO -->
+                  </do_all>
+                </do_if>
+
+                <do_if value="$TargetSpec.$mods?">
+                  <do_all exact="$TargetSpec.$mods.count" counter="$ModCounter">
+                    <set_value name="$Ware" exact="$TargetSpec.$mods.{$ModCounter}"/>
+
+                    <do_if value="$Ware.isenginemod">
+                      <add_equipment_mods object="$TargetSpec_Ship">
+                        <engine ware="$Ware"/>
+                      </add_equipment_mods>
+                    </do_if>
+                    <do_elseif value="$Ware.isweaponmod">
+                      <find_object_component name="$TargetWeapon" class="class.weapon" object="$TargetSpec_Ship" multiple="false"/>
+                      <do_if value="$TargetWeapon">
+                        <add_equipment_mods object="$TargetSpec_Ship">
+                          <weapon ware="$Ware" macro="$TargetWeapon.macro"/>
+                        </add_equipment_mods>
+                      </do_if>
+                      <do_else>
+                        <debug_text text="'No targetweapon found, ignoring weaponmods (if any)'"/>
+                      </do_else>
+                    </do_elseif>
+                    <do_elseif value="$Ware.isshipmod">
+                      <add_equipment_mods object="$TargetSpec_Ship">
+                        <ship ware="$Ware"/>
+                      </add_equipment_mods>
+                    </do_elseif>
+                    <do_elseif value="$Ware.isshieldmod">
+                      <add_equipment_mods object="$TargetSpec_Ship">
+                        <shield ware="$Ware"/>
+                      </add_equipment_mods>
+                    </do_elseif>
+                  </do_all>
+                </do_if>
+
+                <set_owner object="$TargetSpec_Ship" faction="faction.player" />
+
+              </actions>
+            </cue>
+
+            <cue name="CheckMissionStatus_TargetShip" onfail="cancel">
+              <conditions>
+                <check_value value="$TargetShip" comment="nullcheck"/>
+              </conditions>
+              <cues>
+                <cue name="CheckMissionStatus_TargetShipDestroyed" instantiate="true">
+                  <conditions>
+                    <event_object_destroyed object="$TargetShip"/>
+                  </conditions>
+                  <actions>
+                    <do_if value="event.param and event.param.owner" exact="faction.player">
+                      <debug_text text="'Target was destroyed by player'" chance="$DebugChance"/>
+                      <set_value name="$feedbackvalue" exact="-1" comment="failed"/>
+                    </do_if>
+                    <do_else>
+                      <debug_text text="'Target was destroyed by non-player'" chance="$DebugChance"/>
+                      <set_value name="$feedbackvalue" exact="-2" comment="failed"/>
+                    </do_else>
+                    <signal_cue cue="Cleanup"/>
+                  </actions>
+                </cue>
+
+                <cue name="CheckMissionStatus_TargetShipAlreadyOwned" onfail="cancel">
+                  <conditions>
+                    <check_value value="$TargetShip.owner == faction.player" comment="already owned?"/>
+                  </conditions>
+                  <actions>
+                    <set_value name="$feedbackvalue" exact="1" comment="success"/>
+                    <signal_cue cue="Cleanup"/>
+                  </actions>
+                </cue>
+
+                <cue name="CheckMissionStatus_TargetShipOwnerChange" instantiate="true">
+                  <conditions>
+                    <event_object_changed_true_owner object="$TargetShip"/>
+                  </conditions>
+                  <actions>
+                    <do_if value="event.param==faction.player">
+                      <set_value name="$feedbackvalue" exact="1" comment="success"/>
+                      <signal_cue cue="Cleanup"/>
+                    </do_if>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="CheckMissionStatus_TargetSpec" onfail="cancel">
+              <conditions>
+                <check_value value="$TargetSpec" comment="nullcheck"/>
+              </conditions>
+              <cues>
+                <cue name="CheckMissionStatus_TargetSpecOwnerChange" instantiate="true">
+                  <conditions>
+                    <event_contained_object_changed_true_owner space="player.galaxy" owner="faction.player"/>
+                  </conditions>
+                  <actions>
+
+                    <set_value name="$ObjectChangingOwner" exact="event.param"/>
+                    <do_if value="$ObjectChangingOwner.macro.ismacro.{$TargetSpec.$macro}">
+                      
+                      <run_actions ref="md.LIB_Generic.CheckShipMatches" result="$shipmatches">
+                        <param name="currentship" value="$ObjectChangingOwner"/>
+                        <param name="shipmatches" value="true"/>
+                        <param name="shipequip" value="@$TargetSpec.$equipment"/>
+                        <param name="shipammo" value="@$TargetSpec.$ammo"/>
+                        <param name="shipwares" value="@$TargetSpec.$wares"/>
+                        <param name="shipmods" value="@$TargetSpec.$mods"/>
+                      </run_actions>
+
+                      <!-- meets all requirements -->
+                      <do_if value="$shipmatches">
+                        <set_value name="$feedbackvalue" exact="1" comment="success"/>
+                        <signal_cue cue="Cleanup"/>
+                      </do_if>
+                      <do_else>
+                        <debug_text text="'Boarded ship does not meet requirements'" chance="$DebugChance"/>
+                      </do_else>
+
+                    </do_if>
+                    <do_else>
+                      <debug_text text="'different macro: ' + $ObjectChangingOwner.macro + ' instead of ' + $TargetSpec.$macro" chance="$DebugChance"/>
+                    </do_else>
+
+                  </actions>
+                </cue>
+
+              </cues>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="UpdateBriefing" instantiate="true" comment="Called each time a briefing-update is needed">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+
+            <do_if value="$UpdateBriefing">
+              <update_mission cue="$MissionCue">
+                <briefing>
+                  <objective step="$StartStep" action="objective.board" text="$ObjectiveText" encyclopedia="if $TargetShip? then $TargetShip else null"/>
+                </briefing>
+              </update_mission>
+
+              <do_if value="$TargetShip">
+                <set_objective cue="$MissionCue" step="$StartStep" action="objective.board" text="$ObjectiveText" object="$TargetShip" encyclopedia="$TargetShip"/>
+              </do_if>
+              <do_else>
+                <set_objective cue="$MissionCue" step="$StartStep" action="objective.board" text="$ObjectiveText"/>
+              </do_else>
+            </do_if>
+
+          </actions>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <!--TODO remove_objective-->
+
+            <do_if value="$feedbackvalue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'ERROR: Feedback value is 0 and no error values were set. Defaulting to -100'"/>
+                <set_value name="$feedbackvalue" exact="-100"/>
+              </do_if>
+              <do_else>
+                <set_value name="$feedbackvalue" exact="$ErrorList.{1}"/>
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+                    <do_if value="$ErrorList.{$Counter}" exact="-104">
+                      <set_value name="$FeedbackText" exact="'Both $TargetShip and $TargetSpec defined'"/>
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-103">
+                      <set_value name="$FeedbackText" exact="'Neither $TargetShip nor $TargetSpec defined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'Cue parameters not defined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-100">
+                      <set_value name="$FeedbackText" exact="'Undefined failure. Defaulted to -100'"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                    </do_else>
+
+                    <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+
+              <do_if value="$feedbackvalue" exact="1">
+                <set_value name="$FeedbackText" exact="'Board $TargetShip success'"/>
+              </do_if>
+              <do_elseif value="$feedbackvalue" exact="-2">
+                <set_value name="$FeedbackText" exact="{30004,6010}" comment="'Board $TargetShip failed (destroyed by non-player )'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="-1">
+                <set_value name="$FeedbackText" exact="{30004,6010}" comment="'Board $TargetShip failed (destroyed by player)'"/>
+              </do_elseif>
+              <do_if value="$feedbackvalue" min="1">
+                <debug_text text="'Mission Successful. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_if>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission Failed. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+            <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$feedbackvalue"/>
+            <signal_cue cue="$EndSignalCue"/>
+            <cancel_cue cue="BoardShip"/>
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

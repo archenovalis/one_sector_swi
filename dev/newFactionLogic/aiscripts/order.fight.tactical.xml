@@ -1,0 +1,657 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<aiscript name="order.fight.tactical" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" version="5">
+  <!--
+     Tactical order to coordinate a fleet attack from a centralised point (this entity)
+  -->
+  <order id="TacticalOrder" name="{1041, 731}" description="{1041, 732}" category="coordination" canplayercancel="true" infinite="true" allowinloop="false">
+    <params>
+      <param name="selectedtarget" required="true" type="object" text="{1041, 10126}" comment="Target. The object to fight with" />
+      <param name="aggressiveness" type="number" default="50" text="{1041, 10166}" comment="Fleet aggressiveness">
+        <input_param name="min" value="0" />
+        <input_param name="max" value="100" />
+        <input_param name="step" value="1" />
+        <editable/>
+      </param>
+      <param name="weakfirst" type="bool" default="true" text="{1041, 10167}" comment="Acquire weak targets first" >
+        <editable/>
+      </param>
+      <param name="xdistance" type="length" default="[[this.ship.defaultformationradius.{null}*3.0f, 3km].max, 20km].min" text="{1041, 10093}" advanced="true">
+        <input_param name="min" value="0km" />
+        <input_param name="max" value="20km" />
+        <input_param name="step" value="1km" />
+        <editable/>
+      </param>
+      <param name="zdistance" type="length" default="30km" text="{1041, 10062}" advanced="true" comment="Maximun distance">
+        <input_param name="min" value="5km" />
+        <input_param name="max" value="50km" />
+        <input_param name="step" value="1km" />
+        <editable/>
+        <patch value="30km" sinceversion="1"/>
+      </param>
+      <param name="timeout" type="time" default="1h" text="{1041, 10034}" advanced="true" comment="Duration">
+        <input_param name="min" value="0h" />
+        <input_param name="max" value="5h" />
+        <input_param name="step" value="1m" />
+        <editable/>
+      </param>
+      <param name="releasemove" type="bool" default="false" text="{1041, 10169}" comment="Release attack (TEMP). Hack/temp solution to a syncpoint system (This will be removed)">
+        <editable/>
+      </param>
+      <param name="debugchance" type="bool" default="0" advanced="true" text="{1041, 10086}" comment="Print debug output">
+        <input_param name="truevalue" value="100"/>
+        <editable/>
+      </param>
+    </params>
+    <requires >
+      <match shiptype="shiptype.lasertower" negate="true" />
+      <match primarypurpose="purpose.fight" />
+    </requires>
+    <!-- Display the top commander as the main target -->
+    <location object="$selectedtarget.toplevelcommander" condition="$selectedtarget.canbeattacked"/>
+  </order>
+  <interrupts>
+    <!-- EVENT FUNCTIONS -->
+    <library>
+      <!-- Select Targets -->
+      <actions name="select_targets">
+
+        <!-- Check if primary target is still alive, if not update it -->
+        <do_if value="not $primarytarget.canbeattacked">
+          <debug_text text="'Primary not operational,  %1 targets'.[$targets.count]" chance="$debugchance" />
+          <set_value name="$primarytarget" exact="$targets.{1}" />
+          <!-- go up into the commander's hierachy to get the hightest level within the same sector -->
+          <do_while value="$primarytarget.commander.canbeattacked and ($primarytarget.commander.sector == $primarytarget.sector)">
+            <set_value name="$primarytarget" exact="$primarytarget.commander"/>
+            <debug_text text="'Update: $primarytarget with %1 (%2). Selected target was: %3 (%4)'.[$primarytarget.name, $primarytarget, $selectedtarget.name, $selectedtarget]" chance="$debugchance" />
+          </do_while>
+        </do_if>
+
+        <!-- Acquire targets. iterate up to the apparent fleet commander and iterate down from there to all subordinates. -->
+        <!-- do not remove existing members of $targets unless they are no longer in the engagement sector. -->
+        <set_value name="$localtoplevelcommander" exact="$primarytarget"/>
+        <do_for_each name="$loctarget" in="$primarytarget.allcommanders">
+          <do_if value="$loctarget.sector == $primarytarget.sector">
+            <set_value name="$localtoplevelcommander" exact="$loctarget"/>
+          </do_if>
+          <do_else>
+            <break/>
+          </do_else>
+        </do_for_each>
+        <add_to_group groupname="$targets" list="$localtoplevelcommander.allsubordinates"/>
+        <add_to_group groupname="$targets" object="$localtoplevelcommander"/>
+        <remove_value name="$localtoplevelcommander"/>
+
+        <debug_text text="'Found %1 targets'.[$targets.count]" chance="$debugchance" />
+
+        <!-- weighted average position, on stronger my ships -->
+        <set_value name="$maxhull" exact="0" />
+        <set_value name="$maxdist" exact="0" />
+
+        <!-- Iterate throught all targets-->
+        <do_for_each name="$t" in="$targets" reverse="true">
+          <!-- Filter out invalid targets  -->
+          <do_if value="$t.sector != $primarytarget.sector">
+            <debug_text text="'enemy %1 (%2), is out of sector. Enemy sector %3 (%4)'.[$t.knownname, $t, $t.sector.name, $t.sector]" chance="$debugchance" />
+            <remove_from_group group="$targets" object="$t" />
+            <continue/>
+          </do_if>
+          <!-- get the max hull and target distance -->
+          <set_value name="$maxhull" exact="[$maxhull, $t.hull].max" />
+          <set_value name="$maxdist" exact="[$maxdist, $t.distanceto.{this.ship}].max" />
+        </do_for_each>
+
+        <!-- SORTING -->
+        <!-- The sorting formula:
+             sort the targets by distance (closest first) based on the farthest target mixed with hull (smaller first) based on the biggest hull.
+             This means the less hull and distance a target has, the earlier will be picked as a valid target -->
+        <sort_group group="$targets" sortbyvalue="(loop.element.distanceto.{this.ship})f/($maxdist)f + 
+                                                  (loop.element.hull)f/($maxhull)f" sortdescending="not $weakfirst" />
+        <debug_text text="'max hull %1, max dist %2'.[$maxhull, $maxdist]" chance="$debugchance" />
+
+      </actions>
+      <!-- Clear orders on subordinate -->
+      <actions name="clear_previous_orders">
+        <!-- Clear any previous orders in this subordinate -->
+        <do_all counter="$i" exact="$shiptoclear.orders.count" reverse="true">
+          <set_value name="$previousorder" exact="$shiptoclear.orders.{$i}" />
+          <!-- Check that the old order is on the Orders list-->
+          <set_value name="$previousorderindex" exact="@$ORDERS.{$subordinategroupid}.{'$' + $previousorder.id}.indexof.{$previousorder}"/>
+          <do_if value="@$previousorderindex">
+            <debug_text text="'sub %s, with old order %2, cleaning order'.[$shiptoclear.name, $previousorder.name]" chance="$debugchance" />
+            <remove_value name="$ORDERS.{$subordinategroupid}.{'$' + $previousorder.id}.{$previousorderindex}" />
+            <cancel_order order="$previousorder" />
+          </do_if>
+        </do_all>
+        <remove_value name="$previousorder" />
+
+        <!-- After clearing all previous subordinate orders, check the orders table if it neeeds a cleanup too -->
+        <do_for_each name="$ordergroup" in="$ORDERS" reverse="true">
+          <do_if value="$ORDERS.{$ordergroup}.keys.count" exact="0">
+            <remove_value name="$ORDERS.{$ordergroup}" />
+          </do_if>
+          <do_else>
+            <do_for_each name="$ordertype" in="$ORDERS.{$ordergroup}" reverse="true">
+              <debug_text text="'$ordergroup %s, has %s, on type %s '.[$ordergroup, @$ORDERS.{$ordergroup}.{$ordertype}, $ordertype]" chance="$debugchance" />
+              <!-- Remove possible orders that may be cancelled, from the table -->
+              <do_all counter="$i" exact="$ORDERS.{$ordergroup}.{$ordertype}.count"  reverse="true">
+                <do_if value="not $ORDERS.{$ordergroup}.{$ordertype}.{$i}.exists">
+                  <remove_value name="$ORDERS.{$ordergroup}.{$ordertype}.{$i}"/>
+                </do_if>
+              </do_all>
+
+              <do_if value="$ORDERS.{$ordergroup}.{$ordertype}.count" exact="0">
+                <remove_value name="$ORDERS.{$ordergroup}.{$ordertype}" />
+              </do_if>
+            </do_for_each>
+          </do_else>
+        </do_for_each>
+
+      </actions>
+      <!-- Clear all orders -->
+      <actions name="clear_all_orders">
+        <!-- Iterate through all orders to clear and cancel them -->
+        <do_for_each name="$ordergroup" in="$ORDERS">
+          <do_for_each name="$ordertype" in="$ORDERS.{$ordergroup}">
+            <do_all counter="$i" exact="$ORDERS.{$ordergroup}.{$ordertype}.count"  reverse="true">
+              <cancel_order order="$ORDERS.{$ordergroup}.{$ordertype}.{$i}" />
+            </do_all>
+          </do_for_each>
+        </do_for_each>
+
+        <debug_text text="'Cleared all created orders on all subordinates'" chance="$debugchance" />
+
+        <!-- remove the orders list-->
+        <remove_value name="$ORDERS" />
+
+      </actions>
+      <!-- Orders for a subordinate, using $subordinate, $subordinategroupid and $enemytarget  -->
+      <actions name="create_orders">
+
+        <!-- Filter-out the assignment roles that are not allowed -->
+        <do_if value="$assignments.indexof.{$subordinate.assignment} and not $subordinate.subordinategroupdockoverride">
+
+          <!-- Clear any previous orders in this undirect subordinate -->
+          <set_value name="$shiptoclear" exact="$subordinate" />
+          <include_interrupt_actions ref="clear_previous_orders" comment="use $shiptoclear as the ship parameter to clear orders" />
+          <remove_value name="$shiptoclear" />
+
+          <set_value name="$forcedassignment" exact="$subordinate.assignment" />
+          <!-- Assume that this sub assignment is attack, when everything in on default (all subs are defence) -->
+          <do_if value="this.ship.subordinates.{assignment.attack}.count == 0 and this.ship.subordinates.{assignment.interception}.count == 0 and this.assignedcontrolled.subordinates.{assignment.bombardment}.count == 0">
+            <set_value name="$forcedassignment" exact="assignment.interception" />
+          </do_if>
+
+          <!-- Different order for each assignment -->
+          <do_if value="$forcedassignment" exact="assignment.defence">
+
+            <create_order object="$subordinate" id="'ProtectShip'" immediate="true" name="$mainorder" >
+              <param name="target" value="this.ship"/>
+              <param name="pursuedistance" value="[($aggressiveness/100.0f)*this.ship.maxradarrange, this.ship.formationradius*1.5f].max" />
+              <param name="radius" value="$xdistance * 0.3f" />
+            </create_order>
+
+          </do_if>
+          <do_else>
+            <!-- Create the attack order for subordinate -->
+            <create_order object="$subordinate" id="'Attack'" immediate="true" name="$mainorder" >
+              <param name="primarytarget" value="$enemytarget"/>
+              <param name="checkrelation" value="false" comment="this will force the attack" />
+              <param name="allowothertargets" value="false"/>
+              <param name="squad_attack" value="false"/>
+              <param name="forceprimarytarget" value="false" />
+              <param name="pursuetargets" value="false"/>
+            </create_order>
+          </do_else>
+
+          <!-- If neccesary: Initial table creation for this subordinate group id -->
+          <do_if value="not @$ORDERS.{$subordinategroupid}">
+            <set_value name="$ORDERS.{$subordinategroupid}" exact="table[]" />
+          </do_if>
+          <!-- Keep track of the given orders -->
+          <do_if value="not @$ORDERS.{$subordinategroupid}.{'$' + $mainorder.id}">
+            <set_value name="$ORDERS.{$subordinategroupid}.{'$' + $mainorder.id}" exact="[]" />
+          </do_if>
+
+          <!-- Add the created order to track it on the orders list-->
+          <append_to_list name="$ORDERS.{$subordinategroupid}.{'$' + $mainorder.id}" exact="$mainorder" />
+          <debug_text text="'Order %1 given to attack: %2'.[$mainorder, $enemytarget.knownname]" chance="$debugchance" />
+
+          <!-- Initial movement order -->
+          <do_if value="not $releasemove">
+            <!-- Calculate move position based on a cylinder around this ship towards enemy ship -->
+            <set_value name="$ngroups" exact="this.ship.subordinates.{$subordinate.assignment}.count" />
+            <set_value name="$alpha" exact="2.0*pi/$ngroups" />
+            <set_value name="$groupindex" exact="$ngroups - this.ship.subordinates.{$subordinate.assignment}.indexof.{$subordinate} + 1" />
+
+            <set_value name="$assignment_weight_factor" exact="$assignment_weights.{$assignments.indexof.{$forcedassignment}}" />
+
+            <set_value name="$x" exact="($xdistance * $assignment_weight_factor  * cos($alpha * $groupindex))" />
+            <set_value name="$y" exact="($xdistance * $assignment_weight_factor  * sin($alpha * $groupindex))" />
+            <set_value name="$zfactor" exact="1.0f - $assignment_weight_factor * ($aggressiveness/100.0f)" />
+            <set_value name="$maxz" exact="[this.ship.distanceto.{$primarytarget} + 10km, $zdistance].min" />
+
+            <!-- Get this ship and primary enemy target -->
+            <create_position name="$thispos" object="this.ship" space="this.sector" />
+            <create_position name="$enemypos" object="$primarytarget" space="$primarytarget.sector" />
+
+            <!-- Rotation direction from enemy ship to this ship -->
+            <create_orientation name="$orientation" refposition="$thispos" orientation="look_at" >
+              <position value="$enemypos" />
+            </create_orientation>
+
+            <!-- The calculated position: from the vector (enemy->this) with the cylinder relative coordinates along it  -->
+            <transform_position refposition="$enemypos" refrotation="$orientation" name="$initialpos">
+              <position x="$x" y="$y" z="-5km + $zfactor * $maxz" max="100m" />
+            </transform_position>
+
+            <debug_text text="'Position for subordinategroupid: %1:, %2'.[$subordinategroupid,  $initialpos]" chance="$debugchance" />
+
+            <!-- Create a move and wait order, with rotation towards primary target  -->
+            <create_order object="$subordinate" id="'MoveWait'"  immediate="true" name="$moveorder">
+              <param name="destination" value="[$primarytarget.sector, $initialpos]" />
+              <param name="lookat" value="$enemypos"/>
+              <param name="timeout" value="0s" comment="with 0s this will be infinite" />
+              <param name="recallsubordinates" value="false" />
+            </create_order>
+
+            <!-- assign the current order's sync point to the created subordinate's order -->
+            <assign_order_syncpoint_to_order owner="this.ship.order" order="$moveorder" />
+
+            <!-- Keep track of the given orders -->
+            <do_if value="not @$ORDERS.{$subordinategroupid}.{'$' + $moveorder.id}">
+              <set_value name="$ORDERS.{$subordinategroupid}.{'$' + $moveorder.id}" exact="[]" />
+            </do_if>
+
+            <append_to_list name="$ORDERS.{$subordinategroupid}.{'$' + $moveorder.id}" exact="$moveorder" />
+            <debug_text text="'Order %1 given to move: %2'.[$moveorder, $initialpos]" chance="$debugchance" />
+          </do_if>
+
+          <!-- Escort order creation -->
+          <do_if value="$createescortorders">
+            <!-- For the nested subordinate, give it a custom escort order -->
+            <do_for_each name="$subsubordinate" in="$subordinate.subordinates">
+
+              <!-- Clear any previous orders in this undirect subordinate -->
+              <set_value name="$shiptoclear" exact="$subsubordinate" />
+              <include_interrupt_actions ref="clear_previous_orders" comment="use $shiptoclear as the ship parameter to clear orders" />
+              <remove_value name="$shiptoclear" />
+
+              <!-- This escort order is meant to be special, so the thresholdbreak controls that ships stay in formation attacking (not for capships)
+                   And the endontargetdeath parameters makes them finish this order, instead of getting a new one out of this tactical context -->
+              <create_order object="$subsubordinate" id="'Escort'" immediate="true" name="$escortorder"  >
+                <param name="target" value="$subordinate"/>
+                <param name="formation" value="formationshape.circle" />
+                <param name="formationparam" value="$subordinate.size + $subsubordinate.size" />
+                <param name="rollmembers" value="true" />
+                <param name="rollformation" value="false" />
+                <param name="maxshipsperline" value="10" />
+                <param name="overrideformationskill" value="true" />
+                <param name="thresholdbreak" value="if $subordinate.iscapitalship then 100 else (100.0f - $aggressiveness)" comment="the threshold of hull+shield to break formations. Pointless for capitalships" />
+                <param name="endontargetdeath" value="true" />
+              </create_order>
+
+              <do_if value="not @$ORDERS.{$subordinategroupid}.{'$' + $escortorder.id}">
+                <set_value name="$ORDERS.{$subordinategroupid}.{'$' + $escortorder.id}" exact="[]" />
+              </do_if>
+
+              <append_to_list name="$ORDERS.{$subordinategroupid}.{'$' + $escortorder.id}" exact="$escortorder" />
+              <debug_text text="'Order %1 given to escort %2'.[$escortorder, $subordinate]" chance="$debugchance" />
+            </do_for_each>
+          </do_if>
+
+          <remove_value name="$enemytarget" />
+        </do_if>
+      </actions>
+    </library>
+    <!-- EVENT HANDLING -->
+    <!-- target destroyed: adquire a new one -->
+    <handler comment="Target destroyed">
+      <conditions>
+        <check_any>
+          <event_object_destroyed group="$targets"/>
+          <check_all>
+            <!-- detect members of $targetfleet moving into or out of $primarytarget.sector. $targets updated in select_targets.
+                  NB: this will not acquire objects that are not apparent members of the fleet already engaged. -->
+            <event_object_changed_sector group="$targetfleet"/>
+            <check_value value="$primarytarget.sector"/>
+            <check_value value="(event.param2 == $primarytarget.sector) != (event.param == $primarytarget.sector)"/>
+          </check_all>
+        </check_any>
+      </conditions>
+      <actions>
+        <debug_text text="'%s: %s (%s). Targets: %s'.[event.name, event.object.knownname, event.object, $targets]" chance="$debugchance" />
+
+        <!-- No more targets: we win! -->
+        <do_if value="$targets.count" exact="0">
+          <debug_text text="'No targets, finish'" chance="$debugchance" />
+          <abort_called_scripts resume="finish" />
+        </do_if>
+
+        <!-- FIND SHIP GROUP of the destroyed-target's orders belongs to-->
+        <set_value name="$reassigntargetsubgroup" exact="[]" />
+
+        <!-- Iterate the given Order's table to check the destroyed target -->
+        <do_for_each name="$ordergroup" in="$ORDERS">
+          <do_if value="@$ORDERS.{$ordergroup}.$Attack">
+            <do_for_each name="$order" in="$ORDERS.{$ordergroup}.$Attack">
+              <!-- if the order is valid get the primary target -->
+              <do_if value="$order.exists and ($order.$primarytarget == event.object) and not $reassigntargetsubgroup.indexof.{$ordergroup}">
+                <!-- add the order to the list of groups to reassign targets -->
+                <append_to_list name="$reassigntargetsubgroup" exact="$ordergroup" />
+                <break />
+              </do_if>
+            </do_for_each>
+          </do_if>
+        </do_for_each>
+
+        <!-- REFRESH TARGETS -->
+        <include_interrupt_actions ref="select_targets" />
+        <debug_text text="'refreshed targets on $reassigntargetsubgroup: %s, targets size: %2'.[$reassigntargetsubgroup, $targets.count]"  chance="$debugchance" />
+
+        <!-- Check that there are targets found -->
+        <do_if value="$targets.count">
+          <!-- RE-ASSIGN TARGETS to specific assigment group  -->
+          <set_value name="$createescortorders" exact="false" />
+          <set_value name="$targetindex" exact="1" />
+
+          <do_for_each name="$subordinategroupid" in="$reassigntargetsubgroup">
+            <!-- Iterate the first-level subordinates of different groups -->
+            <do_for_each name="$subordinate" in="this.ship.subordinatesingroup.{$subordinategroupid}">
+              <set_value name="$enemytarget" exact="$targets.{$targetindex}" />
+              <debug_text text="'reassign on $i: %1, on group id: %2, give orders to %3'.[$targetindex, $subordinategroupid, $enemytarget]" chance="0" />
+              <!-- create orders per $subordinate -->
+              <include_interrupt_actions ref="create_orders" />
+            </do_for_each>
+            <set_value name="$targetindex" exact="($targetindex % $targets.count) + 1"/>
+          </do_for_each>
+        </do_if>
+
+      </actions>
+    </handler>
+    <!-- subordinate added or changed group (to the one we can use) -->
+    <handler comment="Subordinate added (either a new one or a promoted one)">
+      <conditions>
+        <check_any>
+          <event_object_subordinate_added  object="this.ship" />
+          <event_object_changed_subordinategroup object="this.ship" />
+        </check_any>
+        <check_value value="event.param.isoperational" />
+      </conditions>
+      <actions>
+        <debug_text text="'%s - %s subordinate: %s, param2: %s, assignment: %s'.[player.age, event.name, event.param.knownname, event.param2, event.param.assignment]" chance="$debugchance" />
+
+        <do_if value="event.name == 'event_object_changed_subordinategroup'" >
+          <!-- clear orders with previous subordinate group id -->
+          <set_value name="$shiptoclear" exact="event.param" />
+          <set_value name="$subordinategroupid" exact="event.param2" />
+          <include_interrupt_actions ref="clear_previous_orders" comment="use $shiptoclear as the ship parameter to clear orders" />
+          <remove_value name="$shiptoclear" />
+        </do_if>
+
+        <!-- Skip new order reevaluation if it is not a handled assignment role -->
+        <do_if value="event.param.assignment" list="$assignments" >
+
+          <set_value name="$createescortorders" exact="true" />
+          <set_value name="$subordinate" exact="event.param" />
+          <set_value name="$subordinategroupid" exact="$subordinate.subordinategroupid" />
+
+          <set_value name="$enemytarget" exact="$targets.{($ORDERS.keys.count % $targets.count) + 1} " />
+
+          <!-- if the group exists, get it's target -->
+          <do_if value="@$ORDERS.{$subordinategroupid}.$Attack" >
+            <!-- setting the current's group target -->
+            <do_for_each name="$order" in="$ORDERS.{$subordinategroupid}.$Attack">
+              <do_if value="$order.exists and @$order.$primarytarget.canbeattacked">
+                <set_value name="$enemytarget" exact="$order.$primarytarget" />
+                <break />
+              </do_if>
+            </do_for_each>
+          </do_if>
+
+          <!-- Give new orders to subordinate and its subordinates -->
+          <debug_text text="'new $subordinate %1, sub-subordinates %2'.[$subordinate.knownname, $subordinate.subordinates.count]" chance="$debugchance" />
+          <include_interrupt_actions ref="create_orders" />
+          <debug_text text="'interrupt finish giving orders to new $subordinate %1, subds %2'.[$subordinate.knownname, $subordinate.subordinates.count]" chance="$debugchance" />
+
+        </do_if>
+
+      </actions>
+    </handler>
+    <!-- handle removed subordinates (including destroyed) -->
+    <handler comment="Subordinate removed, or changed to unhandled group">
+      <conditions>
+        <event_object_subordinate_removed  object="this.ship"/>
+        <check_value value="event.param.isoperational" exact="true"/>
+      </conditions>
+      <actions>
+        <!-- Check that it is operational -->
+        <do_if value="event.param.isoperational">
+
+          <debug_text text="'%s - %s subordinate: %s (%s) (isoperational: %s)'.[player.age, event.name, event.param.knownname, event.param, event.param.isoperational]" chance="$debugchance" />
+
+          <set_value name="$shiptoclear" exact="event.param" />
+          <set_value name="$subordinategroupid" exact="event.param2" />
+          <include_interrupt_actions ref="clear_previous_orders" comment="use $shiptoclear as the ship parameter to clear orders" />
+          <remove_value name="$shiptoclear" />
+        </do_if>
+      </actions>
+    </handler>
+    <!-- Need to handle the cancel request because we might be on the order critical state:
+     In this state, the order cannot be cancelled directly any more, and parameters can only be edited if allowed by the order definition. 
+     Moving or disabling the order is not possible any more. Requests to cancel the order can be made, but they are not necessarily processed immediately.
+     To handle a cancel request in the critical state, the order script stack has to listen to <event_object_order_cancelled> 
+     with immediate="false". If not cancelled, the order can optionally leave the critical state by entering the finish state.-->
+    <handler consume="false" comment="Order cancelled">
+      <conditions>
+        <check_any>
+          <event_object_order_cancelled object="this.assignedcontrolled" immediate="false"/>
+          <event_object_signalled object="this.assignedcontrolled" param="'abort_order'" param2="this.assignedcontrolled.order"/>
+        </check_any>
+      </conditions>
+      <actions>
+        <debug_text text="'explicit cancellation'" chance="$debugchance" />
+        <abort_called_scripts resume="finish" />
+      </actions>
+    </handler>
+    <!-- handle order parameter edition -->
+    <handler comment="Order params are edited">
+      <conditions>
+        <event_object_order_param_edited object="this.ship" />
+      </conditions>
+      <actions>
+        <debug_text text="'param2: %1, param3 %2 --- %3'.[event.param2, event.param3, $aggressiveness]" chance="$debugchance" />
+        <abort_called_scripts resume="start" />
+      </actions>
+    </handler>
+    <handler ref="TideHandler"/>
+  </interrupts>
+  <!-- INITIALIZATION -->
+  <init>
+    <set_command command="command.attackenemies" />
+    <!--Initial parameters -->
+    <!-- $selectedtarget (hence $primarytarget) might be invalid. checked and handled in actions. -->
+    <set_value name="$primarytarget" exact="$selectedtarget" />
+
+    <!-- assignment variables -->
+    <!-- r: addition of bombardment weight effectively halves the weight of the other assignments -->
+    <set_value name="$assignments" exact="[assignment.defence, assignment.attack, assignment.interception, assignment.bombardment]" />
+    <set_value name="$assignment_weights" exact="[0.3f,       0.6f,              1.0f, 1.0f]" />
+
+    <!-- Targets to be populated on 'select_targets' -->
+    <create_group groupname="$targets" />
+    <!-- all members of fleet to which $selectedtarget belongs regardless of where they are. used for detecting them leaving or arriving at engagement sector. -->
+    <create_group groupname="$targetfleet"/>
+
+    <set_value name="$createescortorders" exact="true" comment="Global flag to issue escort orders on subordinates" />
+    <!-- Structure: [group_id][order_id] -> order -->
+    <set_value name="$ORDERS" exact="table[]" comment="Global orders given to subrdinates"/>
+  </init>
+  <patch sinceversion="1" early="true">
+    <set_value name="$assignments" exact="[assignment.defence, assignment.attack, assignment.interception]" />
+    <set_value name="$assignment_weights" exact="[0.3f,       0.6f,              1.0f]" />
+  </patch>
+  <patch sinceversion="3" early="true">
+    <!-- r: addition of bombardment weight effectively halves the weight of the other assignments -->
+    <set_value name="$assignments" exact="[assignment.defence, assignment.attack, assignment.interception, assignment.bombardment]" />
+    <set_value name="$assignment_weights" exact="[0.3f,       0.6f,              1.0f, 1.0f]" />
+  </patch>
+  <patch sinceversion="4">
+    <do_if value="this.assignedcontrolled.order">
+      <signal_objects object="this.assignedcontrolled" param="'abort_order'" param2="this.assignedcontrolled.order"/>
+    </do_if>
+  </patch>
+  <patch sinceversion="5" early="true">
+    <create_group groupname="$targetfleet"/>
+  </patch>
+  <patch sinceversion="5">
+    <set_value name="$fleetcommander" exact="$primarytarget"/>
+    <do_if value="$fleetcommander.toplevelcommander">
+      <set_value name="$fleetcommander" exact="$fleetcommander.toplevelcommander"/>
+    </do_if>
+    <add_to_group groupname="$targetfleet" list="$fleetcommander.allsubordinates"/>
+    <add_to_group groupname="$targetfleet" object="$fleetcommander"/>
+    <remove_value name="$fleetcommander"/>
+  </patch>
+
+  <attention min="unknown">
+    <actions>
+
+      <do_if value="not $selectedtarget.canbeattacked">
+        <debug_text text="'selected target %s %s %s cannot be attacked. state: %s. cleaning up.'.[@$selectedtarget.idcode, @$selectedtarget.knownname, $selectedtarget, @$selectedtarget.state]" chance="$debugchance"/>
+        <resume label="finish"/>
+      </do_if>
+      <!-- go up into the commander's hierachy to get the hightest level within the same sector -->
+      <do_while value="$primarytarget.commander.canbeattacked and ($primarytarget.commander.sector == $selectedtarget.sector)">
+        <set_value name="$primarytarget" exact="$primarytarget.commander"/>
+        <debug_text text="'Updated $primarytarget with %1 (%2). Selected target was: %3 (%4)'.[$primarytarget.name, $primarytarget, $selectedtarget.name, $selectedtarget]" chance="$debugchance" />
+      </do_while>
+
+      <set_value name="$fleetcommander" exact="$primarytarget"/>
+      <do_if value="$fleetcommander.toplevelcommander">
+        <set_value name="$fleetcommander" exact="$fleetcommander.toplevelcommander"/>
+      </do_if>
+      <add_to_group groupname="$targetfleet" list="$fleetcommander.allsubordinates"/>
+      <add_to_group groupname="$targetfleet" object="$fleetcommander"/>
+      <remove_value name="$fleetcommander"/>
+
+      <!-- Set a sync point for this order -->
+      <!-- NB: script will restart after the first time this is done. -->
+      <create_order_syncpoint owner="this.ship.order" />
+      <wait exact="1ms" sinceversion="2"/>
+
+      <label name="start"/>
+
+      <!-- Acquire all enemy fleet as targets -->
+      <add_to_group groupname="$targets" list="$primarytarget.allsubordinates" />
+      <add_to_group groupname="$targets" object="$primarytarget" />
+
+      <debug_text text="'Start tactical attack order in object %1'.[this.ship.knownname]" chance="$debugchance" />
+
+      <debug_text text="'Number of all subordinates: %1, '.[this.ship.allsubordinates.count]" chance="$debugchance"  />
+      <debug_text text="'Number of Defend subordinates: %1, '.[this.ship.subordinates.{assignment.defence}.count]" chance="$debugchance"  />
+      <debug_text text="'Number of Attack subordinates: %1, '.[this.ship.subordinates.{assignment.attack}.count]" chance="$debugchance"  />
+
+
+      <!-- Select the best target -->
+      <label name="targetselection" />
+      <include_interrupt_actions ref="select_targets" />
+
+      <!-- Give inital orders to fleet members -->
+      <label name="giveorders" />
+
+      <set_value name="$targetindex" exact="1" />
+      <!-- Iterate the groups -->
+      <do_for_each name="$subordinategroupid" in="this.ship.activesubordinategroupids">
+        <debug_text text="'subordinate group id: %1'.[$subordinategroupid]" chance="$debugchance"  />
+        <debug_text text="'subordinate group assignment: %1'.[this.ship.subordinategroupassignment.{$subordinategroupid}]" chance="$debugchance"  />
+        <debug_text text="'subordinate group: %1'.[this.ship.subordinatesingroup.{$subordinategroupid}]" chance="$debugchance"  />
+
+        <!-- Iterate the first-level subordinates of different groups -->
+        <do_for_each name="$subordinate" in="this.ship.subordinatesingroup.{$subordinategroupid}">
+          <do_if value="$subordinate.subordinategroupdockoverride">
+            <debug_text text="'subordinate group %s set to dock at commander. skipping.'.[$subordinategroupid]" chance="$debugchance"/>
+            <break/>
+          </do_if>
+          <set_value name="$createescortorders" exact="true" />
+          <set_value name="$enemytarget" exact="$targets.{$targetindex}" />
+
+          <debug_text text="'on $i: %1, on group id: %2, give orders to %3'.[$targetindex, $subordinategroupid, $enemytarget]" chance="$debugchance" />
+          <!-- create orders per $subordinate -->
+          <include_interrupt_actions ref="create_orders" />
+        </do_for_each>
+
+        <!-- check max target count, using modulo of targets.count -->
+        <set_value name="$targetindex" exact="($targetindex % $targets.count) + 1"/>
+        <debug_text text="'Group: %3 - given a total of %1 attack orders, %2 escort orders'.[$ORDERS.{$subordinategroupid}.$Attack.count,
+                                                                              @$ORDERS.{$subordinategroupid}.$Escort.count,
+                                                                              $subordinategroupid]" chance="$debugchance"  />
+      </do_for_each>
+
+      <!-- ATTACK -->
+      <label name="attack" />
+
+      <!-- Wait until initial positions are reached, or there is an event to release the attack -->
+      <do_if value="not $releasemove">
+        <!-- Get this ship and primary enemy target -->
+        <create_position name="$thispos" object="this.ship" space="this.sector" />
+        <create_position name="$enemypos" object="$primarytarget" space="$primarytarget.sector" />
+
+        <!-- Rotation direction from enemy ship to this ship -->
+        <create_orientation name="$orientation" refposition="$thispos" orientation="look_at" >
+          <position value="$enemypos" />
+        </create_orientation>
+
+        <!-- The calculated position: from the vector (enemy->this) with the cylinder relative coordinates along it  -->
+        <transform_position refposition="$enemypos" refrotation="$orientation" name="$initialpos">
+          <position z="-5km + (1.0f - 0.3f * ($aggressiveness/100.0f)) * [this.ship.distanceto.{$primarytarget} + 10km, $zdistance].min" />
+        </transform_position>
+
+        <!-- move and rotate against the main target -->
+        <move_to destination="$primarytarget.sector" object="this.ship" forcerotation="true" forceposition="false" travel="true">
+          <position value="$initialpos" />
+          <interrupt_after_time time="1s"/>
+        </move_to>
+
+        <!-- this blocks the order finish condition -->
+        <set_order_state order="this.ship.order" state="orderstate.critical" />
+        <!-- Reach the sync point on this ship -->
+        <set_order_syncpoint_reached order="this.ship.order"  />
+
+        <!-- wait until the Sync point is released-->
+        <wait exact="$timeout">
+          <interrupt>
+            <conditions>
+              <event_object_order_syncpoint_released object="this.ship" order="this.ship.order"/>
+            </conditions>
+            <actions>
+              <set_value name="$releasemove" exact="true" />
+              <debug_text text="'wait interrupted with %1'.[event.name]" chance="$debugchance" />
+              <resume label="start" />
+            </actions>
+          </interrupt>
+        </wait>
+      </do_if>
+
+      <!-- Attack with this ship -->
+      <!-- Finish condition would be to kill the primary and all secondary targets -->
+      <run_script name="'order.fight.attack.object'">
+        <param name="primarytarget" value="$primarytarget"/>
+        <param name="secondarytargets" value="$targets"/>
+        <param name="allowothertargets" value="false"/>
+        <param name="allowboost" value="true" />
+        <param name="squad_attack" value="false"/>
+      </run_script>
+
+      <!-- Finish and cleanup -->
+      <label name="finish" />
+
+      <!-- Clear all the created orders -->
+      <include_interrupt_actions ref="clear_all_orders" />
+    </actions>
+  </attention>
+  <on_abort>
+    <debug_text text="'order aborted'" chance="$debugchance" />
+    <!-- Clear all the created orders -->
+    <include_interrupt_actions ref="clear_all_orders" />
+  </on_abort>
+</aiscript>

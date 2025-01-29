@@ -1,0 +1,914 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="LIB_Reward_Balancing" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--<cue name="RewardTest" instantiate="true">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <set_value name="$DoCredits" exact="true"/>
+        <set_value name="$DoNotoriety" exact="false"/>
+        <set_value name="$DoTradeInfo" exact="true"/>
+        <set_value name="$DoStationInfo" exact="true"/>
+        
+        <set_value name="$DiffList" exact="[level.veryeasy, level.easy, level.medium, level.hard, level.veryhard]"/>
+        <set_value name="$Faction" exact="faction.albionenergy"/>
+        <set_faction_relation faction="$Faction" otherfaction="faction.player" value="0.3"/>
+        <do_all exact="2">
+          <find_station name="$Station" owner="$Faction" space="player.sector" required="true"/>
+          <debug_text text="'Station is ' + $Station.knownname"/>
+          <do_all exact="10" counter="$o">
+            <do_all exact="$DiffList.count" counter="$i">
+              <do_all exact="2">
+                <do_if value="$DoCredits">
+                  <signal_cue_instantly cue="md.LIB_Reward_Balancing.Reward_Money" param="[RewardTest, $DiffList.{$i}, $o, $Faction]"/>
+                  <debug_text text="'Credits - Level:' + $o + ' Diff: ' + $DiffList.{$i} + ' Faction:' + $Faction + ' Result: ' + RewardTest.$Reward_Money__Result / 1Cr"/>
+                </do_if>
+                <do_if value="$DoNotoriety">
+                  <signal_cue_instantly cue="md.LIB_Reward_Balancing.Reward_Notoriety" param="[RewardTest, $DiffList.{$i}, $o, $Faction]"/>
+                  <debug_text text="'Notoriety - Level:' + $o + ' Diff: ' + $DiffList.{$i} + ' Faction:' + $Faction + ' Result: ' + RewardTest.$Reward_Notoriety__Result"/>
+                </do_if>
+                <do_if value="$DoTradeInfo">
+                  <debug_text text="'TradeInfo - Level:' + $o + ' Diff: ' + $DiffList.{$i} + ' Faction:' + $Faction"/>
+                  <signal_cue_instantly cue="md.LIB_Reward_Balancing.Get_Trade_Subscriptions" param="[RewardTest, $DiffList.{$i}, $o, $Faction, $Station]"/>
+                </do_if>
+                <do_if value="$DoStationInfo">
+                  <debug_text text="'StationInfo - Level:' + $o + ' Diff: ' + $DiffList.{$i} + ' Faction:' + $Faction"/>
+                  <signal_cue_instantly cue="md.LIB_Reward_Balancing.Get_Station_Info" param="[RewardTest, $DiffList.{$i}, $o, $Faction, $Station]"/>
+                </do_if>
+              </do_all>
+            </do_all>
+          </do_all>
+          <set_value name="$Faction" exact="faction.plutarch"/>
+        </do_all>
+      </actions>
+    </cue>-->
+
+    <!--***UNIVERSAL VALUE MODIFIER***-->
+
+    <!-- $Value calculation with steep curve: Used by credit reward cues -->
+    <library name="GetValue_Credits">
+      <actions>
+        <!-- Balance influence of $MissionLevel on rewards via these values -->
+        <set_value name="$MissionLevelIncrement" exact="0.1f"/>
+
+        <set_value name="$MissionLevel" exact="event.param.{3}"/>
+        <debug_text text="'Rewards based on MissionLevel: ' + $MissionLevel" chance="$DebugChance"/>
+
+        <do_if value="$MissionLevel" max="0">
+          <set_value name="$MissionLevel" exact="1"/>
+        </do_if>
+        <!-- We currently allow a $MissionLevel of 1 to 10, which equals roughly double the base reward -->
+        <do_elseif value="$MissionLevel" min="10">
+          <set_value name="$MissionLevel" exact="10"/>
+        </do_elseif>
+
+        <set_value name="$MissionLevel" exact="1.0f + (($MissionLevel - 1) * $MissionLevelIncrement)"/>
+
+        <debug_text text="'MissionLevel factor is: ' + $MissionLevel" chance="$DebugChance"/>
+
+        <!-- $Difficulty factor; goal is to make the reward enticing at the required level of progression -->
+        <debug_text text="'Rewards based on Difficulty: ' + event.param.{2}" chance="$DebugChance"/>
+        <do_if value="event.param.{2} == level.trivial">
+          <set_value name="$Difficulty" exact="1.0f"/>
+        </do_if>
+        <!-- Missions which can be completed with the starter ship and maybe some deployables -->
+        <do_elseif value="event.param.{2} == level.veryeasy">
+          <set_value name="$Difficulty" exact="1.0f"/>
+        </do_elseif>
+        <!-- Missions which can be completed with the starter ship but involve some sort of danger or risk -->
+        <do_elseif value="event.param.{2} == level.easy">
+          <set_value name="$Difficulty" exact="1.4f"/>
+        </do_elseif>
+        <!-- Missions which require an upgraded / different ship and / or involve killing -->
+        <do_elseif value="event.param.{2} == level.medium">
+          <set_value name="$Difficulty" exact="8.0f"/>
+        </do_elseif>
+        <!-- Missions which require substantial funds or a small fleet -->
+        <do_elseif value="event.param.{2} == level.hard">
+          <set_value name="$Difficulty" exact="40.0f"/>
+        </do_elseif>
+        <!-- Missions which involve large-scale objectives like conquest or fleet destruction -->
+        <do_elseif value="event.param.{2} == level.veryhard">
+          <set_value name="$Difficulty" exact="400.0f"/>
+        </do_elseif>
+        <do_elseif value="event.param.{2} == level.impossible">
+          <set_value name="$Difficulty" exact="1000.0f"/>
+        </do_elseif>
+        <do_else>
+          <set_value name="$Difficulty" exact="1.0f" comment="Failsafe"/>
+        </do_else>
+
+        <debug_text text="'Difficulty factor for credit reward is: ' + $Difficulty" chance="$DebugChance"/>
+
+        <!-- Calculate $Value, which will later multiply credit rewards -->
+        <set_value name="$Value" exact="$Difficulty * $MissionLevel"/>
+      </actions>
+    </library>
+
+    <!-- $Value calculation with flatter curve: Used by notoriety reward cues -->
+    <library name="GetValue_Notoriety">
+      <actions>
+        <!-- Balance influence of $MissionLevel on rewards via these values -->
+        <set_value name="$MissionLevelIncrement" exact="0.1f"/>
+
+        <set_value name="$MissionLevel" exact="event.param.{3}"/>
+        <debug_text text="'Rewards based on MissionLevel: ' + $MissionLevel" chance="$DebugChance"/>
+
+        <!-- We currently allow a $MissionLevel of 1 to 10, which equals roughly double the base reward -->
+        <do_if value="$MissionLevel" max="0">
+          <set_value name="$MissionLevel" exact="1"/>
+        </do_if>
+        <do_elseif value="$MissionLevel" min="10">
+          <set_value name="$MissionLevel" exact="10"/>
+        </do_elseif>
+
+        <set_value name="$MissionLevel" exact="1.0f + (($MissionLevel - 1) * $MissionLevelIncrement)"/>
+
+        <debug_text text="'MissionLevel factor is: ' + $MissionLevel" chance="$DebugChance"/>
+
+        <!-- Balance influence of $Difficulty on rewards via these values -->
+        <debug_text text="'Rewards based on Difficulty: ' + event.param.{2}" chance="$DebugChance"/>
+        <do_if value="event.param.{2} == level.trivial">
+          <set_value name="$Difficulty" exact="1.0f"/>
+        </do_if>
+        <do_elseif value="event.param.{2} == level.veryeasy">
+          <set_value name="$Difficulty" exact="1.0f"/>
+        </do_elseif>
+        <do_elseif value="event.param.{2} == level.easy">
+          <set_value name="$Difficulty" exact="1.2f"/>
+        </do_elseif>
+        <do_elseif value="event.param.{2} == level.medium">
+          <set_value name="$Difficulty" exact="4.0f"/>
+        </do_elseif>
+        <do_elseif value="event.param.{2} == level.hard">
+          <set_value name="$Difficulty" exact="10.0f"/>
+        </do_elseif>
+        <do_elseif value="event.param.{2} == level.veryhard">
+          <set_value name="$Difficulty" exact="20.0f"/>
+        </do_elseif>
+        <do_elseif value="event.param.{2} == level.impossible">
+          <set_value name="$Difficulty" exact="20.0f"/>
+        </do_elseif>
+        <do_else>
+          <set_value name="$Difficulty" exact="1.0f" comment="Failsafe"/>
+        </do_else>
+
+        <debug_text text="'Difficulty factor for notoriety reward is: ' + $Difficulty" chance="$DebugChance"/>
+
+        <!-- Calculate $Value, which will later multiply notoriety rewards -->
+        <set_value name="$Value" exact="$Difficulty * $MissionLevel"/>
+      </actions>
+    </library>
+    
+    
+    <!--***REWARD TYPE WEIGHT***-->
+
+    <!-- input: $Difficulty, $ClientOwner; output: $RewardCreditsWeight, $RewardModWeight, $RewardSeminarWeight-->
+    <library name="Allocate_RewardWeight">
+      <actions>
+
+        <!-- {$Difficulty} = table[ {Relation Threshold} = [$RewardSeminarWeight, $RewardModWeight] ] -->
+        <set_value name="$DifficultyVsWeight" exact="table[
+           {level.veryeasy} = table[
+                {0.01}  = [ 0,  0],
+                {0.032} = [20,  0],
+                {0.1}   = [40,  0],
+                {0.32}  = [40, 20]
+                ],
+           {level.easy} = table[
+                {0.01}  = [ 0,  0],
+                {0.032} = [20,  0],
+                {0.1}   = [35, 10],
+                {0.32}  = [35, 30]
+                ],
+           {level.medium} = table[
+                {0.01}  = [ 0,  0],
+                {0.032} = [ 0,  0],
+                {0.1}   = [ 0, 30],
+                {0.32}  = [ 0, 80]
+                ],
+        ]"/>
+
+        <set_value name="$RewardSeminarWeight" exact="0"/>
+        <set_value name="$RewardModWeight"     exact="0"/>
+
+        <do_if value="$DifficultyVsWeight.{$Difficulty}?">
+          <set_value name="$ClientRelation" exact="$ClientOwner.relationto.{faction.player}"/>
+          <set_value name="$WeightTable" exact="$DifficultyVsWeight.{$Difficulty}"/>
+          <do_for_each name="$RelationThreshold" valuename="$RewardWeightList" in="$WeightTable">
+            <set_value name="$ThresholdCounter" exact="1" operation="add"/>
+            <do_if value="$ClientRelation lt $RelationThreshold">
+              <do_if value="$ThresholdCounter == 1">
+                <!-- Below the first threshold -->
+                <set_value name="$RewardSeminarWeight"  exact="$RewardWeightList.{1}"/>
+                <set_value name="$RewardModWeight"      exact="$RewardWeightList.{2}"/>
+              </do_if>
+              <do_elseif value="$ClientRelation lt $RelationThreshold">
+                <!-- Find the values between this threshold and the previous one based on the current relation -->
+                <set_value name="$PreviousRelationThreshold" exact="$WeightTable.keys.{$ThresholdCounter - 1}"/>
+                <set_value name="$PreviousRewardWeightList" exact="$WeightTable.{$PreviousRelationThreshold}"/>
+                <!-- See cue Reward_Money for formula -->
+                <set_value name="$RewardSeminarWeight"  exact="$PreviousRewardWeightList.{1} + ($RewardWeightList.{1} - $PreviousRewardWeightList.{1}) * ($ClientRelation - $PreviousRelationThreshold) / ($RelationThreshold - $PreviousRelationThreshold)"/>
+                <set_value name="$RewardModWeight"      exact="$PreviousRewardWeightList.{2} + ($RewardWeightList.{2} - $PreviousRewardWeightList.{2}) * ($ClientRelation - $PreviousRelationThreshold) / ($RelationThreshold - $PreviousRelationThreshold)"/>
+                <remove_value name="$PreviousRelationThreshold"/>
+                <remove_value name="$PreviousRewardWeightList"/>
+              </do_elseif>
+              <break/>
+            </do_if>
+            <do_elseif value="$ThresholdCounter == $WeightTable.keys.count">
+              <!-- Above the last threshold -->
+              <set_value name="$RewardSeminarWeight"  exact="$RewardWeightList.{1}"/>
+              <set_value name="$RewardModWeight"      exact="$RewardWeightList.{2}"/>
+            </do_elseif>
+          </do_for_each>
+          <remove_value name="$ClientRelation"/>
+          <remove_value name="$WeightTable"/>
+          <remove_value name="$ThresholdCounter"/>
+        </do_if>
+
+        <set_value name="$RewardCreditsWeight" exact="100"/>
+
+        <remove_value name="$DifficultyVsWeight"/>
+      </actions>
+    </library>
+
+    <!--***REWARD CREDITS***-->
+
+    <!-- input: $OfferType, $MissionThread, $Reward_Money__Result output: $Reward_Money__Result_Multiplied -->
+    <library name="Apply_RewardMultiplier">
+      <actions>
+        <set_value name="$RewardMultiplier" exact="1.0f"/>
+        <do_if value="$MissionThread">
+          <!--set_value name="$RewardMultiplier" exact="$RewardMultiplier * 1.25"/-->
+        </do_if>
+        <do_elseif value="$OfferType and $OfferType == 'signalleak'">
+          <set_value name="$RewardMultiplier" exact="1.5f"/>
+        </do_elseif>
+        <!-- stat.trade_score, stat.trade_rank, stat.fight_score, stat.fight_rank -->
+        <set_value name="$Reward_Money__Result_Multiplied" exact="(($Reward_Money__Result)f * $RewardMultiplier)ct"/>
+      </actions>
+    </library>
+
+    <!--***DETERMINE ADDITIONAL REWARD***-->
+    <library name="DetermineAdditionalReward" purpose="run_actions">
+      <params>
+        <param name="RewardModWeight"/>
+        <param name="RewardSeminarWeight"/>
+      </params>
+      <actions>
+        <do_any>
+          <do_all weight="$RewardModWeight">
+            <signal_cue_instantly cue="Reward_ModPart" param="[this]" />
+            <set_value name="$AdditionalReward" exact="$Reward_ModPart__Result"/>
+          </do_all>
+          <do_all weight="$RewardSeminarWeight">
+            <signal_cue_instantly cue="Reward_Seminar" param="[this]" />
+            <set_value name="$AdditionalReward" exact="$Reward_Seminar__Result"/>
+          </do_all>
+          <do_all weight="100 - $RewardModWeight - $RewardSeminarWeight">
+            <!--No Additional Reward-->
+            <set_value name="$AdditionalReward" exact="null"/>
+          </do_all>
+        </do_any>
+        <return value="$AdditionalReward"/>
+      </actions>
+    </library>
+
+
+    <!--event.param: [$ResultCue, $Difficulty, $MissionLevel, $Faction]
+    e.g.
+    [MyCue, level.medium, 5, faction.argon]
+    
+    Result saved to $ResultCue.$Reward_Money__Result-->
+    <cue name="Reward_Money" instantiate="true" namespace="this">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <set_value name="$DebugChance" exact="0"/>
+
+        <include_actions ref="GetValue_Credits"/>
+
+        <!--Modifier to make it a sensible range of credits-->
+        <set_value name="$Value" min="$Value * 24000" max="$Value * 26000"/>
+
+        <!--Boost by faction relation. Formula:
+            r0 = Relation threshold at which the boost starts increasing
+            r1 = Relation threshold at which the boost stops increasing
+            m0 = Boost at start threshold
+            m1 = Boost at stop threshold
+            
+            r = Relation
+            m = Boost at Relation r
+            
+            m(r) = m0 + (m1 - m0) * (r - r0) / (r1 - r0)
+        -->
+        
+        <!-- Relation boost for hard missions and above starts at relation 0.1 (displayed as 20) and goes up to x3. These don't reward objects, because players would then miss out on large sums of credits. -->
+        <do_if value="event.param.{2} ge level.hard">
+          <set_value name="$RelationBoost" exact="1.0f + (3.0f - 1.0f) * (event.param.{4}.relationto.{faction.player} - 0.1f) / (1.0f - 0.1f)"/>
+          <do_if value="$RelationBoost gt 3.0">
+            <set_value name="$RelationBoost" exact="3.0f"/>
+          </do_if>
+          <do_elseif value="$RelationBoost lt 1.0">
+            <set_value name="$RelationBoost" exact="1.0f"/>
+          </do_elseif>
+        </do_if>
+        
+        <!-- Relation boost for easy and medium missions starts at relation 0.01 (displayed as 10) and stops at x2 at relation 0.1 (displayed as 20). Beyond that, we reward players with objects such as mod parts. -->
+        <do_elseif value="event.param.{2} == level.medium">
+          <set_value name="$RelationBoost" exact="1.0f + (2.0f - 1.0f) * (event.param.{4}.relationto.{faction.player} - 0.01f) / (0.1f - 0.01f)"/>
+          <do_if value="$RelationBoost gt 2.0">
+            <set_value name="$RelationBoost" exact="2.0f"/>
+          </do_if>
+          <do_elseif value="$RelationBoost lt 1.0">
+            <set_value name="$RelationBoost" exact="1.0f"/>
+          </do_elseif>
+        </do_elseif>
+        
+        <!-- Relation boost for very easy and easy missions starts at relation 0 and stops at x2 at relation 0.032 (displayed as 15). Beyond that, we reward players with objects such as mod parts. -->
+        <do_else>
+          <set_value name="$RelationBoost" exact="1.0f + (2.0f - 1.0f) * event.param.{4}.relationto.{faction.player} / 0.1f"/>
+          <do_if value="$RelationBoost gt 2.0">
+            <set_value name="$RelationBoost" exact="2.0f"/>
+          </do_if>
+          <do_elseif value="$RelationBoost lt 1.0">
+            <set_value name="$RelationBoost" exact="1.0f"/>
+          </do_elseif>
+        </do_else>
+        
+        <set_value name="$Value" min="$Value * $RelationBoost" max="$Value * $RelationBoost * 1.3" profile="decreasing" scale="2"/>
+
+        <!--Round to number ending in 0-->
+        <set_value name="$Value" exact="(($Value)i / 10) * 10"/>
+
+        <debug_text text="'Total: ' + $Value" chance="$DebugChance"/>
+
+        <set_value name="event.param.{1}.$Reward_Money__Result" exact="($Value)Cr"/>
+      </actions>
+    </cue>
+
+    <!-- Input: $TimeBonusCr_Max, $MissionActivationTime, ($DurationUntilBonusDecay), ($DurationUntilBonusExpiry), ($RewardCr); Output: $RewardCr -->
+    <library name="Apply_TimeBonusCr">
+      <actions>
+        <do_if value="$TimeBonusCr_Max? and $MissionActivationTime?" comment="$MissionDuration is already checked by library TimeBonusCr_Max">
+
+          <do_if value="$DurationUntilBonusDecay?">
+            <set_value name="$BonusDecayTime" exact="$MissionActivationTime + $DurationUntilBonusDecay"/>
+          </do_if>
+          <do_if value="$DurationUntilBonusExpiry?">
+            <set_value name="$BonusExpiryTime" exact="$MissionActivationTime + $DurationUntilBonusExpiry"/>
+          </do_if>
+
+          <do_if value="$BonusDecayTime? and not $BonusExpiryTime?">
+            <set_value name="$BonusExpiryTime" exact="$MissionActivationTime + $MissionDuration"/>
+          </do_if>
+
+          <do_if value="$BonusDecayTime? and $BonusExpiryTime? and ($BonusDecayTime lt $BonusExpiryTime)">
+            <set_value name="$BonusDecayDuration" exact="$BonusExpiryTime - $BonusDecayTime"/>
+          </do_if>
+
+          <do_if value="$BonusExpiryTime? and (player.age ge $BonusExpiryTime)">
+            <set_value name="$TimeBonusCr_Modifier" exact="0.0"/>
+          </do_if>
+          <do_elseif value="$BonusDecayTime? and (player.age ge $BonusDecayTime)">
+            <set_value name="$TimeBonusCr_Modifier" exact="1.0 - (($BonusExpiryTime - player.age) / $BonusDecayDuration)" comment="Checks above prevent division by 0"/>
+          </do_elseif>
+          <do_else>
+            <set_value name="$TimeBonusCr_Modifier" exact="1.0"/>
+          </do_else>
+
+          <do_if value="not $RewardCr?">
+            <set_value name="$RewardCr" exact="0Cr"/>
+          </do_if>
+          <set_value name="$RewardCr" exact="($RewardCr + (($TimeBonusCr_Max)f * $TimeBonusCr_Modifier)ct) / (10Cr) * (10Cr)"/>
+
+          <remove_value name="$BonusDecayTime"/>
+          <remove_value name="$BonusExpiryTime"/>
+          <remove_value name="$BonusDecayDuration"/>
+          <remove_value name="$TimeBonusCr_Modifier"/>
+        </do_if>
+      </actions>
+    </library>
+
+    <!-- Input: $Reward_Money__Result, $MissionActivationTime, $MissionDuration; Output: $TimeBonusCr_Max -->
+    <library name="TimeBonusCr_Max">
+      <actions>
+        <do_if value="$DurationUntilBonusDecay or $DurationUntilBonusExpiry">
+          <set_value name="$TimeBonusCr_Max" exact="(($Reward_Money__Result)f * 1.0f)ct / (10Cr) * (10Cr)" comment="Bonus is based on the unmodified reward"/>
+        </do_if>
+      </actions>
+    </library>
+
+    <!--***REWARD NOTORIETY***-->
+
+    <!--event.param: [$ResultCue, $Difficulty, $MissionLevel, $Faction]
+    e.g.
+    [MyCue, level.medium, 5, faction.argon]
+    
+    Result saved to $ResultCue.$Reward_Notoriety__Result-->
+    <cue name="Reward_Notoriety" instantiate="true" namespace="this">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <set_value name="$DebugChance" exact="0"/>
+
+        <include_actions ref="GetValue_Notoriety"/>
+
+        <!--Modifier to make it a sensible amount of notoriety-->
+        <set_value name="$Value" exact="$Value * 0.001"/>
+
+        <debug_text text="'Total: ' + $Value" chance="$DebugChance"/>
+
+        <set_value name="event.param.{1}.$Reward_Notoriety__Result" exact="$Value"/>
+      </actions>
+    </cue>
+
+    <!--***REWARD WEAPON MODIFICATION***-->
+
+    <!-- event.param: [$ResultCue] -->
+
+    <cue name="Reward_ModPart" instantiate="true" namespace="this">
+      <conditions>
+        <event_cue_signalled />
+      </conditions>
+      <actions>
+        <set_value name="$DebugChance" exact="0" />
+
+        <do_any>
+          <do_any weight="84">
+            <set_value name="$RewardModPart" exact="ware.modpart_extendedfuelcontainer" />
+            <set_value name="$RewardModPart" exact="ware.modpart_highenergycatalyst" />
+            <set_value name="$RewardModPart" exact="ware.modpart_nividiumcrystallite" />
+            <set_value name="$RewardModPart" exact="ware.modpart_nividiumoxide" />
+            <set_value name="$RewardModPart" exact="ware.modpart_tuningsoftware" />
+          </do_any>
+
+          <do_any weight="16">
+            <set_value name="$RewardModPart" exact="ware.modpart_enginefuelinjector_t1" />
+            <set_value name="$RewardModPart" exact="ware.modpart_shieldgeneratorcoil_t1" />
+            <set_value name="$RewardModPart" exact="ware.modpart_shipnanoweave_t1" />
+            <set_value name="$RewardModPart" exact="ware.modpart_weaponchamber_t1" />
+          </do_any>
+        </do_any>
+
+        <debug_text text="'Reward set to ' + $RewardModPart.name" chance="$DebugChance" />
+        <set_value name="event.param.{1}.$Reward_ModPart__Result" exact="$RewardModPart" />
+      </actions>
+    </cue>
+
+    <library name="Get_Suitable_Mod_Part" purpose="run_actions">
+      <params>
+        <param name="Type" default="null" comment="type string: 'engine', 'shield', 'ship' or 'weapon'. If null, any type."/>
+        <param name="Level" default="0" comment="Mod part level (0 - 3)"/>
+        <param name="RewardTable" default="null" comment="Ware table to also add the mod part to"/>
+      </params>
+      <actions>
+        <do_if value="$Level" min="0" max="3">
+          <do_if value="not $Type">
+            <set_value name="$Type" exact="['engine', 'shield', 'ship', 'weapon'].random"/>
+          </do_if>
+          <set_value name="$ModPart" exact="null"/>
+          
+          <do_if value="$Type == 'engine'">
+            <do_if value="$Level == 0">
+              <do_any>
+                <set_value name="$ModPart" exact="ware.modpart_extendedfuelcontainer"/>
+                <set_value name="$ModPart" exact="ware.modpart_nividiumoxide"/>
+              </do_any>
+            </do_if>
+            <do_elseif value="$Level == 1">
+              <do_any>
+                <set_value name="$ModPart" exact="ware.modpart_enginefuelinjector_t1"/>
+              </do_any>
+            </do_elseif>
+            <do_elseif value="$Level == 2">
+              <do_any>
+                <set_value name="$ModPart" exact="ware.modpart_enginefuelinjector_t2"/>
+              </do_any>
+            </do_elseif>
+            <do_elseif value="$Level == 3">
+              <do_any>
+                <set_value name="$ModPart" exact="ware.modpart_enginefuelinjector_t3"/>
+              </do_any>
+            </do_elseif>
+          </do_if>
+          <do_elseif value="$Type == 'shield'">
+            <do_if value="$Level == 0">
+              <do_any>
+                <set_value name="$ModPart" exact="ware.modpart_extendedfuelcontainer"/>
+                <set_value name="$ModPart" exact="ware.modpart_tuningsoftware"/>
+              </do_any>
+            </do_if>
+            <do_elseif value="$Level == 1">
+              <do_any>
+                <set_value name="$ModPart" exact="ware.modpart_shieldgeneratorcoil_t1"/>
+              </do_any>
+            </do_elseif>
+            <do_elseif value="$Level == 2">
+              <do_any>
+                <set_value name="$ModPart" exact="ware.modpart_shieldgeneratorcoil_t2"/>
+              </do_any>
+            </do_elseif>
+            <do_elseif value="$Level == 3">
+              <do_any>
+                <set_value name="$ModPart" exact="ware.modpart_shieldgeneratorcoil_t3"/>
+              </do_any>
+            </do_elseif>
+          </do_elseif>
+          <do_elseif value="$Type == 'ship'">
+            <do_if value="$Level == 0">
+              <do_any>
+                <set_value name="$ModPart" exact="ware.modpart_nividiumcrystallite"/>
+              </do_any>
+            </do_if>
+            <do_elseif value="$Level == 1">
+              <do_any>
+                <set_value name="$ModPart" exact="ware.modpart_shipnanoweave_t1"/>
+              </do_any>
+            </do_elseif>
+            <do_elseif value="$Level == 2">
+              <do_any>
+                <set_value name="$ModPart" exact="ware.modpart_shipnanoweave_t2"/>
+              </do_any>
+            </do_elseif>
+            <do_elseif value="$Level == 3">
+              <do_any>
+                <set_value name="$ModPart" exact="ware.modpart_shipnanoweave_t3"/>
+              </do_any>
+            </do_elseif>
+          </do_elseif>
+          <do_elseif value="$Type == 'weapon'">
+            <do_if value="$Level == 0">
+              <do_any>
+                <set_value name="$ModPart" exact="ware.modpart_highenergycatalyst"/>
+                <set_value name="$ModPart" exact="ware.modpart_tuningsoftware"/>
+              </do_any>
+            </do_if>
+            <do_elseif value="$Level == 1">
+              <do_any>
+                <set_value name="$ModPart" exact="ware.modpart_weaponchamber_t1"/>
+              </do_any>
+            </do_elseif>
+            <do_elseif value="$Level == 2">
+              <do_any>
+                <set_value name="$ModPart" exact="ware.modpart_weaponchamber_t2"/>
+              </do_any>
+            </do_elseif>
+            <do_elseif value="$Level == 3">
+              <do_any>
+                <set_value name="$ModPart" exact="ware.modpart_weaponchamber_t3"/>
+              </do_any>
+            </do_elseif>
+          </do_elseif>
+          <do_else>
+            <debug_text text="'Invalid mod part type: ' + $Type" filter="error"/>
+            <return value="null"/>
+          </do_else>
+
+          <do_if value="$ModPart and $RewardTable">
+            <set_value name="$RewardTable.{$ModPart}" operation="add"/>
+          </do_if>
+          <return value="$ModPart"/>
+        </do_if>
+        <do_else>
+          <debug_text text="'Invalid mod part level. Should be 0 to 3'" filter="error"/>
+          <return value="null"/>
+        </do_else>
+      </actions>
+    </library>
+
+    <!--***REWARD SEMINARS***-->
+
+    <!-- event.param: [$ResultCue] -->
+
+    <cue name="Reward_Seminar" instantiate="true" namespace="this">
+      <conditions>
+        <event_cue_signalled />
+      </conditions>
+      <actions>
+        <set_value name="$DebugChance" exact="0" />
+
+        <do_any>      
+          <set_value name="$RewardSeminar" exact="[ware.inv_seminar_piloting_1, ware.inv_seminar_piloting_1, ware.inv_seminar_management_1].random" weight="84"/>
+          <set_value name="$RewardSeminar" exact="[ware.inv_seminar_piloting_2, ware.inv_seminar_piloting_2, ware.inv_seminar_management_2].random" weight="16"/>
+        </do_any>
+
+        <debug_text text="'Reward set to ' + $RewardSeminar.name" chance="$DebugChance" />
+        <set_value name="event.param.{1}.$Reward_Seminar__Result" exact="$RewardSeminar" />
+      </actions>
+    </cue>
+    <!--***Get Donation Rewards***-->
+
+    <!--event.param: [$ResultCue, $Difficulty, $MissionLevel, $Faction, $MissionStation]
+    e.g.
+    [MyCue, level.medium, 5, faction.argon, $MissionStation]
+    
+    Result saved to $ResultCue.$Get_Discounts__Result-->
+    <cue name="Get_Discounts" instantiate="true" namespace="this">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <set_value name="$DebugChance" exact="0"/>
+
+        <!--TODO: Discount-->
+        <set_value name="event.param.{1}.$Get_Discounts__Result" exact="null"/>
+
+      </actions>
+    </cue>
+
+    <!--***Get Trade Subscription Rewards***-->
+
+    <!--event.param: [$ResultCue, $Difficulty, $MissionLevel, $Faction, $MissionStation]
+    e.g.
+    [MyCue, level.medium, 5, faction.argon, $MissionStation]
+    
+    Result saved to $ResultCue.$Reward_Notoriety__Result-->
+    <cue name="Get_Trade_Subscriptions" instantiate="true" namespace="this">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <set_value name="$DebugChance" exact="0"/>
+        <set_value name="event.param.{1}.$Get_Trade_Subscriptions__Result" exact="null"/>
+        <set_value name="$SubscriptionStations" exact="[]"/>
+
+        <do_if value="event.param.{5}.exists">
+
+          <include_actions ref="GetValue_Notoriety"/>
+
+          <set_value name="$RelValue" min="($Value)f / 45.0f" max="($Value)f / 55.0f" profile="increasing" scale="2"/>
+          <!-- TODO (@Owen / @Lorraine): Without this, there is a chance that the reward will fail to be set - this would leave the mission to continue without setting a reward at all (unless we were to add a back up to every single mission) - does this need to be done properly / in another way? -->
+          <do_if value="$RelValue lt 1">
+            <set_value name="$RelValue" exact="1" />
+          </do_if>
+
+          <do_if value="$RelValue" min="1">
+            <set_value name="$RelValue" exact="($RelValue)i"/>
+            <debug_text text="'$RelValue ' + $RelValue" chance="$DebugChance"/>
+            <find_station_by_true_owner name="$SubscriptionStations" faction="event.param.{4}" space="event.param.{5}.sector" multiple="true"/>
+            <!--TODO: Extend search?-->
+
+            <do_if value="$SubscriptionStations.count">
+              <do_all exact="$SubscriptionStations.count" counter="$i" reverse="true">
+                <!-- TODO (@Owen / @Lorraine): If at some point we decide we want to differentiate between permanent trade subscriptions and timed ones in missions, this will need to be passed in somehow -->
+                <do_if value="$SubscriptionStations.{$i}.haspermanenttradesubscription">
+                  <remove_value name="$SubscriptionStations.{$i}"/>
+                </do_if>
+              </do_all>
+
+              <do_if value="$SubscriptionStations.count">
+                <do_if value="$RelValue lt $SubscriptionStations.count">
+                  <do_all exact="$SubscriptionStations.count - $RelValue">
+                    <set_value name="$Index" min="1" max="$SubscriptionStations.count"/>
+                    <remove_value name="$SubscriptionStations.{$Index}"/>
+                  </do_all>
+                </do_if>
+
+                <debug_text text="'num stations ' + $SubscriptionStations.count" chance="$DebugChance"/>
+
+                <do_if value="$SubscriptionStations.count" min="1">
+                  <do_if value="$SubscriptionStations.count" exact="1">
+                    <substitute_text source="{30002,1103}" text="$BriefingText">
+                      <replace string="'$STATION$'" with="$SubscriptionStations.{1}.knownname"/>
+                    </substitute_text>
+                    <substitute_text source="{30002,1111}" text="$LogbookText">
+                      <replace string="'$STATION$'" with="$SubscriptionStations.{1}.knownname"/>
+                      <replace string="'$SECTOR$'" with="$SubscriptionStations.{1}.sector.knownname"/>
+                    </substitute_text>
+                    <set_value name="$Notification" exact="{30002,1131}"/>
+                  </do_if>
+                  <do_elseif value="$SubscriptionStations.count" min="7">
+                    <!-- Too many to show individually, so use single line summary -->
+                    <!-- TODO (@Lorraine): Add better single line summaries -->
+                    <substitute_text source="{30002,1104}" text="$BriefingText">
+                      <replace string="'$NUM$'" with="$SubscriptionStations.count"/>
+                    </substitute_text>
+                    <substitute_text source="{30002,1113}" text="$LogbookText">
+                      <replace string="'$NUM$'" with="$SubscriptionStations.count" />
+                      <replace string="'$SECTOR$'" with="$SubscriptionStations.{1}.sector.knownname" />
+                    </substitute_text>
+                    <set_value name="$Notification" exact="{30002,1132}" />
+                  </do_elseif>
+                  <do_else>
+                    <substitute_text source="{30002,1104}" text="$BriefingText">
+                      <replace string="'$NUM$'" with="$SubscriptionStations.count"/>
+                    </substitute_text>
+                    <set_value name="$LogbookText" exact="readtext.{30002}.{1112} + '\n'" />
+                    <do_all exact="$SubscriptionStations.count" counter="$Counter">
+                      <set_value name="$Station" exact="$SubscriptionStations.{$Counter}" />
+                      <do_if value="$Counter" exact="$SubscriptionStations.count">
+                        <set_value name="$LogbookText" exact="$LogbookText + $Station.knownname + ' (' + $Station.sector.knownname + ')'" />
+                      </do_if>
+                      <do_else>
+                        <set_value name="$LogbookText" exact="$LogbookText + $Station.knownname + ' (' + $Station.sector.knownname + ')' + '\n'" />
+                      </do_else>
+                    </do_all>
+                    <set_value name="$Notification" exact="{30002,1132}" />
+                  </do_else>
+                  <set_value name="event.param.{1}.$Get_Trade_Subscriptions__Result" exact="[$SubscriptionStations, $BriefingText, $LogbookText, $Notification]"/>
+                </do_if>
+              </do_if>
+            </do_if>
+          </do_if>
+
+        </do_if>
+      </actions>
+    </cue>
+
+    <!--Get Station Info Rewards-->
+
+    <!--event.param: [$ResultCue, $Difficulty, $MissionLevel, $Faction, $MissionStation]
+    e.g.
+    [MyCue, level.medium, 5, faction.argon, $MissionStation]
+    
+    Result saved to $ResultCue.$Get_Station_Info__Result
+    Result is in the form [ [$Station, (optional)secrecylevel, (optional)percent], [$Station, (optional)secrecylevel, (optional)percent]... ]-->
+    <cue name="Get_Station_Info" instantiate="true" namespace="this">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <set_value name="$DebugChance" exact="0"/>
+
+        <set_value name="event.param.{1}.$Get_Station_Info__Result" exact="null"/>
+
+        <do_if value="event.param.{5}.exists">
+          <set_value name="$MaxSecrecyLevel" exact="6"/>
+          <include_actions ref="GetValue_Notoriety"/>
+
+          <set_value name="$RevealValue" exact="$Value * 2.7"/>
+
+          <find_station_by_true_owner name="$UnrevealedStations" faction="event.param.{4}" space="event.param.{5}.sector" multiple="true">
+            <match_revealed_percentage exact="100" negate="true"/>
+          </find_station_by_true_owner>
+
+          <set_value name="$UnrevealedStationsCopy" exact="$UnrevealedStations.clone"/>
+          <set_value name="$PotentialRevealsValue" exact="0"/>
+          <create_list name="$PotentialReveals"/>
+          <do_all exact="$UnrevealedStationsCopy.count">
+            <set_value name="$Index" min="1" max="$UnrevealedStationsCopy.count"/>
+            <set_value name="$Station" exact="$UnrevealedStationsCopy.{$Index}"/>
+            <remove_value name="$UnrevealedStationsCopy.{$Index}"/>
+            <do_all exact="$MaxSecrecyLevel" counter="$i">
+              <!--Level starts at 0-->
+              <set_value name="$Level" exact="$i - 1"/>
+              <set_value name="$RevealLevelPercentage" exact="$Station.revealedlevelpercentage.{$Level}"/>
+              <do_if value="$RevealLevelPercentage != 100">
+                <append_to_list name="$PotentialReveals" exact="[$Station, $Level, 100 - $RevealLevelPercentage, (100 - $RevealLevelPercentage) * ($i * 1.5)]"/>
+                <!--Add the value of that reveal to $PotentialRevealsValue-->
+                <set_value name="$PotentialRevealsValue" exact="(100 - $RevealLevelPercentage) * ($i * 1.5)" operation="add"/>
+              </do_if>
+            </do_all>
+          </do_all>
+
+          <debug_text text="'$PotentialRevealsValue ' + $PotentialRevealsValue" chance="$DebugChance"/>
+          <create_list name="$Result"/>
+          <set_value name="$ConfirmedRevealsValue" exact="0"/>
+          <do_if value="$PotentialRevealsValue lt $RevealValue">
+            <set_value name="$ConfirmedRevealsValue" exact="$PotentialRevealsValue"/>
+            <!--All stations-->
+            <set_value name="$RevealStations" exact="$UnrevealedStations"/>
+            <do_all exact="$UnrevealedStations.count" counter="$i">
+              <append_to_list name="$Result" exact="[$UnrevealedStations.{$i}]"/>
+            </do_all>
+          </do_if>
+          <do_else>
+            <create_list name="$RevealStations"/>
+            <do_while value="$ConfirmedRevealsValue lt $RevealValue">
+              <do_if value="$RevealStations.count lt 5 and $PotentialReveals.count">
+                <set_value name="$Index" min="1" max="$PotentialReveals.count"/>
+                <set_value name="$RevealDef" exact="$PotentialReveals.{$Index}"/>
+                <do_if value="not $RevealStations.indexof.{$RevealDef.{1}}">
+                  <append_to_list name="$RevealStations" exact="$RevealDef.{1}"/>
+                </do_if>
+
+                <set_value name="$AvailablePercentage" exact="$RevealDef.{3}"/>
+                <set_value name="$TopPercentage" exact="$AvailablePercentage"/>
+                <do_if value="$AvailablePercentage" max="34">
+                  <set_value name="$AvailablePercentage" exact="35"/>
+                </do_if>
+                <do_elseif value="$AvailablePercentage" max="67">
+                  <do_any>
+                    <set_value name="$AvailablePercentage" exact="35" weight="4"/>
+                    <set_value name="$AvailablePercentage" exact="68" weight="2"/>
+                  </do_any>
+                </do_elseif>
+                <do_else>
+                  <do_any>
+                    <set_value name="$AvailablePercentage" exact="35" weight="6"/>
+                    <set_value name="$AvailablePercentage" exact="68" weight="4"/>
+                    <set_value name="$AvailablePercentage" exact="100" weight="2"/>
+                  </do_any>
+                </do_else>
+
+                <set_value name="$ConfirmedRevealsValue" exact="$AvailablePercentage" operation="add"/>
+                <append_to_list name="$Result" exact="[$RevealDef.{1}, $RevealDef.{2}, $AvailablePercentage, $TopPercentage]"/>
+                <remove_value name="$PotentialReveals.{$Index}"/>
+              </do_if>
+              <do_else>
+                <set_value name="$ResultIndexes" exact="[]"/>
+                <do_all exact="$Result.count" counter="$i">
+                  <do_if value="$Result.{$i}.{3} lt $Result.{$i}.{4}">
+                    <append_to_list name="$ResultIndexes" exact="$i"/>
+                  </do_if>
+                </do_all>
+                <shuffle_list list="$ResultIndexes" />
+                <do_for_each name="$Index" in="$ResultIndexes">
+                  <do_if value="$Result.{$Index}.{3} lt $Result.{$Index}.{4}">
+                    <set_value name="$ConfirmedRevealsValue" exact="$Result.{$Index}.{3}" operation="subtract"/>
+                    <set_value name="$ConfirmedRevealsValue" exact="$Result.{$Index}.{4}" operation="add"/>
+                    <set_value name="$Result.{$Index}.{3}" exact="$Result.{$Index}.{4}"/>
+                    <do_if value="$ConfirmedRevealsValue lt $RevealValue">
+                      <break/>
+                    </do_if>
+                  </do_if>
+                </do_for_each>
+                <remove_value name="$ResultIndexes" />
+
+                <!--For safety, past this point, the do_while will break-->
+                <do_if value="$ConfirmedRevealsValue lt $RevealValue">
+                  <do_if value="$PotentialReveals.count">
+                    <!--Look to add some more from $PotentialReveals-->
+                    <set_value name="$RevealDef" exact="$PotentialReveals.random"/>
+                    <set_value name="$ConfirmedRevealsValue" exact="$RevealDef.{3}" operation="add"/>
+                    <append_to_list name="$Result" exact="[$RevealDef.{1}, $RevealDef.{2}, $RevealDef.{3}, $RevealDef.{3}]"/>
+                    <do_if value="not $RevealStations.indexof.{$RevealDef.{1}}">
+                      <append_to_list name="$RevealStations" exact="$RevealDef.{1}"/>
+                    </do_if>
+                    <break/>
+                  </do_if>
+                </do_if>
+
+                <!--Break out, no more iterations-->
+                <break/>
+              </do_else>
+            </do_while>
+          </do_else>
+
+          <debug_text text="'$ConfirmedRevealsValue ' + $ConfirmedRevealsValue" chance="$DebugChance"/>
+          <debug_text text="'$RevealValue ' + $RevealValue" chance="$DebugChance"/>
+
+          <do_if value="$RevealStations.count" min="1">
+            <do_if value="$RevealStations.count" exact="1">
+              <substitute_text source="{30002,1202}" text="$BriefingText">
+                <replace string="'$STATION$'" with="$RevealStations.{1}.knownname"/>
+              </substitute_text>
+              <substitute_text source="{30002,1211}" text="$LogbookText">
+                <replace string="'$STATION$'" with="$RevealStations.{1}.knownname"/>
+                <replace string="'$SECTOR$'" with="$RevealStations.{1}.sector.knownname"/>
+              </substitute_text>
+              <set_value name="$Notification" exact="{30002,1231}"/>
+            </do_if>
+            <do_elseif value="$RevealStations.count" min="7">
+              <!-- Too many to show individually, so use single line summary -->
+              <!-- TODO (@Lorraine): Add better single line summaries -->
+              <substitute_text source="{30002,1203}" text="$BriefingText">
+                <replace string="'$NUM$'" with="$RevealStations.count"/>
+              </substitute_text>
+              <substitute_text source="{30002,1213}" text="$LogbookText">
+                <replace string="'$NUM$'" with="$RevealStations.count" />
+                <replace string="'$SECTOR$'" with="$RevealStations.{1}.sector.knownname" />
+              </substitute_text>
+              <set_value name="$Notification" exact="{30002,1232}" />
+            </do_elseif>
+            <do_else>
+              <substitute_text source="{30002,1203}" text="$BriefingText">
+                <replace string="'$NUM$'" with="$RevealStations.count"/>
+              </substitute_text>
+              <set_value name="$LogbookText" exact="readtext.{30002}.{1212} + '\n'" />
+              <do_all exact="$RevealStations.count" counter="$Counter">
+                <set_value name="$Station" exact="$RevealStations.{$Counter}" />
+                <do_if value="$Counter" exact="not $RevealStations.count">
+                  <set_value name="$LogbookText" exact="$LogbookText + $Station.knownname + ' (' + $Station.sector.knownname + ')' + '\n'" />
+                </do_if>
+                <do_else>
+                  <set_value name="$LogbookText" exact="$LogbookText + $Station.knownname + ' (' + $Station.sector.knownname + ')'" />
+                </do_else>
+              </do_all>
+              <set_value name="$Notification" exact="{30002,1232}" />
+            </do_else>
+
+            <do_if value="$Result.{1}.count gt 1">
+              <do_all exact="$Result.count" counter="$i">
+                <debug_text text="$Result.{$i}.{1}.knownname + ' ' + $Result.{$i}.{1}.zone.knownname + ' Level: ' + $Result.{$i}.{2} + ' Percent: ' + $Result.{$i}.{3}" chance="$DebugChance"/>
+              </do_all>
+            </do_if>
+            <do_else>
+              <do_all exact="$Result.count" counter="$i">
+                <debug_text text="$Result.{$i}.{1}.knownname + ' ' + $Result.{$i}.{1}.zone.knownname + ' at 100%'" chance="$DebugChance"/>
+              </do_all>
+            </do_else>
+
+            <set_value name="event.param.{1}.$Get_Station_Info__Result" exact="[$Result, $BriefingText, $LogbookText, $Notification]"/>
+          </do_if>
+        </do_if>
+      </actions>
+    </cue>
+
+  </cues>
+</mdscript>

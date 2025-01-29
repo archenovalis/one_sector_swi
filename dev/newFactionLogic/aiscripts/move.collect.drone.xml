@@ -1,0 +1,284 @@
+<?xml version="1.0" encoding="iso-8859-1" ?>
+<!--
+this script sends a drone to pick up an object (crate or rock)
+-->
+<aiscript name="move.collect.drone" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" version="3">
+  <params>
+    <param name="homebase" comment="the homebase to return to" />
+    <param name="target" default="null" comment="the object to pick up" />
+    <param name="masstraffic" default="false" comment="is this a masstraffic drone that should return to the appropriate dock?" />
+    <param name="stayactive" default="true" comment="should the drone remain in activated animation state?" />
+    <param name="launching" default="true" comment="whether this drone is still in its launch movement" />
+    <param name="debugchance" default="0"/>
+  </params>
+  <interrupts>
+    <library>
+      <actions name="TransferItems">
+        <do_if value="$homebase.isoperational and this.ship.isunit">
+          <do_if value="@$target.isdeployable">
+            <debug_text text="'%s %s %s collecting deployable %s %s via transport drone.'.[@$homebase.idcode, @$homebase.knownname, $homebase, @$target.knownname, $target]" chance="$debugchance"/>
+            <collect_deployable object="$homebase" deployable="$target"/>
+          </do_if>
+
+          <do_if value="@$homebase.pilot.exists or @$homebase.tradenpc.exists">
+            <set_value name="$locentity" exact="if @$homebase.pilot.exists then $homebase.pilot else $homebase.tradenpc"/>
+            <do_if value="@$target.wares.count">
+              <do_for_each name="$locware" valuename="$locamount" in="$target.wares.table">
+                <do_if value="$target.wares.{$locware}.exists">
+                  <do_if value="$locware.isinventory">
+                    <debug_text text="'1: turning over %s %s to %s of %s %s.'.[$locamount, $locware, $locentity.controlpost, $locentity.assignedcontrolled.knownname, $locentity.assignedcontrolled]" chance="$debugchance"/>
+                    <add_inventory entity="$locentity" ware="$locware" exact="$locamount"/>
+                    <remove_inventory entity="this" ware="$locware" exact="$locamount"/>
+                  </do_if>
+                  <!-- cargo wares should be transferred via code when drone docks. -->
+                </do_if>
+              </do_for_each>
+            </do_if>
+            <do_if value="this.inventory.count">
+              <do_for_each name="$locware" valuename="$locamount" in="this.inventory.table">
+                <do_if value="this.inventory.{$locware}.exists">
+                  <debug_text text="'2: turning over %s %s to %s of %s %s.'.[$locamount, $locware, $locentity.controlpost, $locentity.assignedcontrolled.knownname, $locentity.assignedcontrolled]" chance="$debugchance"/>
+                  <add_inventory entity="$locentity" ware="$locware" exact="$locamount"/>
+                  <remove_inventory entity="this" ware="$locware" exact="$locamount"/>
+                </do_if>
+              </do_for_each>
+            </do_if>
+            <do_if value="$target.isclass.collectable and @$target.money and this.isplayerowned">
+              <debug_text text="'%s %s %s about to transfer %sCr to the player account'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, $target.money]" chance="$debugchance"/>
+              <reward_player money="$target.money"/>
+            </do_if>
+            <remove_value name="$locentity"/>
+          </do_if>
+        </do_if>
+      </actions>
+    </library>
+    <handler ref="TargetInvalidHandler" />
+    <handler comment="target destroyed">
+      <conditions>
+        <check_any>
+          <event_object_destroyed object="$target" check="false" />
+          <event_object_picked_up object="$target" check="false" />
+        </check_any>
+        <check_value value="not $docking?"/>
+        <check_value value="event.param" exact="this.ship" negate="true" />
+      </conditions>
+      <actions>
+        <debug_text text="'target lost. %s'.[event.name]" chance="$debugchance"/>
+        <abort_called_scripts resume="targetlost" />
+      </actions>
+    </handler>
+  </interrupts>
+  <init>
+    <set_command command="command.collect" param="$target"  />
+  </init>
+  <attention min="visible">
+    <actions>
+
+      <label name="start" />
+
+      <label name="launch" />
+
+      <do_if value="$launching and $homebase.isoperational">
+        <debug_text text="player.age+' launching'" chance="$debugchance" />
+        <!-- this assumes that this.ship is created facing the point it is supposed to go to which is current as of 349060 -->
+        <get_safe_pos result="$safepos" zone="this.zone" object="this.ship" direction="quadrant.front" directionobject="this.ship" radius="this.ship.size * 2.0"/>
+        <create_position name="$dockpos" space="$homebase" value="$safepos" object="this.zone"/>
+
+        <!-- wait not necessary if we're doing the movement via script -->
+        <wait exact="0" chance="0"/>
+        <debug_text text="'moving to position %s relative to %s %s %s, %sm away.'.[$dockpos, @$homebase.idcode, @$homebase.knownname, $homebase, this.ship.distanceto.[$homebase, $dockpos]]" chance="$debugchance"/>
+        <disable_collisions_between object="this.ship" target="$homebase"/>
+        <set_avoid_collisions object="this.ship" bigobjects="false" smallobjects="true"/>
+        <move_to object="this.ship" destination="$homebase" finishonapproach="true" forcesteering="true" relativemovement="true" sinceversion="1">
+          <position value="$dockpos"/>
+        </move_to>
+
+        <debug_text text="player.age+' successfully launched'" chance="$debugchance" />
+        <enable_collisions_between object="this.ship" target="$homebase"/>
+        <reset_avoid_collisions object="this.ship"/>
+      </do_if>
+
+      <do_if value="this.ship.dock">
+        <debug_text text="'%1 (%2), drone of %3 (%4) is still docked after having been launched. high attention'.[this.ship.knownname, this.ship, this.ship.commander.knownname, this.ship.commander]" filter="error"/>
+      </do_if>
+
+      <do_if value="not $target.isoperational">
+        <resume label="targetlost" />
+      </do_if>
+
+      <run_script name="'drone.pickup'" result="$success">
+        <param name="target" value="$target"/>
+        <param name="stayactive" value="$stayactive"/>
+        <param name="debugchance" value="$debugchance"/>
+      </run_script>
+
+      <do_if value="$success">
+        <resume label="dock" />
+      </do_if>
+
+      <label name="targetlost" />
+
+      <debug_text text="player.age+' picking up target failed'" chance="$debugchance"/>
+
+      <!-- short wait to finish undocking in case $target was collected while we're in the process of undocking. -->
+      <wait exact="1s" sinceversion="3"/>
+
+      <label name="dock" />
+
+      <set_value name="$docking"/>
+
+      <!-- The $masstraffic variable is only for Transport/Collector drones (not real masstraffic) -->
+      <do_if value="$homebase.isoperational">
+        <do_if value="(this.sector != $homebase.sector)">
+          <run_script name="'move.generic'" result="$movesuccess" sinceversion="2">
+            <param name="destination" value="$homebase"/>
+          </run_script>
+          <do_if value="not $movesuccess">
+            <debug_text text="'No path to destination. Aborting.'" chance="$debugchance"/>
+            <resume label="cleanup"/>
+          </do_if>
+          <wait exact="1s" sinceversion="2" comment="safety in case of infinite loop"/>
+          <resume label="dock"/>
+        </do_if>
+        <do_if value="$masstraffic">
+          <stop_moving object="this.ship" immediate="false"/>
+          <do_if value="@$dockpos">
+            <create_orientation name="$dockrot" orientation="look_at" refobject="$homebase">
+              <position value="$dockpos" space="$homebase"/>
+            </create_orientation>
+            <move_to object="this.ship" destination="$homebase" finishonapproach="true" forcesteering="true" sinceversion="1">
+              <position value="$dockpos"/>
+              <rotation value="$dockrot"/>
+            </move_to>
+          </do_if>
+
+          <include_interrupt_actions ref="TransferItems"/>
+
+          <disable_collision_response object="this.ship" />
+          <set_avoid_collisions object="this.ship" bigobjects="false" smallobjects="true"/>
+          <!-- First it will fly with Generic behaviour, and at the last way point Dock behaviour -->
+          <debug_text text="player.age+' returning to homebase %1[%2] in %3 (masstrafficdock)'.[$homebase.knownname, $homebase, $homebase.zone.knownname]" chance="$debugchance"/>
+          <dock_masstraffic_drone object="this.ship" destination="$homebase" />
+        </do_if>
+        <do_else>
+          <debug_text text="player.age+' returning to homebase %1[%2] in %3 (dockingbay)'.[$homebase.knownname, $homebase, $homebase.zone.knownname]" chance="$debugchance"/>
+          <!-- enable steering fcm temporarily since spline flight has problems with moving targets -->
+          <run_script name="'order.dock'" result="$docked">
+            <param name="destination" value="$homebase"/>
+            <param name="abouttofinish" value="true"/>
+            <param name="debugchance" value="$debugchance"/>
+          </run_script>
+          <do_if value="$docked">
+            <debug_text text="'successfully docked. waiting to be collected.'" chance="$debugchance"/>
+            <wait sinceversion="3"/>
+          </do_if>
+        </do_else>
+      </do_if>
+      <do_else>
+        <!-- Auto destoy because homebase is gone -->
+        <destroy_object object="this.ship" explosion="true" />
+      </do_else>
+
+      <!-- we are only down here if docking didn't work, most likely because the homebase is dead, we just wait until the low-attention case cleans up -->
+      <stop_moving object="this.ship" />
+      <wait max="5s" />
+      <resume label="dock"/>
+
+      <label name="cleanup"/>
+
+      <destroy_object object="this.assignedcontrolled" explosion="false"/>
+
+    </actions>
+  </attention>
+  <attention min="unknown">
+    <actions>
+      <label name="start" />
+      <label name="launch" />
+      <do_if value="$launching and $homebase.isoperational">
+        <!-- this assumes that this.ship is created facing the point it is supposed to go to which is current as of 349060 -->
+        <get_safe_pos result="$safepos" zone="this.zone" object="this.ship" direction="quadrant.front" directionobject="this.ship" radius="this.ship.size * 2.0"/>
+        <create_position name="$dockpos" space="$homebase" value="$safepos" object="this.zone"/>
+      </do_if>
+
+      <do_if value="this.ship.dock">
+        <debug_text text="'%1 (%2), drone of %3 (%4) is still docked after having been launched. low attention'.[this.ship.knownname, this.ship, this.ship.commander.knownname, this.ship.commander]" chance="$debugchance"/>
+        <wait/>
+      </do_if>
+
+      <do_if value="$target.isoperational">
+        <!-- Move to the target and pick it up -->
+        <move_to object="this.ship" destination="$target" finishonapproach="true" forceposition="false"/>
+      </do_if>
+      <!-- Pick up the target -->
+      <do_if value="$target.isoperational">
+        <pickup_target ship="this.ship" target="$target" />
+      </do_if>
+
+      <label name="targetlost" />
+
+      <!-- short wait to finish undocking in case $target was collected while we're in the process of undocking. -->
+      <wait exact="1s" sinceversion="3"/>
+
+      <label name="dock" />
+
+      <!-- Try to fly back -->
+      <do_if value="$homebase.isoperational">
+        <do_if value="(this.sector != $homebase.sector)">
+          <run_script name="'move.generic'" result="$movesuccess" sinceversion="2">
+            <param name="destination" value="$homebase"/>
+          </run_script>
+          <do_if value="not $movesuccess">
+            <debug_text text="'No path to destination. Aborting.'" chance="$debugchance"/>
+            <resume label="cleanup"/>
+          </do_if>
+          <wait exact="1s" sinceversion="2" comment="safety in case of infinite loop"/>
+          <resume label="dock"/>
+        </do_if>
+        <do_if value="not this.ship.dock">
+          <!-- Move back to home -->
+          <move_to object="this.ship" destination="$homebase" finishonapproach="true" forceposition="false" />
+        </do_if>
+        <do_else>
+          <wait/>
+        </do_else>
+      </do_if>
+
+      <!-- cleanup -->
+      <do_if value="$homebase.isoperational">
+        <!-- Dock -->
+        <do_if value="$masstraffic">
+          <include_interrupt_actions ref="TransferItems"/>
+          <dock_masstraffic_drone object="this.ship" destination="$homebase" immediate="true" />
+          <!-- <return_units object="$homebase" macro="this.ship.macro" /> -->
+        </do_if>
+        <do_else>
+          <run_script name="'order.dock'" result="$docked">
+            <param name="destination" value="$homebase"/>
+            <param name="abouttofinish" value="true"/>
+            <param name="debugchance" value="$debugchance"/>
+          </run_script>
+          <do_if value="$docked">
+            <debug_text text="'successfully docked. waiting to be collected.'" chance="$debugchance"/>
+            <wait sinceversion="3"/>
+          </do_if>
+        </do_else>
+      </do_if>
+      <do_else>
+        <destroy_object object="this.ship" explosion="false" />
+      </do_else>
+
+      <!-- drone no longer exists if the drone docked successfully -->
+      <debug_text text="player.age+' drone docked.'" chance="$debugchance"/>
+
+      <label name="cleanup"/>
+
+      <destroy_object object="this.assignedcontrolled" explosion="false"/>
+
+    </actions>
+  </attention>
+  <on_abort>
+    <do_if value="not @$success and $target.exists and not $target.isdeployable">
+      <set_owner object="$target" faction="null"/>
+    </do_if>
+  </on_abort>
+</aiscript>

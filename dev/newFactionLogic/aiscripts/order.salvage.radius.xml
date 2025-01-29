@@ -1,0 +1,287 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<aiscript name="order.salvage.radius" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd">
+  <order id="SalvageInRadius" name="{1041, 871}" description="{1041, 872}" category="salvage">
+    <params>
+      <param name="destination" required="true" type="position" text="{1041, 10027}" comment="Destination. Position: [space, position]. $destination with $radius defines the operational area where collectables are looked for.">
+        <input_param name="class" value="class.sector"/>
+      </param>
+      <param name="warebasket" default="if @this.ship.warebasket.count then this.ship.warebasket.list else [ware.rawscrap]" type="internal" text="{1041, 10146}" comment="Wares"/>
+      <param name="radius" type="length" default="this.ship.maxradarrange" text="{1041, 10093}" comment="Radius">
+        <input_param name="min" value="1km"/>
+        <input_param name="max" value="this.ship.maxradarrange"/>
+        <input_param name="step" value="1km"/>
+      </param>
+      <param name="debugchance" type="bool" default="0" advanced="true" text="{1041, 10086}" comment="Print debug output">
+        <input_param name="truevalue" value="100"/>
+      </param>
+    </params>
+    <requires>
+      <match_any>
+        <match shiptype="shiptype.tug"/>
+        <match shiptype="shiptype.compactor"/>
+      </match_any>
+    </requires>
+    <location object="$destination.{1}" position="$destination.{2}" radius="$radius"/>
+  </order>
+  <interrupts>
+    <handler ref="SectorChangeHandler"/>
+    <handler ref="TargetInvalidHandler"/>
+    <handler ref="AttackHandler"/>
+    <handler ref="MissileLockHandler" />
+    <handler ref="ScannedHandler"/>
+    <handler ref="InspectedHandler"/>
+    <handler ref="FoundAbandonedHandler"/>
+    <handler ref="FoundLockboxHandler"/>
+    <handler ref="ResupplyHandler"/>
+    <handler ref="TideHandler"/>
+  </interrupts>
+  <attention min="unknown">
+    <actions>
+      <debug_text text="'start'" chance="$debugchance"/>
+
+      <do_if value="this.assignedcontrolled.order.id == 'SalvageInRadius'">
+        <set_value name="$thisorder" exact="this.assignedcontrolled.order"/>
+      </do_if>
+
+      <include_interrupt_actions ref="GetBlacklistgroup"/>
+
+      <set_value name="$mode" exact="'tug'"/>
+      <do_if value="this.assignedcontrolled.type == shiptype.compactor">
+        <set_value name="$mode" exact="'compactor'"/>
+      </do_if>
+
+      <set_value name="$inloop" exact="(@$thisorder.id == 'SalvageInRadius') and $thisorder.isinloop"/>
+      <debug_text text="'inloop: %s'.[$inloop]" chance="0"/>
+
+      <do_if value="(this.assignedcontrolled.type != shiptype.tug) and (this.assignedcontrolled.type != shiptype.compactor)">
+        <debug_text text="'%s %s %s %s is neither a tug nor a compactor.'.[@this.assignedcontrolled.type, @this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled]" filter="error"/>
+        <set_value name="$loopidle" exact="$inloop"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <do_if value="not $warebasket.count">
+        <debug_text text="'%s %s %s %s is has an empty warebasket.'.[@this.assignedcontrolled.type, @this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled]" filter="error"/>
+        <set_value name="$loopidle" exact="$inloop"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <do_if value="($mode == 'tug') and this.assignedcontrolled.towedobject">
+        <debug_text text="'already towing an object.'" chance="$debugchance"/>
+        <do_if value="@$thisorder.isrunning">
+          <set_order_failed order="$thisorder" text="{1045, 143}" comment="Already towing an object."/>
+        </do_if>
+        <set_value name="$loopidle" exact="$inloop"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <do_if value="($mode == 'compactor') and this.assignedcontrolled.dismantletarget">
+        <debug_text text="'already dismantling an object.'" chance="$debugchance"/>
+        <do_if value="@$thisorder.isrunning">
+          <set_order_failed order="$thisorder" text="{1045, 144}" comment="Already dismantling a wreck."/>
+        </do_if>
+        <set_value name="$loopidle" exact="$inloop"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <label name="start"/>
+
+      <set_command command="command.recycle"/>
+      <set_command_action commandaction="commandaction.calculating"/>
+
+      <do_if value="($mode == 'compactor') and not this.assignedcontrolled.units.{unitcategory.build}.count">
+        <debug_text text="'no available build units. trying to get some.'" chance="$debugchance"/>
+        <signal_objects object="this.assignedcontrolled" param="'resupply'" param2="[true]" param3="$debugchance" comment="param2 = [urgent?, resupplystationID], param3 = $debugchance"/>
+        <do_if value="@$thisorder.isrunning">
+          <set_order_failed order="$thisorder" text="{1045,139}" comment="No available builder drones."/>
+        </do_if>
+        <set_value name="$loopidle" exact="$inloop"/>
+        <resume label="finish"/>
+      </do_if>
+      <do_elseif value="player.age gt @$next_resupply_check" chance="30">
+        <debug_text text="'%1 (%2) ready to resupply.'.[this.assignedcontrolled.knownname, this.assignedcontrolled]" chance="$debugchance"/>
+        <signal_objects object="this.assignedcontrolled" param="'resupply'" param2="[false]" param3="$debugchance" comment="param2 = [urgent?, resupplystationID], param3 = $debugchance"/>
+        <set_value name="$next_resupply_check" exact="player.age + 30min"/>
+      </do_elseif>
+
+      <do_if value="this.sector != $destination.{1} or this.assignedcontrolled.distanceto.{$destination} gt 10km">
+        <debug_text text="'%1 %2 (%3) moving long-distance to %4 in %5 %6.'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, $destination.{2}, $destination.{1}.class, $destination.{1}]" chance="$debugchance"/>
+        <run_script name="'move.generic'" result="$movesuccess">
+          <param name="destination" value="$destination.{1}"/>
+          <param name="position" value="$destination.{2}"/>
+          <param name="debugchance" value="$debugchance"/>
+        </run_script>
+        <do_if value="not $movesuccess">
+          <do_if value="@$thisorder.isrunning">
+            <set_order_failed order="$thisorder" text="{1045, 101}" comment="Unable to reach destination."/>
+          </do_if>
+          <debug_text text="'Unable to reach destination. Aborting.'" chance="$debugchance"/>
+          <set_value name="$loopidle" exact="$inloop"/>
+          <resume label="finish"/>
+        </do_if>
+      </do_if>
+
+      <debug_text text="'context: %s %s %s, position: %s, radius: %sm'.[$destination.{1}.class, $destination.{1}.knownname, $destination.{1}, $destination.{2}, $radius]" chance="$debugchance"/>
+
+      <label name="find_wreck"/>
+
+      <set_command_action commandaction="commandaction.searchingresources"/>
+
+      <do_if value="$mode == 'tug'">
+        <find_object name="$potentialtargets" space="$destination.{1}" canbetowed="true" checkoperational="false" knownto="if this.isplayerowned then faction.player else null" sortbydistanceto="this.assignedcontrolled" multiple="true">
+          <match_distance value="$destination.{2}" space="$destination.{1}" max="$radius"/>
+        </find_object>
+        <debug_text text="'tug found %s potential targets'.[$potentialtargets.count]" chance="($potentialtargets.count gt 0) * $debugchance"/>
+        <do_if value="$potentialtargets.count">
+          <do_for_each name="$locobject" in="$potentialtargets">
+            <debug_text text="'found %s %s, state: %s\ncanbetowed: %s\ncurrent tug: %s\nsalvageclaimants: %s, includes this: %s\nnum contained wares: %s'.[$locobject.class, $locobject.knownname, $locobject.state, $locobject.canbetowed, @$locobject.tugship, @$locobject.salvageclaimants, @$locobject.salvageclaimants.indexof.{this.assignedcontrolled}, @$locobject.recyclingwares.remaining.count]" chance="$debugchance"/>
+            <do_if value="$locobject.canbetowed and not @$locobject.tugship and (not @$locobject.salvageclaimants.count or $locobject.salvageclaimants.indexof.{this.assignedcontrolled}) and @$locobject.recyclingwares.remaining.count">
+              <assign_tow_target ship="this.assignedcontrolled" object="$locobject"/>
+              <do_if value="$locobject.salvageclaimants.indexof.{this.assignedcontrolled}">
+                <set_value name="$salvagetarget" exact="$locobject"/>
+                <set_value name="$locverb" exact="'collecting'"/>
+                <break/>
+              </do_if>
+            </do_if>
+          </do_for_each>
+        </do_if>
+      </do_if>
+      <do_else>
+        <find_object name="$potentialtargets" space="$destination.{1}" canbedismantled="true" checkoperational="false" knownto="if this.isplayerowned then faction.player else null" sortbydistanceto="this.assignedcontrolled" multiple="true">
+          <match_distance value="$destination.{2}" space="$destination.{1}" max="$radius"/>
+        </find_object>
+        <debug_text text="'compactor found %s potential targets'.[$potentialtargets.count]" chance="($potentialtargets.count gt 0) * $debugchance"/>
+        <do_if value="$potentialtargets.count">
+          <do_for_each name="$locobject" in="$potentialtargets">
+            <debug_text text="'%s, canbedismantled: %s, canbetowed: %s, dismantlingobject: %s, num claimants: %s, contains wares: %s'.[$locobject.macro, $locobject.canbedismantled, $locobject.canbetowed, @$locobject.dismantlingobject, @$locobject.salvageclaimants.count gt 0, @$locobject.recyclingwares.remaining.count]" chance="$debugchance"/>
+            <do_if value="$locobject.canbedismantled and not @$locobject.dismantlingobject and (not @$locobject.salvageclaimants.count or $locobject.salvageclaimants.indexof.{this.assignedcontrolled}) and @$locobject.recyclingwares.remaining.count">
+              <assign_dismantling_target object="this.assignedcontrolled" wreck="$locobject"/>
+              <do_if value="$locobject.salvageclaimants.indexof.{this.assignedcontrolled}">
+                <set_value name="$salvagetarget" exact="$locobject"/>
+                <set_value name="$locverb" exact="'dismantling'"/>
+                <break/>
+              </do_if>
+              <clear_dismantling_target object="this.assignedcontrolled" wreck="$locobject"/>
+            </do_if>
+          </do_for_each>
+        </do_if>
+        <debug_text text="'salvagetarget: %s'.[@$salvagetarget.macro]" chance="@$salvagetarget.exists * $debugchance"/>
+      </do_else>
+
+      <do_if value="@$salvagetarget.exists">
+        <debug_text text="'%s %s %s %s %s %s in sector %s, %s gates away.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, $locverb, @$salvagetarget.class, @$salvagetarget.knownname, @$salvagetarget.sector.knownname, this.assignedcontrolled.gatedistance.{$salvagetarget}]" chance="$debugchance"/>
+        <resume label="execute"/>
+      </do_if>
+
+      <!-- if not $salvagetarget.exists, find in region. handle none found. -->
+      <do_if value="this.assignedcontrolled.hascontext.{$destination.{1}}">
+        <find_closest_resource sector="$sector" position="$pos_sector" ware="$warebasket" refobject="this.assignedcontrolled" useundiscovered="not this.isplayerowned">
+          <refposition value="$destination.{2}" object="$destination.{1}" max="$radius"/>
+        </find_closest_resource>
+      </do_if>
+      <do_else>
+        <find_closest_resource sector="$sector" position="$pos_sector" ware="$warebasket" refobject="$destination.{1}" useundiscovered="not this.isplayerowned">
+          <refposition value="$destination.{2}" object="$destination.{1}" max="$radius"/>
+        </find_closest_resource>
+      </do_else>
+
+      <do_if value="$sector and $pos_sector and (this.assignedcontrolled.gatedistance.{$sector} ge 0)">
+        <debug_text text="'region found at sector %s, %s'.[$sector.knownname, $pos_sector]" chance="$debugchance"/>
+        <!-- grab object from region and break -->
+        <find_recyclable_in_cluster name="$potentialtargets" cluster="$sector.cluster" cantow="$mode == 'tug'" candismantle="$mode != 'tug'" multiple="true">
+          <position value="$pos_sector" space="$sector"/>
+        </find_recyclable_in_cluster>
+        <debug_text text="'num potential targets: %s'.[$potentialtargets.count]" chance="$debugchance"/>
+        <do_for_each name="$locobject" in="$potentialtargets">
+          <debug_text text="'evaluating %s %s in sector %s.\n%s%s%s%s'.[$locobject.macro, $locobject, $sector.knownname, @$locobject.exists, @$locobject.recyclingwares.remaining.count, ($locobject.sector == $sector), (($mode == 'tug' and $locobject.canbetowed and not @$locobject.tugship) or ($locobject.canbedismantled and not @$locobject.dismantlingobject))]" chance="$debugchance"/>
+          <do_if value="@$locobject.exists and @$locobject.recyclingwares.remaining.count and ($locobject.sector == $sector) and (($mode == 'tug' and $locobject.canbetowed and not @$locobject.tugship) or ($locobject.canbedismantled and not @$locobject.dismantlingobject))">
+            <set_value name="$salvagetarget" exact="$locobject"/>
+            <debug_text text="'found region object %s %s %s in sector %s, %sm away. mode: %s'.[$salvagetarget.class, @$salvagetarget.knownname, $salvagetarget, @$sector.knownname, this.assignedcontrolled.distanceto.{$salvagetarget}, $mode]" chance="$debugchance"/>
+            <break/>
+          </do_if>
+        </do_for_each>
+        <do_if value="@$salvagetarget.exists">
+          <resume label="execute"/>
+        </do_if>
+      </do_if>
+
+      <do_if value="not @$salvagetarget.exists">
+        <debug_text text="'no salvagetarget found in designated space.'" chance="$debugchance"/>
+        <do_if value="@$thisorder.isrunning">
+          <do_if value="$mode == 'tug'">
+            <set_order_failed order="$thisorder" text="{1045,130}" comment="'No usable wrecks or scrap found in range.'"/>
+          </do_if>
+          <do_else>
+            <set_order_failed order="$thisorder" text="{1045,131}" comment="'No usable wrecks found in range.'"/>
+          </do_else>
+        </do_if>
+        <set_value name="$loopidle" exact="$inloop"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <label name="execute"/>
+
+      <do_if value="not @$salvagetarget.exists">
+        <debug_text text="'execute: salvagetarget not found.'" chance="$debugchance"/>
+        <set_value name="$loopidle" exact="$inloop"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <do_if value="@$thisorder.isrunning">
+        <clear_order_failure order="$thisorder"/>
+      </do_if>
+
+      <do_if value="not $salvagetarget.salvageclaimants.indexof.{this.assignedcontrolled}">
+        <do_if value="$mode == 'tug'">
+          <assign_tow_target ship="this.assignedcontrolled" object="$salvagetarget"/>
+        </do_if>
+        <do_else>
+          <assign_dismantling_target object="this.assignedcontrolled" wreck="$salvagetarget"/>
+        </do_else>
+        <do_if value="not $salvagetarget.salvageclaimants.indexof.{this.assignedcontrolled}">
+          <debug_text text="'failed to assign salvagetarget %s %s %s. not handled.'.[$salvagetarget.macro, $salvagetarget.knownname, $salvagetarget]" filter="error"/>
+        </do_if>
+      </do_if>
+      <!--<set_value name="$scriptname" exact="'order.salvage.collect'"/>
+      <do_if value="$mode == 'compactor'">
+        <set_value name="$scriptname" exact="'order.salvage.crush'"/>
+      </do_if>
+      <debug_text text="'running script to %s.'.[$scriptname]" chance="$debugchance"/>
+      <run_script name="$scriptname">
+        <param name="target" value="$salvagetarget"/>
+        <param name="internalorder" value="true"/>
+        <param name="debugchance" value="$debugchance"/>
+      </run_script>
+      <remove_value name="$scriptname"/>-->
+      <do_if value="@$thisorder.exists and $thisorder.isinloop">
+        <!-- HACK: adding an immediate order while current order is critical adds that order after the current one. -->
+        <set_order_state order="$thisorder" state="orderstate.critical"/>
+      </do_if>
+      <set_value name="$orderid" exact="'SalvageCollect'"/>
+      <do_if value="$mode == 'compactor'">
+        <set_value name="$orderid" exact="'SalvageCrush'"/>
+      </do_if>
+      <create_order name="$calledorder" id="$orderid" object="this.assignedcontrolled" immediate="true">
+        <param name="target" value="$salvagetarget"/>
+        <param name="internalorder" value="true"/>
+        <param name="debugchance" value="$debugchance"/>
+      </create_order>
+      <debug_text text="'order to %s added.'.[$orderid]" chance="$debugchance"/>
+      <remove_value name="$orderid"/>
+
+      <!--<do_if value="@$thisorder.exists">
+        <set_order_syncpoint_reached order="$thisorder"/>
+      </do_if>-->
+
+      <label name="finish"/>
+
+      <do_if value="@$loopidle">
+        <set_value name="$loopidle" exact="false"/>
+        <!-- incidentally prevents infinite wake requests if order is placed by itself in a loop. -->
+        <run_script name="'move.idle'">
+          <param name="Min" value="5s"/>
+          <param name="Max" value="11s"/>
+        </run_script>
+      </do_if>
+    </actions>
+  </attention>
+</aiscript>

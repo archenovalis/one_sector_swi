@@ -1,0 +1,487 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_Find_Resources" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+
+    <!--
+    $feedbackvalue:
+    Mission Errors <=-100
+    -106: Space is not of class space
+    -105: ResourceYieldList should have same size as ResourceList!
+    -104: $ResourceYieldList is not of type list
+    -103: Provided list $ResourceList was empty
+    -102: $ResourceList is not of type list
+    -101: EndSignalCue or MissionCue not defined
+    -100: Undefined failure. Defaulted to -100
+    Player Fails
+    -1: 
+    Player Success
+    1: Player found a resource-->
+
+    <library name="FindResources" version="2">
+      <params>
+        <param name="EndSignalCue"/>
+        <param name="MissionCue"/>
+        <param name="StartStep" default="1" comment="Briefing step to start the mission on"/>
+        <param name="UpdateBriefing" default="true" comment="Update the briefing objective step when the objective is updated"/>
+
+        <param name="Space"/>
+        <param name="ObjectiveRadius"             default="160km" comment="0km = no hint, otherwise specifies sphere radius to nearest resource field"/>
+        <param name="ResourceList"                comment="list of wares (required yield in ResourceYieldList)"/>
+        <param name="ResourceYieldList"           comment="list of yields (a percentage of value returned by get_highest_resource_yield, depending on the difficulty)"/>
+        <param name="Text_Ticker_Insufficient"    comment=""/>
+        <param name="Text_Ticker_Sufficient"      comment=""/>
+
+        <!--Result variables-->
+        <param name="ResultTable" default="null" comment="Result keys:
+               $ware = Sub-table with keys $Sector, $Offset and Probe, denoting where the resource probe was when it found this resource"/>
+
+        <param name="DebugChance" default="0"/>
+      </params>
+      <actions>
+        <set_value name="$feedbackvalue" exact="0"/>
+        <create_list name="$ErrorList"/>
+
+        <do_if value="not $EndSignalCue or not $MissionCue">
+          <append_to_list name="$ErrorList" exact="-101"/>
+        </do_if>
+
+        <do_elseif value="$ResourceList">
+          <do_if value="typeof $ResourceList != datatype.list">
+            <append_to_list name="$ErrorList" exact="-102"/>
+          </do_if>
+          <do_elseif value="$ResourceList.count == 0">
+            <append_to_list name="$ErrorList" exact="-103"/>
+          </do_elseif>
+        </do_elseif>
+
+        <do_elseif value="$ResourceYieldList">
+          <do_if value="typeof $ResourceYieldList != datatype.list">
+            <append_to_list name="$ErrorList" exact="-104"/>
+          </do_if>
+          <do_elseif value="$ResourceYieldList.count != $ResourceList.count">
+            <append_to_list name="$ErrorList" exact="-105"/>
+          </do_elseif>
+        </do_elseif>
+
+        <do_if value="not $Space.isclass.space">
+          <append_to_list name="$ErrorList" exact="-106"/>
+        </do_if>
+
+      </actions>
+      <patch sinceversion="2">
+        <set_value name="$ObjectiveRadius" exact="0km"/>
+      </patch>
+      <cues>
+
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="1"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup"/>
+          </actions>
+        </cue>
+
+        <cue name="StartMission" onfail="cancel" version="4">
+          <conditions>
+            <check_value value="$ErrorList.count" exact="0"/>
+          </conditions>
+          <actions>
+            <create_list name="$ResourceListDone" exact="$ResourceList.count" comment="create list with same number of entries as other, filled with 0"/>
+            <do_all exact="$ResourceList.count" counter="$warecount">
+              <set_value name="$ware" exact="$ResourceList.{$warecount}" />
+              <set_value name="$Yield" exact="$ResourceYieldList.{$warecount}" comment="raw yield, as returned by get_highest_yield"/>
+              <get_highest_resource_yield result="$yieldresult1" sector="$Space" ware="$ware" yieldname="'veryhigh'" comment="see library/regionyield.xml" />
+              <get_highest_resource_yield result="$yieldresult2" sector="$Space" ware="$ware" yieldname="'high'" comment="see library/regionyield.xml" />
+              <get_highest_resource_yield result="$yieldresult3" sector="$Space" ware="$ware" yieldname="'medium'" comment="see library/regionyield.xml" />
+              <get_highest_resource_yield result="$yieldresult4" sector="$Space" ware="$ware" yieldname="'medhigh'" comment="see library/regionyield.xml" />
+              <get_highest_resource_yield result="$yieldresult5" sector="$Space" ware="$ware" yieldname="'low'" comment="see library/regionyield.xml" />
+              <get_highest_resource_yield result="$yieldresult6" sector="$Space" ware="$ware" yieldname="'verylow'" comment="see library/regionyield.xml" />
+              <get_highest_resource_yield result="$yieldresult7" sector="$Space" ware="$ware" yieldname="'lowest'" comment="see library/regionyield.xml" />
+              <debug_text text="'ware %s yield %s -> %s | 1=%s 2=%s 3=%s'.[$ware, $Yield, $ResourcePosition, $yieldresult1, $yieldresult2, $yieldresult3, $yieldresult4, $yieldresult5, $yieldresult6, $yieldresult7]" chance="$DebugChance"/>
+              <do_if value="($yieldresult1 gt 0) and ($ResourceYieldList.{$warecount} gt (0.60 * $yieldresult1))">
+                <set_value name="$ResourceYieldList.{$warecount}" exact="0.20 * $yieldresult1" />
+              </do_if>
+              <do_elseif value="($yieldresult2 gt 0) and ($ResourceYieldList.{$warecount} gt (0.60 * $yieldresult2))">
+                <set_value name="$ResourceYieldList.{$warecount}" exact="0.20 * $yieldresult2" />
+              </do_elseif>
+              <do_elseif value="($yieldresult3 gt 0) and ($ResourceYieldList.{$warecount} gt (0.60 * $yieldresult3))">
+                <set_value name="$ResourceYieldList.{$warecount}" exact="0.20 * $yieldresult3" />
+              </do_elseif>
+              <do_elseif value="($yieldresult4 gt 0) and ($ResourceYieldList.{$warecount} gt (0.60 * $yieldresult4))">
+                <set_value name="$ResourceYieldList.{$warecount}" exact="0.20 * $yieldresult4" />
+              </do_elseif>
+              <do_elseif value="($yieldresult5 gt 0) and ($ResourceYieldList.{$warecount} gt (0.60 * $yieldresult5))">
+                <set_value name="$ResourceYieldList.{$warecount}" exact="0.20 * $yieldresult5" />
+              </do_elseif>
+              <do_elseif value="($yieldresult6 gt 0) and ($ResourceYieldList.{$warecount} gt (0.60 * $yieldresult6))">
+                <set_value name="$ResourceYieldList.{$warecount}" exact="0.20 * $yieldresult6" />
+              </do_elseif>
+              <do_elseif value="($yieldresult7 gt 0)">
+                <set_value name="$ResourceYieldList.{$warecount}" exact="0.20 * $yieldresult7" />
+              </do_elseif>
+            </do_all>
+            <signal_cue cue="UpdateBriefing"/>
+          </actions>
+          <patch sinceversion="2" comment="mining yields were lowered, adjust mission">
+            <do_all exact="$ResourceList.count" counter="$warecount">
+              <set_value name="$ware" exact="$ResourceList.{$warecount}" />
+              <set_value name="$Yield" exact="$ResourceYieldList.{$warecount}" comment="raw yield, as returned by get_highest_yield"/>
+              <get_highest_resource_yield result="$yieldresult1" sector="$Space" ware="$ware" yieldname="'veryhigh'" comment="see library/regionyield.xml" />
+              <get_highest_resource_yield result="$yieldresult2" sector="$Space" ware="$ware" yieldname="'high'" comment="see library/regionyield.xml" />
+              <get_highest_resource_yield result="$yieldresult3" sector="$Space" ware="$ware" yieldname="'medium'" comment="see library/regionyield.xml" />
+              <debug_text text="'ware %s yield %s -> %s | 1=%s 2=%s 3=%s'.[$ware, $Yield, $ResourcePosition, $yieldresult1, $yieldresult2, $yieldresult3]" chance="$DebugChance"/>
+              <!-- region yields were decreased in 4.0 beta 7/8, so we need to make missions easier (or abort if it's entirely not possible anymore). 
+                At this point in the RML we don't know anymore what the original yield was, nor what the difficulty-level was so we change it in favor of the player -->
+              <do_if value="($yieldresult1 gt 0) and ($ResourceYieldList.{$warecount} gt (0.60 * $yieldresult1))">
+                <set_value name="$ResourceYieldList.{$warecount}" exact="0.20 * $yieldresult1" />
+              </do_if>
+              <do_elseif value="($yieldresult2 gt 0) and ($ResourceYieldList.{$warecount} gt (0.60 * $yieldresult2))">
+                <set_value name="$ResourceYieldList.{$warecount}" exact="0.20 * $yieldresult2" />
+              </do_elseif>
+              <do_elseif value="($yieldresult3 gt 0)">
+                <set_value name="$ResourceYieldList.{$warecount}" exact="0.20 * $yieldresult3" />
+              </do_elseif>
+              <do_else>
+                <!-- mission isn't possible at all anymore, cleanup -->
+                <debug_text text="'Failed -> Cleanup '" chance="$DebugChance"/>
+                <set_value name="$feedbackvalue" exact="-1" comment="failed"/>
+                <signal_cue cue="Cleanup"/>
+              </do_else>
+            </do_all>
+          </patch>
+          <patch sinceversion="3" comment="make sure the changed yields are also displayed in the objective correctly">
+            <set_value name="$ObjectiveCounter" exact="0" />
+            <do_all exact="$ResourceList.count" counter="$warecount">
+              <set_value name="$ware" exact="$ResourceList.{$warecount}" />
+              <!-- Target yield text -->
+              <set_value name="$Yield" exact="$ResourceYieldList.{$warecount}" comment="raw yield, as returned by get_highest_yield"/>
+              <do_if value="$Yield">
+                <set_value name="$YieldDensity" exact="$Yield / (64*64*64)" comment="in 1/km³"/>
+                <set_value name="$TargetYield" exact="'%.2s'.[$YieldDensity] + ' / ' + readtext.{1001}.{114}"/>
+
+                <substitute_text text="$ObjectiveText" source="{30132,2}">
+                  <replace string="'$WARENAME$'" with="$ResourceList.{$warecount}.name"/>
+                  <replace string="'$SPACENAME$'" with="$Space.knownname"/>
+                  <replace string="'$YIELD$'" with="$TargetYield"/>
+                </substitute_text>
+              </do_if>
+              <do_else>
+                <substitute_text text="$ObjectiveText" source="{30132,1}">
+                  <replace string="'$WARENAME$'" with="$ResourceList.{$warecount}.name"/>
+                  <replace string="'$SPACENAME$'" with="$Space.knownname"/>
+                </substitute_text>
+              </do_else>
+
+              <update_mission cue="$MissionCue">
+                <briefing>
+                  <objective step="$StartStep + $ObjectiveCounter" action="objective.find" text="$ObjectiveText" object="$Space" encyclopedia="$ware"/>
+                </briefing>
+              </update_mission>
+              <set_value name="$ObjectiveCounter" operation="add"/>
+            </do_all>
+
+            <signal_cue cue="UpdateBriefing"/>
+          </patch>
+          <patch sinceversion="4">
+            <do_all exact="$ResourceList.count" counter="$warecount">
+              <set_value name="$ware" exact="$ResourceList.{$warecount}" />
+              <set_value name="$Yield" exact="$ResourceYieldList.{$warecount}" comment="raw yield, as returned by get_highest_yield"/>
+              <get_highest_resource_yield result="$yieldresult1" sector="$Space" ware="$ware" yieldname="'veryhigh'" comment="see library/regionyield.xml" />
+              <get_highest_resource_yield result="$yieldresult2" sector="$Space" ware="$ware" yieldname="'high'" comment="see library/regionyield.xml" />
+              <get_highest_resource_yield result="$yieldresult3" sector="$Space" ware="$ware" yieldname="'medium'" comment="see library/regionyield.xml" />
+              <get_highest_resource_yield result="$yieldresult4" sector="$Space" ware="$ware" yieldname="'medhigh'" comment="see library/regionyield.xml" />
+              <get_highest_resource_yield result="$yieldresult5" sector="$Space" ware="$ware" yieldname="'low'" comment="see library/regionyield.xml" />
+              <get_highest_resource_yield result="$yieldresult6" sector="$Space" ware="$ware" yieldname="'verylow'" comment="see library/regionyield.xml" />
+              <get_highest_resource_yield result="$yieldresult7" sector="$Space" ware="$ware" yieldname="'lowest'" comment="see library/regionyield.xml" />
+              <debug_text text="'ware %s yield %s -> %s | 1=%s 2=%s 3=%s'.[$ware, $Yield, $ResourcePosition, $yieldresult1, $yieldresult2, $yieldresult3, $yieldresult4, $yieldresult5, $yieldresult6, $yieldresult7]" chance="$DebugChance"/>
+              <do_if value="($yieldresult1 gt 0) and ($ResourceYieldList.{$warecount} gt (0.60 * $yieldresult1))">
+                <set_value name="$ResourceYieldList.{$warecount}" exact="0.20 * $yieldresult1" />
+              </do_if>
+              <do_elseif value="($yieldresult2 gt 0) and ($ResourceYieldList.{$warecount} gt (0.60 * $yieldresult2))">
+                <set_value name="$ResourceYieldList.{$warecount}" exact="0.20 * $yieldresult2" />
+              </do_elseif>
+              <do_elseif value="($yieldresult3 gt 0) and ($ResourceYieldList.{$warecount} gt (0.60 * $yieldresult3))">
+                <set_value name="$ResourceYieldList.{$warecount}" exact="0.20 * $yieldresult3" />
+              </do_elseif>
+              <do_elseif value="($yieldresult4 gt 0) and ($ResourceYieldList.{$warecount} gt (0.60 * $yieldresult4))">
+                <set_value name="$ResourceYieldList.{$warecount}" exact="0.20 * $yieldresult4" />
+              </do_elseif>
+              <do_elseif value="($yieldresult5 gt 0) and ($ResourceYieldList.{$warecount} gt (0.60 * $yieldresult5))">
+                <set_value name="$ResourceYieldList.{$warecount}" exact="0.20 * $yieldresult5" />
+              </do_elseif>
+              <do_elseif value="($yieldresult6 gt 0) and ($ResourceYieldList.{$warecount} gt (0.60 * $yieldresult6))">
+                <set_value name="$ResourceYieldList.{$warecount}" exact="0.20 * $yieldresult6" />
+              </do_elseif>
+              <do_elseif value="($yieldresult7 gt 0)">
+                <set_value name="$ResourceYieldList.{$warecount}" exact="0.20 * $yieldresult7" />
+              </do_elseif>
+              <do_else>
+                <!-- mission isn't possible at all anymore, cleanup -->
+                <debug_text text="'Failed -> Cleanup '" chance="$DebugChance"/>
+                <set_value name="$feedbackvalue" exact="-1" comment="failed"/>
+                <signal_cue cue="Cleanup"/>
+              </do_else>
+            </do_all>
+          </patch>
+          <cues>
+
+            <cue name="DebugFindResources_DeployProbe" instantiate="true">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <add_ammo object="player.ship" macro="macro.eq_arg_resourceprobe_01_macro" amount="1" />
+                <launch_resourceprobe object="player.ship" macro="macro.eq_arg_resourceprobe_01_macro"/>
+              </actions>
+            </cue>
+
+            <cue name="CheckMissionStatus" instantiate="true">
+              <conditions>
+                <!-- TODO: Owen, Roger - This only checks when probes are launched, so if you placed probes beforehand, it doesn't work! -->
+                <event_resourceprobe_launched space="$Space"/>
+                <check_value value="event.param2.isplayerowned"/>
+              </conditions>
+              <delay exact="3s" comment="wait a bit, to simular probe gathering data"/>
+              <actions>
+                <debug_text text="event.name + ' ' + event.object + ' ' + event.param + ' ' + event.param2" chance="$DebugChance"/>
+
+                <set_value name="$Probe" exact="event.param2"/>
+                <do_all exact="$ResourceList.count" counter="$i">
+                  <set_value name="$ware" exact="$ResourceList.{$i}" />
+                  
+                  <do_if value="$ResourceListDone.{$i} == null" comment="If we haven't found this ware yet">
+                    <!-- in an area with yields of $ware in amounts [a,b,c,d], $Probe.currentyield.{$ware}.count == a+b+c+d; $Probe.currentbestyield.{$ware} == [a,b,c,d].max -->
+                    <debug_text text="'ware: ' + $ware.name + ' current best yield: ' + $Probe.currentbestyield.{$ware} + ' maxyield: ' + $Probe.maxyield.{$ware}.count + ' checking for minimum of ' + $ResourceYieldList.{$i}" chance="$DebugChance"/>
+                   
+                    <do_if value="$Probe.currentbestyield.{$ware} ge $ResourceYieldList.{$i}">
+                      <set_value name="$ResourceListDone.{$i}" exact="1" comment="passed!"/>
+                      <do_if value="$ResultTable">
+                        <create_position name="$ProbePosition" object="$Probe" space="$Probe.sector"/>
+                        <set_value name="$ResultTable.{$ware}" exact="table[$Sector = $Probe.sector, $Offset = $ProbePosition, $Probe = $Probe]"/>
+                      </do_if>
+                      <debug_text text="'ware: ' + $ware.name + ' passed'" chance="$DebugChance"/>
+                      <!--substitute_text text="$Text_Ticker_Sufficient_Tmp" source="$Text_Ticker_Sufficient">
+                        <replace string="'$WARENAME$'"   with="$ware.name"/>
+                      </substitute_text>
+                      <show_notification text="$Text_Ticker_Sufficient_Tmp"/-->
+                    </do_if>
+                    <do_elseif value="$MissionCue.hasguidance">
+                      <substitute_text text="$Text_Ticker_Insufficient_Tmp" source="$Text_Ticker_Insufficient">
+                        <replace string="'$WARENAME$'"   with="$ware.name"/>
+                      </substitute_text>
+                      <show_notification text="$Text_Ticker_Insufficient_Tmp"/>
+                    </do_elseif>
+                  </do_if>
+                  <do_else>
+                    <debug_text text="'ware: ' + $ware.name + ' yield: ' + $Probe.currentbestyield.{$ware} + ' maxyield: ' + $Probe.maxyield.{$ware}.count + ' already passed'" chance="$DebugChance"/>
+                  </do_else>
+                </do_all>
+              
+
+                <!-- Passed check -->
+                <set_value name="$PassedAll" exact="0" />
+                <do_all exact="$ResourceListDone.count" counter="$i">
+                  <do_if value="$ResourceListDone.{$i} != null">
+                    <set_value name="$PassedAll" operation="add"/>
+                  </do_if>
+                </do_all>
+
+                <do_if value="$PassedAll ge $ResourceListDone.count">
+                  <set_value name="$feedbackvalue" exact="1" comment="success"/>
+                  <signal_cue cue="Cleanup"/>
+                </do_if>
+
+                <signal_cue cue="UpdateBriefing"/>
+
+              </actions>
+              <delay exact="3s"/>
+              <actions>
+                <do_if value="$PassedAll lt $ResourceListDone.count">
+                  <show_help line="8025" position="14" duration="20s" comment="If a Resource Probe detects insufficient resources, you can disable it via the context menu and pick it up again."/>
+                </do_if>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <!--<cue name="ObjectiveRadius_DEBUG">
+          <delay exact="30s"/>
+          <actions>
+            <set_value name="$ObjectiveRadius" exact="5km"/>
+            <set_value name="$ObjectiveRadiusDebug" exact="true"/>
+            <signal_cue cue="UpdateBriefing"/>
+          </actions>
+        </cue>-->
+
+        <cue name="UpdateBriefing" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <!-- First iteration we take the completed objectives, second iteration we take the remaining objectives
+                At the end of the first iteration, we set the 'set_objective' because up to this point we completed them -->
+            <set_value name="$ObjectiveCounter" exact="0" />
+            <set_value name="$ObjectiveStep" exact="0" />
+
+            <do_all exact="2" counter="$TwiceCounter">
+              <do_all exact="$ResourceList.count" counter="$warecount">
+                <set_value name="$ware" exact="$ResourceList.{$warecount}" />
+                
+                <do_if value="($TwiceCounter == 1 and $ResourceListDone.{$warecount} != 0) or ($TwiceCounter == 2 and $ResourceListDone.{$warecount} == 0)">
+
+                  <!-- Target yield text -->
+                  <set_value name="$Yield" exact="$ResourceYieldList.{$warecount}" comment="raw yield, as returned by get_highest_yield"/>
+                  <do_if value="$Yield">
+                    <set_value name="$YieldDensity" exact="$Yield / (64*64*64)" comment="in 1/km³"/>
+                    <set_value name="$TargetYield" exact="'%.2s'.[$YieldDensity] + ' / ' + readtext.{1001}.{114}"/>
+
+                    <substitute_text text="$ObjectiveText" source="{30132,2}">
+                      <replace string="'$WARENAME$'" with="$ResourceList.{$warecount}.name"/>
+                      <replace string="'$SPACENAME$'" with="$Space.knownname"/>
+                      <replace string="'$YIELD$'" with="$TargetYield"/>
+                    </substitute_text>
+                  </do_if>
+                  <do_else>
+                    <substitute_text text="$ObjectiveText" source="{30132,1}">
+                      <replace string="'$WARENAME$'" with="$ResourceList.{$warecount}.name"/>
+                      <replace string="'$SPACENAME$'" with="$Space.knownname"/>
+                    </substitute_text>
+                  </do_else>
+
+                  <do_if value="$TwiceCounter == 2 and not $ObjectiveStep">
+                    <set_value name="$ObjectiveStep" exact="$StartStep + $ObjectiveCounter" />
+
+                    <do_if value="not $RandomOffset?">
+                      <create_position name="$RandomisedPosition" space="$Space" x="[-130km, 130km].randominrange" y="0" z="[-130km, 130km].randominrange"/>
+                      <find_closest_resource sector="$ResultSpace" minamount="$Yield" refobject="$Space" position="$ResourcePosition" ware="$ware" useundiscovered="true">
+                        <refposition value="$RandomisedPosition" object="$Space"/>
+                      </find_closest_resource>
+                      <create_position name="$RandomOffset" space="$Space" value="$ResourcePosition" min="20km" max="if $ObjectiveRadius then ($ObjectiveRadius*0.8) else 150km" />
+                      <remove_value name="$RandomisedPosition"/>
+                    </do_if>
+
+                    <!--get_highest_resource_yield result="$yieldresult1" sector="$Space" ware="$ware" yieldname="'veryhigh'" comment="see library/regionyield.xml" />
+                    <get_highest_resource_yield result="$yieldresult2" sector="$Space" ware="$ware" yieldname="'high'" comment="see library/regionyield.xml" />
+                    <get_highest_resource_yield result="$yieldresult3" sector="$Space" ware="$ware" yieldname="'medium'" comment="see library/regionyield.xml" />
+                    <debug_text text="'Find %s in %s rawyield %s yield %s -> ResultSpace=%s position %s yr1=%s yr2=%s yr3=%s'.[$ware, $Space.knownname, $Yield, $TargetYield, $ResultSpace, $ResourcePosition, $yieldresult1, $yieldresult2, $yieldresult3]"/-->
+
+                    <do_if value="$ObjectiveRadiusDebug?">
+                      <set_objective cue="$MissionCue" step="$StartStep + $ObjectiveCounter" action="objective.find" text="$ObjectiveText" object="$Space" encyclopedia="$ware" offset="$ResourcePosition" radius="$ObjectiveRadius"/>
+                    </do_if>
+                    <do_elseif value="($ObjectiveRadius gt 0km) and $ResultSpace.exists">
+                      <!--<do_if value="not $RandomOffset?">
+                        <set_value name="$RandomOffset" min="$ObjectiveRadius * 0.5" max="$ObjectiveRadius * 0.9"/>
+                        <create_position name="$tempoffset" space="$Space" object="$Space" randomoffset="$RandomOffset"/>
+                        <create_position name="$ResourcePositionRandom"  x="$ResourcePosition.x + $tempoffset.x" y="$ResourcePosition.y + $tempoffset.y" z="$ResourcePosition.z + $tempoffset.z"/>
+                      </do_if>-->
+                      <set_objective cue="$MissionCue" step="$StartStep + $ObjectiveCounter" action="objective.find" text="$ObjectiveText" object="$Space" encyclopedia="$ware" offset="$RandomOffset" radius="$ObjectiveRadius"/>
+                    </do_elseif>
+                    <do_else>
+                      <!-- xxx -->
+                      <set_objective cue="$MissionCue" step="$StartStep + $ObjectiveCounter" action="objective.find" text="$ObjectiveText" object="$Space" encyclopedia="$ware"/>
+                    </do_else>
+                  </do_if>
+
+                  <do_if value="$UpdateBriefing">
+                    <update_mission cue="$MissionCue">
+                      <briefing>
+                        <objective step="$StartStep + $ObjectiveCounter" action="objective.find" text="$ObjectiveText" object="$Space" encyclopedia="$ware"/>
+                      </briefing>
+                    </update_mission>
+                  </do_if>
+                  <set_value name="$ObjectiveCounter" operation="add"/>
+                </do_if>
+              </do_all>
+
+              <do_if value="$ResourceList.count">
+                <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep + $ResourceList.count"/>
+              </do_if>
+            </do_all>
+
+          </actions>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <!--TODO remove_objective-->
+
+            <do_if value="$feedbackvalue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'ERROR: Feedback value is 0 and no error values were set. Defaulting to -100'"/>
+                <set_value name="$feedbackvalue" exact="-100"/>
+              </do_if>
+              <do_else>
+                <set_value name="$feedbackvalue" exact="$ErrorList.{1}"/>
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+                    <do_if value="$ErrorList.{$Counter}" exact="-106">
+                      <set_value name="$FeedbackText" exact="'Space is not of class space'"/>
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-105">
+                      <set_value name="$FeedbackText" exact="'Provided list $ResourceYieldList has different size as $ResourceList'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-104">
+                      <set_value name="$FeedbackText" exact="'$ResourceYieldList is not of type list'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-103">
+                      <set_value name="$FeedbackText" exact="'Provided list $ResourceList was empty'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-102">
+                      <set_value name="$FeedbackText" exact="'$ResourceList is not of type list'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'EndSignalCue or MissionCue not defined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-100">
+                      <set_value name="$FeedbackText" exact="'Undefined failure. Defaulted to -100'"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                    </do_else>
+
+                    <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+
+              <do_if value="$feedbackvalue" exact="-1">
+                <set_value name="$FeedbackText" exact="{30004,6012}" comment="'Objective failed'"/>
+              </do_if>
+              <do_elseif value="$feedbackvalue" exact="1">
+                <set_value name="$FeedbackText" exact="'Player found a resource'"/>
+              </do_elseif>
+
+              <do_if value="$feedbackvalue" exact="-1">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+              </do_if>
+              <do_elseif value="$feedbackvalue" min="1">
+                <debug_text text="'Mission Successful. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText"  chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission Failed. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+            <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$feedbackvalue"/>
+            <signal_cue cue="$EndSignalCue"/>
+            <cancel_cue cue="FindResources"/>
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

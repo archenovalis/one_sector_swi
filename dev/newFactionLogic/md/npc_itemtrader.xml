@@ -1,0 +1,232 @@
+<?xml version="1.0" encoding="iso-8859-1" ?>
+<mdscript name="NPC_Itemtrader" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+    <cue name="OnPlatformPopulation_Itemtrader" instantiate="true" namespace="this" version="4">
+      <conditions>
+        <check_any>
+          <check_all>
+            <event_platform_actor_created />
+            <check_value value="event.param.controlpost != controlpost.shiptrader and (event.param2 == entitytype.trader or event.param2 == entitytype.shadyguy)" />
+          </check_all>
+          <check_all>
+            <!--event.param.{1} = actor-->
+            <event_cue_signalled />
+            <check_value value="event.param.{1}.isclass.npc and event.param.{1}.controlpost != controlpost.shiptrader and (event.param.{1}.type == entitytype.trader or event.param.{1}.type == entitytype.shadyguy)" />
+          </check_all>
+        </check_any>
+      </conditions>
+      <actions>
+        <!-- <debug_text text="'Actor %1 (%2) was created, type=%3, at docking bay %4 (distance=%5m)'.[event.param, event.param.knownname, event.param2, event.param.parent.knownname, event.param.distanceto.{player.entity}]" /> -->
+        <do_if value="event.name == 'event_platform_actor_created'">
+          <set_value name="$actor" exact="event.param" />
+          <set_value name="$type" exact="event.param2"/>
+        </do_if>
+        <do_elseif value="event.name == 'event_cue_signalled'">
+          <set_value name="$actor" exact="event.param.{1}" />
+          <set_value name="$type" exact="event.param.{1}.type"/>
+        </do_elseif>
+        <set_entity_traits entity="$actor" customhandler="true" />
+
+        <!-- Stock overrides -->
+        <do_if value="$type == entitytype.trader">
+          <do_if value="player.module == 'tutorial_inventory'">
+            <set_stock_reference entity="$actor" stock="'tutorial_trader'" />
+          </do_if>
+          <do_elseif value="false">
+            <!-- Always false, only used as reference for patching -->
+          </do_elseif>
+          <do_elseif value="$actor.container.ispiratebase">
+            <set_stock_reference entity="$actor" stock="'pirate_trader'" />
+          </do_elseif>
+        </do_if>
+        <!-- Add inventory to the npc -->
+        <add_stock entity="$actor" />
+
+        <!-- From now on, only this instance tree is responsible for handling the itemtrader conversation -->
+        <!-- Add other necessary variables -->
+        <!--TODO @Owen #EntityTypes trader textID-->
+        <do_if value="$type == entitytype.trader">
+          <set_value name="$PlayerChoiceText" exact="12001" />
+        </do_if>
+        <do_elseif value="$type == entitytype.shadyguy">
+          <set_value name="$PlayerChoiceText" exact="12001" />
+          <set_value name="$PlayerChoiceText2" exact="12072" />
+        </do_elseif>
+
+        <!-- Take the character's inventory and prepare it for use in the trading conversation -->
+        <create_list name="$WareList" />
+        <set_value name="$CharacterStock" exact="$actor.stock.list" />
+        <do_all exact="$CharacterStock.count" counter="$StockCounter">
+          <set_value name="$Ware" exact="$CharacterStock.{$StockCounter}" />
+          <set_value name="$Price" min="$Ware.minprice" max="$Ware.maxprice" />
+
+          <append_to_list name="$WareList" exact="[$Ware, $Price]" />
+
+          <remove_value name="$Ware" />
+          <remove_value name="$Price" />
+        </do_all>
+        <remove_value name="$type"/>
+      </actions>
+      <patch sinceversion="3" state="complete">
+        <!--Duplicate handlers may have been set on shady guys. Stop the current ones and have the patch code in NPC_ShadyGuy trigger new ones.-->
+        <do_if value="$actor.isshadyguy">
+          <debug_text text="'Shutting down handler for shady guy ' + $actor + ' ' + $actor.knownname + '. It will be recreated.'" filter="savegame"/>
+          <cancel_cue cue="this"/>
+        </do_if>
+      </patch>
+      <patch sinceversion="4" state="complete">
+        <do_if value="$actor.isshadyguy and $actor.object.macro.ismacro.{macro.station_pla_headquarters_base_01_macro}">
+          <debug_text text="'Shady guy ' + $actor + ' ' + $actor.knownname + ' was on the player HQ. It will be destroyed.'" filter="savegame"/>
+          <remove_value name="md.$ShadyGuyMap.{$actor}"/>
+          <destroy_object object="$actor"/>
+        </do_if>
+      </patch>
+      <cues>
+        <cue name="ActorKilled">
+          <conditions>
+            <event_object_destroyed object="$actor"/>
+          </conditions>
+          <actions>
+            <cancel_cue cue="OnPlatformPopulation_Itemtrader"/>
+          </actions>
+        </cue>
+
+        <!--param2 = ware, param3 = price-->
+        <cue name="AddWare" instantiate="true">
+          <conditions>
+            <event_object_signalled object="$actor" param="'add_itemtrader_ware'"/>
+          </conditions>
+          <actions>
+            <append_to_list name="$WareList" exact="[event.param2, event.param3]"/>
+          </actions>
+        </cue>
+
+        <cue name="Patch__KillKhaakStationShadyGuys" onfail="cancel">
+          <conditions>
+            <check_value value="$actor.station.owner == faction.khaak"/>
+          </conditions>
+          <actions>
+            <debug_text text="'Killing shady guy ' + $actor + ' ' + $actor.knownname + ' as they are on a Khaak station'" filter="savegame"/>
+            <destroy_object object="$actor"/>
+          </actions>
+        </cue>
+
+        <!-- Itemtrader specific cues -->
+
+        <!-- Start handler for default conversation -->
+        <cue name="DefaultComm" instantiate="true">
+          <conditions>
+            <check_any>
+              <event_conversation_started actor="$actor" />
+              <event_conversation_returned_to_section actor="$actor" />
+            </check_any>
+            <check_value value="event.param == 'default'" />
+          </conditions>
+          <actions>
+            <!-- Check 'kill' relation first, exit conversation if true. -->
+            <do_if value="event.object.hasrelation.enemy.{faction.player}">
+              <add_npc_line line="2004" comment="(Greeting - rejected)" />
+            </do_if>
+            <do_else>
+              <do_if value="event.name == 'event_conversation_started'">
+                <debug_text text="'Itemtrader conversation started: %1, actor=%2, %3'.[event.param, event.object, event.object.knownname]" />
+                <set_conversation_return_section section="g_goodbye" />
+                <!-- Greeting -->
+                <add_npc_line line="2006" comment="(greeting)" />
+              </do_if>
+              <do_elseif value="event.param3 == 'success'">
+                <add_npc_line line="2013" comment="(goodbye - deal struck)" />
+              </do_elseif>
+              <do_else>
+              </do_else>
+              <remove_value name="$returnline" />
+              <add_player_choice_sub text="readtext.{1002}.{$PlayerChoiceText}" section="cItemtrader_inventory" position="top_left" choiceparam="[0, 0, $actor, $WareList]" baseparam="event.param2"/>
+              <do_if value="$actor.type == entitytype.shadyguy">
+                <add_player_choice_sub text="readtext.{1002}.{$PlayerChoiceText2}" section="cItemtrader_wares" position="left" choiceparam="[ 0, 0, true, player.occupiedship, null, 'tradecontext', [ $actor.container, null, false, true ]]" baseparam="event.param2" />
+              </do_if>
+              <!-- TODO (@Lorraine): is the following commented out script still needed? -->
+              <!--do_if value="@$WareList2">
+                <add_player_choice_sub text="readtext.{1002}.{$PlayerChoiceText2}" section="cItemtrader_wares" position="left" choiceparam="[0, 0, $actor, $WareList2]" baseparam="event.param2"/>
+              </do_if-->
+              <add_player_choice_sub text="{1002,12008}" comment="Where can I find ...?" section="g_askforway" position="top_right" baseparam="event.param2" />
+              <do_if value="player.room != $actor.room">
+                <add_player_choice_sub text="{1002,12010}" comment="How can I find you?" section="g_askforway_finish" position="right" baseparam="event.param2" choiceparam="[$actor]" />
+              </do_if>
+              <add_player_choice_return text="{1002,2}" position="bottom_right" comment="Goodbye"/>
+            </do_else>
+          </actions>
+        </cue>
+
+        <!-- TODO (@Lorraine, @Owen): This cue is not being triggered - should it be removed? -->
+        <cue name="TradeComm" instantiate="true">
+          <conditions>
+            <check_any>
+              <event_conversation_started actor="$actor" />
+              <event_conversation_returned_to_section actor="$actor" />
+            </check_any>
+            <check_value value="event.param == 'trade'" />
+          </conditions>
+          <actions>
+            <!-- Check 'kill' relation first, exit conversation if true. -->
+            <do_if value="event.object.hasrelation.enemy.{faction.player}">
+              <add_npc_line line="2004" comment="(Greeting - rejected)" />
+            </do_if>
+            <do_else>
+              <do_if value="event.name == 'event_conversation_started'">
+                <debug_text text="'Itemtrader conversation started: %1, actor=%2, %3'.[event.param, event.object, event.object.knownname]" />
+                <set_conversation_return_section section="g_goodbye" />
+                <!-- Greeting -->
+                <add_npc_line line="2006" comment="(greeting)" />
+              </do_if>
+              <open_conversation_menu menu="InventoryTraderMenu" param="[0, 0, $actor, $WareList]" param2="event.param3"/>
+            </do_else>
+          </actions>
+        </cue>
+
+        <!-- TODO (@Lorraine, @Owen): This cue is not being triggered - should it be removed? -->
+        <cue name="CheckPlayerChoiceText">
+          <actions>
+            <do_if value="$PlayerChoiceText?">
+              <do_if value="(typeof $PlayerChoiceText).isstring">
+                <!--TODO @Owen #EntityTypes trader textID-->
+                <do_if value="$actor.type == entitytype.trader">
+                  <set_value name="$PlayerChoiceText" exact="12001" />
+                </do_if>
+                <do_elseif value="$actor.type == entitytype.shadyguy">
+                  <set_value name="$PlayerChoiceText" exact="12001" />
+                </do_elseif>
+              </do_if>
+            </do_if>
+          </actions>
+        </cue>
+
+        <!-- Section handler for itemtrader -->
+        <cue name="SectionHandler" instantiate="true">
+          <conditions>
+            <check_any>
+              <event_conversation_next_section sectionprefix="cItemtrader_" actor="$actor" />
+              <event_conversation_returned_to_section sectionprefix="cItemtrader_" actor="$actor" />
+            </check_any>
+          </conditions>
+          <actions>
+            <debug_text text="'&lt;%1&gt; section: \'%2\''.[event.name, event.param]" />
+
+            <do_if value="event.name == 'event_conversation_next_section'">
+              <add_npc_line line="5022" comment="(NPC gives someone something)" />
+            </do_if>
+
+            <do_if value="event.param == 'cItemtrader_inventory'">
+              <open_conversation_menu menu="InventoryTraderMenu" param="event.param2" param2="event.param3"/>
+            </do_if>
+            <do_elseif value="event.param == 'cItemtrader_wares'">
+              <open_conversation_menu menu="MapMenu" param="event.param2" param2="event.param3"/>
+            </do_elseif>
+            <do_else>
+              <debug_text text="'ERROR: Unexpected section \'' + event.param + '\''" filter="general" />
+            </do_else>
+          </actions>
+        </cue>
+      </cues>
+    </cue>
+  </cues>
+</mdscript>

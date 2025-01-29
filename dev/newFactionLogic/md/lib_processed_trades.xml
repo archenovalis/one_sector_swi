@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="LIB_Processed_Trades" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+    <!--This library keeps track of the last few trades which missions have found interesting
+    It's purpose is to keep two missions processing the same trade so that they both progress-->
+    
+    <!--event.param: [$ResultCue, $Buyer, $TradeID, $Time]
+    
+    Result saved to $ResultCue.$Process_Trade__Result
+    Result is bool - true: Trade can be processed, false: Trade was already processed by another mission-->
+    <cue name="Process_Trade" instantiate="true" namespace="static">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <set_value name="$DebugChance" exact="0"/>
+        <set_value name="$ResultCue" exact="event.param.{1}"/>
+
+        <do_if value="not $ProcessedTrades?">
+          <create_list name="$ProcessedTrades"/>
+        </do_if>
+
+        <set_value name="$CurrentTrade" exact="[event.param.{2}, event.param.{3}, event.param.{4}]"/>
+        <do_if value="$ProcessedTrades.indexof.{$CurrentTrade}">
+          <debug_text text="'Return false: ' + $CurrentTrade" chance="$DebugChance"/>
+          <!--Return false-->
+          <set_value name="$ResultCue.$Process_Trade__Result" exact="false"/>
+        </do_if>
+        <do_else>
+          <append_to_list name="$ProcessedTrades" exact="$CurrentTrade"/>
+          <!--Only keep the 10 most recent processed trades-->
+          <do_if value="$ProcessedTrades.count" min="10">
+            <remove_value name="$ProcessedTrades.{1}"/>
+          </do_if>
+
+          <!--Return true-->
+          <debug_text text="'***Return true: ' + $CurrentTrade" chance="$DebugChance"/>
+          <set_value name="$ResultCue.$Process_Trade__Result" exact="true"/>
+        </do_else>
+      </actions>
+    </cue>
+
+    <!--This library keeps track of spawned mission offers regarding trades
+    It's purpose is to keep two missions from offering multiple missions for the same ware on the same station-->
+
+    <!--event.param: [$ResultCue, $Buyer, $Ware, $Time]
+    
+    Result saved to $ResultCue.$Register_Mission_Offers__Result
+    Result is bool - true: Mission can be offered, false: Mission should not be offered (but nothing enforcing that if needed)-->
+    <cue name="Register_Mission_Offers" instantiate="true" namespace="static">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <set_value name="$DebugChance" exact="0"/>
+        <set_value name="$ResultCue" exact="event.param.{1}"/>
+
+        <do_if value="not md.$OfferMap?">
+          <create_list name="md.$OfferMap"/>
+          <create_list name="md.$TimeMap"/>
+        </do_if>
+
+        <do_if value="typeof event.param.{4} == datatype.time">
+          <do_if value="event.param.{4}" min="player.age - 5min">
+            <set_value name="$Time" exact="event.param.{4}"/>
+          </do_if>
+        </do_if>
+
+        <do_if value="$Time?">
+          <!--Clear entries older than 30 minutes-->
+          <do_all exact="md.$TimeMap.count" counter="$Counter" reverse="true">
+            <do_if value="md.$TimeMap.{$Counter} + 30min" max="player.age">
+              <debug_text text="'Timeout: Removing trade mission on object ' + md.$OfferMap.{$Counter}.{1}.knownname + ' for ware ' + md.$OfferMap.{$Counter}.{2}.name" chance="$DebugChance"/>
+              <remove_value name="md.$TimeMap.{$Counter}"/>
+              <remove_value name="md.$OfferMap.{$Counter}"/>
+            </do_if>
+          </do_all>
+
+          <set_value name="$CurrentOffer" exact="[event.param.{2}, event.param.{3}]"/>
+          <do_if value="md.$OfferMap.indexof.{$CurrentOffer}">
+            <debug_text text="'Return false: ' + $CurrentOffer" chance="$DebugChance"/>
+            <!--Return false-->
+            <set_value name="$ResultCue.$Register_Mission_Offers__Result" exact="false"/>
+          </do_if>
+          <do_else>
+            <append_to_list name="md.$OfferMap" exact="$CurrentOffer"/>
+            <append_to_list name="md.$TimeMap" exact="$Time"/>
+            <!--Only keep the 20 most recent processed trades-->
+            <do_if value="md.$OfferMap.count" min="20">
+              <remove_value name="md.$OfferMap.{1}"/>
+              <remove_value name="md.$TimeMap.{1}"/>
+            </do_if>
+
+            <!--Return true-->
+            <debug_text text="'***Return true: ' + $CurrentOffer" chance="$DebugChance"/>
+            <set_value name="$ResultCue.$Register_Mission_Offers__Result" exact="true"/>
+          </do_else>
+        </do_if>
+        <do_else>
+          <debug_text text="'Provided time: ' + event.param.{4} + ' is either out of range or not a time'"/>
+          <set_value name="$ResultCue.$Register_Mission_Offers__Result" exact="false"/>
+        </do_else>
+
+        <assert value="md.$OfferMap.count == md.$TimeMap.count" text="'Mismatch between the OfferMap and TimeMap [Owen]'"/>
+      </actions>
+    </cue>
+
+    
+    <!--This library unregisters spawned mission offers registered in Register_Mission_Offers-->
+
+    <!--event.param: [$Buyer, $Ware]
+    
+    No result passed back-->
+    <cue name="Unregister_Mission_Offers" instantiate="true" namespace="static">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <set_value name="$DebugChance" exact="0"/>
+
+        <do_if value="md.$OfferMap?">
+          <set_value name="$Index" exact="md.$OfferMap.indexof.{[event.param.{1}, event.param.{2}]}"/>
+          <do_if value="$Index">
+            <debug_text text="'Removing registered trade mission offer for: ' + md.$OfferMap.{$Index}.{1}.knownname + ' for ware ' + md.$OfferMap.{$Index}.{2}.name" chance="$DebugChance"/>
+            <remove_value name="md.$OfferMap.{$Index}"/>
+            <remove_value name="md.$TimeMap.{$Index}"/>
+          </do_if>
+        </do_if>
+
+        <assert value="md.$OfferMap.count == md.$TimeMap.count" text="'Mismatch between the OfferMap and TimeMap [Owen]'"/>
+      </actions>
+    </cue>
+
+  </cues>
+</mdscript>

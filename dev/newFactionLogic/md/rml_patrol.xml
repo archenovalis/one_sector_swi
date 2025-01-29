@@ -1,0 +1,812 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_Patrol" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--
+    $feedbackvalue:
+    -103: EndSignalCue or MissionCue not defined
+    -102: Destinations list empty
+    -101: Destinations list not valid
+    -100: Undefined failure. Defaulted to -100
+    1: Destination reached 
+    
+   -->
+
+    <!--TODO: Param to count destroyed enemies between patrol points-->
+
+    <library name="Patrol" version="4">
+      <params>
+        <param name="EndSignalCue" />
+        <param name="MissionCue" />
+        <param name="StartStep" default="1" comment="Briefing step to start the mission on"/>
+        <param name="UpdateBriefing" default="true" comment="Update the briefing objective step when the objective is updated"/>
+
+        <param name="PatrolStartedSignalCue" default="null"
+               comment="Cue which will be signalled when the next patrol area is activated.
+               Not fired again when the player leaves then re-enters.
+               Param = [$CurrentPatrolIndex]"/>
+
+        <param name="NextPatrolSignalCue" default="null"
+               comment="Cue which will be signalled with signal_cue_instantly when the next patrol area is selected.
+               Param = [$NextTargetDefinition]"/>
+
+        <param name="ForceNextDestinationCue" default="null" comment="Cue which when signalled will force the RML to proceed to the next area"/>
+        <param name="ForceDestinationCue" default="null" comment="Cue which when signalled will force the RML to proceed to another area (event.param.{1} = destination index)"/>
+        <param name="KilledEnemySignalCue" default="null" comment="Cue to be signalled when a player owned object has killed (or forced bail) an enemy. params: [$enemy, $killer]"/>
+        <param name="EscapedEnemySignalCue" default="null" comment="Cue to be signalled when an Enemy abandons his ship using an escape pot"/>
+        <param name="PirateShips" default="false" comment="Will make use of cover system when applicable"/>
+
+        <!--Destinations is a list of lists.
+        Element 1 - The patrol target component e.g. Sector, zone or station
+        Element 2 - Target offset (defaults to 0, 0, 0).
+        Element 3 - Patrol range: Distance from patrol target (see below for details)
+        Element 4 - Patrol alias: Define optional objective text (defaults to object name)
+        Element 5 - Objective type: e.g. objective.patrol or objective.defend (defaults to objective.patrol)
+        Element 6 - Min time: The minimum time the player must stay at the destination. When there are no enemies, the objective will change. (defaults to 1min)
+        Element 7 - Max time: The maximum time the player patrols an area. When it is reached, the mission can conclude or the player can move on. (defaults to 5min) (can be <0 for unlimited)
+        Element 8 - Enemy spawn offset: The general offset of enemies to spawn in space (ship spawning library may still choose a different spawning method)-->
+
+        <!--Patrol Ranges: Sectors and Clusters make no use of patrolrange
+        patrolrange of 0 defaults it to class specific value
+        Sectors and Clusters: 0km
+        Zones: $Zone.size
+        Objects: 5km + $Object.size
+        Other: 5km-->
+        <param name="Destinations" default="[]"/>
+
+        <param name="Faction" comment="Faction of whom to find enemies for."/>
+        <param name="EnemyFactions" default="null" comment="Faction or List of factions to attack"/>
+        <param name="BlackListEnemies" default="null" comment="Group of enemies to exclude from attack objectives"/>
+
+        <param name="DebugChance" default="0"/>
+      </params>
+      <actions>
+        <set_value name="$feedbackvalue" exact="0" />
+        <create_list name="$ErrorList"/>
+
+        <do_if value="typeof $Destinations != datatype.list">
+          <append_to_list name="$ErrorList" exact="-101"/>
+        </do_if>
+        <do_elseif value="$Destinations.count" exact="0">
+          <append_to_list name="$ErrorList" exact="-102"/>
+        </do_elseif>
+        <do_else>
+          <!--Check Destinations list entries-->
+          <do_all exact="$Destinations.count" counter="$Counter">
+            <assert break="always" value="$Destinations.{$Counter}.{1}.exists" text="'Patrol Destination is not an existing component. Will be skipped. Index: ' + $Counter"/>
+          </do_all>
+        </do_else>
+
+        <do_if value="not $EndSignalCue or not $MissionCue">
+          <append_to_list name="$ErrorList" exact="-103"/>
+        </do_if>
+
+        <do_if value="$ErrorList.count == 0">
+
+          <set_value name="$DestinationIndex" exact="1"/>
+          <set_value name="$PreviousDestination" exact="null"/>
+
+          <set_value name="$KillCutoffTime" exact="0"/>
+          <do_if value="not $EnemyFactions">
+            <get_factions_by_relation result="$EnemyFactions" faction="$Faction" relation="enemy"/>
+            <remove_from_list name="$EnemyFactions" exact="faction.smuggler" multiple="false" />
+          </do_if>
+          <do_elseif value="typeof $EnemyFactions == datatype.faction">
+            <set_value name="$EnemyFactions" exact="[$EnemyFactions]"/>
+          </do_elseif>
+
+          <assert break="always" value="$EnemyFactions.count" text="'Faction doesn\'t have enemies so patrolling is pointless. Faction: ' + $Faction.knownname"/>
+          <create_group groupname="$Enemies"/>
+          <create_group groupname="$EnemiesTrue"/>
+          <create_group groupname="$OldEnemies"/>
+          <create_group groupname="$OldEnemiesHidden"/>
+          <set_value name="$KillCount" exact="0"/>
+          <set_value name="$LastKilled" exact="null"/>
+        </do_if>
+      </actions>
+      <patch sinceversion="2" state="complete">
+        <set_value name="$BlackListEnemies" exact="null"/>
+      </patch>
+      <patch sinceversion="3" state="complete">
+        <do_if value="not $PirateShips">
+          <set_value name="$PirateShips" exact="false"/>
+        </do_if>
+      </patch>
+      <patch sinceversion="4" state="complete">
+        <create_group groupname="$OldEnemiesHidden"/>
+        <set_value name="$KillCount" exact="0"/>
+      </patch>
+      <cues>
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count != 0" />
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup" />
+          </actions>
+        </cue>
+
+        <cue name="StartMission" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count == 0" />
+          </conditions>
+          <actions>
+
+            <!--If there was a destination before, store its values-->
+            <do_if value="$DestinationIndex" min="2">
+              <set_value name="$PreviousDestination" exact="$PatrolTarget"/>
+              <set_value name="$PreviousRange" exact="$PatrolRange"/>
+              <set_value name="$PreviousKillCutoffTime" exact="$KillCutoffTime"/>
+            </do_if>
+
+            <!--Init Values-->
+            <set_value name="$DestinationFound" exact="false"/>
+            <set_value name="$ArrivedAtDestination" exact="false"/>
+
+            <set_value name="$PatrolTarget" exact="null"/>
+            <set_value name="$PatrolSpace" exact="null"/>
+            <set_value name="$PatrolOffset" exact="position.[0, 0, 0]"/>
+            <set_value name="$PatrolRange" exact="0"/>
+            <set_value name="$PatrolAlias" exact="null"/>
+            <set_value name="$Objective" exact="objective.patrol"/>
+            <set_value name="$MinTime" exact="1min"/>
+            <set_value name="$MaxTime" exact="5min"/>
+            <set_value name="$FirstObjective" exact="true"/>
+
+            <!--Find the next destination with an index >= than $DestinationIndex-->
+            <do_all exact="$Destinations.count" counter="$Counter">
+              <do_if value="$Counter" min="$DestinationIndex">
+                <do_if value="$Destinations.{$Counter}.{1}.exists">
+                  <set_value name="$DestinationFound" exact="true"/>
+                  <set_value name="$DestinationIndex" exact="$Counter"/>
+                  <break/>
+                </do_if>
+              </do_if>
+            </do_all>
+
+            <do_if value="$DestinationFound and ($KillCount le 6)">
+              <debug_text text="'Destination is: ' + $Destinations.{$DestinationIndex}.{1}.knownname" chance="$DebugChance"/>
+              <set_value name="$DestinationEntry" exact="$Destinations.{$DestinationIndex}"/>
+              <set_value name="$PatrolTarget" exact="$DestinationEntry.{1}"/>
+              <do_if value="$PatrolTarget.isclass.sector">
+                <set_value name="$PatrolSpace" exact="$PatrolTarget"/>
+              </do_if>
+              <do_elseif value="not $PatrolTarget.isclass.cluster">
+                <set_value name="$PatrolSpace" exact="$PatrolTarget.sector"/>
+              </do_elseif>
+
+              <do_if value="typeof $DestinationEntry.{2}" exact="datatype.position">
+                <set_value name="$PatrolOffset" exact="$DestinationEntry.{2}"/>
+              </do_if>
+
+              <do_if value="$DestinationEntry.{3}" min="1">
+                <set_value name="$PatrolRange" exact="$DestinationEntry.{3}"/>
+              </do_if>
+              <do_else>
+                <!--Set the patrolrange to default value-->
+                <do_if value="$PatrolTarget.isclass.zone">
+                  <set_value name="$PatrolRange" exact="50km"/>
+                </do_if>
+                <do_elseif value="$PatrolTarget.isclass.sector">
+                  <set_value name="$PatrolRange" exact="$PatrolTarget.coresize/2m"/>
+                  <debug_text text="'Sector found - Range is: ' + $PatrolRange" chance="$DebugChance"/>
+                </do_elseif>
+                <do_elseif value="$PatrolTarget.isclass.space">
+                  <set_value name="$PatrolRange" exact="0"/>
+                </do_elseif>
+                <do_elseif value="$PatrolTarget.isclass.object">
+                  <set_value name="$PatrolRange" exact="5km + $PatrolTarget.size"/>
+                </do_elseif>
+                <do_else>
+                  <set_value name="$PatrolRange" exact="5km"/>
+                </do_else>
+              </do_else>
+
+              <do_if value="typeof $DestinationEntry.{4}" exact="datatype.string">
+                <set_value name="$PatrolAlias" exact="$DestinationEntry.{4}"/>
+              </do_if>
+
+              <do_if value="typeof $DestinationEntry.{5}" exact="datatype.objective">
+                <set_value name="$Objective" exact="$DestinationEntry.{5}"/>
+              </do_if>
+
+              <do_if value="$DestinationEntry.{6}" min="1">
+                <set_value name="$MinTime" exact="$DestinationEntry.{6}"/>
+              </do_if>
+
+              <set_value name="$MaxTime" exact="$DestinationEntry.{7}"/>
+
+              <do_if value="$MinTime" max="1s">
+                <debug_text text="'Noncritical Error: $MinTime is too low. $MinTime: ' + $MinTime + ' - Defaulting to 1min'" chance="$DebugChance"/>
+                <set_value name="$MinTime" exact="1min"/>
+
+                <!--MaxTime is optional-->
+                <do_if value="$MaxTime" min="1s">
+                  <do_if value="$MinTime" min="$MaxTime">
+                    <debug_text text="'Noncritical Error: $MinTime is greater than $MaxTime. Defaulting $MaxTime to $MinTime + 1min'" chance="$DebugChance"/>
+                    <debug_text text="'Erroneous values - $MinTime: ' + $MinTime + ' $MaxTime: ' + $MaxTime" chance="$DebugChance"/>
+                    <set_value name="$MaxTime" exact="$MinTime + 1min"/>
+                  </do_if>
+                </do_if>
+              </do_if>
+
+              <do_if value="$NextPatrolSignalCue">
+                <signal_cue_instantly cue="$NextPatrolSignalCue" param="$DestinationEntry.clone"/>
+              </do_if>
+
+              <remove_value name="$DestinationEntry"/>
+            </do_if>
+            <do_else>
+              <!--TODO: Feedback based on kills-->
+              <set_value name="$feedbackvalue" exact="1" />
+              <signal_cue cue="Cleanup"/>
+              <cancel_cue cue="StartMission"/>
+            </do_else>
+          </actions>
+          <cues>
+
+            <cue name="FlyToTest_Ref" ref="md.RML_FlyTo.FlyTo">
+              <param name="MissionCue" value="$MissionCue"/>
+              <param name="StartStep" value="$StartStep" comment="Briefing step to start the mission on"/>
+              <param name="UpdateBriefing" value="$UpdateBriefing"/>
+
+              <param name="Target" value="$PatrolTarget"/>
+              <param name="Offset" value="$PatrolOffset"/>
+              <param name="Distance" value="$PatrolRange"/>
+              <param name="Radius" value="$PatrolRange"/>
+              <param name="FlyToObjective" value="$Objective"/>
+
+              <param name="EndOnCompletion" value="false" comment="End this RML when the player has reached the destination. WARNING: If false, the caller must end the library."/>
+              <param name="ReachedTargetSignalCue" value="AtDestination" comment="Cue to be signalled when player reaches the destination"/>
+              <param name="LeftTargetSignalCue" value="LeftDestination" comment="Cue to be signalled when player leaves the destination (only fired if EndOnCompletion is false)"/>
+
+              <param name="DebugChance" value="$DebugChance"/>
+            </cue>
+
+            <cue name="Player_IsDockedOnStart" onfail="cancel">
+              <conditions>
+                <check_value value="player.container.isclass.{class.station}"/>
+              </conditions>
+              <delay exact="0.3s"/>
+              <actions>
+                <do_if value="Docked_AtStation.state == cuestate.waiting">
+                  <set_value name="$Silent" exact="true"/>
+                  <signal_cue_instantly cue="Docked_AtStation" param="player.container"/>
+                </do_if>
+              </actions>
+            </cue>
+
+            <cue name="LeftDestination" instantiate="true">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <reset_cue cue="AtDestination"/>
+                <signal_cue cue="LeftDestinationTimerCounter"/>
+              </actions>
+            </cue>
+
+            <cue name="Docked_AtStation" instantiate="true" version="2">
+              <conditions>
+                <check_any>
+                  <check_all>
+                    <event_object_docked object="player.entity"/>
+                    <check_value value="$ArrivedAtDestination and (event.param.isclass.{class.station} or (not event.param.isplayerowned))"/>
+                  </check_all>
+                  <event_cue_signalled/>
+                </check_any>
+              </conditions>
+              <actions>
+                <set_value name="$CurrentStation" exact="event.param"/>
+                <set_objective cue="$MissionCue" action="objective.undock" text="$CurrentStation.knownname" silent="$Silent"/>
+                <reset_cue cue="AtDestination"/>
+                <signal_cue cue="LeftDestinationTimerCounter"/>
+              </actions>
+              <patch sinceversion="2">
+                <do_if value="(not $CurrentStation.isclass.{class.station}) or $CurrentStation.isplayerowned">
+                  <force_cue cue="Left_Station"/>
+                </do_if>
+              </patch>
+              <cues>
+
+                <cue name="Left_Station" checkinterval="1s">
+                  <conditions>
+                    <check_value value="not player.entity.hascontext.{$CurrentStation}"/>
+                  </conditions>
+                  <actions>
+                    <signal_cue cue="AtDestination"/>
+                    <reset_cue cue="Docked_AtStation"/>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="LeftDestinationTimerCounter" instantiate="true">
+              <conditions>
+                <event_cue_signalled/>
+                <check_value value="$ArrivedAtDestination"/>
+              </conditions>
+              <actions>
+                <set_value name="$ArrivedAtDestination" exact="false"/>
+                <set_value name="$CurrentMinTime" operation="subtract" exact="player.age"/>
+                <set_value name="$CurrentMaxTime" operation="subtract" exact="player.age"/>
+                <set_value name="$KillCutoffTime" operation="subtract" exact="player.age"/>
+                <debug_text text="'$CurrentMinTime ' + ($CurrentMinTime)s + ' /$CurrentMaxTime ' + ($CurrentMaxTime)s" chance="$DebugChance"/>
+                <set_value name="$PatrolPaused"/>
+              </actions>
+            </cue>
+
+            <cue name="AtDestination">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <!--Make sure objectives are updated-->
+                <set_value name="$FirstObjective" exact="true"/>
+
+                <do_if value="not $PatrolPaused?">
+                  <set_value name="$CurrentMinTime" exact="player.age + $MinTime"/>
+                  <set_value name="$CurrentMaxTime" exact="player.age + $MaxTime"/>
+                  <set_value name="$KillCutoffTime" exact="$CurrentMaxTime + 1min" comment="The time where kills still count in the previous area"/>
+                  <debug_text text="'At destination index ' + $DestinationIndex" chance="$DebugChance"/>
+
+
+                  <do_if value="$PatrolStartedSignalCue">
+                    <signal_cue_instantly cue="$PatrolStartedSignalCue" param="[$DestinationIndex]" check="false"/>
+                  </do_if>
+
+                  <set_value name="$ArrivedAtDestination" exact="true"/>
+                </do_if>
+                <do_else>
+                  <set_value name="$CurrentMinTime" operation="add" exact="player.age"/>
+                  <set_value name="$CurrentMaxTime" operation="add" exact="player.age"/>
+                  <set_value name="$KillCutoffTime" exact="$CurrentMaxTime + 1min + player.age" comment="The time where kills still count in the previous area"/>
+                  <debug_text text="'At destination index ' + $DestinationIndex" chance="$DebugChance"/>
+                  <set_value name="$ArrivedAtDestination" exact="true"/>
+                </do_else>
+              </actions>
+              <cues>
+                <cue name="AtDestination_Wait">
+                  <delay exact="1s"/>
+                  <actions>
+                    <signal_cue cue="SetGuidance"/>
+                  </actions>
+                </cue>
+
+                <cue name="EnemyDestroyed" instantiate="true">
+                  <conditions>
+                    <check_any>
+                      <event_object_destroyed group="$Enemies"/>
+                      <event_object_abandoned group="$Enemies"/>
+                      <event_object_changed_zone group="$Enemies"/>
+                      <event_object_docked group="$Enemies"/>
+                      <event_masstraffic_ship_removed group="$Enemies"/>
+                    </check_any>
+                  </conditions>
+                  <delay exact="5ms"/>
+                  <actions>
+                    <set_value name="$FirstObjective"/>
+                    <do_if value="$Enemies.count == 0" comment="if all current enemies are defeated display timer">
+                      <signal_cue_instantly cue="SetGuidance" param="[false]"/>
+                    </do_if>
+                    <do_else>
+                      <signal_cue_instantly cue="SetGuidance" param="[true]"/>
+                    </do_else>
+                  </actions>
+                </cue>
+
+                <cue name="ShipScanned" instantiate="true">
+                  <conditions>
+                    <event_scan_finished scanned="$EnemiesTrue"/>
+                  </conditions>
+                  <actions>
+                    <signal_cue_instantly cue="SetGuidance" param="[true]"/>
+                  </actions>
+                </cue>
+
+                <cue name="GuidanceTicker" checkinterval="10s" instantiate="true">
+                  <actions>
+                    <signal_cue_instantly cue="SetGuidance"/>
+                  </actions>
+                </cue>
+
+                <!--event.param = [$silent, $enemygroup]-->
+                <cue name="SetGuidance" instantiate="true">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <set_value name="$Silent" exact="false"/>
+                    <do_if value="event.param">
+                      <set_value name="$Silent" exact="event.param.{1}"/>
+                    </do_if>
+                    <clear_group group="$OldEnemies"/>
+                    <clear_group group="$OldEnemiesHidden"/>
+                    <add_to_group groupname="$OldEnemies" group="$Enemies"/>
+                    <add_to_group groupname="$OldEnemiesHidden" group="$EnemiesTrue"/>
+                    <clear_group group="$Enemies"/>
+                    <clear_group group="$EnemiesTrue"/>
+
+                    <set_value name="$FindEnemies" exact="$EnemyFactions.count != 0"/>
+                    <do_if value="event.param">
+                      <do_if value="@event.param.{2}">
+                        <set_value name="$FindEnemies" exact="false"/>
+                        <set_value name="$EnemiesTrue" exact="event.param.{2}"/>
+                      </do_if>
+                    </do_if>
+
+                    <do_if value="$FindEnemies">
+                      <do_if value="$PatrolTarget.isclass.cluster">
+                        <!--TODO: Is this really the best thing to do for the cluster case?-->
+                        <!--Ships only for now. Will not find other objects such as mines-->
+                        <find_ship groupname="$Enemies" comment="Only looking for revealed enemies" space="$PatrolTarget" primarypurpose="purpose.fight" owner="$EnemyFactions" maybeattackedby="$Faction" masstraffic="false" functional="true" multiple="true" docked="false">
+                          <!--P1-TODO: escapepod property in macro?-->
+                          <!--<match macro="macro.ship_gen_xs_escapepod_01_a_macro" negate="true"/>-->
+                          <match_parent class="class.highway" negate="true"/>
+                        </find_ship>
+                      </do_if>
+                      <do_else>
+                        <find_ship groupname="$Enemies" comment="Only looking for revealed enemies" space="$PatrolSpace" primarypurpose="purpose.fight" owner="$EnemyFactions" maybeattackedby="$Faction" masstraffic="false" functional="true" multiple="true" docked="false">
+                          <!--P1-TODO: escapepod property in macro?-->
+                          <!--<match macro="macro.ship_gen_xs_escapepod_01_a_macro" negate="true"/>-->
+                          <match_distance object="$PatrolTarget" value="$PatrolOffset" max="$PatrolRange"/>
+                          <match_parent class="class.highway" negate="true"/>
+                        </find_ship>
+                      </do_else>
+
+                      <do_if value="$PatrolTarget.isclass.cluster">
+                        <!--TODO: Is this really the best thing to do for the cluster case?-->
+                        <!--Ships only for now. Will not find other objects such as mines-->
+                        <find_ship groupname="$EnemiesTrue" trueowner="$EnemyFactions" space="$PatrolTarget" primarypurpose="purpose.fight" masstraffic="false" functional="true" multiple="true" docked="false">
+                          <!--P1-TODO: escapepod property in macro?-->
+                          <!--<match macro="macro.ship_gen_xs_escapepod_01_a_macro" negate="true"/>-->
+                          <match_parent class="class.highway" negate="true"/>
+                        </find_ship>
+                      </do_if>
+                      <do_else>
+                        <find_ship groupname="$EnemiesTrue" trueowner="$EnemyFactions" space="$PatrolSpace" primarypurpose="purpose.fight" masstraffic="false" functional="true" multiple="true" docked="false">
+                          <!--P1-TODO: escapepod property in macro?-->
+                          <!--<match macro="macro.ship_gen_xs_escapepod_01_a_macro" negate="true"/>-->
+                          <match_distance object="$PatrolTarget" value="$PatrolOffset" max="$PatrolRange"/>
+                          <match_parent class="class.highway" negate="true"/>
+                        </find_ship>
+                      </do_else>
+
+                      <do_all exact="$EnemiesTrue.count" counter="$i" reverse="true">
+                        <do_if value="$BlackListEnemies and $BlackListEnemies.indexof.{$EnemiesTrue.{$i}}">
+                          <remove_from_group group="$EnemiesTrue" object="$EnemiesTrue.{$i}"/>
+                        </do_if>
+                        <do_else>
+                          <set_value name="$commander" exact="$EnemiesTrue.{$i}.commander"/>
+                          <do_while value="$commander.exists">
+                            <do_if value="not $Faction.mayattack.{$commander}">
+                              <remove_from_group group="$EnemiesTrue" object="$EnemiesTrue.{$i}"/>
+                              <break/>
+                            </do_if>
+                            <set_value name="$commander" exact="$commander.commander"/>
+                          </do_while>
+                        </do_else>
+                      </do_all>
+                    </do_if>
+
+                    <set_value name="$EnemiesDiffer" exact="false"/>
+                    <do_if value="not $FirstObjective">
+                      <do_if value="$OldEnemies == $Enemies" comment="Same">
+                        <!--Do nothing-->
+                      </do_if>
+                      <do_elseif value="$OldEnemies.count != $Enemies.count" comment="Different amounts">
+                        <set_value name="$EnemiesDiffer" exact="true"/>
+                      </do_elseif>
+                      <do_else comment="Same amounts but maybe different order">
+                        <do_all exact="$Enemies.count" counter="$EnemiesCounter">
+                          <do_if value="not $OldEnemies.indexof.{$Enemies.{$EnemiesCounter}}">
+                            <set_value name="$EnemiesDiffer" exact="true"/>
+                            <break/>
+                          </do_if>
+                        </do_all>
+                      </do_else>
+                      <do_if value="$OldEnemiesHidden == $EnemiesTrue" comment="Same">
+                        <!--Do nothing-->
+                      </do_if>
+                      <do_elseif value="$OldEnemiesHidden.count != $EnemiesTrue.count" comment="Different amounts">
+                        <set_value name="$EnemiesDiffer" exact="true"/>
+                      </do_elseif>
+                      <do_else comment="Same amounts but maybe different order">
+                        <do_all exact="$EnemiesTrue.count" counter="$EnemiesCounter">
+                          <do_if value="not $OldEnemiesHidden.indexof.{$EnemiesTrue.{$EnemiesCounter}}">
+                            <set_value name="$EnemiesDiffer" exact="true"/>
+                            <break/>
+                          </do_if>
+                        </do_all>
+                      </do_else>
+                    </do_if>
+
+                    <do_if value="$EnemiesDiffer or $FirstObjective">
+                      <set_value name="$FirstObjective" exact="false"/>
+                      <do_if value="$Enemies.count or $EnemiesTrue.count">
+                        <do_if value="$UpdateBriefing">
+                          <update_mission cue="$MissionCue">
+                            <briefing>
+                              <objective step="$StartStep" action="$Objective" text="if $PatrolAlias then $PatrolAlias else $PatrolTarget.knownname"/>
+                            </briefing>
+                          </update_mission>
+                        </do_if>
+                        <do_if value="$Destinations.count == 1">
+                          <set_objective cue="$MissionCue" step="$StartStep" action="$Objective" text="if $PatrolAlias then $PatrolAlias else $PatrolTarget.knownname" group="$Enemies" silent="$Silent" showunknownpath="true" endtime="$CurrentMinTime"/>
+                        </do_if>
+                        <do_else>
+                          <do_if value="($PirateShips.count?) and (($Enemies.count == 0) and ($EnemiesTrue.count ge 1))">
+                            <set_objective cue="$MissionCue" customaction="{30155,101}" action="objective.custom" text="if $EnemiesTrue.count == 1 then {30155,102} else {30155,103}" object="$PatrolTarget" offset="$PatrolOffset"
+                                           radius="if ($PatrolRange and $PatrolRange lt 250km) then $PatrolRange else 0m" silent="$Silent" showunknownpath="true"/>
+                          </do_if>
+                          <do_else>
+                            <set_objective cue="$MissionCue" step="$StartStep" action="$Objective" text="if $PatrolAlias then $PatrolAlias else $PatrolTarget.knownname" group="$Enemies" silent="$Silent" showunknownpath="true"/>
+                          </do_else>
+                        </do_else>
+                      </do_if>
+                      <do_else>
+                        <do_if value="$UpdateBriefing">
+                          <update_mission cue="$MissionCue">
+                            <briefing>
+                              <objective step="$StartStep" action="$Objective" text="if $PatrolAlias then $PatrolAlias else $PatrolTarget.knownname" endtime="$CurrentMinTime"/>
+                            </briefing>
+                          </update_mission>
+                        </do_if>
+                        <do_if value="$Destinations.count == 1">
+                          <set_objective cue="$MissionCue" step="$StartStep" action="$Objective" text="if $PatrolAlias then $PatrolAlias else $PatrolTarget.knownname"
+                                         object="$PatrolTarget" offset="$PatrolOffset" silent="$Silent" endtime="$CurrentMinTime" showunknownpath="true"/>
+                        </do_if>
+                        <do_else>
+                          <set_objective cue="$MissionCue" step="$StartStep" action="$Objective" text="if $PatrolAlias then $PatrolAlias else $PatrolTarget.knownname"
+                                         object="$PatrolTarget" offset="$PatrolOffset" radius="if ($PatrolRange and $PatrolRange lt 250km) then $PatrolRange else 0m" silent="$Silent" endtime="if $PirateShips.count? then null else $CurrentMinTime" showunknownpath="true"/>
+                        </do_else>
+                      </do_else>
+                    </do_if>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="DestinationCleared" checkinterval="5s">
+              <conditions>
+                <check_value value="$ArrivedAtDestination"/>
+                <check_any>
+
+                  <!--No enemies and time has passed $CurrentMinTime-->
+                  <check_all>
+                    <check_value value="player.age" min="$CurrentMinTime"/>
+                    <check_any>
+                      <check_value value="($PirateShips.count?) and ($EnemiesTrue.count == 0)"/>
+                      <check_value value="($PirateShips == false) and ($Enemies.count == 0)"/>
+                    </check_any>
+                  </check_all>
+
+                  <!--Time has passed $CurrentMaxTime-->
+                  <check_all>
+                    <check_value value="$MaxTime" min="1s"/>
+                    <check_value value="player.age" min="$CurrentMaxTime"/>
+                    <!--TODO: Check the last time the player attacked something - speed up transition-->
+                  </check_all>
+                </check_any>
+              </conditions>
+              <actions>
+
+                <clear_group group="$Enemies"/>
+                <clear_group group="$EnemiesTrue"/>
+                <clear_group group="$OldEnemies"/>
+                <set_value name="$DestinationIndex" operation="add"/>
+                <remove_value name="$PatrolPaused"/>
+                <reset_cue cue="StartMission"/>
+              </actions>
+            </cue>
+
+            <cue name="ForceDestinationCleared_Trigger" onfail="cancel">
+              <conditions>
+                <check_value value="$ForceNextDestinationCue"/>
+              </conditions>
+              <cues>
+                <cue name="ForceDestinationCleared">
+                  <conditions>
+                    <event_cue_signalled cue="$ForceNextDestinationCue"/>
+                  </conditions>
+                  <actions>
+                    <debug_text text="'ForceDestinationCleared signalled'" chance="$DebugChance"/>
+                    <clear_group group="$Enemies"/>
+                    <clear_group group="$EnemiesTrue"/>
+                    <set_value name="$DestinationIndex" operation="add"/>
+                    <reset_cue cue="StartMission"/>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="ForceDestination_Trigger" onfail="cancel">
+              <conditions>
+                <check_value value="$ForceDestinationCue"/>
+              </conditions>
+              <cues>
+                <cue name="ForceDestination">
+                  <conditions>
+                    <event_cue_signalled cue="$ForceDestinationCue"/>
+                    <check_value value="@event.param.{1} and event.param.{1} != $DestinationIndex"/>
+                  </conditions>
+                  <actions>
+                    <debug_text text="'ForceDestination_Trigger signalled'" chance="$DebugChance"/>
+                    <clear_group group="$Enemies"/>
+                    <clear_group group="$EnemiesTrue"/>
+                    <set_value name="$DestinationIndex" exact="event.param.{1}"/>
+                    <reset_cue cue="StartMission"/>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="PlayerKill" instantiate="true">
+              <conditions>
+                <check_any>
+                  <check_all>
+                    <event_object_destroyed group="$EnemiesTrue"/>
+                    <check_value value="@event.param.isplayerowned"/>
+                  </check_all>
+                  <check_all>
+                    <event_player_killed_object/>
+                    <check_value value="event.param.isclass.object"/>
+                    <check_value value="$EnemyFactions.indexof.{event.param.owner}"/>
+
+                    <check_any>
+                      <check_all>
+                        <check_value value="$ArrivedAtDestination"/>
+                        <check_age max="$KillCutoffTime"/>
+                        <check_any>
+                          <check_all>
+                            <!--<check_value value="$PatrolTarget.isclass.sector or $PatrolTarget.isclass.cluster"/>-->
+                            <check_value value="event.param.hascontext.{$PatrolTarget}"/>
+                          </check_all>
+                          <check_all>
+                            <!--<check_value value="$PatrolTarget.isclass.sector or $PatrolTarget.isclass.cluster" negate="true"/>-->
+                            <check_value value="event.param.distanceto.[$PatrolTarget, $PatrolOffset]" max="$PatrolRange + 1km"/>
+                          </check_all>
+                        </check_any>
+                      </check_all>
+
+                      <check_all>
+                        <check_value value="$PreviousDestination.exists"/>
+                        <check_age max="$PreviousKillCutoffTime"/>
+                        <check_any>
+                          <check_all>
+                            <check_value value="$PreviousDestination.isclass.sector or $PreviousDestination.isclass.cluster"/>
+                            <check_value value="event.param.hascontext.{$PreviousDestination}"/>
+                          </check_all>
+                          <check_all>
+                            <check_value value="$PreviousDestination.isclass.sector or $PreviousDestination.isclass.cluster" negate="true"/>
+                            <check_value value="event.param.distanceto.[$PatrolTarget, $PatrolOffset]" max="$PreviousRange + 1km"/>
+                          </check_all>
+                        </check_any>
+                      </check_all>
+                    </check_any>
+                  </check_all>
+                </check_any>
+                <check_value value="player.controlled"/>
+              </conditions>
+              <actions>
+                <debug_text text="'Something was killed via: ' + event.name" chance="$DebugChance"/>
+                <do_if value="event.name == 'event_object_destroyed'">
+                  <set_value name="$Killed" exact="event.object"/>
+                  <set_value name="$Killer" exact="event.param"/>
+                </do_if>
+                <do_elseif value="event.name == 'event_player_killed_object'">
+                  <set_value name="$Killed" exact="event.param"/>
+                  <set_value name="$Killer" exact="player.controlled"/>
+                </do_elseif>
+
+                <!--This cue can fire twice for the same object-->
+                <do_if value="$Killed != $LastKilled">
+                  <do_if value="$KilledEnemySignalCue">
+                    <signal_cue_instantly cue="$KilledEnemySignalCue" param="[$Killed, $Killer]"/>
+                  </do_if>
+                  <debug_text text="'Successful patrol kill: ' + $Killed.knownname" chance="$DebugChance"/>
+                  <set_value name="$LastKilled" exact="$Killed"/>
+                  <do_if value="$Killed.isclass.[class.ship_l, class.ship_xl]">
+                    <set_value name="$KillCount" operation="add" exact="4"/>
+                  </do_if>
+                </do_if>
+                <do_else>
+                  <set_value name="$KillCount" operation="add" exact="1"/>
+                </do_else>
+              </actions>
+            </cue>
+
+            <cue name="CheckMissionStatus_TargetShipOwnerChange" instantiate="true">
+              <conditions>
+                <event_object_changed_true_owner group="$EnemiesTrue"/>
+                <check_value value="@event.param.isplayerowned"/>
+              </conditions>
+              <actions>
+                <do_if value="$Killed != $LastKilled">
+                  <do_if value="$EscapedEnemySignalCue">
+                    <signal_cue_instantly cue="EscapedEnemySignalCue" param="[$Killed, $Killer]"/>
+                  </do_if>
+                  <debug_text text="'Successful patrol kill: ' + $Killed.knownname" chance="$DebugChance"/>
+                  <set_value name="$LastKilled" exact="$Killed"/>
+                  <set_value name="$KillCount" operation="add"/>
+                  <set_value name="$feedbackvalue" exact="1" comment="success"/>
+                  <signal_cue cue="Cleanup"/>
+                </do_if>
+              </actions>
+            </cue>
+
+            <cue name="DestinationDestroyed">
+              <conditions>
+                <event_object_destroyed object="$PatrolTarget"/>
+              </conditions>
+              <actions>
+                <set_value name="$DestinationIndex" operation="add"/>
+                <reset_cue cue="StartMission"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <!--TODO remove_objective-->
+            <do_if value="$feedbackvalue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'ERROR: Feedback value is 0 and no error values were set. Defaulting to -100'" chance="$DebugChance"/>
+                <set_value name="$feedbackvalue" exact="-100"/>
+              </do_if>
+              <do_else>
+                <set_value name="$feedbackvalue" exact="$ErrorList.{1}"/>
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+                    <do_if value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'Destinations list not valid'"/>
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-102">
+                      <set_value name="$FeedbackText" exact="'Destinations list empty'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-103">
+                      <set_value name="$FeedbackText" exact="'EndSignalCue or MissionCue not defined'"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                    </do_else>
+
+                    <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+
+              <do_if value="$feedbackvalue" exact="1">
+                <set_value name="$FeedbackText" exact="'Patrol ended'"/>
+              </do_if>
+
+              <do_if value="$feedbackvalue" min="1">
+                <debug_text text="'Mission Successful. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_if>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission Failed. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+            <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$feedbackvalue"/>
+            <signal_cue cue="$EndSignalCue"/>
+            <cancel_cue cue="Patrol"/>
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

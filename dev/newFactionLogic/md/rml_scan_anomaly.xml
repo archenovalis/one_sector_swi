@@ -1,0 +1,296 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_Scan_Anomaly" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--
+    $feedbackvalue:
+    -102: EndSignalCue or MissionCue not defined
+    -101: Anomaly does not exist
+    -100: Undefined failure. Defaulted to -100
+    -2: Anomaly destroyed - partially scanned
+    -1: Anomaly destroyed - not scanned
+    1: Anomaly scanned - best result
+    2: Anomaly scanned - good result
+    3: Anomaly scanned - bad result-->
+
+    <library name="ScanAnomaly">
+      <params>
+        <param name="EndSignalCue"/>
+        <param name="MissionCue"/>
+        <param name="StartStep" default="1" comment="Briefing step to start the mission on"/>
+        <param name="UpdateBriefing" default="true" comment="Update the briefing objective step when the objective is updated"/>
+        
+        <param name="Anomaly" comment="Anomaly to scan"/>
+        <param name="Time" comment="Time in seconds to fully scan the anomaly under perfect conditions"/>
+        <param name="MinDistance" default="if $Anomaly then $Anomaly.size * 4" comment="Minimum distance where scan starts"/>
+        <param name="MinScanArea" default="if $Anomaly then $Anomaly.size / 4" comment="Minimum distance from the centre of the anomaly to face to start scanning"/>
+        <param name="FlyToDistance" default="null" comment="Range of random position around anomaly. null to point straight to the anomaly."/>
+
+        <param name="DebugChance" default="0"/>
+      </params>
+      <actions>
+        <debug_text text="'Scan anomaly mission'" chance="$DebugChance"/>
+        <set_value name="$feedbackvalue" exact="0"/>
+        <create_list name="$ErrorList"/>
+
+        <do_if value="typeof $Anomaly != datatype.component">
+          <append_to_list name="$ErrorList" exact="-101"/>
+        </do_if>
+        
+        <do_if value="not $EndSignalCue or not $MissionCue">
+          <append_to_list name="$ErrorList" exact="-102"/>
+        </do_if>
+
+      </actions>
+      <cues>
+
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="1"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup"/>
+          </actions>
+        </cue>
+
+        <cue name="StartMission" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" exact="0"/>
+          </conditions>
+          <actions>
+            <set_value name="$Progress" exact="0"/>
+            <set_value name="$ScanCount" exact="0"/>
+            
+            <do_if value="$FlyToDistance">
+              <set_value name="$UseFlyToLib" exact="true"/>
+            </do_if>
+            <do_else>
+              <set_value name="$UseFlyToLib" exact="false"/>
+              <update_mission cue="$MissionCue">
+                <briefing>
+                  <objective step="$StartStep" action="objective.flyto" object="$Anomaly"/>
+                </briefing>
+              </update_mission>
+            </do_else>
+            
+            <do_if value="$UpdateBriefing">
+              <update_mission cue="$MissionCue">
+                <briefing>
+                  <objective step="$StartStep + 1" action="objective.scan" object="$Anomaly"/>
+                </briefing>
+              </update_mission>
+            </do_if>
+          </actions>
+          <cues>
+            <cue name="FlyTo" onfail="cancel">
+              <conditions>
+                <check_value value="$UseFlyToLib"/>
+              </conditions>
+              <actions>
+                <do_if value="$FlyToDistance">
+                  <set_value name="$FlyToTarget" exact="$Anomaly.zone"/>
+                  <create_position name="$FlyToPosition" object="$Anomaly" max="$FlyToDistance"/>
+                </do_if>
+                <do_else>
+                  <set_value name="$FlyToTarget" exact="$Anomaly"/>
+                  <set_value name="$FlyToPosition" exact="position.[0,0,0]"/>
+                </do_else>
+              </actions>
+              <cues>
+                <cue name="FlyToTest_Ref" ref="md.RML_FlyTo.FlyTo">
+                  <param name="MissionCue" value="$MissionCue"/>
+                  <param name="StartStep" value="$StartStep" comment="Briefing step to start the mission on"/>
+                  <param name="UpdateBriefing" value="$UpdateBriefing"/>
+
+                  <!--Singular case-->
+                  <param name="Target" value="$FlyToTarget"/>
+                  <param name="Offset" value="$FlyToPosition"/>
+                  <param name="Distance" value="$FlyToDistance"/>
+
+                  <param name="FlyToObjective" value="objective.find"/>
+                  <param name="TargetAlias" value="$Anomaly.knownname"/>
+
+                  <param name="EndOnCompletion" value="false" comment="End this RML when the player has reached the destination. WARNING: If false, the caller must end the library."/>
+
+                  <param name="DebugChance" value="$DebugChance"/>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="FoundAnomaly" checkinterval="1s">
+              <conditions>
+                <check_any>
+                  <check_value value="$Anomaly.distanceto.{player.entity} lt $MinDistance"/>
+                  <check_value value="not $UseFlyToLib"/>
+                </check_any>
+              </conditions>
+              <actions>
+                <cancel_cue cue="FlyTo"/>
+                <set_objective cue="$MissionCue" action="objective.scan" object="$Anomaly" step="$StartStep + 1">
+                  <progress text="{30004,9005}" max="$Time"/>
+                </set_objective>
+                <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep + 1"/>
+              </actions>
+              <cues>
+                <cue name="Scan" checkinterval="1s" instantiate="true">
+                  <conditions>
+                    <check_value value="$Anomaly.distanceto.{player.entity} lt $MinDistance"/>
+                  </conditions>
+                  <actions>
+                    <set_value name="$Dist" exact="$Anomaly.distanceto.{player.entity}"/>
+                    <set_value name="$ForwardDist" exact="$Anomaly.distanceto.[player.entity, position.[0m, 0m, $Dist]]"/>
+                    <do_if value="$ForwardDist == 0">
+                      <set_value name="$Focus" exact="1"/>
+                    </do_if>
+                    <do_elseif value="$ForwardDist le $MinScanArea">
+                      <set_value name="$Focus" exact="1.0f - (1.0f / ($MinScanArea / $ForwardDist))"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$Focus" exact="0"/>
+                    </do_else>
+
+                    <!--<debug_text text="'$ForwardDist ' + $ForwardDist" chance="$DebugChance"/>
+                    <debug_text text="'$Focus ' + $Focus" chance="$DebugChance"/>-->
+                    <do_if value="$Focus">
+                      <set_value name="$ScanCount" operation="add"/>
+                      <do_if value="$Dist == 0">
+                        <set_value name="$DistanceFactor" exact="1.0f"/>
+                      </do_if>
+                      <do_else>
+                        <set_value name="$DistanceFactor" exact="1.0f - (1.0f / ($MinDistance / $Dist))"/>
+                      </do_else>
+                      <set_value name="$Progress" exact="$DistanceFactor * $Focus"/>
+                      <set_value name="$TotalProgress" exact="$DistanceFactor * $Focus" operation="add"/>
+                      <!--<debug_text text="'$TotalProgress ' + $TotalProgress" chance="$DebugChance"/>-->
+                      <!--<update_objective_progress cue="$MissionCue" progress="$TotalProgress" max="$Time"/>-->
+                      <remove_help all="true"/>
+                      <do_if value="$TotalProgress ge $Time">
+                        <set_value name="$AverageFocus" exact="$TotalProgress / $ScanCount"/>
+                        <debug_text text="'$AverageFocus ' + $AverageFocus" chance="$DebugChance"/>
+                        <do_if value="$AverageFocus lt 0.35">
+                          <set_value name="$feedbackvalue" exact="3"/>
+                        </do_if>
+                        <do_elseif value="$AverageFocus lt 0.6">
+                          <set_value name="$feedbackvalue" exact="2"/>
+                        </do_elseif>
+                        <do_else>
+                          <set_value name="$feedbackvalue" exact="1"/>
+                        </do_else>
+                        
+                        <signal_cue cue="Cleanup"/>
+                      </do_if>
+                      <do_else>
+                        <do_if value="$Progress lt 0.5">
+                          <set_value name="$StrengthText" exact="'\033R' + {30004,9002} + '\033X'"/>
+                        </do_if>
+                        <do_elseif value="$Progress lt 0.75">
+                          <set_value name="$StrengthText" exact="'\033Y' + {30004,9003} + '\033X'"/>
+                        </do_elseif>
+                        <do_else>
+                          <set_value name="$StrengthText" exact="'\033G' + {30004,9004} + '\033X'"/>
+                        </do_else>
+                        <set_value name="$ProgressText" exact="{30004,9005} + {1001,120} + ' ' + ((100.0f / $Time)f * $TotalProgress)i + '%\n{30004,9001}' + $StrengthText"/>
+                        <show_help custom="$ProgressText" silent="true" duration="3s" position="7"/>
+                      </do_else>
+                    </do_if>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+            
+            <!--Future-proofing. Shouldn't currently happen-->
+            <cue name="AnomalyDestroyed" instantiate="true">
+              <conditions>
+                <event_object_destroyed object="$Anomaly"/>
+              </conditions>
+              <actions>
+                <do_if value="$TotalProgress">
+                  <set_value name="$feedbackvalue" exact="-2"/>
+                </do_if>
+                <do_else>
+                  <set_value name="$feedbackvalue" exact="-1"/>
+                </do_else>
+
+                <signal_cue cue="Cleanup"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <!--TODO remove_objective-->
+            <remove_help all="true"/>
+
+            <do_if value="$feedbackvalue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'ERROR: Feedback value is 0 and no error values were set. Defaulting to -100'"/>
+                <set_value name="$feedbackvalue" exact="-100"/>
+              </do_if>
+              <do_else>
+                <set_value name="$feedbackvalue" exact="$ErrorList.{1}"/>
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+                    <do_if value="$ErrorList.{$Counter}" exact="-102">
+                      <set_value name="$FeedbackText" exact="'EndSignalCue or MissionCue not defined'"/>
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'Anomaly does not exist at start'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-100">
+                      <set_value name="$FeedbackText" exact="'Undefined failure. Defaulted to -100'"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                    </do_else>
+
+                    <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+                
+              <do_if value="$feedbackvalue" exact="-2">
+                <set_value name="$FeedbackText" exact="{30004,6061}" comment="'Anomaly destroyed - partially scanned'"/>
+              </do_if>
+              <do_elseif value="$feedbackvalue" exact="-1">
+                <set_value name="$FeedbackText" exact="{30004,6060}" comment="'Anomaly destroyed - scan not started'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="1">
+                <set_value name="$FeedbackText" exact="'Anomaly scanned - best result'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="2">
+                <set_value name="$FeedbackText" exact="'Anomaly scanned - good result'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="3">
+                <set_value name="$FeedbackText" exact="'Anomaly scanned - bad result'"/>
+              </do_elseif>
+
+              <do_if value="$feedbackvalue" min="1">
+                <debug_text text="'Mission Successful. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_if>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission Failed. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+            <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$feedbackvalue"/>
+            <signal_cue cue="$EndSignalCue"/>
+            <cancel_cue cue="ScanAnomaly"/>
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

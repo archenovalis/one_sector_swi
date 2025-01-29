@@ -1,0 +1,612 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_Protect_Object" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--
+    $feedbackvalue:
+    -102: EndSignalCue or MissionCue not defined
+    -101: Object does not exist at start
+    -100: Undefined failure. Defaulted to -100
+    -3: Object was killed by a player owned object
+    -2: Object killed by player
+    -1: Object killed by non-player object
+    1: All Objects safe at end
+    2: Some Objects safe at end-->
+
+    <library name="ProtectObject" version="3">
+      <params>
+        <param name="EndSignalCue"/>
+        <param name="MissionCue"/>
+        <param name="StartStep" default="1" comment="Briefing step to start the mission on"/>
+        <param name="UpdateBriefing" default="true" comment="Update the briefing objective step when the objective is updated"/>
+        
+        <!--Use either $Object or $ObjectGroup-->
+        <param name="Object" default="null" comment="Object to protect."/>
+        <!--Note: When using an Object group, keep in mind that differing factions or extreme distances can give odd guidance in this mission-->
+        <param name="ObjectGroup" default="null" comment="Group of objects to protect"/>
+        <param name="EnemyFactions" default="[]" comment="Only find enemies of these factions"/>
+        
+        <param name="ToleratePlayerKill" default="false" comment="Will the player killing one of the object end the mission"/>
+        <param name="ToleratePlayerOwnedKill" default="false" comment="Will a player object killing one of the object end the mission"/>
+
+        <param name="GuidanceOnObject" default="false" comment="When close to $Object, have guidance point to the object or find enemies?"/>
+        <param name="ObjectObjective" default="objective.protect" comment="Objective for the objects. e.g .protect or .escort" />
+        <param name="ObjectiveText" default="null" comment="Default is random object name"/>
+
+        <param name="FlyToRange" default="5km" comment="If null, RML_FlyTo will generate a distance. The value is saved to $MissionCue.$RML_FlyTo__Distance"/>
+
+        <param name="EndTime" default="0.0s" comment="The amount of time until the RML will be completed."/>
+        <param name="EndTimeIsSuccess" default="true" comment="Set $feedbackvalue to success when reaching the endtime."/>
+
+        <!--End Phase Params-->
+        <!--The End Phase is when the RML will be capable of ending successfully, once the object is relativly safe.-->
+        <!--The first condition to be met causes the end phase to start-->
+        <param name="TimeOut" default="null" comment="The amount of time until the end phase will start. Mission may continue until enemies are gone."/>
+        <param name="EndPhaseCue" default="null" comment="If this cue is complete, the end phase will start"/>
+        <param name="ForceEndCue" default="null" comment="Force the end of the protect RML"/>
+
+        <param name="KilledEnemySignalCue" default="null" comment="Cue to be signalled when a player owned object has killed (or forced bail) an enemy. params: [$enemy, $killer]"/>
+
+        <!--Signalling Removal of Protected Object-->
+        <!--TODO: Signal cue instantly and pass parameter-->
+        <param name="RemoveObjectCue" default="null"/>
+        <!--Parent cues calling this RML can Signal this RML to remove an object from the protected group.
+            This is useful in cases such as an Escort Mission where a ship in a convoy has docked safely.
+        
+            To Remove a Protected Object:
+            - Pass a cue to the parameter RemoveObjectCue
+              e.g <param name="RemoveObjectCue" value="ShipDocked"/>
+              
+            - This cue should complete when you want to remove an object from the group.
+            
+            - Use set_value to save the object to this cue, under the name of $RemovedObject
+              e.g <set_value name="My_Protect_RML_Call.$RemovedObject" exact="$DockedShip"/>
+              
+            - Signal the cue 'RemoveObject'
+              e.g <signal_cue cue="RemoveObject"/>-->
+
+        <param name="DebugChance" default="0"/>
+      </params>
+      <actions>
+        <debug_text text="'Protect mission'" chance="$DebugChance"/>
+        <set_value name="$RemovedObject" exact="null"/>
+        <set_value name="$feedbackvalue" exact="0"/>
+        <create_list name="$ErrorList"/>
+        <set_value name="$EndPhaseStarted" exact="false"/>
+        <create_group groupname="$Enemies"/>
+        
+        <do_if value="$Object.exists">
+          <add_to_group groupname="$ObjectsCopy" object="$Object"/>
+        </do_if>
+        <do_elseif value="typeof $ObjectGroup == datatype.group">
+          <add_to_group groupname="$ObjectsCopy" group="$ObjectGroup"/>
+        </do_elseif>
+        <do_else>
+          <append_to_list name="$ErrorList" exact="-101"/>
+        </do_else>
+        
+        <do_if value="not $EndSignalCue or not $MissionCue">
+          <append_to_list name="$ErrorList" exact="-102"/>
+        </do_if>
+
+        <do_if value="not $ObjectiveText">
+          <set_value name="$ObjectiveText" exact="''" />
+        </do_if>
+        <set_value name="$LastAttack" exact="0"/>
+      </actions>
+      <patch sinceversion="2">
+        <set_value name="$EndTime" exact="0.0"/>
+        <set_value name="$EndTimeIsSuccess" exact="true"/>
+      </patch>
+      <patch sinceversion="3">
+        <do_if value="$EnemyFaction">
+          <set_value name="$EnemyFactions" exact="[$EnemyFaction]"/>
+        </do_if>
+        <do_else>
+          <set_value name="$EnemyFactions" exact="[]"/>
+        </do_else>
+      </patch>
+
+      <cues>
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="1"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup"/>
+          </actions>
+        </cue>
+
+        <cue name="StartMission" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" exact="0"/>
+          </conditions>
+          <actions>
+            <set_value name="$InitialGroupCount" exact="$ObjectsCopy.count"/>
+            <set_value name="$RemovedObjects" exact="0"/>
+            <set_value name="$NearObjects" exact="false"/>
+            
+            <set_value name="$NoTimeOut" exact="true"/>
+            <do_if value="typeof $TimeOut == datatype.time">
+              <do_if value="$TimeOut" min="1">
+                <set_value name="$TimeOut" exact="$TimeOut + player.age"/>
+                <set_value name="$NoTimeOut" exact="false"/>
+                <signal_cue cue="Signal_CheckTimeOut"/>
+              </do_if>
+            </do_if>
+            <do_if value="$EndPhaseCue">
+              <set_value name="$NoTimeOut" exact="false"/>
+              <signal_cue cue="Signal_CheckEndPhaseCue"/>
+            </do_if>
+            <do_if value="$NoTimeOut">
+              <signal_cue cue="DummyTimeOut"/>
+            </do_if>
+
+            <do_if value="$ForceEndCue">
+              <signal_cue cue="Signal_ForceEndCue"/>
+            </do_if>
+          </actions>
+          <cues>
+            <cue name="FlyToTest_Ref" ref="md.RML_FlyTo.FlyTo">
+              <param name="MissionCue" value="$MissionCue"/>
+              <param name="StartStep" value="$StartStep" comment="Briefing step to start the mission on"/>
+              <param name="UpdateBriefing" value="$UpdateBriefing"/>
+
+              <!--Singular case-->
+              <param name="Target" value="$Object"/>
+
+              <!--Group case - no offset-->
+              <param name="Group" value="$ObjectsCopy"/>
+              <param name="TargetAlias" value="$ObjectiveText"/>
+              <param name="Distance" value="$FlyToRange"/>
+
+              <param name="EndOnCompletion" value="false" comment="End this RML when the player has reached the destination. WARNING: If false, the caller must end the library."/>
+              <param name="ReachedTargetSignalCue" value="ReachedObjects" comment="Cue to be signalled when player reaches the destination"/>
+              <param name="LeftTargetSignalCue" value="LeftObjects" comment="Cue to be signalled when player leaves the destination (only fired if EndOnCompletion is false)"/>
+
+              <param name="DebugChance" value="$DebugChance"/>
+            </cue>
+            
+            <cue name="ReachedObjects" instantiate="true">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <set_value name="$NearObjects" exact="true"/>
+                <signal_cue cue="UpdateGuidance"/>
+              </actions>
+            </cue>
+
+            <cue name="LeftObjects" instantiate="true">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <set_value name="$NearObjects" exact="false"/>
+              </actions>
+            </cue>
+            
+            <!--Update the guidance for the protected objects if one is destroyed or removed from the group-->
+            <cue name="UpdateGuidance" instantiate="true">
+              <conditions>
+                <event_cue_signalled/>
+                <check_value value="$NearObjects"/>
+              </conditions>
+              <actions>
+                <set_value name="$ProtectObjects" exact="$GuidanceOnObject"/>
+                <do_if value="not $ProtectObjects and $Enemies.count == 0">
+                  <set_value name="$ProtectObjects" exact="true"/>
+                </do_if>
+                
+                <do_if value="$ProtectObjects">
+                  <do_if value="$ObjectsCopy.count" min="1">
+                    <do_if value="$UpdateBriefing">
+                      <update_mission cue="$MissionCue">
+                        <briefing>
+                          <objective step="$StartStep" action="$ObjectObjective" group="$ObjectsCopy"/>
+                        </briefing>
+                      </update_mission>
+                      <set_objective cue="$MissionCue" step="$StartStep" action="$ObjectObjective" group="$ObjectsCopy" text="$ObjectiveText" silent="true" endtime="$EndTime"/>
+                    </do_if>
+                    <do_else>
+                      <set_objective cue="$MissionCue" action="$ObjectObjective" group="$ObjectsCopy" text="$ObjectiveText" silent="true" endtime="$EndTime"/>
+                    </do_else>
+                  </do_if>
+                  <do_else>
+                    <debug_text text="'ERROR: UpdateGuidance was called when there were no objects to protect. Calling EvaluateAtEnd anyway.'"/>
+                    <signal_cue cue="EvaluateAtEnd"/>
+                  </do_else>
+                </do_if>
+                <do_else>
+                  <do_if value="$UpdateBriefing">
+                    <update_mission cue="$MissionCue">
+                      <briefing>
+                        <objective step="$StartStep" action="objective.destroy" group="$Enemies"/>
+                      </briefing>
+                    </update_mission>
+                    <set_objective cue="$MissionCue" step="$StartStep" action="objective.destroy" group="$Enemies" text="{1004,1051}" silent="true" endtime="$EndTime"/>
+                  </do_if>
+                  <do_else>
+                    <set_objective cue="$MissionCue" action="objective.destroy" group="$Enemies" text="{1004,1051}" silent="true" endtime="$EndTime"/>
+                  </do_else>
+                </do_else>
+              </actions>
+            </cue>
+
+            <!--
+            Find potential enemies around protected objects
+            - Will affect guidance if enemies should be marked
+            - Will be used to decide when the protect mission is over
+            - Will be used for comments from NPC's e.g. Yisha: "Not many left now."-->
+            <cue name="CheckDangerLevel_Ticker" checkinterval="3s" instantiate="true">
+              <conditions>
+                <cue_is_complete cue="FlyToTest_Ref"/>
+              </conditions>
+              <actions>
+                <clear_group group="$Enemies"/>
+                <do_all exact="$ObjectsCopy.count" counter="$Counter">
+                  <set_value name="$CurrentObject" exact="$ObjectsCopy.{$Counter}"/>
+                  <!--Check that protected object is not in superhighway-->
+                  <do_if value="$CurrentObject.sector">
+                    <!--TODO:
+                    - Check if the potential enemy is capable of attacking the protected object
+                    - Implement a match_distance filter taking 'object' box into account
+                    - find incoming torpedos?-->
+                    <do_if value="@$EnemyFactions.count">
+                      <find_ship name="$EnemiesList" masstraffic="false" multiple="true" space="$CurrentObject.sector" owner="$EnemyFactions">
+                        <!--P1-TODO: escapepod property in macro?-->
+                        <!--<match macro="macro.ship_gen_xs_escapepod_01_a_macro" negate="true"/>-->
+                        <match_parent class="class.highway" negate="true"/>
+                      </find_ship>
+                    </do_if>
+                    <do_else>
+                      <find_ship name="$EnemiesList" masstraffic="false" multiple="true" space="$CurrentObject.sector">
+                        <!--P1-TODO: escapepod property in macro?-->
+                        <!--<match macro="macro.ship_gen_xs_escapepod_01_a_macro" negate="true"/>-->
+                        <match owner="faction.player" negate="true"/>
+                        <match_relation_to faction="$CurrentObject.owner" relation="enemy" comparison="le"/>
+                        <match_parent class="class.highway" negate="true"/>
+                      </find_ship>
+                    </do_else>
+                    <do_if value="not $EnemyDetectionRange?">
+                      <set_value name="$EnemyDetectionRange" exact="$MissionCue.$RML_FlyTo__Distance - 500m"/>
+                    </do_if>
+                    <!--not-so-nice loop checking distance from protected object bbox to potential enemy position
+                    (can't go from enemy bbox to protected object as it may conflict with the player's FlyTo distance)-->
+                    <do_all exact="$EnemiesList.count" counter="$i" reverse="true">
+                      <do_if value="$CurrentObject.bboxdistanceto.{$EnemiesList.{$i}} gt $EnemyDetectionRange">
+                        <remove_value name="$EnemiesList.{$i}"/>
+                      </do_if>
+                    </do_all>
+                    <add_to_group groupname="$Enemies" list="$EnemiesList"/>
+                  </do_if>
+                </do_all>
+
+                <!--If there are no enemies, check if the mission is ready to end-->
+                <do_if value="$Enemies.count" exact="0">
+                  <do_if value="player.age" min="$LastAttack + 10s">
+                    <do_if value="$EndPhaseStarted">
+                      <signal_cue cue="EvaluateAtEnd"/>
+                    </do_if>
+                  </do_if>
+                </do_if>
+                <!--Should the guidance point to enemies-->
+                <do_elseif value="not $GuidanceOnObject">
+                  <signal_cue cue="UpdateGuidance"/>
+                </do_elseif>
+              </actions>
+            </cue>
+
+            <cue name="EnemyDestroyed" instantiate="true">
+              <conditions>
+                <check_any>
+                  <event_object_destroyed group="$Enemies"/>
+                  <event_object_abandoned group="$Enemies"/>
+                  <event_object_changed_zone group="$Enemies"/>
+                  <event_object_docked group="$Enemies"/>
+                </check_any>
+              </conditions>
+              <actions>
+                <do_if value="$KilledEnemySignalCue">
+                  <do_if value="event.name == 'event_object_destroyed' and @event.param.isplayerowned">
+                    <signal_cue_instantly cue="$KilledEnemySignalCue" param="[event.object, event.param]"/>
+                  </do_if>
+                  <do_elseif value="event.name == 'event_object_abandoned'">
+                    <signal_cue_instantly cue="$KilledEnemySignalCue" param="[event.object]"/>
+                  </do_elseif>
+                </do_if>
+                <do_if value="$GuidanceOnObject">
+                  <signal_cue cue="UpdateGuidance"/>
+                </do_if>
+              </actions>
+            </cue>
+
+            <cue name="ObjectAttacked" instantiate="true">
+              <conditions>
+                <event_object_attacked group="$ObjectsCopy"/>
+              </conditions>
+              <actions>
+                <set_value name="$LastAttack" exact="player.age"/>
+              </actions>
+            </cue>
+
+            <!--On the event that a protected object is destroyed, check if the player forced an early end to the mission. If not, check if any objects remain.-->
+            <cue name="ObjectDestroyed" instantiate="true">
+              <conditions>
+                <event_object_destroyed group="$ObjectsCopy"/>
+              </conditions>
+              <actions>
+                <set_value name="$PlayerInvolved" exact="false"/>
+
+                <!--Is this nastier than a 1ms delay?-->
+                <remove_from_group object="event.object" group="$ObjectsCopy"/>
+
+                <!--If player killed object-->
+                <do_if value="event.param2" exact="killmethod.collected" negate="true">
+                  <do_if value="event.param" exact="player.ship">
+                    <debug_text text="'the object was killed by the player'"/>
+                    <set_value name="$ObjectDestroyedByPlayer" operation="add"/>
+                    <set_value name="$PlayerInvolved" exact="true"/>
+                    <!--If player not allowed to kill object-->
+                    <do_if value="$ToleratePlayerKill" exact="false">
+                      <set_value name="$feedbackvalue" exact="-2"/>
+                    </do_if>
+                  </do_if>
+
+                  <do_if value="$feedbackvalue" exact="0">
+                    <!--If player owned object killed object-->
+                    <do_if value="@event.param.owner == faction.player">
+                      <set_value name="$ObjectDestroyedByPlayerOwned" operation="add"/>
+                      <set_value name="$PlayerInvolved" exact="true"/>
+                      <debug_text text="'the object was killed by a player owned object'"/>
+                      <!--If player owned not allowed to kill object-->
+                      <do_if value="$ToleratePlayerOwnedKill" exact="false">
+                        <set_value name="$feedbackvalue" exact="-3"/>
+                      </do_if>
+                    </do_if>
+                  </do_if>
+                </do_if>
+
+                <!--Increment 'Other' Counter-->
+                <do_if value="$PlayerInvolved" exact="false">
+                  <set_value name="$ObjectDestroyedByOther" operation="add"/>
+                </do_if>
+
+                <!--If player forced an end, Cleanup-->
+                <do_if value="$feedbackvalue" exact="0" negate="true">
+                  <signal_cue cue="Cleanup"/>
+                </do_if>
+                <!--Else If there are no objects left, signal EvaluateAtEnd-->
+                <do_elseif value="$ObjectsCopy.count" exact="0">
+                  <signal_cue cue="EvaluateAtEnd"/>
+                </do_elseif>
+                <!--Else, continue the mission-->
+                <do_else>
+                  <signal_cue cue="UpdateGuidance"/>
+                </do_else>
+              </actions>
+            </cue>
+
+            <!--The $RemoveObjectCue is a cue outside this library which this library waits to complete.
+            Upon doing so, $RemovedObject, which is set outside this library is removed from the list of protected objects-->
+            
+            <!--TODO: Add a positive or negative feedback on whether the object was removed for a good or bad reason. This will affect the players result in this mission.-->
+            <cue name="RemoveObjectCheck" onfail="cancel">
+              <conditions>
+                <check_value value="$RemoveObjectCue"/>
+              </conditions>
+              <cues>
+                <cue name="RemoveObject" instantiate="true">
+                  <conditions>
+                    <event_cue_completed cue="$RemoveObjectCue"/>
+                  </conditions>
+                  <actions>
+                    <debug_text text="'Object removed from protect mission. ID: ' + $RemovedObject + ' . Name: ' + $RemovedObject.knownname"/>
+                    <remove_from_group object="$RemovedObject" group="$ObjectsCopy"/>
+                    <set_value name="$RemovedObjects" operation="add"/>
+
+                    <do_if value="$ObjectsCopy.count" exact="0">
+                      <signal_cue cue="EvaluateAtEnd"/>
+                    </do_if>
+                    <do_else>
+                      <signal_cue cue="UpdateGuidance"/>
+                    </do_else>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="NoObjectFailsafe" checkinterval="5s" instantiate="true">
+              <conditions>
+                <check_value value="$ObjectsCopy.count" min="1" negate="true"/>
+              </conditions>
+              <actions>
+                <debug_text text="'ERROR: This failsafe cue should never trigger. There are no objects left to protect. Some other cue should handle this.'"/>
+                <signal_cue cue="EvaluateAtEnd"/>
+              </actions>
+            </cue>
+
+            <cue name="EvaluateAtEnd">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <!--TODO: Evaluate ObjectDestroyed Counters, create more feedback values-->
+                <set_value name="$FinalObjectCount" exact="$RemovedObjects + $ObjectsCopy.count"/>
+                <do_if value="$FinalObjectCount" exact="0">
+                  <set_value name="$feedbackvalue" exact="-1"/>
+                </do_if>
+                <do_elseif value="$FinalObjectCount" exact="$InitialGroupCount">
+                  <set_value name="$feedbackvalue" exact="1"/>
+                </do_elseif>
+                <do_else>
+                  <set_value name="$feedbackvalue" exact="2"/>
+                </do_else>
+
+                <do_if value="$feedbackvalue" exact="0" negate="true">
+                  <signal_cue cue="Cleanup"/>
+                </do_if>
+              </actions>
+            </cue>
+
+            <cue name="CheckEndTime" checktime="$EndTime" onfail="cancel">
+              <conditions>
+                <check_value value="$EndTime gt 0"/>
+              </conditions>
+              <actions>
+                <do_if value="$EndTimeIsSuccess">
+                  <set_value name="$feedbackvalue" exact="1"/>
+                </do_if>
+                <signal_cue cue="Cleanup"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Signal_CheckTimeOut">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <cues>
+            <cue name="CheckTimeOut" checkinterval="1s">
+              <conditions>
+                <check_age min="$TimeOut"/>
+              </conditions>
+              <actions>
+                <set_value name="$EndPhaseStarted" exact="true"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Signal_CheckEndPhaseCue">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <debug_text text="'Check endphase'" chance="$DebugChance"/>
+            <do_if value="$EndPhaseCue.state" exact="cuestate.complete">
+              <cancel_cue cue="CheckEndPhaseCue"/>
+              <set_value name="$EndPhaseStarted" exact="true"/>
+            </do_if>
+          </actions>
+          <cues>
+            <cue name="CheckEndPhaseCue">
+              <conditions>
+                <event_cue_completed cue="$EndPhaseCue"/>
+              </conditions>
+              <actions>
+                <set_value name="$EndPhaseStarted" exact="true"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Signal_ForceEndCue">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <do_if value="$ForceEndCue.state" exact="cuestate.complete">
+              <cancel_cue cue="CheckForceEndCue"/>
+              <signal_cue cue="EvaluateAtEnd"/>
+            </do_if>
+          </actions>
+          <cues>
+            <cue name="CheckForceEndCue">
+              <conditions>
+                <event_cue_completed cue="$ForceEndCue"/>
+              </conditions>
+              <actions>
+                <signal_cue cue="EvaluateAtEnd"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="DummyTimeOut">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <delay exact="10s"/>
+          <actions>
+            <set_value name="$EndPhaseStarted" exact="true"/>
+          </actions>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <!--TODO remove_objective-->
+
+            <do_if value="$feedbackvalue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'ERROR: Feedback value is 0 and no error values were set. Defaulting to -100'"/>
+                <set_value name="$feedbackvalue" exact="-100"/>
+              </do_if>
+              <do_else>
+                <set_value name="$feedbackvalue" exact="$ErrorList.{1}"/>
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+                    <do_if value="$ErrorList.{$Counter}" exact="-102">
+                      <set_value name="$FeedbackText" exact="'EndSignalCue or MissionCue not defined'"/>
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'Object does not exist at start'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-100">
+                      <set_value name="$FeedbackText" exact="'Undefined failure. Defaulted to -100'"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                    </do_else>
+
+                    <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+
+              <do_if value="$feedbackvalue" exact="-3">
+                <set_value name="$FeedbackText" exact="{30004,6070}" comment="'Object was killed by a player owned object'"/>
+              </do_if>
+              <do_elseif value="$feedbackvalue" exact="-2">
+                <set_value name="$FeedbackText" exact="{30004,6071}" comment="'Object killed by player'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="-1">
+                <set_value name="$FeedbackText" exact="{30004,6072}" comment="'Object killed by non-player object'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="1">
+                <set_value name="$FeedbackText" exact="'All Objects safe at end'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="2">
+                <set_value name="$FeedbackText" exact="'Some Objects safe at end'"/>
+              </do_elseif>
+
+              <do_if value="$feedbackvalue" min="1">
+                <debug_text text="'Mission Successful. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_if>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission Failed. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+            <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$feedbackvalue"/>
+            <signal_cue cue="$EndSignalCue"/>
+            <cancel_cue cue="ProtectObject"/>
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

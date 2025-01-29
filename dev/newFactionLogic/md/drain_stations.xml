@@ -1,0 +1,164 @@
+<?xml version="1.0" encoding="iso-8859-1" ?>
+<mdscript name="Drain_Stations" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+    <cue name="Start" checktime="5s" checkinterval="5s">
+      <conditions>
+        <cue_is_complete cue="md.Setup.GameStart"/>
+        <check_value value="player.galaxy.macro.ismacro.{macro.xu_ep2_universe_macro}"/>
+        <!-- <check_value value="false" comment="Remove to enable"/> -->
+      </conditions>
+      <actions>
+        <set_value name="$Debugchance" exact="0"/>
+        <set_value name="$ClusterIndex" exact="1"/>
+        <find_cluster name="$Clusters" multiple="true"/>
+        <set_value name="$StationData" exact="table[]"/>
+      </actions>
+      <cues>
+        <cue name="UpdateClusters" instantiate="true">
+          <conditions>
+            <!-- NOTE: this cue will only trigger after saving and loading once, otherwise this early event will be missed as the listener is set up too late when the cue is freshly added -->
+            <event_game_loaded />
+          </conditions>
+          <actions>
+            <!-- update list of clusters since list could change through Mods or DLCs being enabled/disabled -->
+            <find_cluster name="$Clusters" multiple="true" />
+            <debug_text text="'Updated list of clusters, now tracking %1 clusters'.[$Clusters.count]" chance="$Debugchance"/>
+            <do_if value="$ClusterIndex gt $Clusters.count">
+              <set_value name="$ClusterIndex" exact="1"/>
+            </do_if>
+            <!-- purge stations that may not exist anymore -->
+            <set_value name="$StationKeys" exact="$StationData.keys.list"/>
+            <do_all exact="$StationKeys.count" counter="$KeyIdx">
+              <do_if value="not $StationKeys.{$KeyIdx}.exists">
+                <debug_text text="'Removed destroyed station %1 from $StationData'.[$StationKeys.{$KeyIdx}]" chance="$Debugchance"/>
+                <remove_value name="$StationData.{$StationKeys.{$KeyIdx}}"/>
+              </do_if>
+            </do_all>
+            <remove_value name="$StationKeys"/>
+          </actions>
+        </cue>
+
+        <library name="DrainStation">
+          <actions>
+            <do_if value="$Station.exists">
+              <do_if value="not $StationData.{$Station}?">
+                <set_value name="$StationData.{$Station}" exact="table[]"/>
+              </do_if>
+              <set_value name="$TradeWares" exact="$Station.tradewares.list"/>
+              <do_if value="$TradeWares.count">
+                <do_all exact="$TradeWares.count" counter="$WareIdx">
+                  <set_value name="$Ware" exact="$TradeWares.{$WareIdx}" />
+                  <set_value name="$MaxAmount" exact="$Station.cargo.{$Ware}.target"/>
+
+                  <!--debug_text text="$TradeWares.{$WareIdx}.name + ' amount=' + ($Station.cargo.{$Ware}.count)f + ' MaxAmount=' + $MaxAmount + ' calc=' + ($Station.cargo.{$Ware}.count)f / $MaxAmount"/-->
+
+                  <do_if value="$MaxAmount gt 0">
+                    <do_if value="$StationData.{$Station}.{$Ware}?">
+                      <append_to_list name="$StationData.{$Station}.{$Ware}" exact="($Station.cargo.{$Ware}.count)f / $MaxAmount"/>
+                    </do_if>
+                    <do_else>
+                      <set_value name="$StationData.{$Station}.{$Ware}" exact="[($Station.cargo.{$Ware}.count)f / $MaxAmount]"/>
+                    </do_else>
+                    <do_if value="not $Station.istradestation or $StationData.{$Station}.{$Ware}.count gt 2">
+                      <!-- build average and check if we need to drain something -->
+                      <!--check if faction is HighDrain-->
+                      <do_if value="$HighDrainFactions? and $HighDrainFactions.indexof.{$Station.owner}" comment="$HighDrainFactions may not exist if library is called from a scenario">
+                        <do_if value="$StationData.{$Station}.{$Ware}.average gt 0.6f">
+                          <remove_cargo object="$Station" ware="$Ware" min="$MaxAmount * 0.2f" max="$MaxAmount * 0.4f" result="$RemovedAmount"/>
+                          <debug_text text="'Drained %1 %2 from %3(%4) in %5'.[$RemovedAmount, $Ware, $Station.knownname, $Station, $Station.sector.knownname]" chance="$Debugchance"/>
+                          <!-- time;type;sink;sinkid;agent;agentid;source;sourceid;cluster;sector;zone;ware;amount;volume-->
+                          <debug_text text="'#DRAIN#;%1;drain;NULL;0x0;Drain_Stations;0xfefe;%2;%3;%4;%5;%6;%7;%8;%9'.[player.age, $Station.knownname, $Station, $Station.cluster.knownname, $Station.sector.knownname, $Station.zone.knownname, $Ware.name, $RemovedAmount, $RemovedAmount * $Ware.volume]" filter="economy_verbose" context="false"/>
+                        </do_if>
+                      </do_if>
+                      <do_elseif value="$StationData.{$Station}.{$Ware}.average gt 0.75f">
+                        <remove_cargo object="$Station" ware="$Ware" min="$MaxAmount * 0.2f" max="$MaxAmount * 0.4f" result="$RemovedAmount"/>
+                        <debug_text text="'Drained %1 %2 from %3(%4) in %5'.[$RemovedAmount, $Ware, $Station.knownname, $Station, $Station.sector.knownname]" chance="$Debugchance"/>
+                        <!-- time;type;sink;sinkid;agent;agentid;source;sourceid;cluster;sector;zone;ware;amount;volume-->
+                        <debug_text text="'#DRAIN#;%1;drain;NULL;0x0;Drain_Stations;0xfefe;%2;%3;%4;%5;%6;%7;%8;%9'.[player.age, $Station.knownname, $Station, $Station.cluster.knownname, $Station.sector.knownname, $Station.zone.knownname, $Ware.name, $RemovedAmount, $RemovedAmount * $Ware.volume]" filter="economy_verbose" context="false" />
+                      </do_elseif>
+                      <do_else>
+                        <debug_text text="'No need to drain %1 from %2(%3) in %4. Stocklevel history: %5'.[$Ware, $Station.knownname, $Station, $Station.sector.knownname, $StationData.{$Station}.{$Ware}]" chance="$Debugchance"/>
+                      </do_else>
+                      <remove_value name="$StationData.{$Station}.{$Ware}.{1}"/>
+                    </do_if>
+                  </do_if>
+                  <do_elseif value="$StationData.{$Station}.{$Ware}?">
+                    <!-- remove ware from tracking if target amount is <= 0 -->
+                    <remove_value name="$StationData.{$Station}.{$Ware}"/>
+                  </do_elseif>
+                </do_all>
+              </do_if>
+              <do_else>
+                <debug_text text="'No wares to drain from %1(%2) in %3.'.[$Station.knownname, $Station, $Station.sector.knownname]" chance="$Debugchance"/>
+              </do_else>
+            </do_if>
+          </actions>
+        </library>
+
+        <library name="DrainStationAll" purpose="run_actions" comment="mostly useful for debugging">
+          <params>
+            <param name="Station"/>
+            <param name="TradeWares"  comment="e.g. $Station.cargo.list or $Station.tradewares.list (see LSO 'select trade wares')"/>
+            <param name="DebugChance" default="0"/>
+          </params>
+          <actions>
+            <do_if value="$Station.exists and $TradeWares.count">
+              <do_all exact="$TradeWares.count" counter="$WareIdx">
+                <set_value name="$Ware" exact="$TradeWares.{$WareIdx}" />
+                <remove_cargo object="$Station" ware="$Ware" exact="$Station.cargo.{$Ware}.count" result="$RemovedAmount"/>
+                <debug_text text="'Drained %1 %2 from %3(%4) in %5'.[$RemovedAmount, $Ware, $Station.knownname, $Station, $Station.sector.knownname]" chance="$DebugChance"/>
+              </do_all>
+            </do_if>
+          </actions>
+        </library>
+
+        <cue name="DrainLoop" version="2">
+          <actions>
+            <create_list name="$HighDrainFactions"/>
+            <!--DLC factions with HighDrain patched in here-->
+            <set_value name="$Cluster" exact="$Clusters.{$ClusterIndex}"/>
+            <set_value name="$ClusterIndex" operation="add"/>
+            <do_if value="$ClusterIndex gt $Clusters.count">
+              <set_value name="$ClusterIndex" exact="1"/>
+            </do_if>
+
+            <do_if value="$Cluster.exists">
+              <find_sector name="$Sectors" space="$Cluster" multiple="true" />
+              <do_all exact="$Sectors.count" counter="$SectorIdx">
+                <set_value name="$Sector" exact="$Sectors.{$SectorIdx}"/>
+                <do_if value="$Sector.owner">
+                  <find_station name="$Stations" space="$Sector" tradestation="true" multiple="true">
+                    <match_attention max="attention.insector" />
+                    <match owner="faction.player" negate="true"/>
+                  </find_station>
+                  <debug_text text="'Drain_Stations processing %1 stations in %2'.[$Stations.count, $Sector.knownname]" chance="$Debugchance"/>
+                  <do_all exact="$Stations.count" counter="$i">
+                    <set_value name="$Station" exact="$Stations.{$i}"/>
+                    <include_actions ref="DrainStation"/>
+                  </do_all>
+                </do_if>
+              </do_all>
+            </do_if>
+          </actions>
+          <patch sinceversion="1">
+            <remove_value name="$Offer"/>
+            <remove_value name="$SellOffers"/>
+            <remove_value name="$StationMacro"/>
+          </patch>
+          <patch sinceversion="2">
+            <create_list name="$HighDrainFactions"/>
+          </patch>
+          <cues>
+            <cue name="DrainLoop_Reset">
+              <!-- round-trip through the universe should take 45 minutes, normalize to number of clusters (works for <= 108 clusters, then gets slower) -->
+              <delay min="[45min / $Clusters.count - 10s, 15s].max" max="[45min / $Clusters.count + 10s, 25s].max"/>
+              <actions>
+                <reset_cue cue="DrainLoop"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+      </cues>
+    </cue>
+  </cues>
+</mdscript>

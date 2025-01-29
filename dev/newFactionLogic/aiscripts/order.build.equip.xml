@@ -1,0 +1,356 @@
+<?xml version="1.0" encoding="utf-8"?>
+<aiscript name="order.build.equip" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" priority="3" version="8">
+  <!--Build order to fly to an object and restock ammo and units
+  If cancelled, the build task is removed from the building object-->
+  <order id="Equip" name="{1041, 501}" description="{1041, 502}" category="internal" allowinloop="false">
+    <params>
+      <param name="build" type="build" default="null" text="{1041, 10153}" advanced="true" comment="Build">
+        <input_param name="playerreadonly" value="true"/>
+      </param>
+      <param name="subordinateorders" type="internal" default="[]" comment="Subordinate orders"/>
+      <param name="cannotdock" type="internal" default="false" text="{1041, 10133}" comment="Unable to dock. used for error handling in case of inability to dock"/>
+      <param name="internalorder" type="bool" default="false" advanced="true" text="{1041, 10159}" comment="Order results from an automated behavior."/>
+      <param name="debugchance" type="bool" default="0" advanced="true" text="{1041, 10086}" comment="Print debug output">
+        <input_param name="truevalue" value="100"/>
+      </param>
+    </params>
+    <requires>
+      <match shiptype="shiptype.lasertower" negate="true"/>
+      <match class="class.spacesuit" negate="true"/>
+    </requires>
+    <location object="$build.object" condition="@$build.object.exists"/>
+  </order>
+  <!-- to do: determine if any further interrupts are needed. add here as necessary. -->
+  <interrupts>
+    <handler ref="AttackHandler"/>
+    <handler ref="MissileLockHandler" />
+    <handler ref="ScannedHandler"/>
+    <handler ref="InspectedHandler"/>
+    <handler ref="FoundAbandonedHandler"/>
+    <handler ref="FoundLockboxHandler"/>
+  </interrupts>
+  <init>
+    <set_command command="command.resupply"/>
+  </init>
+  <patch sinceversion="2" early="true">
+    <set_value name="$waittime" exact="10min"/>
+  </patch>
+  <patch sinceversion="5">
+    <do_if value="not $inprogress?">
+      <set_value name="$inprogress" exact="false"/>
+    </do_if>
+  </patch>
+  <patch sinceversion="6">
+    <!-- patched to true since that is safer. if no path is possible, order should be called again with the proper flag set. -->
+    <set_value name="$internalorder" exact="this.isplayerowned"/>
+  </patch>
+  <patch sinceversion="7">
+    <do_if value="this.assignedcontrolled.order.state == orderstate.critical and $build.isshipmodification and @$build.object.builds.queued.indexof.{$build} and $build.object.canabortbuild.{$build}">
+      <set_value name="$debugchance" exact="100" comment="Set debug chance for additonal info when the order aborts"/>
+      <debug_text text="'Aborting build to equip ship ' + this.assignedcontrolled + ' ' + this.assignedcontrolled.knownname + '. Order is critical while the build is not processing which is no longer an accepted state.'" filter="savegame"/>
+      <abort_build container="$build.object" build="$build"/>
+    </do_if>
+  </patch>
+  <attention min="unknown">
+    <actions>
+      <label name="init"/>
+
+      <!-- short wait to prevent any further blocking actions in case this order has already been cancelled at this point. in that case, order will stop after the blocking action. important for actions that act upon this order. -->
+      <wait exact="1ms" sinceversion="8"/>
+
+      <!-- it is possible that the build was already done before we start this script. -->
+      <do_if value="not $build.exists">
+        <debug_text text="'Build task does not exist ' + $build + ' - aborting'" filter="error"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <do_if value="not @$build.object.exists">
+        <debug_text text="'Build task does not have a building object assigned ' + $build + ' - aborting'" filter="error"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <do_if value="$build.buildobject != this.ship">
+        <debug_text text="'Build task is not set to build this ship ' + $build + ' - aborting'" filter="error"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <do_if value="not $build.isshipmodification">
+        <debug_text text="'Build task is not set to modify the ship ' + $build + ' - aborting'" filter="error"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <do_if value="not $build.object.builds.queued.indexof.{$build}">
+        <do_if value="not $build.object.builds.inprogress.indexof.{$build}">
+          <assert value="$build.object.builds.todelete.indexof.{$build}" text="'Build task ' + $build + ' is no longer referenced by the build object ' + $build.object + ' ' + $build.object.knownname + ' [Owen]'"/>
+          <debug_text text="'Build task ' + $build + ' is not queued at the build object ' + $build.object + ' ' + $build.object.knownname + ' - aborting'" chance="$debugchance"/>
+          <resume label="finish"/>
+        </do_if>
+        <debug_text text="'Build ' + $build + ' is already in progress. NPC may have taken over from another during the build.'" chance="$debugchance"/>
+      </do_if>
+
+      <set_value name="$destination_station" exact="$build.object"/>
+      <add_to_group groupname="$subordinates" list="this.ship.subordinates"/>
+
+      <do_if value="(@this.ship.dock.container == $destination_station) or (this.ship.parkedat and ((this.ship.parkedat == $destination_station) or this.ship.parkedat.hascontext.{$destination_station}))">
+        <resume label="equip"/>
+      </do_if>
+
+      <!-- if we are not where the station is, go there. -->
+      <do_if value="$destination_station.zone" exact="this.zone" negate="true">
+        <debug_text text="'%1 (%2) needs to go to %3, %4, %5 to resupply at %6. Going there.'.[this.ship.knownname, this.ship, $destination_station.zone.knownname, $destination_station.sector.knownname, $destination_station.cluster.knownname, $destination_station.knownname]" chance="$debugchance"/>
+        <run_script name="'move.generic'" result="$movesuccess">
+          <param name="destination" value="$destination_station"/>
+          <param name="endintargetzone" value="true"/>
+          <param name="strictblacklist" value="$internalorder"/>
+          <param name="debugchance" value="$debugchance"/>
+        </run_script>
+        <do_if value="not $movesuccess">
+          <do_if value="@this.assignedcontrolled.order.isrunning">
+            <set_order_failed order="this.assignedcontrolled.order" text="{1045, 101}" comment="Unable to reach destination." recurring="$internalorder"/>
+          </do_if>
+          <debug_text text="'Unable to move to destination %s %s possibly due to blacklist. Returning.'.[$destination_station.class, @$destination_station.knownname]" chance="$debugchance"/>
+          <resume label="finish"/>
+        </do_if>
+      </do_if>
+
+      <do_if value="not this.ship.isplayerowned and $subordinates.count gt 0">
+        <do_all exact="$subordinates.count" counter="$i">
+          <do_if value="$subordinates.{$i}.isclass.[class.ship_xl, class.ship_l, class.ship_m, class.ship_s]">
+            <do_all exact="$subordinates.{$i}.orders.count + 1" counter="$j">
+              <do_if value="$j gt $subordinates.{$i}.orders.count">
+                <debug_text text="'%1 (%2) signalling %3 (%4) to resupply.'.[this.ship.knownname, this.ship, $subordinates.{$i}.knownname, $subordinates.{$i}]" chance="$debugchance"/>
+                <!--<create_order object="$subordinates.{$i}" id="'Resupply'" immediate="true">
+                  <param name="urgent" value="false"/>
+                  <param name="debugchance" value="$debugchance"/>
+                </create_order>-->
+                <signal_objects object="$subordinates.{$i}" param="'resupply'" param2="[false]" param3="$debugchance" comment="param2 = urgent?, param3 = $debugchance"/>
+              </do_if>
+              <do_elseif value="$subordinates.{$i}.orders.{$j}.id" exact="'Resupply'">
+                <break/>
+              </do_elseif>
+            </do_all>
+          </do_if>
+        </do_all>
+      </do_if>
+
+      <do_if value="$cannotdock">
+        <debug_text text="'cannot dock. aborting.'" chance="$debugchance"/>
+        <do_if value="@this.assignedcontrolled.order.isrunning">
+          <set_order_failed order="this.assignedcontrolled.order" text="{1045,119}" comment="Unable to dock." recurring="$internalorder"/>
+        </do_if>
+        <resume label="finish"/>
+      </do_if>
+      <!--<assert value="this.ship.order.id == 'Equip'" text="'Ship equipping with order other than Equip. Order: %s'.[this.ship.order.id]" break="always"/>-->
+      <!-- DockAndWait should return shortly after docking since it is called immediately. -->
+      <create_order object="this.ship" id="'DockAndWait'" immediate="true">
+        <param name="destination" value="$destination_station"/>
+        <param name="building" value="true"/>
+        <param name="waittime" value="8760h"/>
+        <param name="dockfollowers" value="$destination_station.isclass.station"/>
+        <param name="undockhandler" value="this.ship.order"/>
+        <param name="callerid" value="this.ship.order"/>
+        <param name="internalorder" value="true"/>
+        <param name="debugchance" value="$debugchance"/>
+      </create_order>
+
+      <wait/>
+
+      <label name="equip"/>
+
+      <do_if value="$internalorder and @this.assignedcontrolled.order.isrunning">
+        <clear_recurring_order_failure object="this.assignedcontrolled" id="this.assignedcontrolled.order.id"/>
+      </do_if>
+
+      <set_value name="$wait"/>
+
+      <!-- NB: build could become invalid while we are waiting. check for build validity every few minutes. -->
+      <do_while value="$wait?">
+        <remove_value name="$wait"/>
+
+        <set_value name="$inprogress" exact="false"/>
+        <do_if value="$destination_station.builds.queued.indexof.{$build}">
+          <debug_text text="'%s %s has a queued build pertaining to us.'.[$destination_station.knownname, $destination_station]" chance="$debugchance"/>
+          <signal_objects object="$destination_station" param="'equip_request'" delay="1s"/>
+          <set_value name="$wait"/>
+        </do_if>
+        <do_elseif value="$destination_station.builds.inprogress.indexof.{$build}">
+          <debug_text text="'%s %s has an ongoing build pertaining to us.'.[$destination_station.knownname, $destination_station]" chance="$debugchance"/>
+          <set_value name="$inprogress" exact="true"/>
+          <set_value name="$wait"/>
+        </do_elseif>
+
+        <do_if value="$wait?">
+          <do_if value="$inprogress and this.assignedcontrolled.order and this.assignedcontrolled.order.state != orderstate.critical">
+            <set_value name="$buildingprocessor" exact="this.ship.buildingprocessor"/>
+            <do_if value="$buildingprocessor">
+              <do_if value="$buildingprocessor.canabortbuild">
+                <debug_text text="'Build can still be aborted. Order %s remains non-critical.'.[this.assignedcontrolled.order.id]" chance="$debugchance"/>
+              </do_if>
+              <do_else>
+                <debug_text text="'Build can not be aborted. Setting order %s to critical.'.[this.assignedcontrolled.order.id]" chance="$debugchance"/>
+                <set_order_state order="this.assignedcontrolled.order" state="orderstate.critical"/>
+              </do_else>
+            </do_if>
+            <remove_value name="$buildingprocessor"/>
+          </do_if>
+          <debug_text text="'waiting'" chance="$debugchance"/>
+          <do_if value="$destination_station.builds.queued.indexof.{$build}">
+            <!--Build not yet started. Wait longer for it to be processed-->
+            <set_value name="$waittime" min="10min" max="12min"/>
+          </do_if>
+          <do_else>
+            <set_value name="$waittime" min="5min" max="7min"/>
+          </do_else>
+          <wait exact="$waittime">
+            <interrupt>
+              <conditions>
+                <check_any>
+                  <event_build_started object="$destination_station" build="$build"/>
+                  <check_all>
+                    <event_build_loadout_applied object="$destination_station" build="$build"/>
+                    <!--Only respond to the loadout_applied event if the order is not yet critical-->
+                    <check_value value="this.assignedcontrolled.order and this.assignedcontrolled.order.state != orderstate.critical"/>
+                  </check_all>
+                  <event_build_finished object="$destination_station" build="$build"/>
+                  <event_build_cancelled object="$destination_station" build="$build"/>
+                  <event_object_order_cancelled object="this.assignedcontrolled" order="this.assignedcontrolled.order"/>
+                </check_any>
+              </conditions>
+              <actions>
+                <do_if value="event.name == 'event_build_started'">
+                  <do_if value="$inprogress">
+                    <debug_text text="'event_build_started for build ' + $build + ' which was already in progress for object ' + this.object + ' ' + this.object.knownname + ' [' + this.object.idcode + ']. This can happen as this event is dispatched a frame later.'" chance="$debugchance"/>
+                  </do_if>
+                  <do_else>
+                    <debug_text text="'%1 (%2) [%3] is prepared to start equiping itself at %4 in %5, %6, %7.'.[this.ship.knownname, this.ship, this.ship.idcode, $destination_station.knownname, $destination_station.zone.knownname, $destination_station.sector.knownname, $destination_station.cluster.knownname]" chance="$debugchance"/>
+                  </do_else>
+                  <set_value name="$buildstarted"/>
+                </do_if>
+                <do_elseif value="event.name == 'event_build_loadout_applied'">
+                  <debug_text text="'%1 (%2) [%3] has had the loadout applied after waiting at %4 in %5, %6, %7.'.[this.ship.knownname, this.ship, this.ship.idcode, $destination_station.knownname, $destination_station.zone.knownname, $destination_station.sector.knownname, $destination_station.cluster.knownname]" chance="$debugchance"/>
+                  <set_value name="$buildstarted"/>
+                </do_elseif>
+                <do_elseif value="event.name == 'event_object_order_cancelled'">
+                  <do_if value="this.assignedcontrolled.order.state == orderstate.critical">
+                    <debug_text text="'%1 (%2) [%3] has had its build order cancelled at %4 in %5, %6, %7. but it is currently CRITICAL. Will finish the build.'.[this.ship.knownname, this.ship, this.ship.idcode, $destination_station.knownname, $destination_station.zone.knownname, $destination_station.sector.knownname, $destination_station.cluster.knownname]" chance="$debugchance"/>
+                  </do_if>
+                  <do_else>
+                    <debug_text text="'%1 (%2) [%3] has had its build order cancelled at %4 in %5, %6, %7. It was not critical'.[this.ship.knownname, this.ship, this.ship.idcode, $destination_station.knownname, $destination_station.zone.knownname, $destination_station.sector.knownname, $destination_station.cluster.knownname]" chance="$debugchance"/>
+                    <remove_value name="$wait"/>
+                    <remove_value name="$buildstarted"/>
+                  </do_else>
+                </do_elseif>
+                <do_else>
+                  <do_if value="event.name == 'event_build_finished' and this.$restock_blackliststations?">
+                    <remove_value name="this.$restock_blackliststations"/>
+                  </do_if>
+                  <debug_text text="'%1 (%2) [%3] has %4 equipping at %5 in %6, %7, %8.'.[this.ship.knownname, this.ship, this.ship.idcode, if event.name == 'event_build_finished' then 'finished' else 'aborted', $destination_station.knownname, $destination_station.zone.knownname, $destination_station.sector.knownname, $destination_station.cluster.knownname]" chance="$debugchance"/>
+                  <remove_value name="$wait"/>
+                </do_else>
+              </actions>
+            </interrupt>
+          </wait>
+          <do_if value="$buildstarted?">
+            <debug_text text="'waiting for build ' + $build + ' to finish.'" chance="$debugchance"/>
+            <do_if value="this.assignedcontrolled.order and this.assignedcontrolled.order.state != orderstate.critical">
+              <set_value name="$buildingprocessor" exact="this.ship.buildingprocessor"/>
+              <do_if value="$buildingprocessor and not $buildingprocessor.canabortbuild">
+                <debug_text text="'Build can not be aborted. Setting order %s to critical.'.[this.assignedcontrolled.order.id]" chance="$debugchance"/>
+                <set_order_state order="this.assignedcontrolled.order" state="orderstate.critical"/>
+              </do_if>
+              <remove_value name="$buildingprocessor"/>
+            </do_if>
+            <remove_value name="$buildstarted"/>
+          </do_if>
+          <do_elseif value="$wait? and not this.isplayerowned">
+            <do_if value="this.ship.build == $build">
+              <do_if value="@this.ship.buildingprocessor.canabortbuild">
+                <do_if value="not this.$restock_blackliststations?">
+                  <create_list name="this.$restock_blackliststations"/>
+                </do_if>
+                <do_if value="not this.$restock_blackliststations.indexof.{$destination_station}">
+                  <append_to_list name="this.$restock_blackliststations" exact="$destination_station"/>
+                </do_if>
+                <debug_text text="'Aborting build ' + $build + ' to upgrade ' + this.ship + ' ' + this.ship.knownname + ' due to nothing happening for a while'" chance="$debugchance"/>
+                <set_value name="$cleanupaction" exact="'abort_build'"/>
+                <remove_value name="$wait"/>
+              </do_if>
+            </do_if>
+            <do_elseif value="$destination_station.builds.queued.indexof.{$build}">
+              <do_if value="not this.$restock_blackliststations?">
+                <create_list name="this.$restock_blackliststations"/>
+              </do_if>
+              <do_if value="not this.$restock_blackliststations.indexof.{$destination_station}">
+                <append_to_list name="this.$restock_blackliststations" exact="$destination_station"/>
+              </do_if>
+              <debug_text text="'Removing queued build ' + $build + ' to upgrade ' + this.ship + ' ' + this.ship.knownname + ' due to nothing happening for a while'" chance="$debugchance"/>
+              <set_value name="$cleanupaction" exact="'remove_build'"/>
+              <remove_value name="$wait"/>
+            </do_elseif>
+          </do_elseif>
+        </do_if>
+        <do_else>
+          <do_if value="not $build.exists">
+            <!--This line probably will never be hit as the order is likely to have been aborted along with the build destruction.-->
+            <debug_text text="'build no longer exists which usually means it was already processed. This build order will be aborted. Object: ' + this.object + ' ' + this.object.knownname + ' [' + this.object.idcode + '].'" chance="$debugchance"/>
+          </do_if>
+          <do_elseif value="$destination_station.builds.todelete.indexof.{$build}">
+            <debug_text text="'container has already processed build ' + $build + ' and it is queued to be deleted. This order may end. Object: ' + this.object + ' ' + this.object.knownname + ' [' + this.object.idcode + '].'" chance="$debugchance"/>
+          </do_elseif>
+          <do_else>
+            <assert value="false" text="'container does not have reference to the build ' + $build + ' for this object ' + this.object + ' ' + this.object.knownname + ' [' + this.object.idcode + ']. Aborting. [Owen]'"/>
+          </do_else>
+          <!--explicit break for clarity-->
+          <break/>
+        </do_else>
+      </do_while>
+
+      <label name="finish"/>
+      <!-- insert cleanup in case of order failure here. -->
+
+      <!-- order subordinates to undock. -->
+      <debug_text text="player.age + ': num subordinate orders: %s'.[$subordinateorders.count]" chance="($subordinateorders.count gt 0) * $debugchance"/>
+      <do_all exact="$subordinateorders.count" counter="$i">
+        <do_if value="$subordinateorders.{$i}.exists">
+          <debug_text text="'ordering subordinate %s %s %s to undock. order %s'.[@$subordinateorders.{$i}.object.idcode, @$subordinateorders.{$i}.object.knownname, $subordinateorders.{$i}.object, $subordinateorders.{$i}]" chance="$debugchance"/>
+          <cancel_order order="$subordinateorders.{$i}"/>
+        </do_if>
+      </do_all>
+
+      <!-- short wait to allow order-related events to fire in case the order ends without hitting any blocking actions. -->
+      <do_if value="not $cleanupaction?">
+        <wait exact="1ms" sinceversion="3"/>
+      </do_if>
+
+      <!-- undock for all orders now handled in orders.base -->
+
+      <do_if value="$cleanupaction?">
+        <do_if value="$cleanupaction == 'abort_build'">
+          <abort_build buildprocessor="this.ship.buildingprocessor"/>
+        </do_if>
+        <do_elseif value="$cleanupaction == 'remove_build'">
+          <remove_build object="$destination_station" build="$build"/>
+        </do_elseif>
+        <do_else>
+          <debug_text text="'Unknown cleanupaction: %s'.[$cleanupaction]" filter="error"/>
+        </do_else>
+      </do_if>
+
+    </actions>
+  </attention>
+  <on_abort>
+    <do_if value="$build.object.isoperational and (this.ship.parkedat == $build.object)">
+      <do_if value="this.$unparkreleasesignal">
+        <!-- if we have to abort, send release signal immediately. -->
+        <signal_objects object="$build.object" param="this.$unparkreleasesignal.{1}" param2="@this.$unparkreleasesignal.{2}"/>
+      </do_if>
+      <disconnect_from_trade_location ship="this.ship"/>
+    </do_if>
+    <do_for_each name="$locorder" in="$subordinateorders" reverse="true">
+      <do_if value="$locorder.exists">
+        <debug_text text="'on_abort: ordering subordinate %s %s %s to undock.'.[@$locorder.object.idcode, @$locorder.object.knownname, $locorder.object]" chance="$debugchance"/>
+        <cancel_order order="$locorder"/>
+      </do_if>
+    </do_for_each>
+  </on_abort>
+</aiscript>

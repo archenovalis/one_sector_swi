@@ -1,0 +1,1294 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="Setup" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <cue name="Debugging">
+      <actions>
+        <!--Activate RML debugging-->
+        <set_value name="md.$RML_Debugging" exact="1"/>
+        <set_value name="md.$DebuggingNotifications" exact="0" comment="disabled by default"/>
+      </actions>
+    </cue>
+
+    <cue name="DebuggingNotifications">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <set_value name="md.$DebuggingNotifications" exact="1"/>
+      </actions>
+    </cue>
+
+    <cue name="GameLoaded" instantiate="true">
+      <conditions>
+        <event_game_loaded />
+      </conditions>
+      <actions>
+        <set_value name="stat.savegames_loaded" operation="add" />
+        <signal_cue cue="Start" check="false" />
+      </actions>
+    </cue>
+
+    <!--
+    This cue sets up global variables that can be used by other MD scripts.
+    To wait for the setup to be complete, use the following condition:
+        <event_cue_signalled cue="md.Setup.Start" />
+    Unlike md.Setup.GameStart, the signal is also sent when loading a savegame,
+    so also newly added cues can get the signal.
+    -->
+    <cue name="Start" version="32">
+      <actions>
+        <create_group groupname="global.$PlayerContainerGroup" />
+        <create_group groupname="global.$PlayerControlledGroup" />
+        <create_group groupname="global.$PlayerOccupiedShipGroup" />
+        <create_group groupname="global.$PlayerShipsGroup" comment="Tracks player.ship and ships it's docked at"/>
+        <create_list name="global.$Trophies" comment="Tracks player trophies (tag.xxx)"/>
+        <find_ship groupname="global.$VisitorShipGroup" onlineobject="true" visitor="true" space="player.galaxy" multiple="true" />
+        <!--Sector used for 'reachablefrom' checks to the base game-->
+        <find_sector name="global.$BaseGameSector" extension="''"/>
+        <do_if value="not global.$BaseGameSector">
+          <!--Fallback, typically for tutorial universe scenarios-->
+          <find_sector name="global.$BaseGameSector"/>
+        </do_if>
+
+        <set_value name="$RandomOfferLocations" exact="true"/>
+        <!-- $list.{md.$RandomIdx} will be either $list.{1} or $list.random, depending on $RandomOfferLocations -->
+        <set_value name="md.$RandomIdx" exact="1"/>
+        <do_if value="$RandomOfferLocations">
+          <set_value name="md.$RandomIdx" exact="'random'"/>
+        </do_if>
+        <set_value name="md.$MaxMissionOfferDistance" exact="60km"/>
+        <set_value name="md.$InteractiveMissionOfferTimeout" exact="10s"/>
+        <!-- Init player money stat -->
+        <set_value name="stat.money_player" exact="player.money / 1Cr" />
+
+        <create_list name="md.$TradeMissionStations"/>
+        <create_list name="md.$MissionDND" comment="Set during sections of missions when it doesn't want to be disturbed by 'non-urgent chatter'"/>
+        <set_value   name="md.$SuppressChatter_CueListener" exact="table[]" comment="table[ $Cue = $InstanceListeningForCancellation]"/>
+        <create_list name="md.$CommChatterDND" comment="Set during sections of missions when it doesn't want to be disturbed by 'non-urgent chatter'"/>
+
+        <!--TODO @Owen #EntityTypes Hiring fees based on skill?-->
+        <!-- Hire Fee Entry: [entitytype, minfee, maxfee] -->
+        <set_value name="md.$HireFees" exact="
+            [
+                [entitytype.officer, 11000, 33000]
+            ]
+        "/>
+
+        <get_factions_by_tag result="global.$smugglercoverfactions" tag="tag.economic"/>
+        <remove_from_list name="global.$smugglercoverfactions" list="[faction.hatikvah, faction.scaleplate, faction.alliance, faction.buccaneers, faction.trinity]" comment="honor among thieves. does not include the minor factions."/>
+
+        <create_group groupname="global.$IgnoredAbandonedShips"/>
+
+        <!-- Set up the ware lists that can be used for automatic station generation at the beginning of the game -->
+        <set_value name="md.$SystemTimeAtGamestart" exact="player.systemtime.{'%Y-%m-%d_%H-%M-%S'}" />
+        <set_value name="md.$EquipmentTable" exact="table[]" />
+        <get_ware_definition result="md.$EquipmentTable.{faction.argon}" faction="faction.argon" flags="equipment" />
+        <get_ware_definition result="md.$EquipmentTable.{faction.antigone}" faction="faction.antigone" flags="equipment" />
+        <get_ware_definition result="md.$EquipmentTable.{faction.hatikvah}" faction="faction.hatikvah" flags="equipment" />
+        <get_ware_definition result="md.$EquipmentTable.{faction.paranid}" faction="faction.paranid" flags="equipment" />
+        <get_ware_definition result="md.$EquipmentTable.{faction.holyorder}" faction="faction.holyorder" flags="equipment" />
+        <get_ware_definition result="md.$EquipmentTable.{faction.alliance}" faction="faction.alliance" flags="equipment" />
+        <get_ware_definition result="md.$EquipmentTable.{faction.teladi}" faction="faction.teladi" flags="equipment" />
+        <get_ware_definition result="md.$EquipmentTable.{faction.ministry}" faction="faction.ministry" flags="equipment" />
+        <get_ware_definition result="md.$EquipmentTable.{faction.scaleplate}" faction="faction.scaleplate" flags="equipment" />
+        <get_ware_definition result="md.$EquipmentTable.{faction.xenon}" faction="faction.xenon" flags="equipment" />
+        <get_ware_definition result="md.$EquipmentTable.{faction.trinity}" faction="faction.trinity" flags="equipment" />
+        <get_ware_definition result="md.$EquipmentTable.{faction.buccaneers}" faction="faction.buccaneers" flags="equipment" />
+
+        <!-- setup a list of missiongroups to track to which ones the player is subscribed -->
+        <create_list name="md.$SubscribedMissionGroups"/>
+
+        <!-- Set up a list of persistent characters whose macros are already present in the universe -->
+        <set_value name="md.$PersistentCharacters" exact="table[]"/>
+        <!-- Track Mentors which compete for the player's attention for their stories. Last speak time saved in md.$LastMentorSpeak -->
+        <create_group groupname="md.$StoryMentors"/>
+        <set_value name="md.$LastMentorSpeak" exact="if md.$LastMentorSpeak? then md.$LastMentorSpeak else 0s"/>
+        <set_value name="md.$LastMentorStory" exact="null"/>
+        <set_value name="md.$LastMentor"      exact="null"/>
+
+        <!-- Set up a table to track faction HQs throughout the game -->
+        <set_value name="md.$FactionData" exact="table[]" />
+        <set_value name="md.$FactionData.{faction.argon}" exact="table[]" />
+        <set_value name="md.$FactionData.{faction.antigone}" exact="table[]" />
+        <set_value name="md.$FactionData.{faction.hatikvah}" exact="table[]" />
+        <set_value name="md.$FactionData.{faction.paranid}" exact="table[]" />
+        <set_value name="md.$FactionData.{faction.holyorder}" exact="table[]" />
+        <set_value name="md.$FactionData.{faction.alliance}" exact="table[]" />
+        <set_value name="md.$FactionData.{faction.teladi}" exact="table[]" />
+        <set_value name="md.$FactionData.{faction.ministry}" exact="table[]" />
+        <set_value name="md.$FactionData.{faction.scaleplate}" exact="table[]" />
+        <set_value name="md.$FactionData.{faction.trinity}" exact="table[]" />
+        <set_value name="md.$FactionData.{faction.buccaneers}" exact="table[]" />
+
+        <!-- List of factions (DLC's can append dlc-specific factions) -->
+        <do_if value="not md.$SplitFactions?">
+          <set_value name="md.$SplitFactions" exact="[]" />
+        </do_if>
+        <do_if value="not md.$SplitPatriarchyFactions?">
+          <set_value name="md.$SplitPatriarchyFactions" exact="[]" />
+        </do_if>
+        <do_if value="not md.$SplitCurbFactions?">
+          <set_value name="md.$SplitCurbFactions" exact="[]" />
+        </do_if>
+        <do_if value="not md.$TerranFactions?">
+          <set_value name="md.$TerranFactions" exact="[]" />
+        </do_if>
+        <do_if value="not md.$DLCPirateFactions?">
+          <set_value name="md.$DLCPirateFactions" exact="[]" />
+        </do_if>
+        <do_if value="not md.$TerranEarthFactions?">
+          <set_value name="md.$TerranEarthFactions" exact="[]" />
+        </do_if>
+        <do_if value="not md.$TerranYakiFactions?">
+          <set_value name="md.$TerranYakiFactions" exact="[]" />
+        </do_if>
+        <do_if value="not md.$DLCBoronFactions?">
+          <set_value name="md.$DLCBoronFactions" exact="[]" />
+        </do_if>
+        <do_if value="not md.$DLCKaoriFactions?">
+          <set_value name="md.$DLCKaoriFactions" exact="[]" />
+        </do_if>
+
+        <do_if value="player.galaxy.macro == macro.xu_ep2_universe_macro and not player.ismapeditoractive">
+          <do_if value="faction.holyorder.isactive">
+            <set_job_active job="'holyorder_destroyer_patrol_l_comp_mission'" activate="true"/>
+            <set_job_active job="'holyorder_dronecarrier_patrol_m_sector_mission'" activate="true"/>
+            <set_job_active job="'holyorder_corvette_patrol_m_sector_mission'" activate="true"/>
+          </do_if>
+          <do_if value="faction.paranid.isactive">
+            <set_job_active job="'paranid_destroyer_patrol_l_comp_mission'" activate="true"/>
+            <set_job_active job="'paranid_dronecarrier_patrol_m_sector_mission'" activate="true"/>
+            <set_job_active job="'paranid_corvette_patrol_m_sector_mission'" activate="true"/>
+          </do_if>
+        </do_if>
+        <signal_cue cue="md.Story_Research_Xen_Equipment.Start"/>
+      </actions>
+      <patch sinceversion="2">
+        <find_ship name="$hatikvahplunderships" space="player.galaxy" checkoperational="true" trueowner="faction.hatikvah" job="'dummy_job'" multiple="true" recursive="true"/>
+        <debug_text text="'1: found %s plunder ships'.[$hatikvahplunderships.count]" chance="0"/>
+
+        <do_all exact="$hatikvahplunderships.count" counter="$i">
+          <do_if value="$hatikvahplunderships.{$i}.attention ge attention.visible">
+            <set_value name="$donotdestroy"/>
+          </do_if>
+          <do_elseif value="$hatikvahplunderships.{$i}.boardingoperations.count">
+            <set_value name="$donotdestroy"/>
+          </do_elseif>
+
+          <do_if value="not $donotdestroy?">
+            <debug_text text="'destroying %s %s %s'.[$hatikvahplunderships.{$i}.idcode, $hatikvahplunderships.{$i}.knownname, $hatikvahplunderships.{$i}]" chance="0"/>
+            <destroy_object object="$hatikvahplunderships.{$i}" explosion="false"/>
+          </do_if>
+          <do_else>
+            <signal_objects object="$hatikvahplunderships.{$i}" param="'LoseCover'" param2="false"/>
+            <set_owner object="$hatikvahplunderships.{$i}" faction="faction.scaleplate" overridenpc="true"/>
+            <debug_text text="'handing %s %s %s over to %s'.[$hatikvahplunderships.{$i}.idcode, $hatikvahplunderships.{$i}.knownname, $hatikvahplunderships.{$i}, $hatikvahplunderships.{$i}.trueowner]" chance="0"/>
+            <remove_value name="$donotdestroy"/>
+          </do_else>
+        </do_all>
+
+        <remove_value name="$hatikvahplunderships"/>
+      </patch>
+      <patch sinceversion="3">
+        <find_ship name="$coveredplayerships" space="player.galaxy" trueowner="faction.player" multiple="true" recursive="true">
+          <match coverowner="null" negate="true"/>
+        </find_ship>
+        <do_all exact="$coveredplayerships.count" counter="$i">
+          <debug_text text="'PATCH: player-owned ship %s %s %s currently under cover. uncovering.'.[$playerships.{$i}.idcode, $playerships.{$i}.knownname, $playerships.{$i}]" filter="savegame"/>
+          <signal_objects object="$playerships.{$i}" param="'LoseCover'"/>
+        </do_all>
+        <do_if value="player.occupiedship">
+          <!-- coverowner of player.occupiedship is always null, but we need to clean up the Cover instance if it has one. -->
+          <signal_objects object="player.occupiedship" param="'LoseCover'"/>
+        </do_if>
+
+        <find_ship name="$coveredplayerships" space="player.galaxy" trueowner="faction.player" multiple="true" recursive="true">
+          <match coverowner="null" negate="true"/>
+        </find_ship>
+        <debug_text text="'POST_PATCH: found %s player-owned ships currently under cover.'.[$coveredplayerships.count]" filter="savegame"/>
+
+        <remove_value name="$coveredplayerships"/>
+      </patch>
+      <patch sinceversion="4">
+        <find_ship name="$playerminers" space="player.galaxy" checkoperational="true" trueowner="faction.player" multiple="true" recursive="true"/>
+        <do_all exact="$playerminers.count" counter="$i">
+          <do_if value="@$playerminers.{$i}.defaultorder.id == 'MiningRoutine' and not @$playerminers.{$i}.commander.isclass.station">
+            <set_value name="$defaultorder" exact="$playerminers.{$i}.defaultorder"/>
+            <do_if value="@$playerminers.{$i}.pilot.combinedskill ge 80">
+              <debug_text text="'PATCH: setting %s %s %s %s to expert automine.'.[$playerminers.{$i}.class, $playerminers.{$i}.idcode, $playerminers.{$i}.knownname, $playerminers.{$i}]" filter="savegame"/>
+              <create_order object="$playerminers.{$i}" id="'MiningRoutine_Expert'" default="true">
+                <param name="warebasket" value="$defaultorder.$warebasket"/>
+                <param name="range" value="$defaultorder.$range"/>
+                <param name="minbuy" value="$defaultorder.$minbuy"/>
+                <param name="maxbuy" value="$defaultorder.$maxbuy"/>
+                <param name="minsell" value="$defaultorder.$minsell"/>
+                <param name="maxsell" value="$defaultorder.$maxsell"/>
+                <param name="debugchance" value="$defaultorder.$debugchance"/>
+                <param name="debugchance2" value="$defaultorder.$debugchance2"/>
+              </create_order>
+            </do_if>
+            <do_elseif value="@$playerminers.{$i}.pilot.combinedskill ge 60">
+              <debug_text text="'PATCH: setting %s %s %s %s to advanced automine.'.[$playerminers.{$i}.class, $playerminers.{$i}.idcode, $playerminers.{$i}.knownname, $playerminers.{$i}]" filter="savegame"/>
+              <create_order object="$playerminers.{$i}" id="'MiningRoutine_Advanced'" default="true">
+                <param name="warebasket" value="$defaultorder.$warebasket"/>
+                <param name="range" value="$defaultorder.$range"/>
+                <param name="minbuy" value="$defaultorder.$minbuy"/>
+                <param name="maxbuy" value="$defaultorder.$maxbuy"/>
+                <param name="minsell" value="$defaultorder.$minsell"/>
+                <param name="maxsell" value="$defaultorder.$maxsell"/>
+                <param name="debugchance" value="$defaultorder.$debugchance"/>
+                <param name="debugchance2" value="$defaultorder.$debugchance2"/>
+              </create_order>
+            </do_elseif>
+            <do_elseif value="@$playerminers.{$i}.pilot">
+              <set_value name="$refsector" exact="@$playerminers.{$i}.sector"/>
+              <do_if value="not $refsector and $playerminers.{$i}.zone.issuperhighway and $playerminers.{$i}.zone.destination and $playerminers.{$i}.zone.destination.sector">
+                <set_value name="$refsector" exact="$playerminers.{$i}.zone.destination.sector"/>
+              </do_if>
+
+              <!-- fallback in case no reasonable ware can be found -->
+              <set_value name="$locbasket" exact="$defaultorder.$warebasket.random"/>
+              <do_if value="$refsector.exists">
+                <do_all exact="$defaultorder.$warebasket.count" counter="$j">
+                  <find_closest_resource ware="$defaultorder.$warebasket.{$j}" refobject="$playerminers.{$i}" sector="$resourcesector" position="$resourcepos"/>
+                  <do_if value="$resourcesector.exists and ($refsector == $resourcesector)">
+                    <set_value name="$locbasket" exact="$defaultorder.$warebasket.{$j}"/>
+                    <break/>
+                  </do_if>
+                </do_all>
+              </do_if>
+
+              <debug_text text="'PATCH: setting %s %s %s %s to basic automine, harvesting %s.'.[$playerminers.{$i}.class, $playerminers.{$i}.idcode, $playerminers.{$i}.knownname, $playerminers.{$i}, $locbasket]" filter="savegame"/>
+              <create_order object="$playerminers.{$i}" id="'MiningRoutine_Basic'" default="true">
+                <param name="warebasket" value="$locbasket"/>
+                <param name="range" value="$refsector"/>
+                <param name="minbuy" value="0"/>
+                <param name="maxbuy" value="0"/>
+                <param name="minsell" value="0"/>
+                <param name="maxsell" value="0"/>
+                <param name="debugchance" value="$defaultorder.$debugchance"/>
+                <param name="debugchance2" value="$defaultorder.$debugchance2"/>
+              </create_order>
+              <remove_value name="$locbasket"/>
+              <remove_value name="$refsector"/>
+              <remove_value name="$resourcesector"/>
+              <remove_value name="$resourcepos"/>
+            </do_elseif>
+            <remove_value name="$defaultorder"/>
+          </do_if>
+        </do_all>
+        <remove_value name="$playerminers"/>
+      </patch>
+      <patch sinceversion="5">
+        <create_list name="md.$SubscribedMissionGroups"/>
+      </patch>
+      <patch sinceversion="6">
+        <find_ship name="$allships" space="player.galaxy" multiple="true"/>
+        <do_all exact="$allships.count" counter="$i">
+          <do_if value="$allships.{$i}.isoperational and @$allships.{$i}.defaultorder.id == 'Recon' and $allships.{$i}.defaultorder.$police">
+            <debug_text text="'PATCH: changing default order of %s %s %s %s to Police.'.[$allships.{$i}.class, @$allships.{$i}.idcode, @$allships.{$i}.knownname, $allships.{$i}]" filter="savegame"/>
+            <set_value name="$currentdefaultorder" exact="$allships.{$i}.defaultorder"/>
+            <create_order object="$allships.{$i}" id="'Police'" default="true">
+              <param name="targetspace" value="$currentdefaultorder.$targetspace"/>
+              <param name="hq" value="$currentdefaultorder.$hq"/>
+              <param name="targetclasses" value="$currentdefaultorder.$targetclasses"/>
+              <param name="targetpurposes" value="$currentdefaultorder.$targetpurposes"/>
+              <param name="debugchance" value="$currentdefaultorder.$debugchance"/>
+            </create_order>
+            <remove_value name="$currentdefaultorder"/>
+          </do_if>
+        </do_all>
+        <remove_value name="$allships"/>
+      </patch>
+      <patch sinceversion="7">
+        <debug_text text="'Changing global MD list md.$PersistentCharacters ' + md.$PersistentCharacters + ' to a table'" filter="savegame"/>
+        <set_value name="md.$PersistentCharacters" exact="table[]"/>
+        <do_if value="md.X4Ep1_Mentor_Subscriptions.Start.$Boron_Mentor?">
+          <set_value name="md.$PersistentCharacters.$BosoTa" exact="md.X4Ep1_Mentor_Subscriptions.Start.$Boron_Mentor"/>
+          <debug_text text="'Adding Boso Ta to the persistent character table: ' + md.$PersistentCharacters" filter="savegame"/>
+        </do_if>
+      </patch>
+      <patch sinceversion="9">
+        <set_value name="md.$SplitFactions" exact="[]" />
+        <set_value name="md.$TerranFactions" exact="[]" />
+      </patch>
+      <patch sinceversion="10">
+        <set_value name="md.$SplitPatriarchyFactions" exact="[]" />
+        <set_value name="md.$SplitCurbFactions" exact="[]" />
+      </patch>
+      <patch sinceversion="11">
+        <get_ware_definition result="md.$EquipmentTable.{faction.trinity}" faction="faction.trinity" flags="equipment" />
+        <get_ware_definition result="md.$EquipmentTable.{faction.buccaneers}" faction="faction.buccaneers" flags="equipment" />
+        <set_value name="md.$FactionData.{faction.trinity}" exact="table[]" />
+        <set_value name="md.$FactionData.{faction.buccaneers}" exact="table[]" />
+      </patch>
+      <patch sinceversion="12">
+        <set_value name="md.$DLCPirateFactions" exact="[]" />
+      </patch>
+      <patch sinceversion="13">
+        <do_if value="player.galaxy.macro == macro.xu_ep2_universe_macro">
+          <do_if value="faction.holyorder.isactive">
+            <debug_text text="'PATCH: activating added holyorder jobs'" filter="savegame"/>
+            <set_job_active job="'holyorder_destroyer_patrol_l_comp_mission'" activate="true"/>
+            <set_job_active job="'holyorder_dronecarrier_patrol_m_sector_mission'" activate="true"/>
+            <set_job_active job="'holyorder_corvette_patrol_m_sector_mission'" activate="true"/>
+          </do_if>
+          <do_if value="faction.paranid.isactive">
+            <debug_text text="'PATCH: activating added paranid jobs'" filter="savegame"/>
+            <set_job_active job="'paranid_destroyer_patrol_l_comp_mission'" activate="true"/>
+            <set_job_active job="'paranid_dronecarrier_patrol_m_sector_mission'" activate="true"/>
+            <set_job_active job="'paranid_corvette_patrol_m_sector_mission'" activate="true"/>
+          </do_if>
+          <do_if value="faction.trinity.isactive">
+            <debug_text text="'PATCH: activating added trinity jobs'" filter="savegame"/>
+            <set_job_active job="'trinity_destroyer_patrol_l_comp_mission'" activate="true"/>
+            <set_job_active job="'trinity_dronecarrier_patrol_m_sector_mission'" activate="true"/>
+            <set_job_active job="'trinity_corvette_patrol_m_sector_par_mission'" activate="true"/>
+            <set_job_active job="'trinity_corvette_patrol_m_sector_hop_mission'" activate="true"/>
+          </do_if>
+        </do_if>
+      </patch>
+      <patch sinceversion="14">
+        <create_list name="md.$MissionDND"/>
+      </patch>
+      <patch sinceversion="15">
+        <find_ship groupname="global.$VisitorShipGroup" onlineobject="true" visitor="true" space="player.galaxy" multiple="true" />
+      </patch>
+      <patch sinceversion="16">
+        <set_value name="md.$TerranFactions" exact="[]" />
+      </patch>
+      <patch sinceversion="17">
+        <get_factions_by_tag result="global.$smugglercoverfactions" tag="tag.economic"/>
+        <remove_from_list name="global.$smugglercoverfactions" list="[faction.hatikvah, faction.scaleplate, faction.alliance, faction.buccaneers, faction.trinity]" comment="honor among thieves. does not include the minor factions."/>
+      </patch>
+      <patch sinceversion="18">
+        <create_list name="md.$CommChatterDND"/>
+      </patch>
+      <patch sinceversion="19">
+        <do_if value="not md.$TerranEarthFactions?">
+          <set_value name="md.$TerranEarthFactions" exact="[]" />
+        </do_if>
+      </patch>
+      <patch sinceversion="20">
+        <do_if value="not md.$SuppressChatter_CueListener?">
+          <set_value name="md.$SuppressChatter_CueListener" exact="table[]"/>
+        </do_if>
+      </patch>
+      <patch sinceversion="21">
+        <create_group groupname="global.$IgnoredAbandonedShips"/>
+      </patch>
+      <patch sinceversion="22">
+        <create_group groupname="global.$PlayerShipsGroup" comment="Tracks player.ship and ships it's docked at"/>
+      </patch>
+      <patch sinceversion="23">
+        <find_ship name="$playerships" space="player.galaxy" checkoperational="true" trueowner="faction.player" multiple="true" recursive="true"/>
+        <do_for_each name="$locship" in="$playerships">
+          <do_if value="(@$locship.defaultorder.id == 'TradeRoutine') and not @$locship.commander">
+            <set_value name="$defaultorder" exact="$locship.defaultorder"/>
+            <do_if value="@$locship.pilot.combinedskill ge 60">
+              <debug_text text="'PATCH: setting %s %s %s %s to advanced autotrade.'.[$locship.class, @$locship.idcode, @$locship.knownname, $locship]" filter="savegame"/>
+              <create_order object="$locship" id="'TradeRoutine_Advanced'" default="true">
+                <param name="warebasket" value="$defaultorder.$warebasket"/>
+                <param name="range" value="$defaultorder.$range"/>
+                <param name="minbuy" value="$defaultorder.$minbuy"/>
+                <param name="maxbuy" value="$defaultorder.$maxbuy"/>
+                <param name="minsell" value="$defaultorder.$minsell"/>
+                <param name="maxsell" value="$defaultorder.$maxsell"/>
+                <param name="debugchance" value="$defaultorder.$debugchance"/>
+                <param name="debugchance2" value="$defaultorder.$debugchance2"/>
+              </create_order>
+            </do_if>
+            <do_else>
+              <!-- NB: shouldn't be necessary since autotrade requires combinedskill 60 -->
+              <set_value name="$refsector" exact="@$locship.sector"/>
+              <do_if value="not $refsector and $locship.zone.issuperhighway and $locship.zone.destination and $locship.zone.destination.sector">
+                <set_value name="$refsector" exact="$locship.zone.destination.sector"/>
+              </do_if>
+
+              <!-- fallback in case no reasonable ware can be found -->
+              <set_value name="$locbasket" exact="$defaultorder.$warebasket.random"/>
+
+              <debug_text text="'PATCH: setting %s %s %s %s to basic autotrade, trading %s.'.[$locship.class, @$locship.idcode, @$locship.knownname, $locship, $locbasket]" filter="savegame"/>
+              <create_order object="$locship" id="'TradeRoutine_Basic'" default="true">
+                <param name="warebasket" value="$locbasket"/>
+                <param name="range" value="$refsector"/>
+                <param name="minbuy" value="0"/>
+                <param name="maxbuy" value="0"/>
+                <param name="minsell" value="0"/>
+                <param name="maxsell" value="0"/>
+                <param name="debugchance" value="$defaultorder.$debugchance"/>
+                <param name="debugchance2" value="$defaultorder.$debugchance2"/>
+              </create_order>
+              <remove_value name="$locbasket"/>
+              <remove_value name="$refsector"/>
+            </do_else>
+            <remove_value name="$defaultorder"/>
+          </do_if>
+        </do_for_each>
+        <remove_value name="$playerships"/>
+      </patch>
+      <patch sinceversion="24">
+        <create_list name="global.$Trophies" comment="Tracks player trophies (tag.xxx)"/>
+      </patch>
+      <patch sinceversion="25">
+        <do_if value="md.X4Ep1_Mentor_Subscriptions.Start.$Boron_Mentor?">
+          <set_value name="md.$PersistentCharacters.$BosoTa.$cutscenekey" exact="table[ $key = 'ShowCharacterBoron']"/>
+          <debug_text text="'Adding Boso Ta Cutscenekey to the persistent character table entry: ' + md.$PersistentCharacters" filter="savegame"/>
+        </do_if>
+      </patch>
+      <patch sinceversion="26">
+        <remove_licence faction="faction.buccaneers" type="militaryequipment" licencefaction="faction.antigone"/>
+        <remove_licence faction="faction.buccaneers" type="militaryequipment" licencefaction="faction.argon"/>
+        <remove_licence faction="faction.buccaneers" type="militaryequipment" licencefaction="faction.paranid"/>
+        <remove_licence faction="faction.buccaneers" type="militaryequipment" licencefaction="faction.holyorder"/>
+      </patch>
+      <patch sinceversion="27">
+        <find_sector name="global.$BaseGameSector" extension="''"/>
+        <do_if value="not global.$BaseGameSector">
+          <!--Fallback, typically for tutorial universe scenarios-->
+          <find_sector name="global.$BaseGameSector"/>
+        </do_if>
+      </patch>
+      <patch sinceversion="28">
+        <create_group groupname="md.$StoryMentors"/>
+        <set_value name="md.$LastMentorSpeak" exact="if md.$LastMentorSpeak? then md.$LastMentorSpeak else player.age" comment="for usage in player saves we don't want to start at 0s"/>
+        <set_value name="md.$LastMentorStory" exact="null"/>
+        <set_value name="md.$LastMentor"      exact="null"/>
+      </patch>
+      <patch sinceversion="29">
+        <do_if value="not md.$DLCBoronFactions?">
+          <set_value name="md.$DLCBoronFactions" exact="[]" />
+        </do_if>
+      </patch>
+      <patch sinceversion="30">
+      </patch>
+      <patch sinceversion="31">
+        <signal_cue cue="md.Story_Research_Xen_Equipment.Start"/>
+        <set_value name="$700PatchingTrigger" comment="For patching when loading pre-7.00 saves"/>
+        <do_if value="md.$SplitFactions.count">
+          <set_value name="$WaresAllocationPatch_SV"/>
+        </do_if>
+        <do_if value="md.$DLCPirateFactions.count">
+          <set_value name="$WaresAllocationPatch_TOA"/>
+        </do_if>
+        <do_if value="md.$DLCBoronFactions.count">
+          <set_value name="$WaresAllocationPatch_KE"/>
+        </do_if>
+      </patch>
+      <patch sinceversion="32">
+        <do_if value="not md.$TerranYakiFactions?">
+          <set_value name="md.$TerranYakiFactions" exact="[]" />
+        </do_if>
+      </patch>
+      <cues>
+        <!-- Send a signal to interested cues at game start: Only if this is a new game, not when resetting the MD -->
+        <!-- Use the following condition: -->
+        <!-- <event_cue_signalled cue="md.Setup.GameStart" /> -->
+        <cue name="GameStart">
+          <conditions>
+            <!-- This can only run after the player was connected into the universe! -->
+            <event_game_started/>
+          </conditions>
+          <actions>
+            <do_if value="player.container">
+              <add_to_group groupname="global.$PlayerContainerGroup" object="player.container" />
+              <do_if value="player.container.isplayerowned and player.container.isclass.ship and not player.container.isclass.spacesuit">
+                <set_value name="player.entity.$PlayerTaxi" exact="player.container"/>
+              </do_if>
+            </do_if>
+            <do_if value="player.controlled">
+              <add_to_group groupname="global.$PlayerControlledGroup" object="player.controlled" />
+            </do_if>
+            <do_if value="player.occupiedship">
+              <add_to_group groupname="global.$PlayerOccupiedShipGroup" object="player.occupiedship" />
+            </do_if>
+            <set_value name="this.$ship" exact="player.ship"/>
+            <do_while value="this.$ship.exists">
+              <add_to_group groupname="global.$PlayerShipsGroup" object="this.$ship"/>
+              <debug_text text="'addtogroup' + this.$ship" chance="0"/>
+              <set_value name="this.$ship" exact="this.$ship.ship"/>
+            </do_while>
+            <signal_cue cue="this" check="false" />
+            <signal_cue cue="Start" check="false" />
+          </actions>
+          <cues>
+            <cue name="PlayerObjectChanged" instantiate="true">
+              <conditions>
+                <!-- Assumptions:
+              1. Player is always in a container
+              2. Player is always in a room
+              3. A room always belongs to the same container
+            -->
+                <event_object_changed_room object="player.entity" />
+                <check_value value="player.container != global.$PlayerContainerGroup.{1}" />
+              </conditions>
+              <actions>
+                <!-- <debug_text text="'player.container = %s (%s)'.[player.container, player.container.name]" /> -->
+                <do_if value="global.$PlayerContainerGroup.{1}.pilot.$canplayerredirect?">
+                  <!-- set in order.rescue.ship if the player was picked up in a spacesuit. player allowed to redirect the rescuing ship once. -->
+                  <debug_text text="'clearing canplayerredirect'" chance="0"/>
+                  <remove_value name="global.$PlayerContainerGroup.{1}.pilot.$canplayerredirect"/>
+                </do_if>
+                <do_if value="@global.$PlayerContainerGroup.{1}.order.$untilplayerleaves">
+                  <!-- cleans up order delivering the player to where the player requested if player changes containers. -->
+                  <debug_text text="'cancelling untilplayerleaves order %s %s'.[global.$PlayerContainerGroup.{1}.order.id, global.$PlayerContainerGroup.{1}.order]" chance="0"/>
+                  <cancel_order order="global.$PlayerContainerGroup.{1}.order"/>
+                </do_if>
+                <clear_group group="global.$PlayerContainerGroup" />
+                <add_to_group groupname="global.$PlayerContainerGroup" object="player.container" />
+                <do_if value="player.container.isplayerowned and player.container.isclass.ship and not player.container.isclass.spacesuit">
+                  <set_value name="player.entity.$PlayerTaxi" exact="player.container"/>
+                </do_if>
+              </actions>
+            </cue>
+
+            <cue name="PlayerShipsGroupUpdate" instantiate="true">
+              <conditions>
+                <check_any>
+                  <event_object_changed_object object="player.entity"/>
+                  <event_object_docked group="global.$PlayerShipsGroup"/>
+                  <event_object_undocked group="global.$PlayerShipsGroup"/>
+                  <event_object_destroyed group="global.$PlayerShipsGroup"/>
+                </check_any>
+              </conditions>
+              <actions>
+                <clear_group group="global.$PlayerShipsGroup"/>
+                <set_value name="this.$ship" exact="player.ship"/>
+                <do_while value="this.$ship.exists">
+                  <add_to_group groupname="global.$PlayerShipsGroup" object="this.$ship"/>
+                  <debug_text text="'addtogroup' + this.$ship" chance="0"/>
+                  <set_value name="this.$ship" exact="this.$ship.ship"/>
+                </do_while>
+              </actions>
+            </cue>
+
+            <cue name="PlayerControlledChanged" instantiate="true">
+              <conditions>
+                <check_any>
+                  <!-- Note: Event object can be either the controlled object or the control entity -->
+                  <event_control_entity_added object="player.entity" />
+                  <event_control_entity_removed object="player.entity" />
+                </check_any>
+              </conditions>
+              <actions>
+                <!-- <debug_text text="'player.controlled = %s (%s)'.[player.controlled, @player.controlled.name]" /> -->
+                <clear_group group="global.$PlayerControlledGroup" />
+                <clear_group group="global.$PlayerOccupiedShipGroup" />
+                <do_if value="event.name == 'event_control_entity_removed'">
+                  <set_value name="global.$Time_PlayerStoppedControl" exact="player.age"/>
+                </do_if>
+                <!-- Player occupied ship is valid if and only if player is controlling something -->
+                <do_if value="player.controlled">
+                  <add_to_group groupname="global.$PlayerControlledGroup" object="player.controlled" />
+                  <add_to_group groupname="global.$PlayerOccupiedShipGroup" object="player.occupiedship" />
+                  <do_if value="player.occupiedship != @global.$LastPlayerShip">
+                    <do_if value="not player.occupiedship.isclass.spacesuit">
+                      <remove_value name="global.$Time_PlayerStoppedControl"/>
+                      <do_if value="@global.$LastPlayerShip.isoperational">
+                        <do_if value="global.$LastPlayerShip.assignedpilot and not global.$LastPlayerShip.pilot">
+                          <signal_objects object="global.$LastPlayerShip.assignedpilot" param="'npc__return_to_post'"/>
+                        </do_if>
+                        <debug_text text="'signal to proceed sent to %s %s'.[global.$LastPlayerShip.knownname, global.$LastPlayerShip]" chance="0"/>
+                        <signal_objects object="global.$LastPlayerShip" param="'playerownedship_proceed'"/>
+                        <remove_value name="global.$WaitForSignalID"/>
+                      </do_if>
+                      <set_value name="global.$LastPlayerShip" exact="player.occupiedship"/>
+                    </do_if>
+                  </do_if>
+                  <do_elseif value="global.$WaitForSignalID?">
+                    <debug_text text="'player retaking control of %s %s %s. cancelling WaitForSignal'.[player.occupiedship.idcode, player.occupiedship.knownname, player.occupiedship]" chance="0"/>
+                    <cancel_order order="global.$WaitForSignalID"/>
+                    <remove_value name="global.$WaitForSignalID"/>
+                  </do_elseif>
+                </do_if>
+                <do_if value="event.name == 'event_control_entity_removed' and @event.object.order.state == orderstate.critical">
+                  <debug_text text="'Player stops controlling %s %s while ship has an order in critical state! order=%s'.[event.object, event.object.name, event.object.order.id]" filter="error" />
+                </do_if>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="PlayerControl" namespace="this">
+          <actions>
+            <set_value name="$PlayerControlled" exact="null"/>
+            <set_value name="$OldCommander" exact="null"/>
+            <set_value name="$OldSubordinateGroup" exact="null"/>
+            <set_value name="$OldAssignment" exact="null"/>
+            <set_value name="$OldOrder" exact="null"/>
+            <set_value name="$DebugChance" exact="0"/>
+          </actions>
+          <cues>
+            <cue name="PlayerStartedControl" instantiate="true">
+              <conditions>
+                <event_player_started_control/>
+                <check_value value="player.controlled.commander"/>
+              </conditions>
+              <actions>
+                <debug_text text="'player started control of %s %s %s.\ncommander: %s %s %s\nassignment: %s\nsubordinategroup: %s'.[player.controlled.idcode, player.controlled.knownname, player.controlled, @player.controlled.commander.idcode, @player.controlled.commander.knownname, @player.controlled.commander, @player.controlled.assignment, @player.controlled.subordinategroupid]" chance="$DebugChance"/>
+                <set_value name="$PlayerControlled" exact="player.controlled"/>
+                <set_value name="$OldCommander" exact="$PlayerControlled.commander"/>
+                <set_value name="$OldSubordinateGroup" exact="$PlayerControlled.subordinategroupid"/>
+                <set_value name="$OldAssignment" exact="$PlayerControlled.assignment"/>
+                <set_value name="$OldOrder" exact="$PlayerControlled.defaultorder"/>
+                <remove_object_commander object="$PlayerControlled"/>
+              </actions>
+            </cue>
+            <cue name="PlayerStoppedControl" instantiate="true">
+              <conditions>
+                <event_player_stopped_control/>
+              </conditions>
+              <actions>
+                <debug_text text="'player stopped control of %s %s %s.\nold commander: %s %s %s\nold assignment: %s\nold subordinategroup: %s\nold order: %s, current: %s'.[$PlayerControlled.idcode, $PlayerControlled.knownname, $PlayerControlled, @$OldCommander.idcode, @$OldCommander.knownname, $OldCommander, $OldAssignment, $OldSubordinateGroup, $OldOrder, $PlayerControlled.defaultorder]" chance="$DebugChance"/>
+                <do_if value="$PlayerControlled.isoperational">
+                  <do_if value="$OldCommander.isoperational and ($OldSubordinateGroup or $OldAssignment)">
+                    <do_if value="not $OldAssignment or (@$OldCommander.subordinategroupassignment.{$OldSubordinateGroup} == $OldAssignment)">
+                      <set_value name="$OldAssignment" exact="null"/>
+                    </do_if>
+                    <do_else>
+                      <set_value name="$OldSubordinateGroup" exact="null"/>
+                    </do_else>
+                    <create_order id="'AssignCommander'" object="$PlayerControlled" immediate="true">
+                      <param name="commander" value="$OldCommander"/>
+                      <param name="subordinategroup" value="$OldSubordinateGroup"/>
+                      <param name="assignment" value="$OldAssignment"/>
+                      <param name="cancelorders" value="false"/>
+                      <param name="debugchance" value="$DebugChance"/>
+                    </create_order>
+                  </do_if>
+                  <do_elseif value="$PlayerControlled.defaultorder.exists and ($OldOrder == $PlayerControlled.defaultorder)">
+                    <!-- old default order is invalid. get new default order. -->
+                    <cancel_order order="$PlayerControlled.defaultorder"/>
+                  </do_elseif>
+                </do_if>
+                <set_value name="$OldOrder" exact="null"/>
+                <set_value name="$OldAssignment" exact="null"/>
+                <set_value name="$OldSubordinateGroup" exact="null"/>
+                <set_value name="$OldCommander" exact="null"/>
+                <set_value name="$PlayerControlled" exact="null"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="VentureShipAdded" instantiate="true">
+          <conditions>
+            <event_venture_ship_added/>
+            <check_value value="event.param.isvisitor"/>
+          </conditions>
+          <actions>
+            <add_to_group groupname="global.$VisitorShipGroup" object="event.param"/>
+          </actions>
+        </cue>
+
+        <cue name="VentureShipRemoved" instantiate="true">
+          <conditions>
+            <event_venture_ship_removed/>
+          </conditions>
+          <actions>
+            <debug_text text="'removed venture ship ' + event.param + ' ' + event.param.knownname" chance="0"/>
+            <remove_from_group group="global.$VisitorShipGroup" object="event.param"/>
+          </actions>
+        </cue>
+
+        <cue name="LastSpeak_Manager">
+          <!-- update md.$StoryMentors and md.$LastMentorSpeak -->
+          <actions>
+            <create_list name="md.$StoryMentorHandlers"/>
+          </actions>
+          <cues>
+            <cue name="Debug_Dump_Info" instantiate="true">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <debug_text text="'$StoryMentorHandlers: '"/>
+                <set_value name="$temp" exact="null"/>
+                <do_for_each in="md.$StoryMentorHandlers" name="$handler">
+                  <do_if value="$temp != $handler.$story">
+                    <set_value name="$temp" exact="$handler.$story"/>
+                    <debug_text text="''" comment="line break between stories, might not be reliable but works"/>
+                  </do_if>
+                  <debug_text text="'[story cue: ' + $handler.$story + '] [lastspeak: ' + $handler.$actor.lastspeaktime + ']  ' + $handler.$actor.knownname"/>
+                </do_for_each>
+              </actions>
+            </cue>
+
+            <cue name="AddStoryMentor" instantiate="true">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <set_value name="this.$actor" exact="event.param.$actor"/>
+                <set_value name="this.$story" exact="event.param.$story"/>
+
+                <add_to_group groupname="md.$StoryMentors" object="this.$actor"/>
+                <set_value name="md.$LastMentorSpeak" exact="[md.$LastMentorSpeak, this.$actor.lastspeaktime].max"/>
+                <append_to_list name="md.$StoryMentorHandlers" exact="this"/>
+              </actions>
+              <cues>
+                <cue name="LastSpeak_Update" instantiate="true">
+                  <conditions>
+                    <check_any>
+                      <event_conversation_started             actor="parent.$actor"/>
+                      <event_conversation_finished            actor="parent.$actor"/>
+                      <event_conversation_next_section        actor="parent.$actor"/>
+                      <event_conversation_returned_to_section actor="parent.$actor"/>
+                      <event_speak_finished                   actor="parent.$actor"/>
+                      <event_speak_line_finished              actor="parent.$actor"/>
+                    </check_any>
+                  </conditions>
+                  <actions>
+                    <set_value name="md.$LastMentorSpeak" exact="player.age"/>
+                    <set_value name="md.$LastMentorStory" exact="parent.$story"/>
+                    <set_value name="md.$LastMentor"      exact="parent.$actor"/>
+                  </actions>
+                </cue>
+                <cue name="LastSpeak_ActorDied">
+                  <conditions>
+                    <event_object_destroyed object="parent.$actor"/>
+                  </conditions>
+                  <actions>
+                    <remove_from_list name="md.$StoryMentorHandlers" exact="parent"/>
+                    <cancel_cue cue="parent"/>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="RemoveStoryMentor" instantiate="true">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <do_for_each in="md.$StoryMentorHandlers" name="$handler" reverse="true">
+                  <do_if value="($handler.$actor == event.param.$actor) and ($handler.$story == event.param.$story)">
+                    <remove_from_list name="md.$StoryMentorHandlers" exact="$handler"/>
+                    <cancel_cue cue="$handler"/>
+                  </do_if>
+                </do_for_each>
+              </actions>
+            </cue>
+
+          </cues>
+        </cue>
+
+        <cue name="HereticsEnd_FactionOwnershipClearance" mapeditor="false">
+          <!-- HE is exempt from faction logic. The player claiming the space and losing it will change this. -->
+          <conditions>
+            <event_cue_signalled cue="md.Setup.Start" />
+            <check_value value="player.galaxy.macro == macro.xu_ep2_universe_macro" comment="only in main-galaxy" />
+          </conditions>
+          <actions>
+            <find_cluster required="true" name="$HereticsEndCluster"  macro="macro.cluster_31_macro" />
+            <find_sector  required="true" name="$HereticsEndSector"   macro="macro.cluster_31_sector001_macro" space="player.galaxy" />
+          </actions>
+          <cues>
+
+            <cue name="DEBUG_Warp_PlayerContainer_ToHereticsEnd" comment="i.e. take over an Argon Shipyard and warp it to HE to claim it">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <warp object="player.container" sector="$HereticsEndSector"/>
+              </actions>
+            </cue>
+            <cue name="DEBUG_Warp_PlayerContainer_ToGetsuFune">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <find_sector name="$GetsuFuneSector" macro="macro.cluster_48_sector001_macro" space="player.galaxy"/>
+                <warp object="player.container" sector="$GetsuFuneSector"/>
+              </actions>
+            </cue>
+
+            <cue name="HerecticsEnd_PlayerDiscovered_Check" onfail="cancel">
+              <conditions>
+                <check_value value="$HereticsEndSector.isknown"/>
+              </conditions>
+            </cue>
+            <cue name="HerecticsEnd_PlayerDiscovered_Event">
+              <conditions>
+                <check_any>
+                  <event_object_known_to_player object="$HereticsEndSector"/>
+                  <event_cue_completed cue="HerecticsEnd_PlayerDiscovered_Check"/>
+                </check_any>
+              </conditions>
+              <actions>
+                <signal_cue cue="HereticsEnd_Mail1"/>
+              </actions>
+            </cue>
+
+            <!-- Player claimed/claims Heretic's End -->
+            <cue name="HereticsEnd_PlayerClaim_Check" onfail="cancel">
+              <conditions>
+                <check_value value="$HereticsEndSector.owner == faction.player"/>
+              </conditions>
+            </cue>
+            <cue name="HereticsEnd_PlayerClaim_Event">
+              <conditions>
+                <check_any>
+                  <event_object_changed_owner object="$HereticsEndSector" owner="faction.player"/>
+                  <event_cue_completed cue="HereticsEnd_PlayerClaim_Check"/>
+                </check_any>
+              </conditions>
+              <actions>
+                <signal_cue cue="HereticsEnd_Mail2"/>
+              </actions>
+              <cues>
+                <!-- Player relinquishes ownership of Heretic's End -->
+                <cue name="HereticsEnd_PlayerOwnershipRelinquished">
+                  <conditions>
+                    <event_object_changed_owner object="$HereticsEndSector" previous="faction.player"/>
+                  </conditions>
+                  <actions>
+                    <signal_cue cue="HereticsEnd_Mail3"/>
+                    <set_space_faction_logic_allowed allow="true" space="$HereticsEndCluster"/>
+                    <set_space_faction_logic_allowed allow="true" space="$HereticsEndSector"/>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="HereticsEnd_Mail1">
+              <!-- Player discovered HE. -->
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <write_incoming_message source="{30253,10051}" highpriority="true"
+                                         title="{30005,13100}"
+                                          text="{30005,13101} + {30253,10001}"/>
+              </actions>
+            </cue>
+
+            <cue name="HereticsEnd_Mail2">
+              <!-- Player Claimed HE. Letting go of it will put the neutrality to an end. -->
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <substitute_text text="this.$message" source="readtext.{30005}.{13201}">
+                  <replace string="'$PlayerCharacterName$'"    with="player.name"/>
+                </substitute_text>
+                <write_incoming_message source="{30253,10051}" highpriority="true"
+                                         title="{30005,13200}"
+                                          text="this.$message"/>
+              </actions>
+            </cue>
+
+            <cue name="HereticsEnd_Mail3">
+              <!-- Player lost claim on HE. Factions will claim it now. -->
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <substitute_text text="this.$message" source="readtext.{30005}.{13301}">
+                  <replace string="'$PlayerCharacterName$'"    with="player.name"/>
+                </substitute_text>
+                <write_incoming_message source="{30253,10051}" highpriority="true"
+                                         title="{30005,13300}"
+                                          text="this.$message"/>
+              </actions>
+            </cue>
+
+          </cues>
+        </cue>
+
+        <cue name="SectorClaimedAchievement_DEBUG">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <set_owner object="player.sector" faction="faction.player"/>
+          </actions>
+        </cue>
+
+        <cue name="SectorClaimedAchievement" version="2">
+          <conditions>
+            <event_contained_sector_changed_owner owner="faction.player" space="player.galaxy"/>
+          </conditions>
+          <actions>
+            <unlock_achievement name="CLAIM_SECTOR"/>
+          </actions>
+          <patch sinceversion="2" state="complete">
+            <unlock_achievement name="CLAIM_SECTOR"/>
+          </patch>
+        </cue>
+
+        <cue name="StationConstructionAchievement" instantiate="true" version="2">
+          <conditions>
+            <event_player_build_finished_components comment="check each time a module is completed"/>
+            <count_object_components object="event.param.buildanchor" class="class.production" min="1"/>
+            <count_object_components object="event.param.buildanchor" class="class.buildmodule" min="1"/>
+            <count_object_components object="event.param.buildanchor" class="class.storage" min="1"/>
+            <count_object_components object="event.param.buildanchor" class="class.habitation" min="1"/>
+            <count_object_components object="event.param.buildanchor" class="class.welfaremodule" min="1" comment="special mission"/>
+            <count_object_components object="event.param.buildanchor" class="class.dockarea" min="1"/>
+            <count_object_components object="event.param.buildanchor" class="class.defencemodule" min="1"/>
+            <count_object_components object="event.param.buildanchor" class="class.processingmodule" min="1"/>
+            <count_object_components object="event.param.buildanchor" class="class.connectionmodule" min="1"/>
+          </conditions>
+          <actions>
+            <unlock_achievement name="BUILD_MODULES"/>
+            <cancel_cue cue="this.static"/>
+          </actions>
+          <patch sinceversion="2" state="cancelled">
+            <unlock_achievement name="BUILD_MODULES"/>
+            <debug_text text="'Bob The Builder Achievement patched'"/>
+          </patch>
+        </cue>
+
+        <!-- Award an achievement for personally taking control of a Xenon-built ship -->
+        <cue name="XenonShip_ControlAchievement">
+          <conditions>
+            <event_player_started_control/>
+            <check_value value="event.param.makerraces.indexof.{race.xenon}"/>
+          </conditions>
+          <delay exact="3s"/>
+          <actions>
+            <unlock_achievement name="CONTROL_XENON_SHIP"/>
+          </actions>
+        </cue>
+
+        <!-- Award achievement for shooting down a ship while being zoomed in -->
+        <cue name="ZoomedIn_EnemyDestroyedAchievement">
+          <conditions>
+            <check_all>
+              <event_object_killed_object group="global.$PlayerOccupiedShipGroup"/>
+              <check_value value="player.camera.zoom gt 1.0"/>
+              <check_value value="event.param.isclass.ship"/>
+            </check_all>
+          </conditions>
+          <actions>
+            <unlock_achievement name="SHOOT_ZOOMED"/>
+          </actions>
+        </cue>
+
+        <!-- After destroying 10 non-MT ships in External View, award the achievement -->
+        <cue name="DestroyShips_ExternalViewAchievement_ShipDestroyed" instantiate="true">
+          <conditions>
+            <check_all>
+              <event_object_killed_object group="global.$PlayerOccupiedShipGroup"/>
+              <check_value value="player.camera.external"/>
+              <check_value value="event.param.isclass.ship"/>
+              <check_value value="not event.param.isclass.ship_xs"/>
+            </check_all>
+          </conditions>
+          <actions>
+            <set_value name="stat.s_ships_destroyed_extview" operation="add" />
+          </actions>
+        </cue>
+
+        <!-- Reward this Achievement after entering a player-owned observatory for the first time  -->
+        <cue name="ObservationRoomEntered_Achievement">
+          <conditions>
+            <event_object_changed_room object="player.entity"/>
+            <check_value value="event.param.macro.ismacro.{macro.room_gen_observationdeck_01_macro}"/>
+            <check_value value="event.param.station.isplayerowned"/>
+          </conditions>
+          <delay exact="5s"/>
+          <actions>
+            <unlock_achievement name="OBSERVATION_MODULE"/>
+          </actions>
+        </cue>
+      </cues>
+    </cue>
+
+    <cue name="EnableVentures">
+      <conditions>
+        <event_cue_signalled cue="md.Setup.Start"/>
+      </conditions>
+      <actions>
+        <!-- do not add venture module blueprints in the Station Design Simulator or any Timelines gamestart (also avoiding the unlock notification popup which is just unnecessarily distracting there) -->
+        <do_if value="player.module != 'x4ep1_gamestart_workshop' and player.module != 'x4ep1_gamestart_hub' and player.allmodules.{player.module}.exists and not player.allmodules.{player.module}.isscenario">
+          <add_research ware="ware.research_module_venture"/>
+          <add_blueprints wares="[ware.module_gen_conn_venturerbase_01, ware.module_gen_conn_venturerbase_02, ware.module_gen_conn_venturerbase_03, ware.module_gen_conn_venturercross_01, ware.module_gen_conn_venturervertical_01, ware.module_gen_conn_venturervertical_02, ware.module_gen_dock_m_venturer_01, ware.module_gen_ventureplatform_cross_01]"/>
+        </do_if>
+      </actions>
+    </cue>
+
+    <cue name="ALIShipyard_SR" onfail="cancel">
+      <conditions>
+        <check_value value="player.age" min="30s" comment="Existing saves only"/>
+      </conditions>
+      <actions>
+        <find_sector name="$SacredRelic" macro="macro.cluster_23_sector001_macro" required="1"/>
+        <find_station name="$ALIShipyard" space="$SacredRelic"  shipyard="1" required="1" checkoperational="false" plannedshipyard="1"/>
+        <add_build_to_expand_station constructionplan="'ali_shipyard'" object="$ALIShipyard.buildstorage" buildobject="$ALIShipyard"/>
+      </actions>
+    </cue>
+
+    <cue name="WaresAllocationPatch" namespace="this">
+      <conditions>
+        <event_cue_signalled cue="md.Setup.Start"/>
+      </conditions>
+      <actions>
+        <do_if value="not md.Setup.Start.$700PatchingTrigger?">
+          <cancel_cue cue="WaresAllocationPatch"/>
+        </do_if>
+      </actions>
+      <delay exact="60s"/>
+      <actions>
+        <find_station name="$Wharf_ARG" godstationentry="['wharf_argon_01', 'arg_wharf_cluster_416_sector002', 'wharf_antigone']" multiple="1" space="player.galaxy"/>
+        <find_station name="$Wharf_PAR" godstationentry="['wharf_paranid', 'wharf_holyorder', 'wharf_alliance', 'par_wharf_cluster_422_sector001']" multiple="1" space="player.galaxy"/>
+        <find_station name="$Wharf_TEL" godstationentry="['wharf_teladi_01', 'wharf_ministry_01']" multiple="1" space="player.galaxy"/>
+        <find_station name="$Shipyard_ARG" godstationentry="['shipyard_argon_01', 'shipyard_antigone']" multiple="1" space="player.galaxy"/>
+        <find_station name="$Shipyard_TEL" godstationentry="['shipyard_teladi_01', 'shipyard_ministry_01']" multiple="1" space="player.galaxy"/>
+        <do_for_each in="$Wharf_ARG" counter="$ARG">
+          <add_build_to_expand_station result="$BuildTask" buildobject="$Wharf_ARG.{$ARG}" object="$Wharf_ARG.{$ARG}.buildstorage" constructionplan="'arg_wharf'"/>
+          <debug_text text="'Build task Added to ' + $Wharf_ARG.{$ARG}.name " filter="savegame"/>
+        </do_for_each>
+        <do_for_each in="$Wharf_PAR" counter="$PAR">
+          <add_build_to_expand_station result="$BuildTask" buildobject="$Wharf_PAR.{$PAR}" object="$Wharf_PAR.{$PAR}.buildstorage" constructionplan="'par_wharf'"/>
+          <debug_text text="'Build task Added to ' + $Wharf_PAR.{$PAR}.name " filter="savegame"/>
+        </do_for_each>
+        <do_for_each in="$Wharf_TEL" counter="$TEL">
+          <add_build_to_expand_station result="$BuildTask" buildobject="$Wharf_TEL.{$TEL}" object="$Wharf_TEL.{$TEL}.buildstorage" constructionplan="'tel_wharf'"/>
+          <debug_text text="'Build task Added to ' + $Wharf_TEL.{$TEL}.name " filter="savegame"/>
+        </do_for_each>
+        <do_for_each in="$Shipyard_ARG" counter="$ARG">
+          <add_build_to_expand_station result="$BuildTask" buildobject="$Shipyard_ARG.{$ARG}" object="$Shipyard_ARG.{$ARG}.buildstorage" constructionplan="'arg_shipyard'"/>
+          <debug_text text="'Build task Added to ' + $Shipyard_ARG.{$ARG}.name " filter="savegame"/>
+        </do_for_each>
+        <do_for_each in="$Shipyard_TEL" counter="$TEL">
+          <add_build_to_expand_station result="$BuildTask" buildobject="$Shipyard_TEL.{$TEL}" object="$Shipyard_TEL.{$TEL}.buildstorage" constructionplan="'tel_shipyard'"/>
+          <debug_text text="'Build task Added to ' + $Shipyard_TEL.{$TEL}.name " filter="savegame"/>
+        </do_for_each>
+      </actions>
+    </cue>
+
+    <cue name="Patch700ClusterStations" namespace="this" version="2" mapeditor="false">
+      <conditions>
+        <event_cue_signalled cue="md.Setup.Start"/>
+      </conditions>
+      <actions>
+        <do_if value="not md.Setup.Start.$700PatchingTrigger?">
+          <signal_cue cue="md.PlacedObjects.Place_MistsOfArtemis"/>
+          <cancel_cue cue="Patch700ClusterStations"/>
+        </do_if>
+      </actions>
+      <delay exact="10s"/>
+      <actions>
+        <!-- Stations -->
+        <create_god_station groupname="$Stations" id="'anarchy_port_cluster_712'"/>
+        <create_god_station groupname="$Stations" id="'par_defence_cluster_709_sector001_01'"/>
+        <create_god_station groupname="$Stations" id="'par_defence_cluster_709_sector001_02'"/>
+        <create_god_station groupname="$Stations" id="'par_palace_cluster_709_sector001'"/>
+        <create_god_station groupname="$Stations" id="'tel_defence_cluster_713_sector001_01'"/>
+        <create_god_station groupname="$Stations" id="'tel_defence_cluster_713_sector001_02'"/>
+        <create_god_station groupname="$Stations" id="'tel_landmark_cluster_714_sector_001_01'"/>
+        <create_god_station id="'kha_station_cluster_715_01'"/>
+        <create_god_station id="'kha_station_01_static_defense_cluster_715_01'"/>
+        <create_god_station id="'kha_station_01_static_defense_cluster_715_02'"/>
+        <create_god_station id="'kha_station_01_static_defense_cluster_715_03'"/>
+        <create_god_station id="'kha_station_01_static_defense_cluster_715_04'"/>
+        <create_god_station id="'kha_station_01_static_defense_cluster_715_05'"/>
+        <create_god_station id="'kha_station_01_static_defense_cluster_715_06'"/>
+        <create_god_station id="'kha_station_01_static_defense_cluster_715_07'"/>
+        <!-- Products -->
+        <create_god_factory groupname="$Factories" id="'sca_majadust_anarchy'"/>
+        <create_god_factory groupname="$Factories" id="'sca_majasnails_anarchy'"/>
+        <create_god_factory groupname="$Factories" id="'sca_spaceweed_anarchy'"/>
+        <create_god_factory groupname="$Factories" id="'tel_advancedelectronics_new'"/>
+        <create_god_factory groupname="$Factories" id="'tel_antimattercells_new'"/>
+        <create_god_factory groupname="$Factories" id="'tel_teladianium_new'"/>
+        <create_god_factory groupname="$Factories" id="'tel_claytronics_new'"/>
+        <create_god_factory groupname="$Factories" id="'tel_smartchips_new'"/>
+        <create_god_factory groupname="$Factories" id="'tel_medicalsupplies_new'"/>
+        <create_god_factory groupname="$Factories" id="'tel_nostropoil_new'"/>
+        <create_god_factory groupname="$Factories" id="'tel_graphene_new'"/>
+        <create_god_factory groupname="$Factories" id="'tel_energycells_new'"/>
+        <create_god_factory groupname="$Factories" id="'par_advancedcomposites_new'"/>
+        <create_god_factory groupname="$Factories" id="'par_advancedelectronics_new'"/>
+        <create_god_factory groupname="$Factories" id="'par_antimattercells_new'"/>
+        <create_god_factory groupname="$Factories" id="'par_scanningarrays_new'"/>
+        <create_god_factory groupname="$Factories" id="'par_siliconwafers_new'"/>
+        <create_god_factory groupname="$Factories" id="'par_graphene_new'"/>
+        <create_god_factory groupname="$Factories" id="'par_medicalsupplies_new'"/>
+        <create_god_factory groupname="$Factories" id="'par_majasnails_new'"/>
+        <signal_cue cue="md.PlacedObjects.Place_MistsOfArtemis"/>
+        <do_if value="md.Story_Paranid.Unification_Stage_3_FactionMerge_Complete.state == cuestate.complete">
+          <find_object name="this.$objects" owner="[faction.paranid, faction.holyorder]" space="player.galaxy" recursive="true" multiple="true"/>
+          <do_if value="this.$objects.count">
+            <force_cue cue="md.Story_Paranid.Unification_Stage_3_FactionMerge_Immediate"/>
+          </do_if>
+        </do_if>
+        <do_for_each name="$Station" in="$Stations">
+          <signal_objects object="player.galaxy" param="'init station'" param2="$Station" param3="false"/>
+        </do_for_each>
+        <do_for_each name="$Factory" in="$Factories">
+          <signal_objects object="player.galaxy" param="'init station'" param2="$Factory" param3="false"/>
+        </do_for_each>
+      </actions>
+      <patch sinceversion="2">
+        <do_if value="md.Story_Paranid.Unification_Stage_3_FactionMerge_Complete.state == cuestate.complete">
+          <find_object name="this.$objects" owner="[faction.paranid, faction.holyorder]" space="player.galaxy" recursive="true" multiple="true"/>
+          <do_if value="this.$objects.count">
+            <force_cue cue="md.Story_Paranid.Unification_Stage_3_FactionMerge_Immediate"/>
+          </do_if>
+        </do_if>
+        <do_for_each name="$Station" in="$Stations">
+          <signal_objects object="player.galaxy" param="'init station'" param2="$Station" param3="false"/>
+        </do_for_each>
+        <do_for_each name="$Factory" in="$Factories">
+          <signal_objects object="player.galaxy" param="'init station'" param2="$Factory" param3="false"/>
+        </do_for_each>
+      </patch>
+    </cue>
+
+    <cue name="FactionLogicBlocker" namespace="this" mapeditor="false">
+      <conditions>
+        <event_cue_signalled cue="md.Setup.Start"/>
+        <check_value value="player.galaxy.macro == macro.xu_ep2_universe_macro" comment="only in main-galaxy" />
+      </conditions>
+      <actions>
+        <find_sector name="$MooKyeRevenge_Sector" macro="macro.cluster_710_sector001_macro"/>
+        <find_sector name="$MiTonRefuge_Sector" macro="macro.cluster_711_sector001_macro"/>
+        <find_sector name="$Loomanckstrat_Sector" macro="macro.cluster_712_sector001_macro"/>
+        <find_sector name="$FredomsReach_Sector" macro="macro.cluster_714_sector001_macro"/>
+        <find_sector name="$MistsofArtemis_Sector" macro="macro.cluster_715_sector001_macro"/>
+        <set_space_faction_logic_allowed space="$MooKyeRevenge_Sector" allow="false" />
+        <set_space_faction_logic_allowed space="$MiTonRefuge_Sector" allow="false" />
+        <set_space_faction_logic_allowed space="$Loomanckstrat_Sector" allow="false" />
+        <set_space_faction_logic_allowed space="$FredomsReach_Sector" allow="false" />
+        <set_space_faction_logic_allowed space="$MistsofArtemis_Sector" allow="false" />
+      </actions>
+      <cues>
+        <cue name="FactionLogicBlocker_Unlock_FreedomsReach">
+          <conditions>
+            <check_any>
+              <event_cue_signalled/>
+              <event_object_known_to_player object="$FredomsReach_Sector"/>
+            </check_any>
+          </conditions>
+          <delay min="220min" max="260min"/>
+          <actions>
+            <set_space_faction_logic_allowed space="$FredomsReach_Sector" allow="true" />
+          </actions>
+        </cue>
+        <cue name="FactionLogicBlocker_Unlock_MistsOfArtemis">
+          <conditions>
+            <check_any>
+              <event_cue_signalled/>
+              <event_object_known_to_player object="$MistsofArtemis_Sector"/>
+            </check_any>
+          </conditions>
+          <delay min="220min" max="260min"/>
+          <actions>
+            <set_space_faction_logic_allowed space="$MistsofArtemis_Sector" allow="true" />
+          </actions>
+        </cue>
+        <cue name="FactionLogicBlocker_Unlock_Known" comment="Signals cues in case the clusters are already known when starting or loading a game.">
+          <actions>
+            <do_if value="$FredomsReach_Sector.isknown">
+              <signal_cue_instantly cue="FactionLogicBlocker_Unlock_FreedomsReach"/>
+            </do_if>
+            <do_if value="$MistsofArtemis_Sector.isknown">
+              <signal_cue_instantly cue="FactionLogicBlocker_Unlock_MistsOfArtemis"/>
+            </do_if>
+          </actions>
+        </cue>
+      </cues>
+    </cue>
+
+    <cue name="Debug_Setup_SkipperShip" onfail="cancel" mapeditor="false">
+      <conditions>
+        <check_value value="player.debug" comment="skipper only in debug builds"/>
+      </conditions>
+      <cues>
+        <cue name="Debug_Private_Beta_SkipperShip">
+          <delay exact="30s"/>
+          <actions>
+            <do_if value="player.galaxy.macro.ismacro.{macro.xu_ep2_universe_macro}" comment="only in main-galaxy">
+              <signal_cue_instantly cue="Debug_Setup_SkipperShip_Create"/>
+            </do_if>
+          </actions>
+        </cue>
+
+        <cue name="Debug_Setup_SkipperShip_Create" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <do_if value="not $SkipperShip?">
+
+              <debug_text text="'Creating Skipper Ship for Debugging'"/>
+              <find_sector macro="macro.Cluster_01_Sector001_macro"   required="true" name="$GrandExchangeI"/>
+              <!--<find_sector macro="macro.Cluster_01_Sector003_macro"   required="true" name="$GrandExchangeIV"/>-->
+
+              <create_ship name="$SkipperShip" capturable="false" commandeerable="false" missioncue="namespace" macro="ship_par_xl_carrier_01_a_macro" sector="$GrandExchangeI">
+                <owner exact="faction.ownerless"/>
+                <pilot>
+                  <select race="race.drone" tags="tag.aipilot"/>
+                </pilot>
+                <people>
+                  <fillpercent exact="0"/>
+                </people>
+                <paint ware="ware.paintmod_0006"/>
+                <safepos x="100km" y="0" z="200km"/>
+              </create_ship>
+
+              <set_object_name object="$SkipperShip" name="'Story Testing Ship'" comment="Use Line/Page for non-Debug objects with proper names"/>
+              <cancel_all_orders object="$SkipperShip"/>
+              <create_order id="'Wait'" object="$SkipperShip" immediate="true">
+                <param name="noattackresponse" value="true"/>
+              </create_order>
+              <set_object_min_hull object="$SkipperShip" exact="100"/>
+
+              <signal_cue cue="Debug_Setup_SkipperShip_Guidance"/>
+              <signal_cue cue="Debug_Setup_SkipperShip_Create_Completed"/>
+            </do_if>
+            <do_else>
+              <set_objective_from_briefing cue="$MissionCue" step="1"/>
+            </do_else>
+          </actions>
+        </cue>
+
+        <cue name="Debug_Setup_SkipperShip_Create_Completed">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <!-- Skipper Placement waits for this -->
+        </cue>
+
+        <cue name="Debug_Setup_SkipperShip_Guidance">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <set_value name="$MissionCue" exact="this"/>
+            <create_mission cue="$MissionCue" name="'Story Debug Skipper Ship'" description="'Set Guidance to the Skipper Ship for Story Debugging.'"
+                            type="missiontype.plot" faction="faction.civilian"  difficulty="level.trivial" abortable="false" activate="false">
+              <briefing>
+                <objective step="1" action="objective.flyto" object="$SkipperShip"/>
+              </briefing>
+            </create_mission>
+            <set_objective_from_briefing cue="$MissionCue" step="1"/>
+          </actions>
+        </cue>
+
+        <cue name="Debug_Setup_SkipperShip_WarpPlayer" comment="warp player to save some time" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <teleport_player object="$SkipperShip" instant="true" force="true"/>
+          </actions>
+        </cue>
+
+      </cues>
+    </cue>
+
+    <cue name="TEL_tug_jobs" checktime="10s" onfail="cancel">
+      <conditions>
+        <count_stations godstationentry="'tel_processing'" space="player.galaxy"/>
+      </conditions>
+      <actions>
+        <set_job_active job="'teladi_scavenger_free_tug_m'"/>
+      </actions>
+    </cue>
+  </cues>
+</mdscript>

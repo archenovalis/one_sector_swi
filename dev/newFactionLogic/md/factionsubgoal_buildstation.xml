@@ -1,0 +1,519 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="FactionSubgoal_BuildStation" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+    <!--event.param = table[
+    $OwnerGoal                (cue - Cue of calling faction goal),
+    $DesiredEndTime           (time  - optional - Gametime in which to attempt and fullfil the subgoal),
+    $StationMacro             (macro - macro of the station to build),
+    $ConstructionPlan         (constructionsequence - plan of the station to build),
+    $StationRawName           (string - raw name of the station which can be a text reference),
+    $DeployImmediate          (bool - if true, have the subgoal start in the 'build' phase. Otherwise, it begins in the 'prepare' phase),
+    $Target                   (space - sector the station is to be built in),
+    $Position                 (position - position to build the station, in $Target space),
+    $EntryPoint               (object - entry point to wait at in the 'prepare' phase),
+    $EntryPointPosition       (position - position to wait at relative to $EntryPoint)
+    $DebugChance              (int),
+    $DebugChance2             (int)]-->
+    <cue name="Start" instantiate="true" namespace="this" version="4">
+      <conditions>
+        <event_cue_signalled/>
+        <check_value value="typeof event.param == datatype.table"/>
+      </conditions>
+      <actions>
+        <set_value name="$OwnerGoal"                exact="event.param.$OwnerGoal"/>
+        <set_value name="$Descriptor"               exact="event.param.$Descriptor"/>
+        <set_value name="$DesiredEndTime"           exact="@event.param.$DesiredEndTime"/>
+        <set_value name="$Faction"                  exact="$OwnerGoal.$Faction"/>
+        <set_value name="$StationMacro"             exact="event.param.$StationMacro"/>
+        <set_value name="$ConstructionPlan"         exact="event.param.$ConstructionPlan"/>
+        <set_value name="$StationRawName"           exact="@event.param.$StationRawName"/>
+        <set_value name="$DeployImmediate"          exact="event.param.$DeployImmediate"/>
+        <set_value name="$Target"                   exact="event.param.$Target"/>
+        <set_value name="$Position"                 exact="event.param.$Position"/>
+        <!--TODO @Owen - just have a gather position? Doesn't necessarily have to be an 'entry point'-->
+        <set_value name="$EntryPoint"               exact="@event.param.$EntryPoint"/>
+        <set_value name="$EntryPointPosition"       exact="@event.param.$EntryPointPosition"/>
+
+        <!--***Debug***-->
+        <set_value name="$DebugChance"              exact="@event.param.$DebugChance"/>
+        <set_value name="$DebugChance2"             exact="@event.param.$DebugChance2"/>
+
+        <do_if value="$DebugChance or $DebugChance2 or player.debugfilteractive.economy_verbose">
+          <include_actions ref="GenerateDebugTextWithCueID"/>
+          <!--curtime, output_id, goal_id, subgoal_id, object_name, object_idcode, sector_name, faction_id, enemy_faction_id-->
+          <debug_text filter="economy_verbose" text="'#FL#;%1;Started;%2;%3;%4;%5;%6;%7;%8'.[player.age, $DebugGoalText, $DebugText, null, null, $Target.knownname, $Faction.id, @$OwnerGoal.$EnemyFaction.id]" context="false"/>
+        </do_if>
+        <do_else>
+          <set_value name="$DebugText" exact="'(' + $Faction.id + ') Build station: ' + $StationMacro.id + ' in ' + $Target.knownname + ' ' + $Target + ' - '"/>
+        </do_else>
+        <debug_text text="'triggering ' + $DebugText" chance="$DebugChance"/>
+
+        <set_value name="$Station" exact="null"/>
+        <set_value name="$BuildOrders" exact="[]"/>
+        <set_value name="$Phase" exact="if $DeployImmediate then 'build' else 'prepare'"/>
+        <set_value name="$EvaluationResult" exact="'unknown'"/>
+        <set_value name="$EvaluationDelay" exact="1ms"/>
+        <set_value name="$InStandby" exact="false"/>
+        <set_value name="$StationConstructed" exact="false"/>
+        <!--TODO @Owen make Overtime a parameter?-->
+        <!--TODO @Owen check if $DesiredEndTime is valid-->
+        <set_value name="$OverTime" exact="if $DesiredEndTime then $DesiredEndTime + 10min else null"/>
+
+        <!--<set_value name="$InitialNeededResources" exact="table[]"/>
+        <set_value name="$TotalNeededResources" exact="table[]"/>
+        <do_if value="$ConstructionPlan.count">
+          <set_value name="$ModuleWare" exact="null"/>
+          <set_value name="$ModuleResource" exact="null"/>
+          <do_all exact="$ConstructionPlan.count" counter="$i">
+            <set_value name="$ModuleWare" exact="$ConstructionPlan.{$i}.macro.ware"/>
+            <set_value name="$ModuleWare_Resources" exact="$ModuleWare.resources.list"/>
+            <do_all exact="$ModuleWare_Resources.count" counter="$k">
+              <set_value name="$ModuleResource" exact="$ModuleWare_Resources.{$k}"/>
+              <do_if value="$i == 1">
+                <set_value name="$InitialNeededResources.{$ModuleResource}" exact="$ModuleWare.resources.{$ModuleResource}.count"/>
+              </do_if>
+              <set_value name="$TotalNeededResources.{$ModuleResource}" exact="$ModuleWare.resources.{$ModuleResource}.count" operation="add"/>
+            </do_all>
+          </do_all>
+          <remove_value name="$ModuleWare"/>
+          <remove_value name="$ModuleResource"/>
+        </do_if>-->
+
+        <!--This table is the primary way the faction goal accesses data from this subgoal. Some duplicated data, but better than attempting to retrieve variables directly from a cue-->
+        <set_value name="$RegistryTable" exact="table[]"/>
+        <set_value name="$RegistryTable.$Cue" exact="this"/>
+        <set_value name="$RegistryTable.$StartTime" exact="player.age"/>
+        <set_value name="$RegistryTable.$Phase" exact="$Phase"/>
+        <set_value name="$RegistryTable.$EvaluationResult" exact="$EvaluationResult"/>
+        <set_value name="$RegistryTable.$StationMacro" exact="$StationMacro"/>
+        <set_value name="$RegistryTable.$Station" exact="$Station"/>
+        <signal_cue_instantly cue="$OwnerGoal" param="['add_subgoal', $RegistryTable]"/>
+      </actions>
+      <patch sinceversion="2" state="complete">
+        <set_value name="$StationRawName" exact="null"/>
+      </patch>
+      <patch sinceversion="3" state="complete">
+        <do_if value="$Loadouts?">
+          <remove_value name="$Loadouts"/>
+          <remove_value name="$ConstructionPlan"/>
+        </do_if>
+      </patch>
+      <patch sinceversion="4">
+        <assert value="@$Ships.count == 0" text="'Ships group was not empty. ' + $Ships"/>
+      </patch>
+      <cues>
+        <cue name="Init" onfail="cancel">
+          <conditions>
+            <!--Some faction goal activity may cause them to remove their subgoals before they are finished initialising. $SetToShutdown prevents the subgoal from performing initialisation in that case.-->
+            <check_value value="not @$SetToShutdown"/>
+          </conditions>
+          <actions>
+            <set_value name="$RegistryTable.$GenerateReportCue" exact="Generate_Report"/>
+            <set_value name="$RegistryTable.$UpdateSubgoalCue" exact="Update_Sub_Goal"/>
+            <set_value name="$RegistryTable.$EvaluateCue" exact="Force_Evaluation"/>
+
+            <signal_cue_instantly cue="On_Phase_Change"/>
+          </actions>
+        </cue>
+
+        <cue name="Generate_Report" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <debug_text text="'SUBGOAL (' + $EvaluationResult + ') ' + $DebugText + 'Station: ' + $Station + ' - ' + $Station.knownname" context="false"/>
+          </actions>
+        </cue>
+
+        <!--event.param.{1} == update ID-->
+        <cue name="Update_Sub_Goal" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <debug_text text="$DebugText + 'Update request: ' + event.param.{1}" chance="$DebugChance"/>
+            <do_if value="event.param.{1} == 'cleanup' or event.param.{1} == 'handoff'">
+              <!--Clean up, no requested ships to handoff-->
+              <signal_cue_instantly cue="Cleanup"/>
+            </do_if>
+
+            <do_elseif value="event.param.{1} == 'standby'">
+              <!--The subgoal does not activly commandeer or request ships but does not care about time.
+              The subgoal should not be in this state for too long. The faction goal should either dismiss it or make use of it in the next state.-->
+              <set_value name="$InStandby" exact="true"/>
+            </do_elseif>
+
+            <do_elseif value="event.param.{1} == 'reactivate'">
+              <assert value="$InStandby" text="$DebugText + 'subgoal was not in standby when asked to reactivate [Owen]'" break="1"/>
+              <!--event.param.{2} == New Phase ID-->
+              <set_value name="$InStandby" exact="false"/>
+              <signal_cue_instantly cue="$OwnerGoal" param="['reactivate_subgoal', $RegistryTable]"/>
+              <set_value name="$NewPhase" exact="@event.param.{2}"/>
+              <do_if value="$NewPhase">
+                <include_actions ref="ProcessNewPhaseRequest"/>
+              </do_if>
+            </do_elseif>
+
+            <do_elseif value="event.param.{1} == 'change_phase'">
+              <!--event.param.{2} == New Phase ID-->
+              <set_value name="$NewPhase" exact="event.param.{2}"/>
+              <include_actions ref="ProcessNewPhaseRequest"/>
+            </do_elseif>
+
+            <do_else>
+              <assert value="event.param.{1}" text="$DebugText + 'Unknown update request [Owen]'" break="1"/>
+            </do_else>
+
+          </actions>
+        </cue>
+
+        <!--Requires $NewPhase to be set to the phase ID-->
+        <library name="ProcessNewPhaseRequest">
+          <actions>
+            <do_if value="$NewPhase == 'prepare'">
+              <assert value="$NewPhase == 'prepare'" text="$DebugText + 'Attempting change into prepare state which currently should not be transitioned into [Owen]'" break="1"/>
+              <set_value name="$NewPhase" exact="null"/>
+            </do_if>
+            <do_elseif value="event.param.{2} == 'build'">
+              <!--Valid-->
+            </do_elseif>
+            <do_else>
+              <assert value="false" text="'Unknown phase request ' + $NewPhase + ' [Owen]'" break="1"/>
+              <set_value name="$NewPhase" exact="null"/>
+            </do_else>
+            <do_if value="$NewPhase">
+              <set_value name="$Phase" exact="$NewPhase"/>
+              <signal_cue_instantly cue="On_Phase_Change"/>
+            </do_if>
+            <remove_value name="$NewPhase"/>
+          </actions>
+        </library>
+
+        <cue name="On_Phase_Change" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <do_if value="$Phase == 'prepare'">
+              <!--Do nothing-->
+            </do_if>
+            <do_elseif value="$Phase == 'build'">
+              <!-- Create 'invisible' station (We depend on the CV-AI to eventually come and start construction) -->
+              <create_station name="$Station" sector="$Target" owner="$Faction" macro="$StationMacro" rawname="$StationRawName">
+                <safepos value="$Position" includeplotbox="true"/>
+              </create_station>
+              <generate_loadout sequence="$ConstructionPlan" level="0.9" result="$Loadouts" faction="$Faction"/>
+              <do_all exact="$Loadouts.count" counter="$l">
+                <apply_loadout sequence="$ConstructionPlan" index="$l" loadout="$Loadouts.{$l}"  />
+              </do_all>
+              <remove_value name="$Loadouts"/>
+              <set_value name="$RegistryTable.$Station" exact="$Station"/>
+              <add_build_to_expand_station object="$Station.buildstorage" buildobject="$Station" constructionplan="$ConstructionPlan" result="$BuildID"/>
+              <remove_value name="$ConstructionPlan"/>
+              <debug_text text="$DebugText + 'Started construction of station ' + $Station.knownname + ' ' + $Station + ' - Build ID: ' + $BuildID" context="false" chance="$DebugChance"/>
+              <do_if value="player.debugfilteractive.economy_verbose">
+                <include_actions ref="GenerateDebugTextWithCueID"/>
+                <!--curtime, output_id, goal_id, subgoal_id, object_name, object_idcode, sector_name, faction_id, enemy_faction_id-->
+                <debug_text filter="economy_verbose" text="'#FL#;%1;CreateStation;%2;%3;%4;%5;%6;%7;%8'.[player.age, $DebugGoalText, $DebugText, $Station.knownname, $Station.idcode, $Target.knownname, $Faction.id, @$OwnerGoal.$EnemyFaction.id]" context="false"/>
+              </do_if>
+              <signal_cue cue="Station_Management"/>
+
+              <signal_cue_instantly cue="Force_Evaluation"/>
+            </do_elseif>
+          </actions>
+        </cue>
+
+        <cue name="Force_Evaluation" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <set_value name="$EvaluationDelay" exact="0s"/>
+            <reset_cue cue="Evaluate"/>
+          </actions>
+        </cue>
+
+        <!--Result saved to $RegistryTable.$EvaluationResult
+        - 'unknown'    (subgoal is either initialising or in an erronious state)
+        - 'preparing'  (subgoal is working within its desired timeframe and is attempting to ready itself to perform its task)
+        - 'overtime'   (subgoal is working past its desired timeframe but expects it can be ready to perform its task)
+        - 'failed'     (subgoal was unable to perform its task and should be dismissed)
+        - 'performing' (subgoal is in its desired state)
+        - 'achieved'   (subgoal has achieved construction the station)-->
+        <cue name="Evaluate">
+          <delay exact="$EvaluationDelay"/>
+          <actions>
+            <set_value name="$OldResult" exact="$EvaluationResult"/>
+            <set_value name="$EvaluationResult" exact="'unknown'"/>
+
+            <do_if value="$StationConstructed">
+              <set_value name="$EvaluationResult" exact="'achieved'"/>
+            </do_if>
+            <do_else>
+              <do_if value="$Phase == 'build' and not $Station.exists">
+                <set_value name="$EvaluationResult" exact="'failed'"/>
+              </do_if>
+              <do_else>
+                <set_value name="this.$BuildingProcessor" exact="$Station.buildingprocessor"/>
+                <do_if value="this.$BuildingProcessor and (not this.$BuildingProcessor.requiresconstructionvessel or this.$BuildingProcessor.buildmodule.constructionvessel)">
+                  <set_value name="$EvaluationResult" exact="'performing'"/>
+                </do_if>
+                <do_elseif value="not $DesiredEndTime">
+                  <set_value name="$EvaluationResult" exact="'preparing'"/>
+                </do_elseif>
+                <do_elseif value="not $InStandby and player.age gt $DesiredEndTime">
+                  <!--Over the desired time-->
+                  <do_if value="not $OverTime or player.age gt $OverTime">
+                    <set_value name="$EvaluationResult" exact="'failed'"/>
+                  </do_if>
+                  <do_else>
+                    <set_value name="$EvaluationResult" exact="'failed'"/>
+                  </do_else>
+                </do_elseif>
+                <do_else>
+                  <set_value name="$EvaluationResult" exact="'preparing'"/>
+                </do_else>
+              </do_else>
+            </do_else>
+
+            <debug_text text="$DebugText + 'Evaluation result changed from ' + $OldResult + ' to ' + $EvaluationResult" context="false" chance="if $EvaluationResult == $OldResult then 0 else $DebugChance"/>
+
+            <set_value name="$RegistryTable.$EvaluationResult" exact="$EvaluationResult"/>
+            <assert value="$EvaluationResult != 'unknown'" text="'Subgoal is in an invalid state [Owen]'"/>
+            <set_value name="$EvaluationDelay" min="10s" max="20s"/>
+            <reset_cue cue="Evaluate"/>
+          </actions>
+        </cue>
+
+        <cue name="Station_Management">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <!--TODO @Owen better check the different stages of building. e.g first module, last module-->
+            <set_value name="$StationConstructed" exact="false"/>
+            <do_if value="$Station.exists">
+
+            </do_if>
+            <do_else>
+              <!--TODO @Owen This assert fired after an old savegame was loaded. Check-->
+              <assert value="$Station.exists" text="'Station does not exist. This cue should not have been signalled. [Owen]'"/>
+              <reset_cue cue="this"/>
+            </do_else>
+          </actions>
+          <cues>
+
+            <!-- first module being built (CV-AI decided it's going to work on this station, it reached the station and started construction) -->
+            <cue name="Station_UnderConstruction" comment="not instantiated intentionally, so it triggers only once - even if multiple modules are being built!">
+              <conditions>
+                <event_build_started object="$Station.buildstorage"/>
+              </conditions>
+              <actions>
+                <do_if value="((not namespace.static.$subgoal_lastnotification?) or (player.age gt namespace.static.$subgoal_lastnotification + 60s))">
+                  <run_actions ref="md.FactionLogic.Get_Faction_Situation_By_Sector" result="this.$NotificationSituation">
+                    <param name="Sector" value="$Station.sector"/>
+                    <param name="Faction" value="$Faction"/>
+                  </run_actions>
+
+                  <do_if value="this.$NotificationSituation">
+                    <!--Depending on the notification situation, have different headlines-->
+                    <do_if value="this.$NotificationSituation == 'faction_is_war_host'">
+                      <!--War subscription host has built the station-->
+                      <set_value name="this.$NotificationHeadline" exact="{1015,301}" comment="War update"/>
+                    </do_if>
+                    <do_elseif value="this.$NotificationSituation == 'faction_is_war_enemy'">
+                      <!--War subscription enemy has built the station-->
+                      <set_value name="this.$NotificationHeadline" exact="{1015,301}" comment="War update"/>
+                    </do_elseif>
+                    <do_elseif value="this.$NotificationSituation == 'enemy_to_local_friend'">
+                      <!--Station is an enemy to a local faction friendly to the player-->
+                      <set_value name="this.$NotificationHeadline" exact="{1015,309}" comment="Emergency update"/>
+                    </do_elseif>
+                    <do_elseif value="this.$NotificationSituation == 'neutral_to_local_friend'">
+                      <!--Station is neutral to a local faction friendly to the player-->
+                      <set_value name="this.$NotificationHeadline" exact="{1015,308}" comment="News update"/>
+                    </do_elseif>
+
+                    <!--TODO @Owen depending on the notification situation, have different reason texts-->
+                    <substitute_text text="$reason" source="{30004,8301}" comment="$FACTION$ station under construction in $DESTINATION$">
+                      <replace string="'$FACTION$'" with="$Faction.name"/>
+                      <replace string="'$DESTINATION$'" with="$Station.sector.knownname"/>
+                    </substitute_text>
+                    <do_if value="md.$DebuggingNotifications">
+                      <set_value name="$reason" exact="$reason + '\n' + $DebugText + ' phase=' + $Phase + ' station: ' + $Station.knownname + ' sector: ' + $Station.sector.knownname"/>
+                    </do_if>
+
+                    <signal_cue_instantly cue="md.GenericMissions.GenericNewsLogbookEntry" param="['', this.$NotificationHeadline, $reason]"/>
+                    <set_value name="namespace.static.$subgoal_lastnotification" exact="player.age"/>
+                  </do_if>
+                </do_if>
+                
+                <do_if value="player.debugfilteractive.economy_verbose">
+                  <include_actions ref="GenerateDebugTextWithCueID"/>
+                  <!--curtime, output_id, goal_id, subgoal_id, object_name, object_idcode, sector_name, faction_id, enemy_faction_id-->
+                  <debug_text filter="economy_verbose" text="'#FL#;%1;StationStartedConstruction;%2;%3;%4;%5;%6;%7;%8'.[player.age, $DebugGoalText, $DebugText, $Station.knownname, $Station.idcode, $Target.knownname, $Faction.id, @$OwnerGoal.$EnemyFaction.id]" context="false"/>
+                </do_if>
+              </actions>
+            </cue>
+
+            <cue name="Station_Destroyed">
+              <conditions>
+                <event_object_destroyed object="$Station"/>
+              </conditions>
+              <actions>
+                <run_actions ref="md.FactionLogic.Get_Faction_Situation_By_Sector" result="this.$NotificationSituation">
+                  <param name="Sector" value="$Station.sector"/>
+                  <param name="Faction" value="$Faction"/>
+                </run_actions>
+                <do_if value="this.$NotificationSituation">
+                  <!--Depending on the station notification situation, have different headlines-->
+                  <do_if value="this.$NotificationSituation == 'faction_is_war_host'">
+                    <!--War subscription host has lost the station-->
+                    <set_value name="this.$NotificationHeadline" exact="{1015,301}" comment="War update"/>
+                  </do_if>
+                  <do_elseif value="this.$NotificationSituation == 'faction_is_war_enemy'">
+                    <!--War subscription enemy has lost the station-->
+                    <set_value name="this.$NotificationHeadline" exact="{1015,301}" comment="War update"/>
+                  </do_elseif>
+                  <do_elseif value="this.$NotificationSituation == 'enemy_to_local_friend'">
+                    <!--Station was an enemy to a local faction friendly to the player-->
+                    <set_value name="this.$NotificationHeadline" exact="{1015,308}" comment="News update"/>
+                  </do_elseif>
+                  <do_elseif value="this.$NotificationSituation == 'neutral_to_local_friend'">
+                    <!--Station is neutral to a local faction friendly to the player-->
+                    <set_value name="this.$NotificationHeadline" exact="{1015,309}" comment="Emergency update"/>
+                  </do_elseif>
+                </do_if>
+                
+                <do_if value="@this.$NotificationHeadline">
+                  <!--TODO @Owen depending on the station notification data, have different reason texts-->
+                  <substitute_text text="$reason" source="{30004,8303}" comment="station was destroyed">
+                    <replace string="'$FACTION$'" with="$Faction.name"/>
+                    <replace string="'$DESTINATION$'" with="$Station.sector.knownname"/>
+                  </substitute_text>
+                  <do_if value="md.$DebuggingNotifications">
+                    <set_value name="$reason" exact="$reason + '\n' + $DebugText + ' phase=' + $Phase + ' station: ' + $Station.knownname + ' sector: ' + $Station.sector.knownname"/>
+                  </do_if>
+                  <signal_cue_instantly cue="md.GenericMissions.GenericNewsLogbookEntry" param="['', this.$NotificationHeadline, $reason]"/>
+                </do_if>
+
+                <set_value name="$Station" exact="null"/>
+                <reset_cue cue="Station_Management"/>
+                <!--TODO @Owen put this goal into a failed state?-->
+              </actions>
+            </cue>
+
+            <!-- first module finished building -->
+            <cue name="Station_Completed">
+              <conditions>
+                <event_build_finished object="$Station.buildstorage"/>
+              </conditions>
+              <actions>
+                <debug_text text="$DebugText + player.age + ': Station ' + $Station.knownname + ' ' + $Station + ' has finished building.'" context="false" chance="$DebugChance"/>
+                <set_value name="$StationConstructed" exact="true"/>
+
+                <run_actions ref="md.FactionLogic.Get_Faction_Situation_By_Sector" result="this.$NotificationSituation">
+                  <param name="Sector" value="$Station.sector"/>
+                  <param name="Faction" value="$Faction"/>
+                </run_actions>
+                <do_if value="this.$NotificationSituation">
+                  <!--Depending on the station notification situation, have different headlines-->
+                  <do_if value="this.$NotificationSituation == 'faction_is_war_host'">
+                    <!--War subscription host has completed building the station-->
+                    <set_value name="this.$NotificationHeadline" exact="{1015,301}" comment="War update"/>
+                  </do_if>
+                  <do_elseif value="this.$NotificationSituation == 'faction_is_war_enemy'">
+                    <!--War subscription enemy has completed building the station-->
+                    <set_value name="this.$NotificationHeadline" exact="{1015,301}" comment="War update"/>
+                  </do_elseif>
+                  <do_elseif value="this.$NotificationSituation == 'enemy_to_local_friend'">
+                    <!--Station is an enemy to a local faction friendly to the player-->
+                    <set_value name="this.$NotificationHeadline" exact="{1015,309}" comment="Emergency update"/>
+                  </do_elseif>
+                  <do_elseif value="this.$NotificationSituation == 'neutral_to_local_friend'">
+                    <!--Station is neutral to a local faction friendly to the player-->
+                    <set_value name="this.$NotificationHeadline" exact="{1015,308}" comment="News update"/>
+                  </do_elseif>
+
+                  <do_if value="@this.$NotificationHeadline">
+                    <substitute_text text="$reason" source="{30004,8302}" comment="Construction of $FACTION$ station completed in $DESTINATION$">
+                      <replace string="'$FACTION$'" with="$Faction.name"/>
+                      <replace string="'$DESTINATION$'" with="$Station.sector.knownname"/>
+                    </substitute_text>
+                    <do_if value="md.$DebuggingNotifications">
+                      <set_value name="$reason" exact="$reason + '\n' + $DebugText + ' phase=' + $Phase + ' station: ' + $Station.knownname + ' sector: ' + $Station.sector.knownname"/>
+                    </do_if>
+                    <signal_cue_instantly cue="md.GenericMissions.GenericNewsLogbookEntry" param="['', this.$NotificationHeadline, $reason]"/>
+                  </do_if>
+                </do_if>
+
+                <do_if value="player.debugfilteractive.economy_verbose">
+                  <include_actions ref="GenerateDebugTextWithCueID"/>
+                  <!--curtime, output_id, goal_id, cue_id, object_name, object_idcode, sector_name, faction_id, enemy_faction_id-->
+                  <debug_text filter="economy_verbose" text="'#FL#;%1;StationComplete;%2;%3;%4;%5;%6;%7;%8'.[player.age, $DebugGoalText, $DebugText, $Station.knownname, $Station.idcode, $Target.knownname, $Faction.id, @$OwnerGoal.$EnemyFaction.id]" context="false"/>
+                </do_if>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <check_any>
+              <event_cue_cancelled cue="$OwnerGoal"/>
+              <event_cue_signalled/>
+              <!-- NOTE: if other conditions are added, check whether $OwnerGoal needs to be signalled with remove_subgoal to avoid dead entries in the $RegistryTable! -->
+            </check_any>
+          </conditions>
+          <actions>
+
+            <do_if value="$EvaluationResult == 'failed'">
+              <!--TODO @Owen check if a build is currently happening. Have the build storage recycle the station?-->
+              <do_if value="$Station.exists">
+                <debug_text text="$DebugText + 'Failed. Removing station ' + $Station.knownname + ' ' + $Station" context="false" chance="$DebugChance"/>
+                <destroy_object object="$Station.buildstorage"/>
+                <destroy_object object="$Station"/>
+              </do_if>
+            </do_if>
+
+            <do_if value="player.debugfilteractive.economy_verbose">
+              <include_actions ref="GenerateDebugTextWithCueID"/>
+              <!--curtime, output_id, goal_id, subgoal_id, object_name, object_idcode, sector_name, faction_id, enemy_faction_id-->
+              <debug_text filter="economy_verbose" text="'#FL#;%1;Cleanup;%2;%3;%4;%5;%6;%7;%8'.[player.age, $DebugGoalText, $DebugText, null, null, $Target.knownname, $Faction.id, @$OwnerGoal.$EnemyFaction.id]" context="false"/>
+            </do_if>
+
+            <do_if value="event.name != 'event_cue_cancelled'">
+              <signal_cue_instantly cue="$OwnerGoal" param="['remove_subgoal', $RegistryTable]"/>
+            </do_if>
+            <cancel_cue cue="Start"/>
+          </actions>
+        </cue>
+      </cues>
+    </cue>
+
+    <library name="GenerateDebugTextWithCueID">
+      <actions>
+        <!--Simply want the cue instance ID to help differentiate in debug texts. Remove the cue path. @Klaus, please don't kill me-->
+        <set_value name="$CueInstanceString" exact="'' + [namespace]"/>
+        <substitute_text source="$CueInstanceString" text="$DebugID">
+          <replace string="'md.'" with="''"/>
+          <replace string="'.Start'" with="''"/>
+          <replace string="'['" with="''"/>
+          <replace string="']'" with="''"/>
+        </substitute_text>
+        <set_value name="$DebugText" exact="'(' + $Faction.id + ') ' + $DebugID + ': ' + $StationMacro.id + ' in ' + $Target.knownname + ' ' + $Target"/>
+        <remove_value name="$DebugID"/>
+
+        <!--Also get the cue ID of the goal-->
+        <set_value name="$CueInstanceString" exact="'' + [$OwnerGoal]"/>
+        <substitute_text source="$CueInstanceString" text="$DebugGoalText">
+          <replace string="'md.'" with="''"/>
+          <replace string="'.Start'" with="''"/>
+          <replace string="'['" with="''"/>
+          <replace string="']'" with="''"/>
+        </substitute_text>
+        <remove_value name="$CueInstanceString"/>
+      </actions>
+    </library>
+  </cues>
+</mdscript>

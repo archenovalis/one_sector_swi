@@ -1,0 +1,283 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="WE_Distress_Call" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+    <cue name="StartGeneric" instantiate="true" namespace="this">
+      <conditions>
+        <event_cue_signalled />
+        <check_value value="player.sector"/>
+      </conditions>
+      <cues>
+        <cue name="StartRef" ref="md.WE_Distress_Call.Start" />
+      </cues>
+    </cue>
+
+    <!--
+    The Start Cue will create an offer on a station
+    If the offer is accepted, the mission library (ProtectObject) is called
+    $Feedback:
+    -101: No MissionStation parameter provided
+    -100: Undefined failure. Defaulted to -100
+    -1: Mission failed
+    1: Mission succeeded -->
+    <library name="Start">
+      <params>
+        <param name="Difficulty" default="[level.easy, level.medium, level.hard].random"/>
+        <param name="Reward" default="0Cr" />
+
+        <param name="MissionName" default="'Ship Distress Call!'" />
+        <param name="Description" default="'A ship distress call has been received!'" />
+
+        <param name="DistressShip" default="null" />
+        <!-- can change the faction of the passed ship -->
+        <param name="DistressShipFaction" default="faction.argon" />
+
+        <param name="NumberOfWaves" default="1" />
+        <!-- Enemies per wave -->
+        <param name="NumberOfEnemies" default="0" />
+        <param name="EnemyFaction" default="faction.xenon" />
+
+        <param name="ReportSignalCue" default="null" />
+      </params>
+      <delay exact="1ms" />
+      <actions>
+        <set_value name="$Feedback" exact="0"/>
+        <set_value name="$AlreadySpawned" exact="0" />
+
+        <do_if value="not $Feedback">
+          <do_if value="$Reward == 0Cr">
+            <do_if value="$Difficulty == level.easy">
+              <set_value name="$Reward" exact="1000Cr"/>
+            </do_if>
+            <do_elseif value="$Difficulty == level.medium">
+              <set_value name="$Reward" exact="1500Cr"/>
+            </do_elseif>
+            <do_else>
+              <set_value name="$Reward" exact="3000Cr"/>
+            </do_else>
+          </do_if>
+          <do_if value="$NumberOfEnemies == 0">
+            <do_if value="$Difficulty == level.easy">
+              <set_value name="$NumberOfEnemies" exact="1"/>
+            </do_if>
+            <do_elseif value="$Difficulty == level.medium">
+              <set_value name="$NumberOfEnemies" exact="2"/>
+            </do_elseif>
+            <do_else>
+              <set_value name="$NumberOfEnemies" exact="3"/>
+            </do_else>
+          </do_if>
+        </do_if>
+      </actions>
+      <cues>
+        <cue name="EventStarted">
+          <conditions>
+            <event_cue_completed cue="Start" />
+          </conditions>
+          <actions>
+            <!-- No Distressed Ship passed -->
+            <do_if value="$DistressShip == null">
+              <create_ship name="$Object" zone="player.zone" macro="ship_arg_m_trans_container_01_a_macro">
+                <pilot group="argon.pilot" />
+                <drop ref="standardwares"/>
+                <position object="player.ship" exact="8km"/>
+              </create_ship>
+              <set_owner object="$Object.pilot" faction="$DistressShipFaction" />
+            </do_if>
+            <!-- Distressed Ship passed -->
+            <do_else>
+              <set_value name="$Object" exact="$DistressShip" />
+              <do_if value="$DistressShipFaction != null">
+                <set_owner object="$Object.pilot" faction="$DistressShipFaction" />
+              </do_if>
+            </do_else>
+            
+            <do_all exact="$NumberOfEnemies">
+              <create_ship groupname="$EnemyShips" name="$EnemyShip" zone="player.zone" macro="ship_arg_s_fighter_01_a_macro">
+                <pilot group="argon.pilot" />
+                <drop ref="standardwares"/>
+                <position object="$Object" exact="3km"/>
+              </create_ship>
+              <set_owner object="$EnemyShip.pilot" faction="$EnemyFaction" />
+              <create_order object="$EnemyShip" id="'Attack'">
+                <param name="primarytarget" value="$Object"/>
+              </create_order>
+            </do_all>
+            <set_value name="$AlreadySpawned" operation="add" />
+          </actions>
+          <cues>
+            <cue name="PlayerNear" checkinterval="5s">
+              <conditions>
+                <check_value value="$Object.distanceto.{player.ship}" max="6km" />
+              </conditions>
+              <actions>
+                <signal_cue cue="MissionOffer" />
+              </actions>
+            </cue>
+            <cue name="MissionOffer">
+              <conditions>
+                <event_cue_signalled />
+              </conditions>
+              <actions>
+                <start_conversation conversation="distresscall" actor="$Object.pilot"/>
+              </actions>
+              <cues>
+                <cue name="ConversationStart" instantiate="true">
+                  <conditions>
+                    <event_conversation_started actor="$Object.pilot"/>
+                  </conditions>
+                  <actions>
+                    <add_npc_line line="1000001" comment="(emergency event mission offer)" />
+                    <add_player_choice text="{1002,14001}" position="left" section="distresscall_accept" />
+                    <add_player_choice text="{1002,14002}" position="right" section="distresscall_decline" />
+                  </actions>
+                </cue>
+                <cue name="ConversationNextSection" instantiate="true">
+                  <conditions>
+                    <event_conversation_next_section actor="$Object.pilot"/>
+                  </conditions>
+                  <actions>
+                    <do_if value="event.param == 'distresscall_accept'">
+                      <add_npc_line line="1000204" comment="(player accepts mission offer)" />
+                      <!-- Prepare stuff for starting the mission -->
+                      <debug_text text="'Mission accepted!'"/>
+                      <remove_offer cue="Start"/>
+                      <signal_cue cue="MissionAccepted" />
+                    </do_if>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="MissionAccepted">
+              <conditions>
+                <event_cue_signalled />
+              </conditions>
+              <actions>
+                <set_value name="stat.missions_accepted" operation="add"/>
+                
+                <create_mission cue="Start" name="$MissionName" description="$Description" difficulty="$Difficulty" faction="$Object.owner" type="missiontype.fight" reward="$Reward">
+                  <objective action="objective.protect" object="$Object"/>
+                </create_mission>
+              </actions>
+              <cues>
+                <!--Now we have created the objects for the mission, start the mission and pass them as parameters-->
+                <cue name="ProtectObject_ref" ref="md.RML_Protect_Object.ProtectObject">
+                  <param name="EndSignalCue" value="MissionEnded"/>
+                  <param name="MissionCue" value="Start"/>
+                  <param name="Object" value="$Object" comment="Object to protect"/>
+
+                  <!--End Phase Params-->
+                  <!--The End Phase is when the RML will be capable of ending successfully, once the object is relativly safe.-->
+                  <!--The first condition to be met causes the end phase to start-->
+                  <param name="EndPhaseCue" value="EndPhaseTrigger" comment="If this cue is complete, the end phase will start"/>
+                </cue>
+
+                <cue name="PlayerClose" checkinterval="5s">
+                  <conditions>
+                    <check_value value="$Object.distanceto.{player.ship}" max="4km"/>
+                  </conditions>
+                  <actions>
+                    <signal_cue cue="Wait" />
+                  </actions>
+                </cue>
+
+                <cue name="Wait">
+                  <conditions>
+                    <event_cue_signalled />
+                  </conditions>
+                  <cues>
+                    <cue name="SpawnWave" checkinterval="10s" instantiate="true">
+                      <actions>
+                        <do_if value="$AlreadySpawned == $NumberOfWaves">
+                          <signal_cue cue="EndPhaseTrigger"/>
+                          <cancel_cue cue="Wait" />
+                        </do_if>
+                        <do_else>
+                          <do_all exact="$NumberOfEnemies">
+                            <create_ship groupname="$EnemyShips" name="$EnemyShip" zone="player.zone" macro="ship_arg_s_fighter_01_a_macro">
+                              <pilot group="argon.pilot" />
+                              <drop ref="standardwares"/>
+                              <position object="$Object" exact="5km"/>
+                            </create_ship>
+                            <set_owner object="$EnemyShip.pilot" faction="$EnemyFaction" />
+                            <create_order object="$EnemyShip" id="'Attack'">
+                              <param name="primarytarget" value="$Object"/>
+                            </create_order>
+                          </do_all>
+                          <set_value name="$AlreadySpawned" operation="add" />
+                        </do_else>
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="EndPhaseTrigger">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <delay exact="30s"/>
+                </cue>
+
+                <cue name="MissionEnded">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <debug_text text="'This mission has ended. Feedback: ' + MissionEnded.$EndFeedbackValue"/>
+                    <do_if value="MissionEnded.$EndFeedbackValue &gt; 0">
+                      <speak actor="$Object.pilot">
+                        <text line="2111" comment="(grateful)" />
+                        <text line="5023" comment="(reward)" />
+                      </speak>
+                      <set_value name="stat.missions_completed" operation="add"/>
+                      <set_value name="$Feedback" exact="1" />
+                      <create_position name="$Pos" object="$Object" space="$Object.zone"  min="10km" max="15km"/>
+                      <create_order object="$Object" id="'MoveGeneric'">
+                        <param name="destination" value="$Object.zone" />
+                        <param name="position" value="$Pos" />
+                      </create_order>
+                      <remove_mission cue="Start" type="completed" />
+                    </do_if>
+                    <do_else>
+                      <set_value name="$Feedback" exact="-1" />
+                      <remove_mission cue="Start" type="failed" />
+                    </do_else>
+                    <signal_cue cue="CleanUp" />
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="CleanUp">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <do_if value="$Feedback" exact="0">
+              <debug_text text="'ERROR: Ship_Distress_Call.Cleanup - Feedback value is 0. Default to -100'"/>
+              <set_value name="$Feedback" exact="-100"/>
+            </do_if>
+            <do_if value="$ReportSignalCue != null">
+              <set_value name="$ReportSignalCue.$EndFeedbackValue" exact="$Feedback"/>
+              <signal_cue cue="$ReportSignalCue"/>
+            </do_if>
+            <do_if value="$Object.isoperational">
+              <create_order object="$Object" id="'MoveDie'" />
+            </do_if>
+            <do_if value="$EnemyShips.count" min="1">
+              <do_all exact="$EnemyShips.count" counter="$Counter">
+                <create_order object="$EnemyShips.{$Counter}" id="'MoveDie'">
+                  <param name="byhostile" value="true"/>
+                  <param name="byidle" value="false" />
+                </create_order>
+              </do_all>
+            </do_if>
+            <cancel_cue cue="Start"/>
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

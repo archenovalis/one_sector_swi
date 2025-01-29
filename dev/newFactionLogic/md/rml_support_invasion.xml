@@ -1,0 +1,334 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_Support_Invasion" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--
+    This RML is intended for use in Master-Missions. 
+    Taking the MD cue 'FactionGoal_Invade_Space.Start' as a parameter, it pools data from the faction logic to create objectives for the current situation
+    
+    $feedbackvalue:
+    -102 InvasionCue not valid
+    -101 Cue parameters not defined
+    -100: Undefined failure. Defaulted to -100
+    1: TODO -->
+
+    <library name="SupportInvasion" version="2">
+      <params>
+        <param name="EndSignalCue"/>
+        <param name="MissionCue"/>
+        <param name="StartStep" default="1" comment="Briefing step to start the mission on"/>
+        <param name="UpdateBriefing" default="true" comment="Update the briefing objective step when the objective is updated"/>
+        <param name="DebugChance" default="0" />
+
+        <param name="InvasionCue"                   comment="'FactionGoal_Invade_Space.Start' cue to poll information from"/>
+      </params>
+      <actions>
+        <set_value name="$feedbackvalue" exact="0"/>
+        <create_list name="$ErrorList"/>
+
+        <do_if value="not $EndSignalCue or not $MissionCue">
+          <append_to_list name="$ErrorList" exact="-101"/>
+        </do_if>
+        <do_elseif value="typeof $InvasionCue != datatype.cue or not $InvasionCue.exists">
+          <append_to_list name="$ErrorList" exact="-102"/>
+        </do_elseif>
+
+      </actions>
+      <patch sinceversion="2" state="complete">
+        <set_value name="$feedbackvalue" exact="1"/>
+        <signal_cue cue="Cleanup"/>
+      </patch>
+      <cues>
+
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="1"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup"/>
+          </actions>
+        </cue>
+
+        <cue name="Invasion_Ended">
+          <conditions>
+            <event_cue_cancelled cue="$InvasionCue"/>
+          </conditions>
+          <actions>
+            <!--TODO @Owen - end phase?-->
+          </actions>
+        </cue>
+
+        <cue name="StartMission" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="0"/>
+          </conditions>
+          <actions>
+            <!--3.0 Beta 3 - Auto complete RMLs. Their offers have been disabled for now.-->
+            <set_value name="$feedbackvalue" exact="1"/>
+            <signal_cue cue="Cleanup"/>
+            
+            <!--<set_value name="$LastRMLActivation" exact="-1"/>
+            <set_value name="$Faction" exact="$InvasionCue.$Faction"/>
+            <set_value name="$Target" exact="$InvasionCue.$Target"/>
+
+            <signal_cue cue="EvaluateSubgoals"/>-->
+          </actions>
+        </cue>
+
+        <cue name="EvaluateSubgoals_Delayed" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <delay exact="5s"/>
+          <actions>
+            <signal_cue cue="EvaluateSubgoals"/>
+          </actions>
+        </cue>
+
+        <cue name="EvaluateSubgoals" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <assert value="ProcessSubGoal.state == cuestate.waiting" text="'Attempting to evaluate subgoals but ' + ProcessSubGoal + ' is not waiting. State: ' + ProcessSubGoal.state + ' [Owen]'"/>
+            <set_value name="$LastEvaluation" exact="player.age"/>
+            <set_value name="$SubGoals" exact="$InvasionCue.$CurrentPhaseSubGoals"/>
+
+            <!--TODO @Owen - Decide when to end this RML, potentially when there is nothing else to do?-->
+            <!--TODO @Owen - We currently only deal with the 'DefendArea' subgoals. These are used both holding an area and attempting to move forward and take areas-->
+            <!--TODO @Owen - What decides the priority of the subgoals? May need some scoring table to be constructed in the FactionGoal itself.-->
+
+            <set_value name="$SelectedSubGoal" exact="null"/>
+            <do_all exact="$SubGoals.count">
+              <!--TODO @Owen - better selection-->
+              <do_if value="$SubGoals.{$i}.$Descriptor == '$SUBGOAL_DefendArea'">
+                <set_value name="$SelectedSubGoal" exact="$SubGoals.{$i}"/>
+                <break/>
+              </do_if>
+            </do_all>
+
+            <do_if value="$SelectedSubGoal">
+              <signal_cue cue="ProcessSubGoal"/>
+            </do_if>
+            <do_else>
+              <!--TODO @Owen - end phase?-->
+            </do_else>
+          </actions>
+
+        </cue>
+
+        <cue name="ProcessSubGoal">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <do_if value="not $SelectedSubGoal">
+              <!--TODO @Owen - end phase?-->
+            </do_if>
+          </actions>
+          <cues>
+            <cue name="ProcessSubGoal_Signal">
+              <actions>
+                <do_if value="$SelectedSubGoal.$Descriptor == '$SUBGOAL_DefendArea'">
+                  <signal_cue cue="Subgoal_DefendArea"/>
+                </do_if>
+                <do_else>
+                  <!--Unknown subgoal descriptor-->
+                </do_else>
+              </actions>
+            </cue>
+
+            <cue name="Subgoal_DefendArea">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <!--Here we analyse the DefendArea subgoal to find where the areas are, what ships are involved and what they are currently trying to achieve-->
+                <!--TODO @Owen have the subgoal itself priorities the current activities-->
+                <do_if value="$SelectedSubGoal.$DefendArea.$AssignedShips.count">
+                  <do_all exact="$SelectedSubGoal.$DefendArea.$AssignedShips.count" counter="$k">
+                    <!--TODO @Owen grab the objective from the subgoal, not the ship orders-->
+                    <set_value name="this.$ShipOrders" exact="$SelectedSubGoal.$DefendArea.$AssignedShips.orders"/>
+                    <do_all exact="this.$ShipOrders.count" counter="$m">
+                      <do_if value="this.$ShipOrders.{$m}.id == 'Attack'">
+                        <!--NOTE: Parameter lookup of order script order.fight.attack.object - if order script changes, so must this (but if data is taken from subgoal, this can go)-->
+                        <signal_cue_instantly cue="Objective_DestroyComponent" param="table[$target = this.$ShipOrders.{$m}.$primarytarget]"/>
+                        <!--We're done analysing this subgoal-->
+                        <cancel_cue cue="this"/>
+                      </do_if>
+                    </do_all>
+                  </do_all>
+                </do_if>
+                <do_else>
+                  <!--No assigned ships yet. Protect area and wait for ships to arrive and an objective to be suitable-->
+
+                  <set_value name="this.$paramtable" exact="table[
+                               $destinations = [$Target, $SelectedSubGoal.$DefendArea.$Position, $SelectedSubGoal.$DefendArea.$Range, null, null, null, -1]]"/>
+                  <signal_cue_instantly cue="Objective_Patrol" param="this.$paramtable"/>
+                  <!--We're done analysing this subgoal-->
+                  <cancel_cue cue="this"/>
+                </do_else>
+              </actions>
+            </cue>
+
+            <!--event.param == table[
+            $target = attack target]-->
+            <cue name="Objective_DestroyComponent">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <set_value name="this.$params" exact="event.param"/>
+                <do_if value="not event.param.$target.exists">
+                  <reset_cue cue="ProcessSubGoal"/>
+                  <signal_cue cue="EvaluateSubgoals_Delayed"/>
+                </do_if>
+              </actions>
+              <cues>
+                <cue name="Objective_DestroyComponent_Setup">
+                  <actions>
+                    <set_value name="$LastRMLActivation" exact="player.age"/>
+                    <create_group groupname="this.$Targets"/>
+                    <add_to_group groupname="this.$Targets" object="parent.$params.$target"/>
+                  </actions>
+                  <cues>
+                    <cue name="Objective_DestroyComponent_Ref" ref="md.RML_Destroy_Components.DestroyComponents">
+                      <param name="EndSignalCue" value="Objective_DestroyComponent_End"/>
+                      <param name="MissionCue" value="$MissionCue"/>
+                      <param name="StartStep" value="$StartStep" comment="Briefing step to start the mission on"/>
+                      <param name="UpdateBriefing" value="$UpdateBriefing" comment="Update the briefing objective step when the objective is updated"/>
+
+                      <param name="Targets_Param" value="parent.$Targets" comment="Target components to destroy. This group will be copied to '$Targets'"/>
+                      <param name="TargetUpdateCue" value="TargetUpdateCue"/>
+                      <param name="ObjectiveIsGroup" value="true" comment="(true) Have the objective point to the group or (false) have the guidance point to one object"/>
+
+                      <param name="DebugChance" value="$DebugChance"/>
+                    </cue>
+
+                    <cue name="Objective_DestroyComponent_End">
+                      <conditions>
+                        <event_cue_signalled/>
+                      </conditions>
+                      <actions>
+                        <reset_cue cue="ProcessSubGoal"/>
+                        <signal_cue cue="EvaluateSubgoals_Delayed"/>
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+              </cues>
+            </cue>
+
+            <!--event.param == table[
+            $destinations - see RML_Patrol for definition
+            ]-->
+            <cue name="Objective_Patrol">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <set_value name="this.$params" exact="event.param"/>
+                <do_if value="event.param.$destinations.count == 0">
+                  <reset_cue cue="ProcessSubGoal"/>
+                  <signal_cue cue="EvaluateSubgoals_Delayed"/>
+                </do_if>
+              </actions>
+              <cues>
+                <cue name="Objective_Patrol_Setup">
+                  <actions>
+                    <set_value name="$LastRMLActivation" exact="player.age"/>
+                  </actions>
+                  <cues>
+                    <cue name="Objective_Patrol_Ref" ref="md.RML_Patrol.Patrol">
+                      <param name="EndSignalCue" value="Objective_Patrol"/>
+                      <param name="MissionCue" value="$MissionCue"/>
+                      <param name="StartStep" value="$StartStep" comment="Briefing step to start the mission on"/>
+                      <param name="UpdateBriefing" value="$UpdateBriefing" comment="Update the briefing objective step when the objective is updated"/>
+
+                      <param name="Destinations" value="Objective_Patrol.$params.$destinations" />
+                      <param name="Faction" value="$Faction" />
+                      <param name="DebugChance" value="$DebugChance"/>
+                    </cue>
+
+                    <cue name="Objective_Patrol_End">
+                      <conditions>
+                        <event_cue_signalled/>
+                      </conditions>
+                      <actions>
+                        <reset_cue cue="ProcessSubGoal"/>
+                        <signal_cue cue="EvaluateSubgoals_Delayed"/>
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+              </cues>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <!--TODO remove_objective-->
+
+            <do_if value="$feedbackvalue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'ERROR: Feedback value is 0 and no error values were set. Defaulting to -100'"/>
+                <set_value name="$feedbackvalue" exact="-100"/>
+              </do_if>
+              <do_else>
+                <set_value name="$feedbackvalue" exact="$ErrorList.{1}"/>
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+                    <do_if value="$ErrorList.{$Counter}" exact="-102">
+                      <set_value name="$FeedbackText" exact="'InvasionCue not valid'"/>
+                    </do_if>
+                    <do_if value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'Cue parameters not defined'"/>
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-100">
+                      <set_value name="$FeedbackText" exact="'Undefined failure. Defaulted to -100'"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                    </do_else>
+
+                    <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+
+
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+
+              <do_if value="$feedbackvalue" exact="1">
+                <set_value name="$FeedbackText" exact="'TODO'"/>
+              </do_if>
+
+              <do_if value="$feedbackvalue" min="1">
+                <debug_text text="'Mission Successful. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_if>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission Failed. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+            <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$feedbackvalue"/>
+            <signal_cue cue="$EndSignalCue"/>
+            <cancel_cue cue="DeployInPlace"/>
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

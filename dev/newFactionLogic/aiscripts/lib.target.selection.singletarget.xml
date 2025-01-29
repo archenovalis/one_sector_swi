@@ -1,0 +1,198 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<aiscript name="lib.target.selection.singletarget" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd">
+  <interrupts>
+    <library>
+      <actions name="ClearTarget">
+        <!-- remove all acquired modules and surface elements on the now-invalid target.
+              for use in turret control scripts. assumes existence of group $targets_defensibles, $table_targets, and variable $evaltarget. -->
+        <do_if value="@$evaltarget and @$targets_defensibles">
+          <do_if value="$targets_defensibles.indexof.{$evaltarget}">
+            <remove_from_group group="$targets_defensibles" object="$evaltarget"/>
+          </do_if>
+          <do_if value="@$table_targets.{$evaltarget}.count">
+            <do_for_each name="$loctarget" in="$table_targets.{$evaltarget}">
+              <do_if value="@$dronetargets.indexof.{$loctarget}">
+                <remove_from_group group="$dronetargets" object="$loctarget"/>
+              </do_if>
+              <do_if value="@$attackers.indexof.{$loctarget}">
+                <remove_from_group group="$attackers" object="$loctarget"/>
+              </do_if>
+              <do_if value="@$targets.indexof.{$loctarget}">
+                <remove_from_group group="$targets" object="$loctarget"/>
+              </do_if>
+            </do_for_each>
+            <debug_text text="'clearing targets.\ntarget_low: %s %s %s\ntargets_high: %s'.[@$evaltarget.idcode, @$evaltarget.knownname, $evaltarget, $table_targets.{$evaltarget}]" chance="@$debugchance"/>
+            <remove_value name="$table_targets.{$evaltarget}"/>
+          </do_if>
+        </do_if>
+        <do_else>
+          <debug_text text="'RemoveEvaltargetFromTargets called with invalid variables. $evaltarget: %s, $targets_defensibles: %s, $targets: %s'.[@$evaltarget, @$targets_defensibles, @$targets]" filter="error"/>
+        </do_else>
+      </actions>
+
+      <actions name="AcquireTarget">
+        <!-- register target's top-level container to $resulttargets_low and all modules and/or surface elements to $resulttargets_high.
+              both groups always populated on acquisition to avoid performance hits when switching attention levels.
+              for use in turret control scripts. assumes existence of variable $evaltarget, groups $targets_defensibles and $targets, and $table_targets.
+
+              returns groups $resulttargets_low and $resulttargets_high.
+              populates $targets, $targets_defensibles, and $table_targets in the calling script. -->
+        <do_if value="@$evaltarget and @$targets_defensibles and @$targets">
+          <!-- newly-constructed or repaired modules or surface elements should go to the else case to refresh the cache. -->
+          <do_if value="@$table_targets.{$evaltarget}.count and $targets_defensibles.indexof.{$evaltarget}">
+            <do_if value="$evaltarget.canbeattacked and $evaltarget.sector and ($evaltarget.sector == this.sector)">
+              <set_value name="$resulttarget_low" exact="$evaltarget"/>
+              <set_value name="$resulttargets_high" exact="$table_targets.{$evaltarget}"/>
+              <debug_text text="'target %s %s %s was already acquired. returning cached data.'.[@$evaltarget.idcode, @$evaltarget.knownname, $evaltarget]" chance="0"/>
+            </do_if>
+            <do_else>
+              <debug_text text="'was about to return invalid target %s %s %s. target not acquired.\ncanbeattacked: %s\nin a sector: %s\nin my sector: %s'.[@$evaltarget.idcode, @$evaltarget.knownname, $evaltarget, $evaltarget.canbeattacked, $evaltarget.sector, $evaltarget.sector == this.sector]" chance="@$debugchance"/>
+            </do_else>
+          </do_if>
+          <do_else>
+            <include_interrupt_actions ref="SelectTarget_Low"/>
+            <do_if value="@$resulttarget">
+              <set_value name="$resulttarget_low" exact="$resulttarget"/>
+            </do_if>
+            <remove_value name="$resulttarget"/>
+            <do_if value="@$resulttarget_low">
+              <add_to_group groupname="$targets_defensibles" object="$resulttarget_low"/>
+              <set_value name="$evaltarget" exact="$resulttarget_low"/>
+              <include_interrupt_actions ref="SelectTargets_High"/>
+              <do_if value="@$resulttargets.count">
+                <add_to_group groupname="$resulttargets_high" group="$resulttargets"/>
+                <add_to_group groupname="$targets" group="$resulttargets"/>
+                <set_value name="$table_targets.{$resulttarget_low}" exact="$resulttargets"/>
+              </do_if>
+              <do_else>
+                <add_to_group groupname="$locgrp" object="$resulttarget_low"/>
+                <set_value name="$table_targets.{$resulttarget_low}" exact="$locgrp"/>
+                <remove_value name="$locgrp"/>
+              </do_else>
+              <remove_value name="$resulttargets"/>
+              <debug_text text="'acquiring targets.\ntarget_low: %s %s %s\ntargets_high: %s'.[@$resulttarget_low.idcode, @$resulttarget_low.knownname, $resulttarget_low, $resulttargets_high]" chance="@$debugchance"/>
+            </do_if>
+          </do_else>
+        </do_if>
+        <do_else>
+          <debug_text text="'AcquireTarget called with invalid variables. $evaltarget: %s, $targets_defensibles: %s, $targets: %s'.[@$evaltarget, $targets_defensibles, $targets]" filter="error"/>
+        </do_else>
+      </actions>
+
+      <actions name="SelectTarget_Low">
+        <do_if value="@$evaltarget.canbeattacked">
+          <do_if value="$evaltarget.sector and ($evaltarget.sector == this.sector)">
+            <set_value name="$resulttarget" exact="$evaltarget"/>
+            <!-- target not being defensible and having a container means it's a surface element. we cannot get the attackstrength to something that is not a defensible. so target the container. -->
+            <do_while value="not $resulttarget.isclass.defensible and $resulttarget.container and ($resulttarget.container != this.assignedcontrolled)">
+              <set_value name="$resulttarget" exact="$resulttarget.container"/>
+            </do_while>
+            <debug_text text="'%s %s %s %s acquired %s %s %s %s'.[this.assignedcontrolled.class, this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, $resulttarget.class, @$resulttarget.idcode, @$resulttarget.knownname, $resulttarget]" chance="@$debugchance"/>
+          </do_if>
+          <do_else>
+            <debug_text text="'evaltarget: %s %s %s %s is not in this sector.'.[@$evaltarget.class, @$evaltarget.idcode, @$evaltarget.knownname, @$evaltarget]" chance="@$debugchance"/>
+          </do_else>
+        </do_if>
+        <do_else>
+          <debug_text text="'evaltarget: %s %s %s %s is invalid or not operational.'.[@$evaltarget.class, @$evaltarget.idcode, @$evaltarget.knownname, @$evaltarget]" chance="@$debugchance"/>
+        </do_else>
+      </actions>
+
+      <actions name="SelectTargets_High">
+        <!-- selection of subtargets for a given single target. we currently have three cases:
+          simple target, S or M ship or surface element: target itself,
+          capital ship: all surface elements plus the target itself,
+          station: all modules, maybe all surface elements, NOT the target itself.
+
+          requires variable $evaltarget which must be a ship or a station.
+          returns a group of targets named $resulttargets.
+
+          implemented as an interrupt library so it can be used within interrupt actions.
+          must not have any blocking actions! -->
+        <do_if value="@$evaltarget.canbeattacked">
+          <do_if value="$evaltarget.sector and ($evaltarget.sector == this.sector)">
+
+            <create_group groupname="$resulttargets"/>
+
+            <do_if value="not @$evaltarget.ismodular">
+              <add_to_group groupname="$resulttargets" object="$evaltarget"/>
+            </do_if>
+
+            <do_if value="@$evaltarget.ismodular or @$evaltarget.canhaveattackablemodules">
+              <debug_text text="'target: %s %s %s %s is modular'.[@$evaltarget.idcode, @$evaltarget.knownname, $evaltarget, $evaltarget.macro]" chance="0"/>
+              <do_if value="this.assignedcontrolled.iscapitalship">
+                <!--capship vs station-->
+                <do_if value="@$shootindestructible">
+                  <find_module groupname="$resulttargets" object="$evaltarget" checkoperational="false" sortbydistanceto="this.assignedcontrolled" multiple="true">
+                    <match state="componentstate.wreck" negate="true"/>
+                  </find_module>
+                </do_if>
+                <do_else>
+                  <find_module groupname="$resulttargets" object="$evaltarget" checkoperational="false" indestructible="false" invulnerable="false" sortbydistanceto="this.assignedcontrolled" multiple="true">
+                    <match state="componentstate.wreck" negate="true"/>
+                  </find_module>
+                </do_else>
+                <do_all chance="0">
+                  <debug_text text="'found %s modules:'.[$resulttargets.count]"/>
+                  <do_for_each name="$loctarget" in="$resulttargets">
+                    <debug_text text="'%s %s %s'.[$loctarget.knownname, $loctarget, $loctarget.macro]"/>
+                  </do_for_each>
+                </do_all>
+              </do_if>
+              <do_else>
+                <!--non-capship vs station-->
+                <do_if value="@$shootindestructible">
+                  <find_module name="$targetmodules" object="$evaltarget" checkoperational="false" multiple="true" sortbydistanceto="this.assignedcontrolled">
+                    <match state="componentstate.wreck" negate="true"/>
+                  </find_module>
+                </do_if>
+                <do_else>
+                  <find_module name="$targetmodules" object="$evaltarget" checkoperational="false" indestructible="false" invulnerable="false" multiple="true" sortbydistanceto="this.assignedcontrolled">
+                    <match state="componentstate.wreck" negate="true"/>
+                  </find_module>
+                </do_else>
+                <do_if value="$targetmodules.count">
+                  <add_to_group groupname="$resulttargets" list="$targetmodules"/>
+                  <do_for_each in="$targetmodules" counter="$targetmodule_i">
+                    <find_object_component groupname="$resulttargets" object="loop.element" checkoperational="false" integrated="false" indestructible="false" invulnerable="false" surfaceelement="true" multiple="true"/>
+                    <do_if value="@$shootindestructible">
+                      <find_object_component groupname="$resulttargets" object="loop.element" checkoperational="false" integrated="false" indestructible="true" invulnerable="false" surfaceelement="true" multiple="true"/>
+                    </do_if>
+                    <do_if value="$resulttargets.count - $targetmodules.count gt 250">
+                      <!--that's enough surface element target-->
+                      <break/>
+                    </do_if>
+                    <do_if value="$targetmodule_i gt 15">
+                      <!--only get the surface elements of the closest modules-->
+                      <break/>
+                    </do_if>
+                  </do_for_each>
+                </do_if>
+                <remove_value name="$targetmodules"/>
+              </do_else>
+            </do_if>
+            <do_elseif value="@$evaltarget.iscapitalship">
+              <!--anything vs capship-->
+              <find_object_component groupname="$resulttargets" object="$evaltarget" checkoperational="false" integrated="false" indestructible="false" invulnerable="false" surfaceelement="true" multiple="true">
+                <match state="componentstate.wreck" negate="true"/>
+              </find_object_component>
+              <do_if value="@$shootindestructible">
+                <find_object_component groupname="$resulttargets" object="$evaltarget" checkoperational="false" integrated="false" indestructible="true" invulnerable="false" surfaceelement="true" multiple="true">
+                  <match state="componentstate.wreck" negate="true"/>
+                </find_object_component>
+              </do_if>
+            </do_elseif>
+
+            <debug_text text="'%s %s %s %s found %s target%s connected to %s %s %s %s'.[this.assignedcontrolled.class, this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, $resulttargets.count, if ($resulttargets.count gt 1) then 's' else '', $evaltarget.class, @$evaltarget.idcode, @$evaltarget.knownname, $evaltarget]" chance="@$debugchance"/>
+          </do_if>
+          <do_else>
+            <debug_text text="'evaltarget: %s %s %s %s is not in this sector.'.[@$evaltarget.class, @$evaltarget.idcode, @$evaltarget.knownname, @$evaltarget]" chance="@$debugchance"/>
+          </do_else>
+        </do_if>
+        <do_else>
+          <debug_text text="'evaltarget: %s %s %s %s is invalid or not operational.'.[@$evaltarget.class, @$evaltarget.idcode, @$evaltarget.knownname, @$evaltarget]" chance="@$debugchance"/>
+        </do_else>
+      </actions>
+    </library>
+  </interrupts>
+</aiscript>

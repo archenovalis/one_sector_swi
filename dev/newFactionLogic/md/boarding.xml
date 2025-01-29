@@ -1,0 +1,2747 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<mdscript name="Boarding" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <cue name="OperationCreated" instantiate="true" namespace="this" version="4">
+      <conditions>
+        <event_boarding_operation_created/>
+      </conditions>
+      <actions>
+        <set_value name="$DebugChance" exact="0"/>
+
+        <debug_text text="player.age + ' Boarding operation created ' + event.param"/>
+
+        <set_value name="$Operation" exact="event.param"/>
+        <set_value name="$CurrentPhase" exact="null"/>
+        <set_value name="$Target" exact="$Operation.boardee"/>
+        <set_value name="$PlayerInvolved" exact="false"/>
+        <set_value name="$MissionCue" exact="OperationCreated"/>
+
+        <set_value name="$HasStartedInfiltration" exact="false" comment="Helper value to state if the infiltration phase has been reached and any straggler marines can immediately cut through the hull"/>
+        <set_value name="$HasStartedInternalFight" exact="false"/>
+        <set_value name="$InfiltratingMarineProgress" exact="table[]" comment="Table of infiltrating marine templates and their progress percentage"/>
+        <set_value name="$PreInfiltrationMaxProgress" exact="15.0f"/>
+        <set_value name="$AllInfiltrated" exact="false"/>
+        <set_value name="$AttackingTeams" exact="[]"/>
+        <set_value name="$NumDefendersKilled" exact="0"/>
+
+        <create_group groupname="$ApproachingBoardingPods"/>
+        <create_group groupname="$AttachedBoardingPods"/>
+        <create_group groupname="$AttackingShips"/>
+        <set_value name="$AttackingShipMarineTierAmounts" exact="table[]"/>
+
+        <set_value name="$PlacedSpeaker" exact="null"/>
+        <set_value name="$CurrentSpeaker" exact="null"/>
+        <set_value name="$CurrentPriority" exact="-1"/>
+        <set_value name="$LastSpeakTime" exact="-1s"/>
+        <set_value name="$LastSpeakTemplate" exact="null"/>
+        <set_value name="$LastLaunchSpeakTime" exact="-1s"/>
+        <set_value name="$LastPodSpeakTime" exact="-1s"/>
+        <set_value name="$LastFightSpeakTime" exact="-1s"/>
+        <set_value name="$LastFightSpeakLib" exact="null"/>
+
+        <!--Try to keep track of the 'marine commander' so all commanding lines are coming from the same page. It may simply be the first marine to say something.-->
+        <set_value name="$MarineCommanderTemplate" exact="null"/>
+        <set_value name="$MarineCommanderPage" exact="null"/>
+        <set_value name="$MarineCommanderShip" exact="null"/>
+      </actions>
+      <patch sinceversion="2">
+        <set_value name="$PlayerInvolved" exact="false"/>
+        <set_value name="$MissionCue" exact="OperationCreated"/>
+      </patch>
+      <patch sinceversion="3">
+        <set_value name="$AttackingTeams" exact="[]"/>
+        <set_value name="$NumDefendersKilled" exact="0"/>
+
+        <set_value name="$PlacedSpeaker" exact="null"/>
+        <set_value name="$CurrentSpeaker" exact="null"/>
+        <set_value name="$CurrentPriority" exact="-1"/>
+        <set_value name="$LastSpeakTime" exact="-1s"/>
+        <set_value name="$LastSpeakTemplate" exact="null"/>
+        <set_value name="$LastLaunchSpeakTime" exact="-1s"/>
+        <set_value name="$LastPodSpeakTime" exact="-1s"/>
+        <set_value name="$LastFightSpeakTime" exact="-1s"/>
+        <set_value name="$LastFightSpeakLib" exact="null"/>
+
+        <set_value name="$MarineCommanderTemplate" exact="null"/>
+        <set_value name="$MarineCommanderPage" exact="null"/>
+        <set_value name="$MarineCommanderShip" exact="null"/>
+      </patch>
+      <patch sinceversion="4">
+        <create_group groupname="$AttackingShips"/>
+        <set_value name="$AttackingShipMarineTierAmounts" exact="table[]"/>
+        <do_if value="$Operation.exists">
+          <add_to_group groupname="$AttackingShips" list="$Operation.attackers"/>
+
+          <do_for_each name="$ship" in="$AttackingShips">
+            <do_if value="$ship.boardingmarines.count">
+              <set_value name="$AttackingShipMarineTierAmounts.{$ship}" exact="[]"/>
+              <do_for_each name="$level" in="entityrole.marine.tiers">
+                <append_to_list name="$AttackingShipMarineTierAmounts.{$ship}" exact="$ship.boardingmarines.{$level}.count"/>
+              </do_for_each>
+            </do_if>
+          </do_for_each>
+        </do_if>
+      </patch>
+      <cues>
+
+        <!--event.param = boardingphase-->
+        <cue name="ChangePhase" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <assert value="event.param != $Operation.boardingphase" text="'ChangePhase called with the same phase as the current phase. Phase: ' + event.param + ' [Owen]'"/>
+
+            <debug_text text="player.age + ' Boarding operation ' + $Operation + ' Changing phase from ' + $Operation.boardingphase + ' to ' + event.param" chance="$DebugChance"/>
+            <do_if value="$CurrentPhase">
+              <debug_text text="player.age + ' Boarding operation ' + $Operation + ' Stopping boarding cue ' + $CurrentPhase" chance="$DebugChance"/>
+              <cancel_cue cue="$CurrentPhase"/>
+              <set_value name="$CurrentPhase" exact="null"/>
+            </do_if>
+
+            <set_boarding_phase operation="$Operation" phase="event.param"/>
+
+            <do_if value="event.param == boardingphase.pre_approach">
+              <signal_cue cue="Phase_Pre_Approach"/>
+            </do_if>
+            <do_elseif value="event.param == boardingphase.approach">
+              <signal_cue cue="Phase_Approach"/>
+            </do_elseif>
+            <do_elseif value="event.param == boardingphase.pre_infiltration">
+              <signal_cue cue="Phase_Pre_Infiltration"/>
+            </do_elseif>
+            <do_elseif value="event.param == boardingphase.infiltration">
+              <signal_cue cue="Phase_Infiltration"/>
+            </do_elseif>
+            <do_elseif value="event.param == boardingphase.internalfight">
+              <signal_cue cue="Phase_Internal_Fight"/>
+            </do_elseif>
+            <do_else>
+              <assert value="false" text="'Boarding phase' + event.param + ' does not have a cue handler [Owen]'"/>
+            </do_else>
+          </actions>
+        </cue>
+
+        <cue name="ApproachingBoardingPodLaunched" instantiate="true">
+          <conditions>
+            <event_object_signalled object="$Target" param="$Operation" param2="'boarding__podstarted'"/>
+          </conditions>
+          <actions>
+            <debug_text text="'Boarding operation: ' + $Operation + ' - Boarding pod launched ' + event.param3" chance="$DebugChance"/>
+            <add_to_group groupname="$ApproachingBoardingPods" object="event.param3"/>
+            <add_boarding_pod_to_operation operation="$Operation" ship="event.param3"/>
+          </actions>
+        </cue>
+
+        <cue name="ApproachingBoardingPodHit" instantiate="true">
+          <conditions>
+            <event_object_attacked group="$ApproachingBoardingPods"/>
+            <check_value value="$PlayerInvolved and player.age ge ($LastPodSpeakTime + 10s) and not event.param.isplayerowned"/>
+          </conditions>
+          <actions>
+            <set_value name="this.$Pod" exact="event.object"/>
+          </actions>
+          <cues>
+            <!--Delay to check that it wasn't a one-shot-kill-->
+            <cue name="ApproachingBoardingPodHit_Delay">
+              <delay exact="1s"/>
+              <actions>
+                <do_if value="parent.$Pod.isoperational and player.age ge ($LastPodSpeakTime + 10s)">
+                  <set_value name="$LastPodSpeakTime" exact="player.age"/>
+                  <set_value name="$PossibleSpeaks" exact="[]"/>
+
+                  <set_value name="$Pod" exact="parent.$Pod"/>
+                  <include_actions ref="Speak__Pod_Hit"/>
+
+                  <do_if value="$PossibleSpeaks.count">
+                    <signal_cue_instantly cue="Speak_Helper" param="$PossibleSpeaks.random"/>
+                  </do_if>
+                </do_if>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="AttackerDestroyed" instantiate="true">
+          <conditions>
+            <event_object_destroyed group="$AttackingShips"/>
+            <check_value value="event.object.people.marines.count"/>
+            <check_value value="$AttackingShipMarineTierAmounts.{event.object}?"/>
+          </conditions>
+          <actions>
+            <do_for_each name="$level" in="entityrole.marine.tiers" counter="$i">
+              <do_if value="$AttackingShipMarineTierAmounts.{event.object}.{$i}">
+                <set_value name="$marines" exact="event.object.people.marines.{$level}.list"/>
+                <do_all exact="$AttackingShipMarineTierAmounts.{event.object}.{$i}" counter="$j">
+                  <do_if value="event.object.people.{$marines.{$j}}.exists">
+                    <transfer_marine_to_operation operation="$Operation" object="event.object" template="$marines.{$j}" status="killed"/>
+                  </do_if>
+                </do_all>
+              </do_if>
+            </do_for_each>
+            <remove_value name="$AttackingShipMarineTierAmounts.{event.object}"/>
+          </actions>
+        </cue>
+
+        <cue name="ApproachingBoardingPodDestroyed" instantiate="true">
+          <conditions>
+            <event_object_destroyed group="$ApproachingBoardingPods"/>
+          </conditions>
+          <actions>
+            <set_value name="this.$Pod" exact="event.object"/>
+
+            <debug_text text="'Boarding operation: ' + $Operation + ' - Boarding pod killed ' + this.$Pod" chance="$DebugChance"/>
+
+            <set_value name="this.$Marines" exact="this.$Pod.people.marines.list"/>
+            <do_all exact="this.$Marines.count" counter="$i">
+              <debug_text text="'Pod destroyed. Adding ' + this.$Pod.people.{this.$Marines.{$i}}.name + ' from pod ' +  this.$Pod + ' to the operation as an \'killed\' marine'" chance="$DebugChance"/>
+              <transfer_marine_to_operation operation="$Operation" object="this.$Pod" template="this.$Marines.{$i}" status="killed"/>
+            </do_all>
+
+            <remove_from_group group="$ApproachingBoardingPods" object="this.$Pod"/>
+            <remove_boarding_pod_from_operation operation="$Operation" ship="event.object"/>
+
+            <do_if value="$PlayerInvolved and player.age ge ($LastPodSpeakTime + 5s)">
+              <set_value name="$LastPodSpeakTime" exact="player.age"/>
+              <set_value name="$PossibleSpeaks" exact="[]"/>
+
+              <set_value name="$Pod" exact="this.$Pod"/>
+              <include_actions ref="Speak__Pod_Destroyed"/>
+
+              <do_if value="$PossibleSpeaks.count">
+                <signal_cue_instantly cue="Speak_Helper" param="$PossibleSpeaks.random"/>
+              </do_if>
+            </do_if>
+
+            <do_if value="$ApproachingBoardingPods.count lt 1 and $AttachedBoardingPods.count lt 1 and $Operation.marines.infiltrating.count == 0">
+              <debug_text text="'all boarding pods destroyed. ending operation'" chance="$DebugChance"/>
+              <signal_cue cue="Boarding_Failed"/>
+            </do_if>
+          </actions>
+        </cue>
+
+        <cue name="ApproachingBoardingPodAttached" instantiate="true">
+          <conditions>
+            <event_object_signalled object="$Target" param="$Operation" param2="'boarding__podattached'"/>
+          </conditions>
+          <actions>
+            <set_value name="this.$Pod" exact="event.param3"/>
+            <debug_text text="'Boarding operation: ' + $Operation + ' - Boarding pod attached ' + this.$Pod" chance="$DebugChance"/>
+            <remove_from_group group="$ApproachingBoardingPods" object="this.$Pod"/>
+            <remove_boarding_pod_from_operation operation="$Operation" ship="event.param3"/>
+
+            <add_to_group groupname="$AttachedBoardingPods" object="this.$Pod"/>
+
+            <do_if value="$PlayerInvolved and player.age ge ($LastPodSpeakTime + 5s)">
+              <set_value name="$LastPodSpeakTime" exact="player.age"/>
+              <set_value name="$PossibleSpeaks" exact="[]"/>
+
+              <set_value name="$Pod" exact="this.$Pod"/>
+              <include_actions ref="Speak__Pod_Arrived"/>
+
+              <do_if value="$PossibleSpeaks.count">
+                <signal_cue_instantly cue="Speak_Helper" param="$PossibleSpeaks.random.clone"/>
+              </do_if>
+            </do_if>
+
+            <set_value name="this.$Marines" exact="this.$Pod.people.marines.list"/>
+
+            <do_if value="this.$Marines.count">
+              <append_to_list name="$AttackingTeams" exact="table[$marines = table[]]"/>
+              <do_all exact="this.$Marines.count" counter="$i">
+                <debug_text text="'Adding ' + this.$Pod.people.{this.$Marines.{$i}}.name + ' from pod ' +  this.$Pod + ' to the operation as an \'infiltrating\' marine.\n Number of marines now infiltrating: ' + ($Operation.marines.infiltrating.count + 1)" chance="$DebugChance"/>
+                <!--The npcsummary is the key and the value is their 'health'. Each team with at least 1.-->
+                <set_value name="$AttackingTeams.{$AttackingTeams.count}.$marines.{this.$Marines.{$i}}" exact="this.$Pod.people.{this.$Marines.{$i}}.combinedskill + 100"/>
+                <transfer_marine_to_operation operation="$Operation" object="this.$Pod" template="this.$Marines.{$i}" status="infiltrating"/>
+              </do_all>
+              <debug_text text="'Attacking team #' + $AttackingTeams.count + ' has ' + $AttackingTeams.{$AttackingTeams.count}.$marines.keys.count + ' marines'" chance="$DebugChance"/>
+            </do_if>
+          </actions>
+        </cue>
+
+        <cue name="OperationStarted">
+          <conditions>
+            <event_boarding_operation_started operation="$Operation"/>
+          </conditions>
+          <actions>
+            <debug_text text="player.age + ' Boarding operation started ' + event.param + ' ' + $Operation.boardingphase + ' target: ' + $Target" chance="$DebugChance"/>
+
+            <set_value name="$PlayerInvolved" exact="false"/>
+            <do_all exact="$Operation.attackers.count" counter="$i">
+              <do_if value="$Operation.attackers.{$i}.isplayerowned">
+                <set_value name="$PlayerInvolved" exact="true"/>
+                <break/>
+              </do_if>
+            </do_all>
+            <add_to_group groupname="$AttackingShips" list="$Operation.attackers"/>
+
+            <do_for_each name="$ship" in="$AttackingShips">
+              <do_if value="$ship.boardingmarines.count">
+                <set_value name="$AttackingShipMarineTierAmounts.{$ship}" exact="[]"/>
+                <do_for_each name="$level" in="entityrole.marine.tiers">
+                  <append_to_list name="$AttackingShipMarineTierAmounts.{$ship}" exact="$ship.boardingmarines.{$level}.count"/>
+                </do_for_each>
+              </do_if>
+            </do_for_each>
+
+            <do_if value="$PlayerInvolved">
+              <substitute_text text="$DamageHullText" source="{30152,7}">
+                <replace string="'$PERCENT$'" with="$Operation.boardinginsertionthreshold"/>
+              </substitute_text>
+              <substitute_text text="$TargetText" source="{30152,3}">
+                <replace string="'$NAME$'" with="$Target.knownname"/>
+              </substitute_text>
+              <set_value name="$MissionStep_DestroyTurrets" exact="1"/>
+              <set_value name="$MissionStep_ProtectPods"    exact="2"/>
+              <set_value name="$MissionStep_DamageHull"     exact="3"/>
+              <set_value name="$MissionStep_ProtectTarget"  exact="4"/>
+              <!--TODO @Owen make abortable? should this abort the operation?-->
+              <create_mission cue="$MissionCue" name="{30152,1}" description="{30152,2} + '\n' + $TargetText" faction="faction.player" type="missiontype.fight" abortable="false">
+                <briefing>
+                  <objective step="$MissionStep_DestroyTurrets" action="objective.destroy" text="{30152,4}" comment="Turrets"/>
+                  <objective step="$MissionStep_ProtectPods"    action="objective.protect" text="{30152,5}" comment="Boarding Pods"/>
+                  <objective step="$MissionStep_DamageHull"     action="objective.custom" customaction="{30152,6}" text="$DamageHullText" comment="Damage: Hull to %"/>
+                  <objective step="$MissionStep_ProtectTarget"  action="objective.protect" object="$Target"/>
+                </briefing>
+              </create_mission>
+              <!--<do_if value="$Operation.attackers.count gt 1 or $Operation.attackers.{1} != player.ship">
+              <update_mission cue="$MissionCue">
+                <briefing>
+                  <objective step="4" action="objective.protect" text="{30152,8}" comment="Attacking ships"/>
+                </briefing>
+              </update_mission>
+              </do_if>-->
+
+              <find_npc_waypoint name="$SpeakerSlot" object="$Target" tags="tag.npctransport" excludeblocked="false" multiple="false"/>
+              <do_if value="$SpeakerSlot">
+                <create_cue_actor cue="namespace" name="$PlacedSpeaker">
+                  <select faction="faction.argon" tags="tag.marine"/>
+                  <owner exact="$Operation.attackers.{1}.trueowner"/>
+                </create_cue_actor>
+                <do_if value="$PlacedSpeaker">
+                  <set_value name="$PlacedSpeaker.$Stay" exact="true"/>
+                  <set_entity_traits entity="$PlacedSpeaker" hidden="true"/>
+                  <add_actor_to_room actor="$PlacedSpeaker" slot="$SpeakerSlot"/>
+                </do_if>
+              </do_if>
+
+              <set_value name="$PossibleSpeaks" exact="[]"/>
+
+              <include_actions ref="Speak__Prepare_Boarding_Pods"/>
+
+              <do_if value="$PossibleSpeaks.count">
+                <signal_cue_instantly cue="Speak_Helper" param="$PossibleSpeaks.random"/>
+              </do_if>
+            </do_if>
+
+            <signal_cue_instantly cue="ChangePhase" param="boardingphase.pre_approach"/>
+          </actions>
+        </cue>
+
+        <cue name="Phase_Pre_Approach" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <set_value name="$CurrentPhase" exact="this"/>
+          </actions>
+          <cues>
+            <cue name="Phase_Pre_Approach_Check_Conditions" instantiate="true" checkinterval="1s">
+              <actions>
+                <set_value name="$PhaseComplete" exact="false"/>
+                <set_value name="$OperationalTurretCount" exact="0"/>
+                <find_object_component name="$Turrets" object="$Target" class="class.turret" checkoperational="false" multiple="true"/>
+                <do_if value="$Turrets.count">
+                  <set_value name="$WantedAmount" exact="($Turrets.count * $Operation.boardingapproachthreshold / 100.0f)i"/>
+                  <do_if value="not $TurretStartCount?">
+                    <set_value name="$TurretStartCount" exact="$Turrets.count"/>
+                    <debug_text text="'Target has ' + $TurretStartCount + ' turrets and with the approach threshold of ' + $Operation.boardingapproachthreshold + ' we want to reduce it to ' + $WantedAmount" chance="$DebugChance"/>
+                  </do_if>
+                  <do_all exact="$Turrets.count" counter="$i">
+                    <do_if value="$Turrets.{$i}.isoperational">
+                      <set_value name="$OperationalTurretCount" operation="add"/>
+                    </do_if>
+                  </do_all>
+                  <do_if value="$OperationalTurretCount le $WantedAmount">
+                    <set_value name="$PhaseComplete" exact="true"/>
+                  </do_if>
+                  <do_elseif value="$MissionCue.hasmission">
+                    <do_if value="(not Phase_Pre_Approach.$MissionProgress?    or Phase_Pre_Approach.$MissionProgress != [$TurretStartCount - $OperationalTurretCount, 0].max)
+                               or (not Phase_Pre_Approach.$MissionProgressMax? or Phase_Pre_Approach.$MissionProgressMax != ($Turrets.count - $WantedAmount))">
+                      <!--new objective or something has changed-->
+                      <set_value name="Phase_Pre_Approach.$MissionProgress" exact="[$TurretStartCount - $OperationalTurretCount, 0].max"/>
+                      <set_value name="Phase_Pre_Approach.$MissionProgressMax" exact="$Turrets.count - $WantedAmount"/>
+                      <set_objective cue="$MissionCue" step="$MissionStep_DestroyTurrets" action="objective.destroy" text="{30152,4}" object="$Target" comment="Turrets">
+                        <progress text="{30152,4}" progress="Phase_Pre_Approach.$MissionProgress" max="Phase_Pre_Approach.$MissionProgressMax"/>
+                      </set_objective>
+                    </do_if>
+                  </do_elseif>
+                </do_if>
+                <do_else>
+                  <set_value name="$PhaseComplete" exact="true"/>
+                </do_else>
+
+                <do_if value="$PhaseComplete">
+                  <signal_cue_instantly cue="ChangePhase" param="boardingphase.approach"/>
+                </do_if>
+              </actions>
+            </cue>
+
+            <cue name="Phase_Pre_Approach_Damage_Speak">
+              <delay min="9s" max="11s"/>
+              <actions>
+                <do_if value="$PlayerInvolved and $CurrentPhase == Phase_Pre_Approach">
+                  <set_value name="$PossibleSpeaks" exact="[]"/>
+
+                  <include_actions ref="Speak__Damage_Turrets"/>
+
+                  <do_if value="$PossibleSpeaks.count">
+                    <signal_cue_instantly cue="Speak_Helper" param="$PossibleSpeaks.random"/>
+                  </do_if>
+                </do_if>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Phase_Approach" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <set_value name="$CurrentPhase" exact="this"/>
+            <signal_objects object="$Target" param="$Operation" param2="'boarding__movetolaunch_boardingpods'" delay="1s"/>
+            <do_for_each name="$ship" in="$AttackingShips">
+              <do_if value="$ship.pilot">
+                <!-- set on pilot's blackboard in case pilot isn't listening. will be evaluated on script start. -->
+                <set_value name="$ship.pilot.$boarding_movingtolaunchpods"/>
+              </do_if>
+            </do_for_each>
+          </actions>
+          <cues>
+            <cue name="Phase_Approach_Player_Ship_Handler">
+              <cues>
+                <cue name="Phase_Approach_Player_Ship_Handler_Init">
+                  <actions>
+                    <include_actions ref="Phase_Approach_Player_Ship_Handler_Check"/>
+                  </actions>
+                </cue>
+
+                <library name="Phase_Approach_Player_Ship_Handler_Check">
+                  <actions>
+                    <set_value name="$PlayerControlled" exact="player.entity.controlled"/>
+                    <do_if value="$PlayerControlled and $Operation.attackers.indexof.{$PlayerControlled} and $PlayerControlled.boardingmarines.count and not $PlayerControlled.allmarinesdispatched">
+                      <do_if value="$PlayerControlled.sector == player.sector and $PlayerControlled.bboxdistanceto.{$Target} lt 2km">
+                        <signal_cue cue="Phase_Approach_Player_Launch"/>
+                        <set_objective cue="$MissionCue" step="$MissionStep_ProtectPods" action="objective.protect" text="{30152,5}" group="$ApproachingBoardingPods" comment="Boarding Pods"/>
+                      </do_if>
+                      <do_else>
+                        <assert value="$MissionCue.hasmission" text="'Player needs to fly to the target but there is no mission running [Owen]'"/>
+                        <do_if value="$MissionCue.hasmission">
+                          <signal_cue cue="Phase_Approach_Player_Ship_FlyTo"/>
+                        </do_if>
+                      </do_else>
+                    </do_if>
+                    <do_else>
+                      <do_if value="$MissionCue.hasmission">
+                        <set_objective cue="$MissionCue" step="$MissionStep_ProtectPods" action="objective.protect" text="{30152,5}" group="$ApproachingBoardingPods" comment="Boarding Pods"/>
+                      </do_if>
+                    </do_else>
+                  </actions>
+                </library>
+
+                <cue name="Phase_Approach_Player_Ship_FlyTo">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <set_objective cue="$MissionCue" step="$MissionStep_ProtectPods" action="objective.flyto" object="$Target"/>
+                  </actions>
+                  <cues>
+                    <cue name="Phase_Approach_Player_Ship_Close" checkinterval="1s">
+                      <conditions>
+                        <check_value value="$PlayerControlled.sector == player.sector and $PlayerControlled.bboxdistanceto.{$Target} lt 2km"/>
+                      </conditions>
+                      <actions>
+                        <signal_cue cue="Phase_Approach_Player_Launch"/>
+                        <reset_cue cue="Phase_Approach_Player_Ship_FlyTo"/>
+                      </actions>
+                      <cues>
+                        <cue name="Phase_Approach_Player_Ship_Close_Reinit">
+                          <delay exact="2s"/>
+                          <actions>
+                            <include_actions ref="Phase_Approach_Player_Ship_Handler_Check"/>
+                          </actions>
+                        </cue>
+                      </cues>
+                    </cue>
+
+                    <!--TODO @Owen what if the marines are manually removed during this step?-->
+                  </cues>
+                </cue>
+
+                <cue name="Phase_Approach_Player_Changed_Control" instantiate="true">
+                  <conditions>
+                    <check_any>
+                      <event_player_started_control/>
+                      <event_player_stopped_control/>
+                    </check_any>
+                  </conditions>
+                  <delay exact="1s"/>
+                  <actions>
+                    <reset_cue cue="Phase_Approach_Player_Launch"/>
+                    <reset_cue cue="Phase_Approach_Player_Ship_FlyTo"/>
+                    <include_actions ref="Phase_Approach_Player_Ship_Handler_Check"/>
+                  </actions>
+                </cue>
+
+                <cue name="Phase_Approach_Player_Launch">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <set_value name="$MarineTiers" exact="entityrole.marine.tiers"/>
+                    <set_value name="$MarineTierAmounts" exact="[]"/>
+                    <set_value name="$IsMarineCarrier" exact="false"/>
+                    <set_value name="$NumMarinesLaunching" exact="0"/>
+                    <do_all exact="$MarineTiers.count" counter="$i">
+                      <append_to_list name="$MarineTierAmounts" exact="$PlayerControlled.boardingmarines.{$MarineTiers.{$i}}.count"/>
+                      <set_value name="$NumMarinesLaunching" operation="add" exact="$MarineTierAmounts.{$i}"/>
+                      <do_if value="$MarineTierAmounts.{$MarineTierAmounts.count}">
+                        <set_value name="$IsMarineCarrier" exact="true"/>
+                      </do_if>
+                    </do_all>
+
+                    <!--listened for in md.Boarding.Launch_Pod_Helper-->
+                    <do_if value="$IsMarineCarrier">
+                      <set_value name="$ParamTable" exact="table[
+                       $launcher = player.entity.controlled,
+                       $nummarineslaunching = $NumMarinesLaunching,
+                       $marinetieramounts = $MarineTierAmounts,
+                       $debugchance = $DebugChance]"/>
+                      <signal_objects object="$Target" param="$Operation" param2="'boarding__launch_boardingpods'" param3="$ParamTable"/>
+                    </do_if>
+                    <remove_value name="$MarineTiers"/>
+                    <remove_value name="$MarineTierAmounts"/>
+                    <remove_value name="$IsMarineCarrier"/>
+                    <remove_value name="$NumMarinesLaunching"/>
+                    <reset_cue cue="Phase_Approach_Player_Launch"/>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="Phase_Approach_Flying_Pods_Speak" checkinterval="5s">
+              <conditions>
+                <check_value value="player.age ge Phase_Approach.time + 20s"/>
+              </conditions>
+              <actions>
+                <do_if value="$PlayerInvolved">
+                  <set_value name="$PossibleSpeaks" exact="[]"/>
+
+                  <include_actions ref="Speak__Pods_In_Flight"/>
+
+                  <do_if value="$PossibleSpeaks.count">
+                    <signal_cue_instantly cue="Speak_Helper" param="$PossibleSpeaks.random"/>
+                  </do_if>
+                </do_if>
+              </actions>
+              <cues>
+                <cue name="Phase_Approach_Flying_Pods_Speak_Reset">
+                  <delay min="35s" max="45s"/>
+                  <actions>
+                    <reset_cue cue="Phase_Approach_Flying_Pods_Speak"/>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="Phase_Approach_Check_Conditions" checkinterval="1s">
+              <conditions>
+                <!--TODO @Owen conditions for an early phase change e.g. a pod is taking too long-->
+                <check_value value="$Operation.allmarinesdispatched and $ApproachingBoardingPods.count == 0"/>
+              </conditions>
+              <actions>
+                <debug_text text="'all marines dispatched'" chance="$DebugChance"/>
+                <do_if value="$Target.hullpercentage le $Operation.boardinginsertionthreshold">
+                  <signal_cue_instantly cue="ChangePhase" param="boardingphase.infiltration"/>
+                </do_if>
+                <do_else>
+                  <signal_cue_instantly cue="ChangePhase" param="boardingphase.pre_infiltration"/>
+                </do_else>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <!--TODO @Owen @Nick - this may not be the best approach. We may need to keep track of which ships have launched marines in the operation so that the player changing ship / exchanging pilots doesn't confuse things-->
+        <cue name="Launch_Pod_Helper" instantiate="true" namespace="this">
+          <conditions>
+            <event_object_signalled object="OperationCreated.$Target" param="OperationCreated.$Operation" param2="'boarding__launch_boardingpods'"/>
+          </conditions>
+          <actions>
+            <set_value name="$Operation" exact="OperationCreated.$Operation"/>
+            <set_value name="$Target" exact="OperationCreated.$Target"/>
+            <set_value name="$MarineTiers" exact="entityrole.marine.tiers"/>
+
+            <set_value name="$Launcher"             exact="event.param3.$launcher"/>
+            <set_value name="$NumMarinesLaunching"  exact="event.param3.$nummarineslaunching"/>
+            <set_value name="$MarineTierAmount"     exact="event.param3.$marinetieramounts"/>
+            <set_value name="$DebugChance"          exact="event.param3.$debugchance"/>
+
+            <do_if value="$Launcher.exists">
+              <set_value name="$LauncherRot" exact="$Launcher.rotation"/>
+              <set_value name="$LauncherSpeed" exact="$Launcher.speed"/>
+              <set_value name="$InitialPodVel" exact="vector.[$LauncherRot.forward.x * $LauncherSpeed, $LauncherRot.forward.y * $LauncherSpeed, $LauncherRot.forward.z * $LauncherSpeed]"/>
+              <do_if value="$Target.relativeposition.{$Launcher}.x lt 0">
+                <!--Inverse the launch rotation to left-->
+                <set_value name="$LaunchRotation" exact="$LauncherRot.right"/>
+                <set_value name="$LaunchRotation" exact="vector.[-$LaunchRotation.x, -$LaunchRotation.y, -$LaunchRotation.z].rotation"/>
+                <set_value name="$LaunchPosX" exact="-$Launcher.width - 5m"/>
+                <debug_text text="'Pods will launch from the left'" chance="$DebugChance"/>
+              </do_if>
+              <do_else>
+                <set_value name="$LaunchRotation" exact="$LauncherRot.right"/>
+                <set_value name="$LaunchRotation" exact="$LaunchRotation.rotation"/>
+                <set_value name="$LaunchPosX" exact="$Launcher.width + 5m"/>
+                <debug_text text="'Pods will launch from the right'" chance="$DebugChance"/>
+              </do_else>
+              <set_value name="$LaunchPushVel" exact="vector.[$LaunchRotation.forward.x * 100m, $LaunchRotation.forward.y * 100m, $LaunchRotation.forward.z * 100m]"/>
+              <set_value name="$Numpods" exact="0"/>
+              <!--this loop is aborted if the ship could not add the target amount of marines to a pod. $NumMarinesLaunching may not be the actual number of dispatched marines-->
+              <do_while value="$NumMarinesLaunching gt 0">
+                <create_ship name="$Pod" macro="ship_gen_xs_boardingpod_01_a_macro" zone="$Launcher.zone">
+                  <owner exact="$Launcher.owner" overridenpc="true"/>
+                  <pilot>
+                    <select race="race.drone" tags="tag.aipilot"/>
+                  </pilot>
+                  <safepos object="$Launcher" x="$LaunchPosX" z="-1m" allowyaxis="true"/>
+                  <rotation value="$LaunchRotation"/>
+                </create_ship>
+                <set_object_velocity object="$Pod">
+                  <linear value="$InitialPodVel"/>
+                </set_object_velocity>
+                <add_object_velocity object="$Pod">
+                  <linear value="$LaunchPushVel"/>
+                </add_object_velocity>
+
+                <do_if value="$Pod.people.capacity lt 1">
+                  <debug_text text="'pod %s has %s people capacity and was used as a boarding pod. people capacity should be greater than 0 for this.'.[$Pod.macro, $Pod.people.capacity]" filter="error"/>
+                  <destroy_object object="$Pod"/>
+                  <break/>
+                </do_if>
+
+                <set_value name="$NumMarinesInThisPod" exact="0"/>
+                <do_all exact="$MarineTierAmount.count" counter="$i">
+                  <do_if value="$MarineTierAmount.{$i} and $Pod.people.free">
+                    <!-- we have to transfer marines by tier because we have to limit total number of marines transferred per pod by pod capacity. -->
+                    <set_value name="$PotentialMarines" exact="$Launcher.availablepeople.marines.{$MarineTiers.{$i}}.list"/>
+                    <!-- shuffle list so that people with the same combinedskill are still in a random order and not in the consistent order that they were found in -->
+                    <shuffle_list list="$PotentialMarines"/>
+                    <sort_people name="$PotentialMarines" object="$Launcher" templatelist="$PotentialMarines" sorter="combinedskill"/>
+                    <do_if value="$PotentialMarines.count">
+                      <set_value name="$SelectedMarines" exact="[]"/>
+                      <!--Reverse as marines are sorted by skill-->
+                      <do_all exact="[$PotentialMarines.count, $Pod.people.free, $MarineTierAmount.{$i}].min">
+                        <append_to_list name="$SelectedMarines" exact="$PotentialMarines.last"/>
+                        <remove_value name="$PotentialMarines.{$PotentialMarines.count}"/>
+                      </do_all>
+
+                      <do_if value="$SelectedMarines">
+                        <debug_text text="'%s marines selected to be transferred into this pod.\n $MarineTierAmount.{$i}: %s\n $Pod free space: %s'.[$SelectedMarines.count, $MarineTierAmount.{$i}, $Pod.people.free]" chance="$DebugChance"/>
+                        <transfer_people object="$Pod" otherobject="$Launcher" result="$Transferred">
+                          <existing_people people="$SelectedMarines"/>
+                        </transfer_people>
+                        <debug_text text="$Transferred + ' ' + $Transferred.count + ' marines to pod ' + $Pod" chance="$DebugChance"/>
+                        <!--Inform the boarding operation of how many marines have been dispatched to the target-->
+                        <dispatch_marines operation="$Operation" attacker="$Launcher" object="$Pod" marines="$Transferred"/>
+
+                        <set_value name="$NumMarinesInThisPod" exact="$NumMarinesInThisPod + $Transferred.count"/>
+                        <set_value name="$MarineTierAmount.{$i}" exact="$MarineTierAmount.{$i} - $Transferred.count"/>
+                      </do_if>
+                      <do_else>
+                        <debug_text text="'No marines were selected to be placed in pod ' + $Pod + '. Current capacity: ' + $Pod.people.free + ' / ' + $Pod.people.capacity" chance="$DebugChance"/>
+                      </do_else>
+                    </do_if>
+                    <do_else>
+                      <debug_text text="'Unable to find any marines of for tier ' + entityrole.marine.tier.{$MarineTiers.{$i}}.name + ' on ' + $Launcher.knownname + ' for boarding operation ' + $Operation" chance="$DebugChance"/>
+                    </do_else>
+                  </do_if>
+                  <do_if value="not $Pod.people.free">
+                    <break/>
+                  </do_if>
+                </do_all>
+                <do_if value="not $NumMarinesInThisPod">
+                  <debug_text text="'No marines were able to be added to pod ' + $Pod + '. Remaining marine amounts are: ' + $MarineTierAmount + '. Aborting further attempts.'" filter="error"/>
+                  <destroy_object object="$Pod"/>
+                  <break/>
+                </do_if>
+                <set_value name="$Numpods" exact="$Numpods + 1"/>
+                <set_value name="$NumMarinesLaunching" exact="$NumMarinesLaunching - $NumMarinesInThisPod"/>
+                <debug_text text="'%s marines launched in pod %s. %s marines to go.'.[$NumMarinesInThisPod, $Numpods, $NumMarinesLaunching]" chance="$DebugChance"/>
+                <remove_value name="$NumMarinesInThisPod"/>
+
+                <set_value name="$LocWaitTime" min="3ms" max="2s"/>
+                <find_object_surface posname="$TargetPos" rotname="$TargetRot" object="$Target"/>
+                <start_script name="'boarding.pod'" object="$Pod.pilot">
+                  <param name="target" value="$Target"/>
+                  <param name="targetpos" value="$TargetPos"/>
+                  <param name="targetrot" value="$TargetRot"/>
+                  <param name="operation" value="$Operation"/>
+                  <param name="initialwaittime" value="$LocWaitTime"/>
+                  <param name="debugchance" value="$DebugChance"/>
+                </start_script>
+
+                <do_if value="OperationCreated.$MarineCommanderTemplate and not OperationCreated.$MarineCommanderShip and $Pod.people.{OperationCreated.$MarineCommanderTemplate}.exists">
+                  <set_value name="OperationCreated.$MarineCommanderShip" exact="$Pod"/>
+                </do_if>
+
+                <do_if value="OperationCreated.$PlayerInvolved and player.age ge OperationCreated.$LastLaunchSpeakTime + (if $Launcher == player.controlled then 5s else 20s)">
+                  <signal_cue_instantly cue="Pod_Launched_Speak_Helper" param="[$Pod, $Launcher]"/>
+                </do_if>
+
+                <set_relation_boost object="$Target" otherobject="$Pod" value="$Target.owner.relation.kill.min" delay="10min" decay="1" />
+                <remove_value name="$TargetRot"/>
+                <remove_value name="$TargetPos"/>
+                <remove_value name="$Pod"/>
+              </do_while>
+              <set_relation_boost object="$Target" otherobject="$Launcher" value="$Target.owner.relation.kill.min" delay="10min" decay="1" />
+              <!--Signal lua in case a crew list is being displayed while marines were transfered-->
+              <raise_lua_event name="'info_updatePeople'"/>
+              <signal_objects object="$Target" param="$Launcher" param2="'boarding_operation_detected'"/>
+            </do_if>
+          </actions>
+        </cue>
+
+        <!--This helper is needed as Launch_Pod_Helper has its own namespace
+        event.param = [$Pod, $Launcher]-->
+        <cue name="Pod_Launched_Speak_Helper" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <set_value name="$LastLaunchSpeakTime" exact="player.age"/>
+
+            <set_value name="$PossibleSpeaks" exact="[]"/>
+
+            <set_value name="$Pod" exact="event.param.{1}"/>
+            <set_value name="$Launcher" exact="event.param.{2}"/>
+            <include_actions ref="Speak__Launch_Pods"/>
+
+            <do_if value="$PossibleSpeaks.count">
+              <signal_cue_instantly cue="Speak_Helper" param="$PossibleSpeaks.random"/>
+            </do_if>
+          </actions>
+        </cue>
+
+        <!--
+        #####################
+        INFILTRATION
+        #####################-->
+
+        <!--Marines may start 'cutting through hull' in both:
+        - the 'infiltration' phase, cutting all the way through
+        - the 'approach' phase, cutting partway though but only if the hull is already low enough while more pods are still incoming-->
+        <cue name="Infiltration_Ticker" instantiate="true" checkinterval="2s">
+          <conditions>
+            <check_value value="not $AllInfiltrated"/>
+            <check_value value="$HasStartedInfiltration or $Target.hullpercentage le $Operation.boardinginsertionthreshold"/>
+          </conditions>
+          <actions>
+            <!--Progress based on the amount of lost hull. The factor is reduce the lost hull percentage to something usable as base progress percentage-->
+            <set_value name="this.$InfiltratingMarines" exact="$Operation.marines.infiltrating.list"/>
+
+            <set_value name="this.$MarineStillInfiltrating" exact="false"/>
+            <set_value name="this.$CurrentTotalProgress" exact="0"/>
+
+            <set_value name="this.$BaseProgress" exact="(150.0f - $Target.hullpercentage) / 350"/>
+            <do_all exact="this.$InfiltratingMarines.count" counter="$i" reverse="true">
+              <set_value name="this.$marine" exact="this.$InfiltratingMarines.{$i}"/>
+              <do_if value="not $InfiltratingMarineProgress.{this.$marine}?">
+                <set_value name="$InfiltratingMarineProgress.{this.$marine}" exact="0"/>
+              </do_if>
+              <do_elseif value="not $HasStartedInfiltration and $InfiltratingMarineProgress.{this.$marine} ge $PreInfiltrationMaxProgress">
+                <!--Infiltration process has not yet started, and marine has already reached the point where they can partially cut through-->
+                <continue/>
+              </do_elseif>
+              <do_elseif value="$HasStartedInfiltration and $InfiltratingMarineProgress.{this.$marine} ge 100.0f">
+                <set_value name="this.$CurrentTotalProgress" operation="add" exact="100"/>
+                <continue/>
+              </do_elseif>
+
+              <!--Killing of marines during infiltration currently disabled-->
+              <!--<set_value name="this.$killed" chance="[($Target.hullpercentage / [[$Operation.marines.infiltrating.{this.$marine}.combinedskill * 2, 10].max, 100].min), 100].min"/>-->
+
+              <do_if value="this.$killed?">
+                <set_marine_status operation="$Operation" template="this.$marine" status="killed"/>
+
+                <remove_value name="this.$InfiltratingMarines.{$i}"/>
+                <debug_text text="'infiltration: marine %s %s killed in action. num killed: %s. chance: %s. target hull percentage: %s. marine skill: %s'.[$Operation.marines.killed.{this.$marine}.name, $Operation.marines.killed.{this.$marine}.seed, $Operation.marines.killed.count, [($Target.hullpercentage / [[$Operation.marines.killed.{this.$marine}.combinedskill * 2, 20].max, 100].min), 100].min, $Target.hullpercentage, $Operation.marines.killed.{this.$marine}.combinedskill]" chance="$DebugChance"/>
+                <remove_value name="this.$killed"/>
+              </do_if>
+              <do_else>
+                <set_value name="this.$Progress" exact="this.$BaseProgress * ([($Operation.marines.infiltrating.{this.$marine}.combinedskill)f, 10.0f].max / 10)"/>
+                <do_if value="$HasStartedInfiltration">
+                  <set_value name="$InfiltratingMarineProgress.{this.$marine}" exact="[$InfiltratingMarineProgress.{this.$marine} + this.$Progress, 100.0f].min"/>
+                  <do_if value="$InfiltratingMarineProgress.{this.$marine} lt 100.0f">
+                    <!--Try to get help from a random marine who may already be finished-->
+                    <set_value name="this.$Rando" exact="this.$InfiltratingMarines.random"/>
+                    <do_if value="$InfiltratingMarineProgress.{this.$Rando}? and $InfiltratingMarineProgress.{this.$Rando} ge 100.0f">
+                      <set_value name="this.$RandoProgress" exact="(this.$BaseProgress * ($Operation.marines.infiltrating.{this.$Rando}.combinedskill / 10)f * 0.3f)"/>
+                      <set_value name="$InfiltratingMarineProgress.{this.$marine}" exact="[$InfiltratingMarineProgress.{this.$marine} + this.$RandoProgress, 100.0f].min"/>
+                      <debug_text text="'Infiltration for ' + this.$marine + ' is being helped by finished marine ' + this.$Rando + ' for progress bonus of ' + this.$RandoProgress" chance="$DebugChance"/>
+                    </do_if>
+                  </do_if>
+                  <debug_text text="'Infiltration tick progress for ' + this.$marine + ' with skill ' + $Operation.marines.infiltrating.{this.$marine}.combinedskill + ' is ' + this.$Progress + ' for a total of ' + $InfiltratingMarineProgress.{this.$marine}" chance="$DebugChance"/>
+                </do_if>
+                <do_elseif value="$InfiltratingMarineProgress.{this.$marine} lt $PreInfiltrationMaxProgress">
+                  <set_value name="$InfiltratingMarineProgress.{this.$marine}" exact="[$InfiltratingMarineProgress.{this.$marine} + this.$Progress, $PreInfiltrationMaxProgress].min"/>
+                  <debug_text text="'Pre infiltration tick progress for ' + this.$marine + ' with skill ' + $Operation.marines.infiltrating.{this.$marine}.combinedskill + ' is ' + this.$Progress + ' for a total of ' + $InfiltratingMarineProgress.{this.$marine}" chance="$DebugChance"/>
+                </do_elseif>
+                <set_value name="this.$CurrentTotalProgress" operation="add" exact="$InfiltratingMarineProgress.{this.$marine}"/>
+
+                <do_if value="$InfiltratingMarineProgress.{this.$marine} lt 100.0f">
+                  <set_value name="this.$MarineStillInfiltrating" exact="true"/>
+                </do_if>
+              </do_else>
+            </do_all>
+
+            <do_if value="$HasStartedInfiltration and this.$InfiltratingMarines.count and not this.$MarineStillInfiltrating">
+              <set_value name="$AllInfiltrated" exact="true"/>
+            </do_if>
+            <do_elseif value="$HasStartedInfiltration and not $AllInfiltrated and $Operation.marines.infiltrating.count lt 1">
+              <debug_text text="'all infiltrating marines died. ending operation.'" chance="$DebugChance"/>
+              <signal_cue cue="Boarding_Failed"/>
+            </do_elseif>
+            <do_elseif value="not @$PreparingForBreachLine and $Operation.marines.infiltrating.count and this.$CurrentTotalProgress / $Operation.marines.infiltrating.count gt 80">
+              <set_value name="$PreparingForBreachLine" exact="true"/>
+              <do_if value="$PlayerInvolved">
+                <set_value name="$PossibleSpeaks" exact="[]"/>
+
+                <include_actions ref="Speak__Pod_Infiltration_Ending"/>
+
+                <do_if value="$PossibleSpeaks.count">
+                  <signal_cue_instantly cue="Speak_Helper" param="$PossibleSpeaks.random"/>
+                </do_if>
+              </do_if>
+            </do_elseif>
+          </actions>
+        </cue>
+
+        <cue name="Phase_Pre_Infiltration" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <set_value name="$CurrentPhase" exact="this"/>
+            <do_if value="$MissionCue.hasmission">
+              <substitute_text text="$DamageHullText" source="{30152,7}">
+                <replace string="'$PERCENT$'" with="$Operation.boardinginsertionthreshold"/>
+              </substitute_text>
+              <set_objective cue="$MissionCue" step="$MissionStep_DamageHull" action="objective.custom" customaction="{30152,6}" text="$DamageHullText" object="$Target" comment="Damage: Hull"/>
+            </do_if>
+          </actions>
+          <cues>
+            <cue name="Phase_Pre_Infiltration_Check_Conditions" checkinterval="1s">
+              <conditions>
+                <check_value value="$Target.hullpercentage le $Operation.boardinginsertionthreshold"/>
+              </conditions>
+              <actions>
+                <debug_text text="'Hull of target is ' + $Target.hullpercentage + ' which passes threshold ' + $Operation.boardinginsertionthreshold" chance="$DebugChance"/>
+                <signal_cue_instantly cue="ChangePhase" param="boardingphase.infiltration"/>
+              </actions>
+            </cue>
+
+            <cue name="Phase_Pre_Infiltration_Speak" onfail="cancel">
+              <conditions>
+                <check_value value="$PlayerInvolved"/>
+              </conditions>
+              <delay exact="10s"/>
+              <actions>
+                <set_value name="$PossibleSpeaks" exact="[]"/>
+
+                <include_actions ref="Speak__Damage_Hull"/>
+
+                <do_if value="$PossibleSpeaks.count">
+                  <signal_cue_instantly cue="Speak_Helper" param="$PossibleSpeaks.random"/>
+                </do_if>
+
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Phase_Infiltration" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <set_value name="$CurrentPhase" exact="this"/>
+            <set_value name="$HasStartedInfiltration" exact="true"/>
+            <do_if value="$MissionCue.hasmission">
+              <set_objective cue="$MissionCue" step="$MissionStep_ProtectTarget" action="objective.protect" object="$Target"/>
+            </do_if>
+          </actions>
+          <cues>
+            <cue name="Phase_Infiltration_Check_Conditions" checkinterval="1s">
+              <conditions>
+                <check_value value="$AllInfiltrated"/>
+              </conditions>
+              <actions>
+                <debug_text text="'Infiltrated hull of target. It took ' + (player.age - Phase_Infiltration.time)" chance="$DebugChance"/>
+                <signal_cue_instantly cue="ChangePhase" param="boardingphase.internalfight"/>
+              </actions>
+            </cue>
+
+            <cue name="Phase_Infiltration_Speak" onfail="cancel">
+              <conditions>
+                <check_value value="$PlayerInvolved"/>
+              </conditions>
+              <delay min="1s" max="2s"/>
+              <actions>
+                <do_if value="$PlayerInvolved">
+                  <set_value name="$PossibleSpeaks" exact="[]"/>
+
+                  <include_actions ref="Speak__Pod_Infiltration_Start"/>
+
+                  <do_if value="$PossibleSpeaks.count">
+                    <signal_cue_instantly cue="Speak_Helper" param="$PossibleSpeaks.random"/>
+                  </do_if>
+                </do_if>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <!--Once boarding pods launch, the defender starts to prepare itself for the attackers-->
+        <cue name="Defender_Manager" version="2">
+          <conditions>
+            <event_object_signalled object="$Target" param="$Operation" param2="'boarding__launch_boardingpods'"/>
+          </conditions>
+          <actions>
+            <set_value name="$DefendingTeams" exact="[]"/>
+            <set_value name="$HasAppliedBonusDefence" exact="false"/>
+          </actions>
+          <patch sinceversion="2">
+            <set_value name="$HasAppliedBonusDefence" exact="false"/>
+          </patch>
+          <cues>
+            <cue name="Defender_Manager_Reevaluate" instantiate="true" checkinterval="1min">
+              <actions>
+                <include_actions ref="Reevaluate_Defending_Teams"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <library name="Reevaluate_Defending_Teams">
+          <actions>
+            <!--Check that the defending marines still exist and that new ones are put to work-->
+            <set_value name="$DefendingMarines" exact="$Target.people.marines.list"/>
+            <set_value name="$NewMarines" exact="$DefendingMarines.clone"/>
+            <set_value name="$TargetServiceCrew" exact="$Target.people.service.list"/>
+            <set_value name="$AvailableService" exact="$TargetServiceCrew.clone"/>
+
+            <debug_text text="'Currently has ' + $DefendingTeams.count + ' defence teams'" chance="$DebugChance"/>
+            <do_all exact="$DefendingTeams.count" counter="$team_i" reverse="true">
+              <do_if value="not $DefendingTeams.{$team_i}.$isbonus?">
+                <set_value name="$TeamMembers" exact="$DefendingTeams.{$team_i}.$marines.keys.list"/>
+                <do_all exact="$TeamMembers.count" counter="$member_k" reverse="true">
+                  <do_if value="$DefendingMarines.indexof.{$TeamMembers.{$member_k}}">
+                    <!--Marine is already taking part in a defence team-->
+                    <remove_from_list name="$NewMarines" exact="$TeamMembers.{$member_k}" multiple="false" />
+                  </do_if>
+                  <do_elseif value="$TargetServiceCrew.indexof.{$TeamMembers.{$member_k}}">
+                    <!--Service crew is already taking part in a defence team-->
+                    <remove_from_list name="$AvailableService" exact="$TeamMembers.{$member_k}" multiple="false" />
+                  </do_elseif>
+                  <do_else>
+                    <!--Marine no longer present or an active marine-->
+                    <remove_value name="$TeamMembers.{$member_k}"/>
+                  </do_else>
+                  <do_if value="not $TeamMembers.count">
+                    <remove_value name="$DefendingTeams.{$team_i}"/>
+                  </do_if>
+                </do_all>
+              </do_if>
+            </do_all>
+            <set_value name="$MinTeammemberCount" exact="2"/>
+            <set_value name="$MaxTeammemberCount" exact="4"/>
+            <do_if value="not $DefendingTeams.count">
+              <!--Aim to have a team for every 2-4 marines. have at least 3 teams for service crews to populate if they need to-->
+              <set_value name="$NumDefendingTeams" min="[$NewMarines.count / $MaxTeammemberCount, 1].max" max="[$NewMarines.count / $MinTeammemberCount, 3].max"/>
+              <resize_list list="$DefendingTeams" count="$NumDefendingTeams"/>
+              <debug_text text="'Creating ' + $NumDefendingTeams + ' defending teams'" chance="$DebugChance"/>
+              <do_all exact="$DefendingTeams.count" counter="$team_i">
+                <set_value name="$DefendingTeams.{$team_i}" exact="table[$marines = table[]]"/>
+                <!--Add the first marine to the $marines table. If there are no more marines. The teams will be populated with service.-->
+                <do_if value="$NewMarines.count">
+                  <!--The npcsummary is the key and the value is their 'health'. Each team with at least 1.-->
+                  <set_value name="$DefendingTeams.{$team_i}.$marines.{$NewMarines.last}" exact="$Target.people.{$NewMarines.last}.combinedskill + 100"/>
+                  <remove_value name="$NewMarines.last"/>
+                </do_if>
+              </do_all>
+            </do_if>
+            <do_if value="$NewMarines.count">
+              <!--Assign the remaining marines to teams-->
+              <do_all exact="$NewMarines.count">
+                <set_value name="$TeamIndex" min="1" max="$DefendingTeams.count"/>
+                <set_value name="$Team" exact="$DefendingTeams.{$TeamIndex}"/>
+                <set_value name="$Team.$marines.{$NewMarines.{$NewMarines.count}}" exact="$Target.people.{$NewMarines.{$NewMarines.count}}.combinedskill + 100"/>
+                <remove_value name="$NewMarines.{$NewMarines.count}"/>
+              </do_all>
+            </do_if>
+
+            <!--Attempt to add service crew teams if there is a need-->
+            <do_all exact="$DefendingTeams.count" counter="$team_i" reverse="true">
+              <do_if value="not $DefendingTeams.{$team_i}.$isbonus?">
+                <do_if value="$AvailableService.count and $DefendingTeams.{$team_i}.$marines.keys.count lt $MaxTeammemberCount">
+                  <!--A chance that a service member will be called up to fill the team, higher chance the emptier the team is-->
+                  <do_all chance="100 - ($DefendingTeams.{$team_i}.$marines.keys.count * 5) / 4">
+                    <!--The npcsummary is the key and the value is their 'health'. Each team with at least 1. Use their potential skill as marines.-->
+                    <set_value name="$DefendingTeams.{$team_i}.$marines.{$AvailableService.{$AvailableService.count}}" exact="$Target.people.{$AvailableService.{$AvailableService.count}}.potentialskill.{entityrole.marine} + 100"/>
+                    <remove_value name="$AvailableService.{$AvailableService.count}"/>
+                  </do_all>
+                </do_if>
+
+                <do_if value="$DefendingTeams.{$team_i}.$marines.keys.count == 0">
+                  <!--Even after the attempt to add service, it is still empty. Just remove the team.-->
+                  <remove_value name="$DefendingTeams.{$DefendingTeams.count}"/>
+                </do_if>
+              </do_if>
+            </do_all>
+
+            <do_if value="not $HasAppliedBonusDefence and $Target.baseboardingresistance gt 0">
+              <set_value name="$HasAppliedBonusDefence" exact="true"/>
+              <set_value name="$BonusCombinedSkill" exact="param.boarding.boardingresistancebonuscombinedskill"/>
+              <set_value name="$RemainingBonus" exact="$Target.baseboardingresistance"/>
+              <set_value name="$NumBonusTeams" exact="[1, $Target.baseboardingresistance / $BonusCombinedSkill].max"/>
+              <do_all exact="$NumBonusTeams">
+                <set_value name="$NewBonusTeam" exact="table[$isbonus = true, $marines = []]"/>
+                <set_value name="$BonusTeamSize" min="$MinTeammemberCount" max="$MaxTeammemberCount"/>
+                <do_all exact="$BonusTeamSize">
+                  <set_value name="$BonusMarineSkill" exact="[$BonusCombinedSkill, $RemainingBonus].min"/>
+                  <set_value name="$RemainingBonus" operation="subtract" exact="$BonusMarineSkill"/>
+                  <append_to_list name="$NewBonusTeam.$marines" exact="table[$combinedskill = $BonusMarineSkill, $health = $BonusMarineSkill + 100]"/>
+                  <do_if value="$RemainingBonus le 0">
+                    <break/>
+                  </do_if>
+                </do_all>
+                <append_to_list name="$DefendingTeams" exact="$NewBonusTeam"/>
+                <do_all chance="$DebugChance">
+                  <debug_text text="'Added new virtual team for a total of ' + $DefendingTeams.count + ' teams'"/>
+                  <do_for_each name="$TeamMember" in="$NewBonusTeam.$marines">
+                    <debug_text text="'skill: ' + $TeamMember.$combinedskill + ' health ' + $TeamMember.$health"/>
+                  </do_for_each>
+                </do_all>
+                <do_if value="$RemainingBonus le 0">
+                  <break/>
+                </do_if>
+              </do_all>
+            </do_if>
+          </actions>
+        </library>
+
+        <library name="Reevaluate_Attacking_Teams">
+          <actions>
+            <!--Check that the attacking marines are still 'fighting' in the operation. Put any new ones to work.-->
+            <set_value name="$AttackingMarines" exact="$Operation.marines.fighting.list"/>
+            <set_value name="$NewMarines" exact="$AttackingMarines.clone"/>
+
+            <do_all exact="$AttackingTeams.count" counter="$team_i" reverse="true">
+              <set_value name="$TeamMembers" exact="$AttackingTeams.{$team_i}.$marines.keys.list"/>
+              <do_all exact="$TeamMembers.count" counter="$member_k" reverse="true">
+                <do_if value="$AttackingMarines.indexof.{$TeamMembers.{$member_k}}">
+                  <!--Marine is not a new marine-->
+                  <remove_from_list name="$NewMarines" exact="$TeamMembers.{$member_k}" multiple="false" />
+                </do_if>
+                <do_else>
+                  <!--Marine no longer present or an active marine-->
+                  <remove_value name="$TeamMembers.{$member_k}"/>
+                </do_else>
+                <do_if value="not $TeamMembers.count">
+                  <remove_value name="$AttackingTeams.{$team_i}"/>
+                </do_if>
+              </do_all>
+            </do_all>
+            <do_if value="$NewMarines.count">
+              <do_if value="not $AttackingMarines.count">
+                <!--Aim to have a team for every 2-4 marines-->
+                <set_value name="$NumAttackingTeams" min="[$NewMarines.count / 4, 1].max" max="[$NewMarines.count / 2, 1].max"/>
+                <resize_list list="$AttackingTeams" count="$NumAttackingTeams"/>
+                <debug_text text="'Creating ' + $NumAttackingTeams + ' attacking teams'" chance="$DebugChance"/>
+                <do_all exact="$AttackingTeams.count" counter="$team_i">
+                  <set_value name="$AttackingTeams.{$team_i}" exact="table[$marines = table[]]"/>
+                  <!--Add the first marine to the $marines table. The npcsummary is the key and the value is their 'health'. Each team with at least 1.-->
+                  <set_value name="$AttackingTeams.{$team_i}.$marines.{$NewMarines.{$NewMarines.count}}" exact="$Operation.marines.fighting.{$NewMarines.{$NewMarines.count}}.combinedskill + 100"/>
+                  <remove_value name="$NewMarines.{$NewMarines.count}"/>
+                </do_all>
+              </do_if>
+              <!--Assign the remaining marines to teams-->
+              <do_all exact="$NewMarines.count">
+                <set_value name="$TeamIndex" min="1" max="$AttackingTeams.count"/>
+                <set_value name="$Team" exact="$AttackingTeams.{$TeamIndex}"/>
+                <set_value name="$Team.$marines.{$NewMarines.{$NewMarines.count}}" exact="$Operation.marines.fighting.{$NewMarines.{$NewMarines.count}}.combinedskill + 100"/>
+                <remove_value name="$NewMarines.{$NewMarines.count}"/>
+              </do_all>
+            </do_if>
+          </actions>
+        </library>
+
+        <cue name="Internal_Fight_Ticker" instantiate="true" checkinterval="5s">
+          <conditions>
+            <check_value value="$HasStartedInternalFight and $CurrentPhase"/>
+            <check_value value="$Operation.boardingphase == boardingphase.internalfight"/>
+          </conditions>
+          <actions>
+            <include_actions ref="Reevaluate_Defending_Teams"/>
+            <include_actions ref="Reevaluate_Attacking_Teams"/>
+
+            <debug_text text="'***********\n' + player.age + ' Boarding ticker. Infiltrating: ' + $Operation.marines.infiltrating.count + '. Fighting: ' + $Operation.marines.fighting.count" context="false" chance="$DebugChance"/>
+            <!--Check if the fight is already over-->
+            <do_if value="not $DefendingTeams.count">
+              <do_if value="$Operation.marines.fighting.count or $Operation.marines.infiltrating.count">
+                <debug_text text="'attackers remaining and no defenders in sight. victory!'" context="false" chance="$DebugChance"/>
+                <signal_cue cue="Boarding_Successful"/>
+              </do_if>
+              <do_else>
+                <signal_cue cue="Boarding_Stalemate"/>
+              </do_else>
+            </do_if>
+            <do_elseif value="not $AttackingTeams.count">
+              <assert value="$Operation.marines.fighting.count == 0" text="'No attacking teams although there are ' + $Operation.marines.fighting.count + ' fighting marines in the operation [Owen]'"/>
+              <do_if value="$Operation.marines.infiltrating.count">
+                <debug_text text="'No attacking teams left but ' + $Operation.marines.infiltrating.count + ' marines are still infiltrating.'" context="false" chance="$DebugChance"/>
+              </do_if>
+              <do_else>
+                <debug_text text="'No attacking teams left.'" context="false" chance="$DebugChance"/>
+                <signal_cue cue="Boarding_Failed"/>
+              </do_else>
+            </do_elseif>
+            <do_else>
+              <set_value name="$TotalAttackerHealth" exact="0"/>
+              <set_value name="$AttackerSquadsWiped" exact="0"/>
+              <set_value name="$KilledAttackers" exact="[]"/>
+
+              <set_value name="$TotalDefenderHealth" exact="0"/>
+              <set_value name="$DefenderSquadsWiped" exact="0"/>
+              <set_value name="$KilledDefenders" exact="[]"/>
+              <set_value name="$DefendersKilledAtStart" exact="$NumDefendersKilled"/>
+
+              <debug_text text="player.age + ' START: There are ' + $AttackingTeams.count + ' attacking teams and ' + $DefendingTeams.count + ' defending teams'" context="false" chance="$DebugChance"/>
+
+              <!--Have one team attack one other. It will be the same teams fighting until something changes the lists, which is kind of ok.-->
+              <do_all exact="[$AttackingTeams.count, $DefendingTeams.count].min" counter="$i" reverse="true">
+                <set_value name="$AttackerTeam" exact="$AttackingTeams.{$i}"/>
+                <set_value name="$AttackingMarines" exact="$AttackerTeam.$marines.keys.list"/>
+                <do_if value="$AttackingMarines.count == 0">
+                  <remove_value name="$AttackingTeams.{$i}"/>
+                </do_if>
+
+                <set_value name="$DefenceTeam" exact="$DefendingTeams.{$i}"/>
+                <set_value name="$IsBonusDefence" exact="$DefenceTeam.$isbonus?"/>
+                <set_value name="$DefendingMarines" exact="if $IsBonusDefence then $DefenceTeam.$marines else $DefenceTeam.$marines.keys.list"/>
+                <do_if value="$DefendingMarines.count == 0">
+                  <remove_value name="$DefendingTeams.{$i}"/>
+                </do_if>
+
+                <do_if value="$AttackingMarines.count and $DefendingMarines.count">
+                  <do_all chance="$DebugChance">
+                    <debug_text text="'\nAttacking team has ' + $AttackingMarines.count + ' marines.'" context="false"/>
+                    <do_all exact="$AttackingMarines.count" counter="$k">
+                      <debug_text text="'Skill: ' + $Operation.marines.fighting.{$AttackingMarines.{$k}}.combinedskill + ' Health: ' + $AttackerTeam.$marines.{$AttackingMarines.{$k}} + ' '
+                                  + $Operation.marines.fighting.{$AttackingMarines.{$k}}.name + ', ' + $Operation.marines.fighting.{$AttackingMarines.{$k}}.role" context="false"/>
+                    </do_all>
+                    <do_if value="$IsBonusDefence">
+                      <debug_text text="'\nDefending team has ' + $DefendingMarines.count + ' bonus virtual marines.'" context="false"/>
+                      <do_for_each name="$DefendingMarine" in="$DefendingMarines">
+                        <debug_text text="'Skill: ' + $DefendingMarine.$combinedskill + ' Health: ' + $DefendingMarine.$health" context="false"/>
+                      </do_for_each>
+                    </do_if>
+                    <do_else>
+                      <debug_text text="'\nDefending team has ' + $DefendingMarines.count + ' marines.'" context="false"/>
+                      <do_all exact="$DefendingMarines.count" counter="$k">
+                        <debug_text text="'Skill: ' + $Target.people.{$DefendingMarines.{$k}}.potentialskill.{entityrole.marine} + ' Health: ' + $DefenceTeam.$marines.{$DefendingMarines.{$k}} + ' '
+                                  + $Target.people.{$DefendingMarines.{$k}}.name + ', ' + $Target.people.{$DefendingMarines.{$k}}.role" context="false"/>
+                      </do_all>
+                    </do_else>
+                    <debug_text text="' '" context="false"/>
+                  </do_all>
+
+                  <!--Apply damage from each attacker to a random defender-->
+                  <do_all exact="$AttackingMarines.count" counter="$k">
+                    <set_value name="$Damage" min="1" max="$Operation.marines.fighting.{$AttackingMarines.{$k}}.combinedskill + 1" profile="increasing"/>
+                    <set_value name="$HitMarine" exact="$DefendingMarines.random"/>
+                    <do_if value="$IsBonusDefence">
+                      <set_value name="$HitMarine.$health" operation="subtract" exact="$Damage"/>
+                      <debug_text text="'* Attacker ' + $Operation.marines.fighting.{$AttackingMarines.{$k}}.name + ' dealt ' + $Damage + ' to virtual marine, ' + $HitMarine.$health + ' health remaining'" context="false" chance="$DebugChance"/>
+                    </do_if>
+                    <do_else>
+                      <set_value name="$DefenceTeam.$marines.{$HitMarine}" operation="subtract" exact="$Damage"/>
+                      <debug_text text="'* Attacker ' + $Operation.marines.fighting.{$AttackingMarines.{$k}}.name + ' dealt ' + $Damage + ' to ' + $Target.people.{$HitMarine}.name + ', ' + $DefenceTeam.$marines.{$HitMarine} + ' health remaining'" context="false" chance="$DebugChance"/>
+                    </do_else>
+                  </do_all>
+
+                  <!--Apply damage from each defender to a random attacker-->
+                  <do_all exact="$DefendingMarines.count" counter="$k">
+                    <do_if value="$IsBonusDefence">
+                      <set_value name="$Damage" min="1" max="$DefendingMarines.{$k}.$combinedskill + 1" profile="increasing"/>
+                    </do_if>
+                    <do_elseif value="$Target.people.{$DefendingMarines.{$k}}.role == entityrole.marine">
+                      <set_value name="$Damage" min="1" max="$Target.people.{$DefendingMarines.{$k}}.combinedskill + 1" profile="increasing"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$Damage" min="0" max="$Target.people.{$DefendingMarines.{$k}}.potentialskill.{entityrole.marine} + 1"/>
+                    </do_else>
+                    <do_if value="$Damage">
+                      <set_value name="$HitMarine" exact="$AttackingMarines.random"/>
+                      <set_value name="$AttackerTeam.$marines.{$HitMarine}" operation="subtract" exact="$Damage"/>
+                      <do_if value="$IsBonusDefence">
+                        <debug_text text="'* Virtual Defender dealt ' + $Damage + ' to ' + $Operation.marines.fighting.{$HitMarine}.name + ', ' + $AttackerTeam.$marines.{$HitMarine} + ' health remaining'" context="false" chance="$DebugChance"/>
+                      </do_if>
+                      <do_else>
+                        <debug_text text="'* Defender ' + $Target.people.{$DefendingMarines.{$k}}.name + ' dealt ' + $Damage + ' to ' + $Operation.marines.fighting.{$HitMarine}.name + ', ' + $AttackerTeam.$marines.{$HitMarine} + ' health remaining'" context="false" chance="$DebugChance"/>
+                      </do_else>
+                    </do_if>
+                  </do_all>
+
+                  <!--Kill any attacker who has no points left-->
+                  <do_all exact="$AttackingMarines.count" counter="$k" reverse="true">
+                    <do_if value="$AttackerTeam.$marines.{$AttackingMarines.{$k}} le 0">
+                      <!--Killed-->
+                      <remove_value name="$AttackerTeam.$marines.{$AttackingMarines.{$k}}"/>
+                      <append_to_list name="$KilledAttackers" exact="$AttackingMarines.{$k}"/>
+                      <debug_text text="'*** Attacker killed: ' + $Operation.marines.fighting.{$AttackingMarines.{$k}}.name" context="false" chance="$DebugChance"/>
+                      <set_marine_status operation="$Operation" template="$AttackingMarines.{$k}" status="killed"/>
+                    </do_if>
+                    <do_else>
+                      <set_value name="$TotalAttackerHealth" operation="add" exact="$AttackerTeam.$marines.{$AttackingMarines.{$k}}"/>
+                    </do_else>
+                  </do_all>
+                  <do_if value="$AttackerTeam.$marines.keys.count == 0">
+                    <debug_text text="'No attackers left on this team.'" context="false" chance="$DebugChance"/>
+                    <remove_value name="$AttackingTeams.{$i}"/>
+                    <set_value name="$AttackerSquadsWiped" operation="add"/>
+                  </do_if>
+
+                  <!--Kill any defender who has no points left-->
+                  <do_all exact="$DefendingMarines.count" counter="$k" reverse="true">
+                    <do_if value="$IsBonusDefence">
+                      <do_if value="$DefendingMarines.{$k}.$health le 0">
+                        <!--Killed-->
+                        <remove_value name="$DefendingMarines.{$k}"/>
+                        <!--<append_to_list name="$KilledDefenders" exact="$DefendingMarines.{$k}"/>-->
+                        <set_value name="$NumDefendersKilled" operation="add"/>
+                        <debug_text text="'*** Virtual defender killed'" context="false" chance="$DebugChance"/>
+                      </do_if>
+                      <do_else>
+                        <set_value name="$TotalDefenderHealth" operation="add" exact="$DefendingMarines.{$k}.$health"/>
+                      </do_else>
+                    </do_if>
+                    <do_else>
+                      <do_if value="$DefenceTeam.$marines.{$DefendingMarines.{$k}} le 0">
+                        <!--Killed-->
+                        <remove_value name="$DefenceTeam.$marines.{$DefendingMarines.{$k}}"/>
+                        <append_to_list name="$KilledDefenders" exact="$DefendingMarines.{$k}"/>
+                        <set_value name="$NumDefendersKilled" operation="add"/>
+                        <debug_text text="'*** Defender killed: ' + $Target.people.{$DefendingMarines.{$k}}.name" context="false" chance="$DebugChance"/>
+                        <set_value name="$instancedperson" exact="$Target.roleentity.{$DefendingMarines.{$k}}"/>
+                        <do_if value="$instancedperson">
+                          <debug_text text="'Signalling instanced marine to despawn due to being killed - ' + $instancedperson + ' ' + $instancedperson.knownname" chance="$DebugChance"/>
+                          <signal_objects object="$instancedperson" param="'npc_despawn'" param2="table[$movementspeed = $instancedperson.runspeed]"/>
+                        </do_if>
+                        <remove_npc_template object="$Target" template="$DefendingMarines.{$k}"/>
+                      </do_if>
+                      <do_else>
+                        <set_value name="$TotalDefenderHealth" operation="add" exact="$DefenceTeam.$marines.{$DefendingMarines.{$k}}"/>
+                      </do_else>
+                    </do_else>
+                  </do_all>
+                  <do_if value="if $IsBonusDefence then ($DefendingMarines.count == 0) else ($DefenceTeam.$marines.keys.count == 0)">
+                    <debug_text text="'No defenders left on this team.'" context="false" chance="$DebugChance"/>
+                    <remove_value name="$DefendingTeams.{$i}"/>
+                    <set_value name="$DefenderSquadsWiped" operation="add"/>
+                  </do_if>
+                </do_if>
+              </do_all>
+
+              <debug_text text="'END: There are ' + $AttackingTeams.count + ' attacking teams and ' + $DefendingTeams.count + ' defending teams remaining'" context="false" chance="$DebugChance"/>
+
+              <!--Check if the fight is now over-->
+              <do_if value="not $DefendingTeams.count">
+                <do_if value="$Operation.marines.fighting.count or $Operation.marines.infiltrating.count">
+                  <debug_text text="'attackers remaining and no defenders in sight. victory!'" context="false" chance="$DebugChance"/>
+                  <signal_cue cue="Boarding_Successful"/>
+                </do_if>
+                <do_else>
+                  <signal_cue cue="Boarding_Stalemate"/>
+                </do_else>
+              </do_if>
+              <do_elseif value="not $AttackingTeams.count">
+                <assert value="$Operation.marines.fighting.count == 0" text="'No attacking teams although there are ' + $Operation.marines.fighting.count + ' fighting marines in the operation [Owen]'"/>
+                <do_if value="$Operation.marines.infiltrating.count">
+                  <debug_text text="'No attacking teams left but ' + $Operation.marines.infiltrating.count + ' marines are still infiltrating.'" context="false" chance="$DebugChance"/>
+                </do_if>
+                <do_else>
+                  <debug_text text="'No attacking teams left.'" context="false" chance="$DebugChance"/>
+                  <signal_cue cue="Boarding_Failed"/>
+                </do_else>
+              </do_elseif>
+              <do_else>
+                <!--The fight goes on-->
+                <set_value name="$PotentialFightLibs" exact="table[]"/>
+
+                <do_if value="$KilledAttackers.count and $Operation.marines.killed.count == $KilledAttackers.count and $TotalDefenderHealth gt $TotalAttackerHealth">
+                  <!--First attacker killed and also a bad situation-->
+                  <set_value name="$PotentialFightLibs.{Speak__Fight_First_Attacker_Killed}" exact="50"/>
+                </do_if>
+
+                <do_if value="$TotalAttackerHealth and $TotalDefenderHealth">
+                  <debug_text text="'$TotalAttackerHealth: ' + $TotalAttackerHealth" chance="$DebugChance"/>
+                  <debug_text text="'$TotalDefenderHealth: ' + $TotalDefenderHealth" chance="$DebugChance"/>
+                  <do_if value="$TotalAttackerHealth gt $TotalDefenderHealth * 5.0">
+                    <!--Very good situation-->
+                    <set_value name="$PotentialFightLibs.{Speak__Fight_Very_Good_Situation}" exact="60"/>
+                  </do_if>
+                  <do_elseif value="$TotalAttackerHealth gt $TotalDefenderHealth * 2.0">
+                    <!--Good situation-->
+                    <set_value name="$PotentialFightLibs.{Speak__Fight_Good_Situation}" exact="40"/>
+                  </do_elseif>
+                  <do_elseif value="$TotalDefenderHealth gt $TotalAttackerHealth * 5.0">
+                    <!--Very bad situation-->
+                    <set_value name="$PotentialFightLibs.{Speak__Fight_Dire_Situation}" exact="60"/>
+                  </do_elseif>
+                  <do_elseif value="$TotalDefenderHealth gt $TotalAttackerHealth * 2.0">
+                    <!--Bad situation-->
+                    <set_value name="$PotentialFightLibs.{Speak__Fight_Bad_Situation}" exact="40"/>
+                  </do_elseif>
+                  <do_else>
+                    <!--Balanced situation-->
+                    <set_value name="$PotentialFightLibs.{Speak__Fight_Neutral_Combat}" exact="30"/>
+                  </do_else>
+                </do_if>
+
+                <do_if value="$PotentialFightLibs.keys.count">
+                  <set_value name="$PossibleSpeaks" exact="[]"/>
+                  <set_value name="$PotentialFightLibsKeys" exact="$PotentialFightLibs.keys.sorted"/>
+                  <debug_text text="'Possible fight libs ' + $PotentialFightLibsKeys" chance="$DebugChance"/>
+                  <do_if value="$LastFightSpeakLib != $PotentialFightLibsKeys.{$PotentialFightLibsKeys.count} or player.age gt $LastFightSpeakTime + [10s, 13s, 16s].random">
+                    <set_value name="$LastFightSpeakTime" exact="player.age"/>
+                    <set_value name="$LastFightSpeakLib" exact="$PotentialFightLibsKeys.{$PotentialFightLibsKeys.count}"/>
+                    <include_actions ref="$LastFightSpeakLib"/>
+                  </do_if>
+                </do_if>
+
+                <do_if value="$PossibleSpeaks.count">
+                  <signal_cue_instantly cue="Speak_Helper" param="$PossibleSpeaks.random"/>
+                </do_if>
+              </do_else>
+            </do_else>
+          </actions>
+        </cue>
+
+        <cue name="Phase_Internal_Fight" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <set_value name="$CurrentPhase" exact="this"/>
+
+            <do_if value="$MissionCue.hasmission">
+              <set_objective cue="$MissionCue" step="$MissionStep_ProtectTarget" action="objective.protect" object="$Target"/>
+            </do_if>
+
+            <set_value name="$InfiltratingMarines" exact="$Operation.marines.infiltrating.list"/>
+            <debug_text text="'Setting ' + $InfiltratingMarines.count + ' infiltrating marines to start fighting'" chance="$DebugChance"/>
+            <do_all exact="$InfiltratingMarines.count" counter="$i">
+              <debug_text text="'Setting ' + $Operation.marines.infiltrating.{$InfiltratingMarines.{$i}}.name + ' to fighting status'" chance="$DebugChance"/>
+              <set_marine_status operation="$Operation" template="$InfiltratingMarines.{$i}" status="fighting"/>
+            </do_all>
+            <remove_value name="$InfiltratingMarines"/>
+          </actions>
+          <cues>
+            <cue name="Phase_Internal_Fight_Start">
+              <delay min="10s" max="13s"/>
+              <actions>
+                <set_value name="$HasStartedInternalFight"/>
+
+                <do_if value="$PlayerInvolved">
+                  <set_value name="$PossibleSpeaks" exact="[]"/>
+
+                  <include_actions ref="Speak__First_Engagement"/>
+
+                  <do_if value="$PossibleSpeaks.count">
+                    <signal_cue_instantly cue="Speak_Helper" param="$PossibleSpeaks.random"/>
+                  </do_if>
+                </do_if>
+              </actions>
+            </cue>
+
+            <cue name="Phase_Internal_Fight_Check_Conditions" checkinterval="1s">
+              <conditions>
+                <check_value value="$Won?"/>
+              </conditions>
+              <actions>
+                <debug_text text="'Internal fight done.'" chance="$DebugChance"/>
+
+                <signal_cue cue="Boarding_Successful"/>
+              </actions>
+            </cue>
+
+            <cue name="Phase_Internal_Fight_Breach_Speak" onfail="cancel">
+              <conditions>
+                <check_value value="$PlayerInvolved"/>
+              </conditions>
+              <delay max="1s"/>
+              <actions>
+                <do_if value="$PlayerInvolved">
+                  <set_value name="$PossibleSpeaks" exact="[]"/>
+
+                  <include_actions ref="Speak__Breach"/>
+
+                  <do_if value="$PossibleSpeaks.count">
+                    <signal_cue_instantly cue="Speak_Helper" param="$PossibleSpeaks.random"/>
+                  </do_if>
+                </do_if>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Boarding_Failed">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <signal_objects object="player.entity" param="'boarding_failed'" param2="$Target"/>
+
+            <set_value name="$attackingdps" exact="0"/>
+            <do_all exact="$Operation.attackers.count" counter="$i">
+              <set_value name="$attackingdps" exact="$attackingdps + $Operation.attackers.{$i}.dps.all"/>
+            </do_all>
+
+            <do_if value="$Target.isoperational and not [Phase_Pre_Approach, Phase_Approach, Phase_Pre_Infiltration].indexof.{$CurrentPhase}">
+              <do_if value="$Target.pilot">
+                <apply_experience entity="$Target.pilot" experience="'board_repel'" factor="1.0"/>
+              </do_if>
+              <apply_experience object="$Target" role="entityrole.marine" experience="'board_repel'" factor="1.0"/>
+              <apply_experience object="$Target" role="entityrole.service" experience="'board_repel'" factor="1.0"/>
+
+              <do_if value="$attackingdps gt $Target.dps.all">
+                <do_if value="$Target.pilot">
+                  <apply_experience entity="$Target.pilot" experience="'board_survived_hard'" factor="1.0"/>
+                </do_if>
+                <apply_experience object="$Target" role="entityrole.marine" experience="'board_survived_hard'" factor="1.0"/>
+                <apply_experience object="$Target" role="entityrole.service" experience="'board_survived_hard'" factor="1.0"/>
+              </do_if>
+            </do_if>
+
+            <do_if value="$MissionCue.hasmission">
+              <remove_mission cue="$MissionCue" type="failed"/>
+            </do_if>
+
+            <!-- NB: additional cleanup may become necessary if we ever decide to support retreating. -->
+            <end_boarding_operation operation="$Operation"/>
+          </actions>
+        </cue>
+
+        <!--TODO @Owen - make it ownerless?-->
+        <cue name="Boarding_Stalemate">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <set_value name="$attackingdps" exact="0"/>
+            <do_all exact="$Operation.attackers.count" counter="$i">
+              <set_value name="$attackingdps" exact="$attackingdps + $Operation.attackers.{$i}.dps.all"/>
+            </do_all>
+
+            <do_if value="$Target.pilot">
+              <apply_experience entity="$Target.pilot" experience="'board_repel'" factor="1.0"/>
+            </do_if>
+            <apply_experience object="$Target" role="entityrole.marine" experience="'board_repel'" factor="1.0"/>
+            <apply_experience object="$Target" role="entityrole.service" experience="'board_repel'" factor="1.0"/>
+
+            <do_if value="$attackingdps gt $Target.dps.all">
+              <do_if value="$Target.pilot">
+                <apply_experience entity="$Target.pilot" experience="'board_survived_hard'" factor="1.0"/>
+              </do_if>
+              <apply_experience object="$Target" role="entityrole.marine" experience="'board_survived_hard'" factor="1.0"/>
+              <apply_experience object="$Target" role="entityrole.service" experience="'board_survived_hard'" factor="1.0"/>
+            </do_if>
+
+            <do_if value="$MissionCue.hasmission">
+              <remove_mission cue="$MissionCue" type="failed"/>
+            </do_if>
+
+            <!-- NB: additional cleanup may become necessary if we ever decide to support retreating. -->
+            <end_boarding_operation operation="$Operation"/>
+          </actions>
+        </cue>
+
+        <!--TODO @Owen a phase where success is guaranteed but the previous owner is attempting to abandon ship
+        - launch a few escape pods
+        - have remaining crew board remaining docked ships and have them undock
+        - have this phase last a few seconds
+        - any remaining docked ships have the undock order removed and ownership changed-->
+
+        <!--TODO @Owen logbook-->
+        <cue name="Boarding_Successful">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <!-- NB: this will have to change if we implement NPC factions boarding.
+              as it was written, $Faction could be invalid if all attackers of an operation are removed due to their Board order being manually cancelled or the player teleporting away or getting up after initiating.
+              safe for now since only the player faction can do boarding. -->
+            <set_value name="$Faction" exact="faction.player"/>
+            <debug_text text="'%s %s %s boarded by %s'.[$Target.idcode, $Target.knownname, $Target, $Faction]" chance="$DebugChance"/>
+            <!--<set_value name="$Faction" exact="$Operation.attackers.{1}.owner"/>-->
+
+            <!-- perform takeover of target -->
+            <signal_objects object="$Target" param="'boarded'" param2="$Faction"/>
+            <signal_objects object="player.entity" param="'boarded_object'" param2="$Target"/>
+            <signal_cue_instantly cue="Transfer_Ownership" param="table[$target = $Target, $faction = $Faction, $debugchance = $DebugChance]"/>
+
+            <do_if value="$PlayerInvolved">
+              <set_value name="$PossibleSpeaks" exact="[]"/>
+
+              <include_actions ref="Speak__Success"/>
+
+              <do_if value="$PossibleSpeaks.count">
+                <signal_cue_instantly cue="Speak_Helper" param="$PossibleSpeaks.random"/>
+              </do_if>
+            </do_if>
+
+            <!--TODO @Owen remove all people from the target?
+                  NB: now done in Transfer_Ownership. @Owen, please review. might be missing something for already-instantiated people. -->
+
+            <set_value name="$survivingmarines" exact="$Operation.marines.fighting.list"/>
+            <append_list_elements name="$survivingmarines" other="$Operation.marines.infiltrating.list" />
+            <transfer_marines_from_operation operation="$Operation" object="$Target" marines="$survivingmarines"/>
+
+            <apply_experience object="$Target" role="entityrole.marine" experience="'board_success'" factor="1.0"/>
+
+            <do_if value="$PlacedSpeaker">
+              <destroy_object object="$PlacedSpeaker"/>
+            </do_if>
+
+            <do_if value="$MissionCue.hasmission">
+              <remove_mission cue="$MissionCue" type="completed"/>
+            </do_if>
+            <end_boarding_operation operation="$Operation"/>
+          </actions>
+        </cue>
+
+        <cue name="PhaseChanged" instantiate="true">
+          <conditions>
+            <event_boarding_phase_changed operation="$Operation"/>
+          </conditions>
+          <actions>
+            <debug_text text="player.age + ' Boarding operation phase changed from ' + event.param3 + ' to ' + event.param2" chance="$DebugChance"/>
+          </actions>
+        </cue>
+
+        <cue name="OperationRemoved">
+          <conditions>
+            <event_boarding_operation_removed operation="$Operation"/>
+          </conditions>
+          <!--Delay to deal with object destruction-->
+          <delay exact="1ms"/>
+          <actions>
+            <debug_text text="player.age + ' Boarding operation removed ' + event.param" chance="$DebugChance"/>
+
+            <do_if value="$PlayerInvolved and not $Target.isoperational">
+              <set_value name="$PossibleSpeaks" exact="[]"/>
+
+              <include_actions ref="Speak__Target_Destroyed"/>
+
+              <do_if value="$PossibleSpeaks.count">
+                <signal_cue_instantly cue="Speak_Helper" param="$PossibleSpeaks.random"/>
+              </do_if>
+            </do_if>
+
+            <do_if value="$CurrentPhase">
+              <cancel_cue cue="$CurrentPhase"/>
+              <set_value name="$CurrentPhase" exact="null"/>
+            </do_if>
+          </actions>
+          <cues>
+            <cue name="OperationCleanup">
+              <!--Give some time for speaking usecases to finish-->
+              <delay exact="5s"/>
+              <actions>
+                <do_if value="$PlacedSpeaker">
+                  <destroy_object object="$PlacedSpeaker"/>
+                </do_if>
+
+                <cancel_cue cue="OperationCreated"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <!--
+        #####################
+        SPEAK HANDLER
+        #####################-->
+
+        <!--event.param = table[$priority = int, $lines = [ table[$speaker = NPC, $page = int, $line = int, $delay = time, $broadcast = bool, $recipient = NPC] ] ]
+        For Marine (on target) - Marine (on target) - use recipient="$PlacedSpeaker"-->
+        <cue name="Speak_Helper" instantiate="true">
+          <conditions>
+            <event_cue_signalled comment="Trigger the first line to speak"/>
+            <check_value value="not $CurrentSpeaker or event.param.$priority gt $CurrentPriority"/>
+            <check_value value="event.param.$lines.count"/>
+          </conditions>
+          <actions>
+            <set_value name="$CurrentPriority" exact="0"/>
+            <set_value name="$CurrentSpeaker" exact="null"/>
+            <set_value name="this.$Definition" exact="event.param"/>
+            <set_value name="$RequestedSpeaker" exact="null"/>
+            <do_if value="this.$Definition.$lines.{1}.$speaker.isclass.entity and (typeof this.$Definition.$lines.{1}.$line).isnumeric">
+              <set_value name="$RequestedSpeaker" exact="this.$Definition.$lines.{1}.$speaker"/>
+              <set_value name="$NextLine" exact="this.$Definition.$lines.{1}.$line"/>
+              <do_if value="not this.$Definition.$lines.{1}.$page">
+                <set_value name="this.$Definition.$lines.{1}.$page" exact="$RequestedSpeaker.page"/>
+              </do_if>
+              <set_value name="$Page" exact="this.$Definition.$lines.{1}.$page"/>
+              <set_value name="$CurrentPriority" exact="this.$Definition.$priority"/>
+              <set_value name="$Delay" exact="if this.$Definition.$lines.{1}.$delay? then this.$Definition.$lines.{1}.$delay else 0s"/>
+              <debug_text text="'Queuing next line: ' + $NextLine + ' with delay of ' + $Delay + ' for ' + $RequestedSpeaker + ' with page ' + if $Page then $Page else + $RequestedSpeaker.page" chance="$DebugChance"/>
+            </do_if>
+            <do_else>
+              <cancel_cue cue="Speak_Helper"/>
+            </do_else>
+          </actions>
+          <cues>
+            <cue name="Speak_Helper_Delay">
+              <delay exact="$Delay"/>
+              <actions>
+                <speak actor="$RequestedSpeaker" page="parent.$Definition.$lines.{1}.$page" line="$NextLine" priority="parent.$Definition.$priority" recipient="parent.$Definition.$lines.{1}.$recipient" broadcast="parent.$Definition.$lines.{1}.$broadcast"/>
+                <set_value name="$CurrentSpeaker" exact="$RequestedSpeaker"/>
+                <set_value name="$CurrentPriority" exact="parent.$Definition.$priority"/>
+                <debug_text text="'Speaking next line: ' + $NextLine + ' for ' + $RequestedSpeaker" chance="$DebugChance"/>
+                <remove_value name="parent.$Definition.$lines.{1}"/>
+              </actions>
+            </cue>
+            <cue name="Speak_Helper_Line_Finished">
+              <conditions>
+                <event_speak_finished actor="$RequestedSpeaker"/>
+              </conditions>
+              <actions>
+                <debug_text text="'Line finished: ' + event.object + ' - ' + event.param + ' ' + event.param2" chance="$DebugChance"/>
+                <set_value name="$CurrentSpeaker" exact="null"/>
+                <do_if value="parent.$Definition.$lines.count">
+                  <cancel_cue cue="Speak_Helper_Interrupted"/>
+                  <signal_cue_instantly cue="Speak_Helper.static" param="parent.$Definition"/>
+                </do_if>
+                <do_else>
+                  <set_value name="$CurrentPriority" exact="0"/>
+                </do_else>
+                <cancel_cue cue="Speak_Helper"/>
+              </actions>
+            </cue>
+
+            <cue name="Speak_Helper_Speaker_Destroyed">
+              <conditions>
+                <event_object_destroyed object="$RequestedSpeaker"/>
+              </conditions>
+              <actions>
+                <set_value name="$CurrentSpeaker" exact="null"/>
+                <set_value name="$CurrentPriority" exact="0"/>
+                <debug_text text="'Speaker was killed. This definition: ' + parent.$Definition" chance="$DebugChance"/>
+                <cancel_cue cue="Speak_Helper"/>
+              </actions>
+            </cue>
+
+            <cue name="Speak_Helper_Interrupted">
+              <conditions>
+                <event_cue_signalled cue="Speak_Helper.static"/>
+                <check_value value="event.param.$priority gt parent.$Definition.$priority"/>
+              </conditions>
+              <actions>
+                <debug_text text="'Speak was interrupted. This definition: ' + parent.$Definition" chance="$DebugChance"/>
+                <cancel_cue cue="Speak_Helper"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <!--
+        #####################
+        GET SPEAKER OBJECTS
+        #####################-->
+
+        <library name="Get_Marine_Launching_Ship">
+          <actions>
+            <set_value name="$MarineLaunchingShip" exact="null"/>
+            <do_if value="player.ship and $Operation == player.ship.boardingoperation and player.ship.boardingmarines.count and player.ship.people.marines.count">
+              <set_value name="$MarineLaunchingShip" exact="player.ship"/>
+            </do_if>
+            <do_else>
+              <set_value name="$OperationAttackers" exact="$Operation.attackers"/>
+              <shuffle_list list="$OperationAttackers"/>
+              <do_all exact="$OperationAttackers.count" counter="$attacker_i">
+                <do_if value="$OperationAttackers.{$attacker_i}.sector == player.sector and $OperationAttackers.{$attacker_i}.boardingmarines.count and $OperationAttackers.{$attacker_i}.people.marines.count">
+                  <set_value name="$MarineLaunchingShip" exact="$OperationAttackers.{$attacker_i}"/>
+                  <break/>
+                </do_if>
+              </do_all>
+              <remove_value name="$OperationAttackers"/>
+            </do_else>
+            <do_if value="not $MarineLaunchingShip">
+              <!--fallback to player.ship-->
+              <set_value name="$MarineLaunchingShip" exact="player.ship"/>
+            </do_if>
+          </actions>
+        </library>
+
+        <library name="Get_Marine_Related_Ship">
+          <actions>
+            <set_value name="$MarineRelatedShip" exact="null"/>
+            <do_if value="player.ship and $Operation == player.ship.boardingoperation and player.ship.boardingmarines.count">
+              <set_value name="$MarineRelatedShip" exact="player.ship"/>
+            </do_if>
+            <do_else>
+              <set_value name="$OperationAttackers" exact="$Operation.attackers"/>
+              <shuffle_list list="$OperationAttackers"/>
+              <do_all exact="$OperationAttackers.count" counter="$attacker_i">
+                <do_if value="$OperationAttackers.{$attacker_i}.sector == player.sector and $OperationAttackers.{$attacker_i}.boardingmarines.count">
+                  <set_value name="$MarineRelatedShip" exact="$OperationAttackers.{$attacker_i}"/>
+                  <break/>
+                </do_if>
+              </do_all>
+              <remove_value name="$OperationAttackers"/>
+            </do_else>
+            <do_if value="not $MarineRelatedShip">
+              <!--fallback to player.ship-->
+              <set_value name="$MarineRelatedShip" exact="player.ship"/>
+            </do_if>
+          </actions>
+        </library>
+
+        <library name="Get_Random_Marine">
+          <actions>
+            <set_value name="$RandomMarinePage" exact="null"/>
+            <do_if value="$Operation.marines.infiltrating.count">
+              <set_value name="$RandomMarinePage" exact="$Operation.marines.infiltrating.{$Operation.marines.infiltrating.list.random}.page"/>
+            </do_if>
+            <do_elseif value="$Operation.marines.fighting.count">
+              <set_value name="$RandomMarinePage" exact="$Operation.marines.fighting.{$Operation.marines.fighting.list.random}.page"/>
+            </do_elseif>
+            <do_else>
+              <do_all exact="$ApproachingBoardingPods.count" counter="$pod_i">
+                <do_if value="$ApproachingBoardingPods.{$pod_i}.sector == player.sector and $ApproachingBoardingPods.{$pod_i}.people.marines.count">
+                  <set_value name="$RandomMarinePage" exact="$ApproachingBoardingPods.{$pod_i}.people.{$ApproachingBoardingPods.{$pod_i}.people.marines.list.random}.page"/>
+                  <break/>
+                </do_if>
+              </do_all>
+            </do_else>
+            <do_if value="not $RandomMarinePage">
+              <set_value name="$OperationAttackers" exact="$Operation.attackers"/>
+              <shuffle_list list="$OperationAttackers"/>
+              <do_all exact="$OperationAttackers.count" counter="$attacker_i">
+                <do_if value="$OperationAttackers.{$attacker_i}.sector == player.sector and $OperationAttackers.{$attacker_i}.boardingmarines.count
+                       and not $OperationAttackers.{$attacker_i}.allmarinesdispatched and $OperationAttackers.{$attacker_i}.people.marines.count">
+                  <set_value name="$RandomMarinePage" exact="$OperationAttackers.{$attacker_i}.people.{$OperationAttackers.{$attacker_i}.people.marines.list.random}.page"/>
+                  <break/>
+                </do_if>
+              </do_all>
+              <remove_value name="$OperationAttackers"/>
+            </do_if>
+          </actions>
+        </library>
+
+        <!--Returns: $SpeakerPod, $PodMarineTemplate-->
+        <library name="Get_Random_Pod_Marine">
+          <actions>
+            <set_value name="$PodList" exact="$ApproachingBoardingPods.list"/>
+            <shuffle_list list="$PodList"/>
+            <do_all exact="$PodList.count" counter="$podlist_i">
+              <do_if value="$PodList.{$podlist_i}.people.marines.count">
+                <set_value name="$PodMarineTemplate" exact="$PodList.{$podlist_i}.people.marines.list.random"/>
+                <set_value name="$SpeakerPod" exact="$PodList.{$podlist_i}"/>
+                <break/>
+              </do_if>
+            </do_all>
+            <remove_value name="$PodList"/>
+          </actions>
+        </library>
+
+        <!--
+        #####################
+        SPEAK SITUATIONS
+        #####################-->
+
+        <!--TODO @Owen check for instanced NPCs-->
+
+        <library name="Speak__Prepare_Boarding_Pods">
+          <actions>
+            <do_if value="$PlacedSpeaker">
+              <debug_text text="'Attempt to add line'" chance="$DebugChance"/>
+              <include_actions ref="Get_Marine_Launching_Ship"/>
+              <do_if value="$MarineLaunchingShip">
+                <set_value name="$ShipMarines" exact="$MarineLaunchingShip.people.marines.list"/>
+                <do_if value="$ShipMarines.count">
+                  <do_if value="not $MarineCommanderTemplate or not $MarineCommanderPage">
+                    <!--Take a random page from a marine on an involved ship-->
+                    <set_value name="$MarineCommanderTemplate" exact="$ShipMarines.random"/>
+                    <set_value name="$MarineCommanderPage" exact="$MarineLaunchingShip.people.{$MarineCommanderTemplate}.page"/>
+                  </do_if>
+
+                  <!--Marine #1: Boarding teams preparing for launch-->
+                  <append_to_list name="$PossibleSpeaks" exact="table[$priority = 40, $lines = [ 
+                          table[$speaker = $PlacedSpeaker, $page = $MarineCommanderPage, $line = 12201, $delay = [0.8s, 1.2s, 1.6s].random, $recipient = null, $broadcast = true ] 
+                          ] ]"/>
+                </do_if>
+                <remove_value name="$ShipMarines"/>
+              </do_if>
+              <remove_value name="$MarineLaunchingShip"/>
+            </do_if>
+          </actions>
+        </library>
+
+        <library name="Speak__Damage_Turrets">
+          <actions>
+            <do_if value="$PlacedSpeaker">
+              <debug_text text="'Attempt to add line'" chance="$DebugChance"/>
+              <include_actions ref="Get_Marine_Launching_Ship"/>
+              <do_if value="$MarineLaunchingShip">
+                <set_value name="$ShipMarines" exact="$MarineLaunchingShip.people.marines.list"/>
+                <do_if value="$ShipMarines.count">
+                  <do_if value="not $MarineCommanderTemplate or not $MarineCommanderPage">
+                    <!--Take a random page from a marine on an involved ship-->
+                    <set_value name="$MarineCommanderTemplate" exact="$ShipMarines.random"/>
+                    <set_value name="$MarineCommanderPage" exact="$MarineLaunchingShip.people.{$MarineCommanderTemplate}.page"/>
+                  </do_if>
+
+                  <do_if value="player.controlled == $MarineLaunchingShip">
+                    <!--Marine #1: We need to damage the target further.-->
+                    <append_to_list name="$PossibleSpeaks" exact="table[$priority = 50, $lines = [ 
+                          table[$speaker = $PlacedSpeaker, $page = $MarineCommanderPage, $line = 12202, $delay = 0s, $recipient = null, $broadcast = true ] 
+                          ] ]"/>
+                  </do_if>
+                  <do_else>
+                    <set_value name="$ShipNPCSpeaker" exact="$MarineLaunchingShip.controlentity.{controlpost.aipilot}"/>
+                    <do_if value="not $ShipNPCSpeaker">
+                      <find_object_component name="$ShipNPCSpeaker" object="$MarineLaunchingShip.controlroom" entityrole="entityrole.service"/>
+                    </do_if>
+                    <!--Marine #1: We need to damage the target further.-->
+                    <append_to_list name="$PossibleSpeaks" exact="table[$priority = 50, $lines = [ 
+                          table[$speaker = $PlacedSpeaker, $page = $MarineCommanderPage, $line = 12202, $delay = 0s, $recipient = $ShipNPCSpeaker, $broadcast = true ] 
+                          ] ]"/>
+                    <do_if value="$ShipNPCSpeaker">
+                      <!--(Optional) Launching ship speaker: Acknowledged. / Got it.-->
+                      <append_to_list name="$PossibleSpeaks.{$PossibleSpeaks.count}.$lines" exact="
+                          table[$speaker = $ShipNPCSpeaker, $page = null, $line = [2105, 2107].random, $delay = 0.4s, $recipient = $PlacedSpeaker, $broadcast = true ]"/>
+                    </do_if>
+                  </do_else>
+                </do_if>
+                <remove_value name="$ShipMarines"/>
+              </do_if>
+              <remove_value name="$MarineLaunchingShip"/>
+            </do_if>
+          </actions>
+        </library>
+
+        <library name="Speak__Damage_Hull">
+          <actions>
+            <do_if value="$PlacedSpeaker">
+              <debug_text text="'Attempt to add line'" chance="$DebugChance"/>
+
+              <include_actions ref="Get_Marine_Related_Ship"/>
+              <do_if value="$MarineRelatedShip">
+                <set_value name="$ShipNPCSpeaker" exact="$MarineRelatedShip.controlentity.{controlpost.aipilot}"/>
+                <do_if value="not $ShipNPCSpeaker">
+                  <!--TODO @Owen check if they are moving around / hidden-->
+                  <find_object_component name="$ShipNPCSpeaker" object="$MarineRelatedShip.controlroom" entityrole="entityrole.service"/>
+                </do_if>
+
+                <set_value name="$Marine1" exact="null"/>
+                <set_value name="this.$InfiltratingMarines" exact="$Operation.marines.infiltrating.list"/>
+                <do_if value="this.$InfiltratingMarines.count">
+                  <do_if value="$MarineCommanderTemplate and $Operation.marines.infiltrating.{$MarineCommanderTemplate}.exists">
+                    <set_value name="$Marine1" exact="$MarineCommanderTemplate"/>
+                  </do_if>
+                  <do_else>
+                    <set_value name="$Marine1" exact="this.$InfiltratingMarines.random"/>
+                  </do_else>
+                </do_if>
+
+                <do_if value="$Marine1">
+                  <set_value name="$Marine1Page" exact="$Operation.marines.infiltrating.{$Marine1}.page"/>
+                  <set_value name="$SpeakDef" exact="table[$priority = 60, $lines = [ ] ]"/>
+                  <append_to_list name="$PossibleSpeaks" exact="$SpeakDef"/>
+
+                  <!--Marine: We need to damage the target further-->
+                  <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $PlacedSpeaker, $page = $Marine1Page, $line = 12202, $delay = 0s, $recipient = $PlacedSpeaker, $broadcast = true ] "/>
+                  <do_if value="$ShipNPCSpeaker">
+                    <!--Ship NPC: Acknowledged. / Got it.-->
+                    <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $ShipNPCSpeaker, $page = null, $line = [2105, 2107].random, $delay = 0.8s, $recipient = $PlacedSpeaker, $broadcast = true ]" chance="70"/>
+                  </do_if>
+
+                  <remove_value name="$Marine1Page"/>
+                </do_if>
+                <remove_value name="$Marine1"/>
+                <remove_value name="this.$InfiltratingMarines"/>
+              </do_if>
+              <remove_value name="$MarineRelatedShip"/>
+            </do_if>
+          </actions>
+        </library>
+
+        <library name="Speak__Target_Destroyed">
+          <actions>
+            <do_if value="$PlacedSpeaker">
+              <debug_text text="'Attempt to add line'" chance="$DebugChance"/>
+              <include_actions ref="Get_Random_Marine"/>
+              <do_if value="$RandomMarinePage">
+                <!--Instant remark-->
+
+                <!--Marine #1: It's gonna blow!-->
+                <speak actor="$PlacedSpeaker" page="$RandomMarinePage" line="10051" broadcast="true" priority="50"/>
+              </do_if>
+              <remove_value name="$RandomMarinePage"/>
+            </do_if>
+          </actions>
+        </library>
+
+        <!--Required value: $Pod, $Launcher-->
+        <library name="Speak__Launch_Pods">
+          <actions>
+            <do_if value="$PlacedSpeaker">
+              <debug_text text="'Attempt to add line'" chance="$DebugChance"/>
+
+              <do_if value="$Pod">
+                <set_value name="$ShipMarines" exact="$Pod.people.marines.list"/>
+                <do_if value="$ShipMarines.count">
+                  <set_value name="$ShipNPCSpeaker" exact="$Launcher.assignedcontrolentity.{controlpost.aipilot}"/>
+                  <do_if value="$ShipNPCSpeaker and ($ShipNPCSpeaker.ishidden or $ShipNPCSpeaker.isintransit) and player.controlled == $Launcher">
+                    <!--If AI pilot is moving around or hidden in the player controlled ship, don't use them-->
+                    <set_value name="$ShipNPCSpeaker" exact="null"/>
+                  </do_if>
+                  <do_if value="not $ShipNPCSpeaker">
+                    <!--TODO @Owen check if they are moving around / hidden-->
+                    <find_object_component name="$ShipNPCSpeaker" object="$Launcher.controlroom" entityrole="entityrole.service"/>
+                  </do_if>
+                  <!--Marine #1: Pod launched. Moving to target.-->
+                  <append_to_list name="$PossibleSpeaks" exact="table[$priority = 50, $lines = [ 
+                          table[$speaker = $PlacedSpeaker, $page = $Pod.people.{$ShipMarines.random}.page, $line = 12210, $delay = 0.3s, $recipient = $ShipNPCSpeaker, $broadcast = true ] 
+                          ] ]"/>
+                  <do_if value="$ShipNPCSpeaker">
+                    <!--(Optional) Stay sharp-->
+                    <append_to_list name="$PossibleSpeaks.{$PossibleSpeaks.count}.$lines" exact="
+                          table[$speaker = $ShipNPCSpeaker, $page = null, $line = 4008, $delay = 0.4s, $recipient = $PlacedSpeaker, $broadcast = true ]" chance="80"/>
+                  </do_if>
+                </do_if>
+                <remove_value name="$ShipMarines"/>
+              </do_if>
+            </do_if>
+          </actions>
+        </library>
+
+        <library name="Speak__Pods_In_Flight">
+          <actions>
+            <do_if value="$PlacedSpeaker">
+              <debug_text text="'Attempt to add line'" chance="$DebugChance"/>
+
+              <do_if value="$ApproachingBoardingPods.count">
+                <set_value name="$SpeakerPod" exact="null"/>
+                <set_value name="$PodMarineTemplate" exact="null"/>
+                <do_if value="not $MarineCommanderTemplate or not $MarineCommanderPage">
+                  <!--Make a random marine the 'commander'-->
+                  <include_actions ref="Get_Random_Pod_Marine"/>
+                  <do_if value="$SpeakerPod and $PodMarineTemplate">
+                    <set_value name="$MarineCommanderShip" exact="$SpeakerPod"/>
+                    <set_value name="$MarineCommanderTemplate" exact="$PodMarineTemplate"/>
+                  </do_if>
+                </do_if>
+
+                <do_if value="$MarineCommanderShip and $ApproachingBoardingPods.indexof.{$MarineCommanderShip}">
+                  <!--Commander is still in flight-->
+                  <set_value name="$SpeakerPod" exact="$MarineCommanderShip"/>
+                  <set_value name="$PodMarineTemplate" exact="$MarineCommanderTemplate"/>
+                </do_if>
+                <do_else>
+                  <!--Get a random pod marine-->
+                  <include_actions ref="Get_Random_Pod_Marine"/>
+                </do_else>
+
+                <do_if value="$SpeakerPod and $PodMarineTemplate">
+                  <set_value name="$SpeakDef" exact="table[$priority = 50, $lines = [ ] ]"/>
+                  <append_to_list name="$PossibleSpeaks" exact="$SpeakDef"/>
+                  <do_if value="$PodMarineTemplate == $MarineCommanderTemplate">
+                    <!--Marine commander: This is group leader.-->
+                    <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $SpeakerPod.pilot, $page = $MarineCommanderPage, $line = 10501, $delay = 0s, $recipient = null, $broadcast = true ] " chance="50"/>
+                  </do_if>
+                  <do_any>
+                    <!--Marine (could be anyone): Follow that course-->
+                    <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $SpeakerPod.pilot, $page = $SpeakerPod.people.{$PodMarineTemplate}.page, $line = 4003, $delay = 0.2s, $recipient = null, $broadcast = true ] "/>
+                    <!--Marine (could be anyone): Keep an eye on sensors-->
+                    <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $SpeakerPod.pilot, $page = $SpeakerPod.people.{$PodMarineTemplate}.page, $line = 5031, $delay = 0.2s, $recipient = null, $broadcast = true ] "/>
+                    <!--Marine (could be anyone): Stay in formation-->
+                    <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $SpeakerPod.pilot, $page = $SpeakerPod.people.{$PodMarineTemplate}.page, $line = 4017, $delay = 0.2s, $recipient = null, $broadcast = true ] "/>
+                  </do_any>
+                </do_if>
+
+                <remove_value name="$SpeakerPod"/>
+                <remove_value name="$PodMarineTemplate"/>
+              </do_if>
+            </do_if>
+          </actions>
+        </library>
+
+        <!--Required value: $Pod-->
+        <library name="Speak__Pod_Hit">
+          <actions>
+            <do_if value="$PlacedSpeaker and $Pod">
+              <debug_text text="'Attempt to add line'" chance="$DebugChance"/>
+              <include_actions ref="Get_Marine_Related_Ship"/>
+              <do_if value="$MarineRelatedShip">
+                <set_value name="$ShipMarines" exact="$Pod.people.marines.list"/>
+                <do_if value="$ShipMarines.count">
+                  <set_value name="$ShipNPCSpeaker" exact="$MarineRelatedShip.assignedcontrolentity.{controlpost.aipilot}"/>
+                  <do_if value="$ShipNPCSpeaker and ($ShipNPCSpeaker.ishidden or $ShipNPCSpeaker.isintransit) and player.controlled == $MarineRelatedShip">
+                    <!--If AI pilot is moving around or hidden in the player controlled ship, don't use them-->
+                    <set_value name="$ShipNPCSpeaker" exact="null"/>
+                  </do_if>
+                  <do_if value="not $ShipNPCSpeaker">
+                    <!--TODO @Owen check if they are moving around / hidden-->
+                    <find_object_component name="$ShipNPCSpeaker" object="$MarineRelatedShip.controlroom" entityrole="entityrole.service"/>
+                  </do_if>
+                  <set_value name="$RandomMarine" exact="$ShipMarines.random"/>
+                  <set_value name="$SpeakDef" exact="table[$priority = 50, $lines = [ ] ]"/>
+                  <append_to_list name="$PossibleSpeaks" exact="$SpeakDef"/>
+                  <!--Marine: Pod taking damage! / They're all over us!-->
+                  <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $Pod.pilot, $page = $Pod.people.{$RandomMarine}.page, $line = [12211, 10606].random, $delay = 0s, $recipient = null, $broadcast = true ] "/>
+                  <!--Marine: Requesting immediate backup!-->
+                  <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $Pod.pilot, $page = $Pod.people.{$RandomMarine}.page, $line = 10602, $delay = 0.4s, $recipient = null, $broadcast = true ] " chance="80"/>
+                  <do_if value="$ShipNPCSpeaker">
+                    <!--Ship NPC: Acknowledged-->
+                    <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $ShipNPCSpeaker, $page = null, $line = 2105, $delay = 0.4s, $recipient = $Pod.pilot, $broadcast = true ]" chance="80"/>
+                    <do_if value="$ShipNPCSpeaker.controlpost == controlpost.aipilot">
+                      <find_object_component name="$ServiceCrew" object="$MarineRelatedShip.controlroom" entityrole="entityrole.service"/>
+                      <do_if value="$ServiceCrew">
+                        <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $ShipNPCSpeaker, $page = null, $line = [3108, 4010, 4014], $delay = 0.8s, $recipient = $ServiceCrew, $broadcast = true ]" chance="80"/>
+                      </do_if>
+                      <remove_value name="$ServiceCrew"/>
+                    </do_if>
+                  </do_if>
+                  <remove_value name="$RandomMarine"/>
+                </do_if>
+                <remove_value name="$ShipMarines"/>
+              </do_if>
+              <remove_value name="$MarineRelatedShip"/>
+            </do_if>
+          </actions>
+        </library>
+
+        <!--Killed pod must be removed from $ApproachingBoardingPods-->
+        <library name="Speak__Pod_Destroyed">
+          <actions>
+            <do_if value="$PlacedSpeaker">
+              <debug_text text="'Attempt to add line'" chance="$DebugChance"/>
+
+              <include_actions ref="Get_Marine_Related_Ship"/>
+              <do_if value="$MarineRelatedShip">
+                <set_value name="$ShipNPCSpeaker" exact="$MarineRelatedShip.assignedcontrolentity.{controlpost.aipilot}"/>
+                <do_if value="$ShipNPCSpeaker and ($ShipNPCSpeaker.ishidden or $ShipNPCSpeaker.isintransit) and player.controlled == $MarineRelatedShip">
+                  <!--If AI pilot is moving around or hidden in the player controlled ship, don't use them-->
+                  <set_value name="$ShipNPCSpeaker" exact="null"/>
+                </do_if>
+                <do_if value="not $ShipNPCSpeaker">
+                  <!--TODO @Owen check if they are moving around / hidden-->
+                  <find_object_component name="$ShipNPCSpeaker" object="$Launcher.controlroom" entityrole="entityrole.service"/>
+                </do_if>
+                <do_if value="$ShipNPCSpeaker">
+                  <set_value name="$SpeakDef" exact="table[$priority = 60, $lines = [ ] ]"/>
+                  <append_to_list name="$PossibleSpeaks" exact="$SpeakDef"/>
+                  <do_if value="$ApproachingBoardingPods.count">
+                    <!--Ship NPC: Protect that ship!-->
+                    <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $ShipNPCSpeaker, $page = null, $line = 4014, $delay = 0.4s, $recipient = null, $broadcast = true ]" chance="80"/>
+                  </do_if>
+                  <do_else>
+                    <!--Ship NPC: Godspeed, everyone-->
+                    <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $ShipNPCSpeaker, $page = null, $line = 12207, $delay = 0.4s, $recipient = null, $broadcast = true ]" chance="80"/>
+                  </do_else>
+                </do_if>
+              </do_if>
+              <remove_value name="$MarineRelatedShip"/>
+            </do_if>
+          </actions>
+        </library>
+
+        <!--Required value: $Pod-->
+        <library name="Speak__Pod_Arrived">
+          <actions>
+            <do_if value="$PlacedSpeaker and $Pod">
+              <debug_text text="'Attempt to add line'" chance="$DebugChance"/>
+
+              <include_actions ref="Get_Marine_Related_Ship"/>
+              <do_if value="$MarineRelatedShip">
+                <set_value name="$ShipMarines" exact="$Pod.people.marines.list"/>
+                <do_if value="$ShipMarines.count">
+                  <set_value name="$ShipNPCSpeaker" exact="$MarineRelatedShip.assignedcontrolentity.{controlpost.aipilot}"/>
+                  <do_if value="$ShipNPCSpeaker and ($ShipNPCSpeaker.ishidden or $ShipNPCSpeaker.isintransit) and player.controlled == $MarineRelatedShip">
+                    <!--If AI pilot is moving around or hidden in the player controlled ship, don't use them-->
+                    <set_value name="$ShipNPCSpeaker" exact="null"/>
+                  </do_if>
+                  <do_if value="not $ShipNPCSpeaker">
+                    <!--TODO @Owen check if they are moving around / hidden-->
+                    <find_object_component name="$ShipNPCSpeaker" object="$MarineRelatedShip.controlroom" entityrole="entityrole.service"/>
+                  </do_if>
+                  <set_value name="$RandomMarine" exact="$ShipMarines.random"/>
+                  <set_value name="$SpeakDef" exact="table[$priority = 50, $lines = [ ] ]"/>
+                  <append_to_list name="$PossibleSpeaks" exact="$SpeakDef"/>
+                  <!--Marine: Steady-->
+                  <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $PlacedSpeaker, $page = $Pod.people.{$RandomMarine}.page, $line = 4025, $delay = 0s, $recipient = null, $broadcast = true ] " chance="40"/>
+                  <!--Marine: Contact. Making preparations to breach.-->
+                  <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $PlacedSpeaker, $page = $Pod.people.{$RandomMarine}.page, $line = 12213, $delay = 1.2s, $recipient = null, $broadcast = true ] "/>
+                  <do_if value="$ShipNPCSpeaker">
+                    <!--Ship NPC: Acknowledged / Got it - Now speaking to $PlacedSpeaker on the $Target-->
+                    <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $ShipNPCSpeaker, $page = null, $line = [2105, 2107].random, $delay = 0.4s, $recipient = $PlacedSpeaker, $broadcast = true ]" chance="80"/>
+                  </do_if>
+                  <remove_value name="$RandomMarine"/>
+                </do_if>
+                <remove_value name="$ShipMarines"/>
+              </do_if>
+              <remove_value name="$MarineRelatedShip"/>
+            </do_if>
+          </actions>
+        </library>
+
+        <library name="Speak__Pod_Infiltration_Start">
+          <actions>
+            <do_if value="$PlacedSpeaker">
+              <debug_text text="'Attempt to add line'" chance="$DebugChance"/>
+
+              <include_actions ref="Get_Marine_Related_Ship"/>
+              <do_if value="$MarineRelatedShip">
+                <set_value name="$ShipNPCSpeaker" exact="$MarineRelatedShip.controlentity.{controlpost.aipilot}"/>
+                <do_if value="not $ShipNPCSpeaker">
+                  <!--TODO @Owen check if they are moving around / hidden-->
+                  <find_object_component name="$ShipNPCSpeaker" object="$MarineRelatedShip.controlroom" entityrole="entityrole.service"/>
+                </do_if>
+
+                <set_value name="$Marine1" exact="null"/>
+                <set_value name="$Marine2" exact="null"/>
+                <set_value name="this.$InfiltratingMarines" exact="$Operation.marines.infiltrating.list"/>
+                <do_if value="this.$InfiltratingMarines.count == 1">
+                  <do_if value="$MarineCommanderTemplate and $Operation.marines.infiltrating.{$MarineCommanderTemplate}.exists">
+                    <set_value name="$Marine1" exact="$MarineCommanderTemplate"/>
+                  </do_if>
+                  <do_else>
+                    <set_value name="$Marine1" exact="this.$InfiltratingMarines.{1}"/>
+                  </do_else>
+                </do_if>
+                <do_elseif value="this.$InfiltratingMarines.count">
+                  <shuffle_list list="this.$InfiltratingMarines"/>
+                  <do_if value="$MarineCommanderTemplate and $Operation.marines.infiltrating.{$MarineCommanderTemplate}.exists">
+                    <set_value name="$Marine1" exact="$MarineCommanderTemplate"/>
+                  </do_if>
+                  <do_else>
+                    <set_value name="$Marine1" exact="this.$InfiltratingMarines.{1}"/>
+                  </do_else>
+                  <set_value name="$Marine2" exact="this.$InfiltratingMarines.{2}"/>
+                </do_elseif>
+
+                <do_if value="$Marine1">
+                  <set_value name="$Marine1Page" exact="$Operation.marines.infiltrating.{$Marine1}.page"/>
+                  <set_value name="$Marine2Page" exact="null"/>
+                  <do_if value="$Marine2">
+                    <set_value name="$Marine2Page" exact="$Operation.marines.infiltrating.{$Marine2}.page"/>
+                  </do_if>
+                  <set_value name="$SpeakDef" exact="table[$priority = 50, $lines = [ ] ]"/>
+                  <append_to_list name="$PossibleSpeaks" exact="$SpeakDef"/>
+                  <do_if value="$ShipNPCSpeaker">
+                    <do_if value="$Marine1 == $MarineCommanderTemplate">
+                      <!--Ship NPC: Commander, what's your status.-->
+                      <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $ShipNPCSpeaker, $page = null, $line = 12203, $delay = 0s, $recipient = $PlacedSpeaker, $broadcast = true ]" chance="80"/>
+                    </do_if>
+                    <do_else>
+                      <!--Ship NPC: Sit-rep!-->
+                      <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $ShipNPCSpeaker, $page = null, $line = 11502, $delay = 0s, $recipient = $PlacedSpeaker, $broadcast = true ]" chance="80"/>
+                    </do_else>
+                  </do_if>
+                  <!--Marine: Preparing for breach.-->
+                  <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $PlacedSpeaker, $page = $Marine1Page, $line = 12214, $delay = 0.4s, $recipient = null, $broadcast = true ] "/>
+                  <do_if value="$Marine2Page">
+                    <!--Marine2: Stay sharp!-->
+                    <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $PlacedSpeaker, $page = $Marine2Page, $line = 4008, $delay = 0.9s, $recipient = null, $broadcast = true ] " chance="60"/>
+                  </do_if>
+
+                  <remove_value name="$Marine1Page"/>
+                  <remove_value name="$Marine2Page"/>
+                </do_if>
+                <remove_value name="$Marine1"/>
+                <remove_value name="$Marine2"/>
+                <remove_value name="this.$InfiltratingMarines"/>
+              </do_if>
+              <remove_value name="$MarineRelatedShip"/>
+            </do_if>
+          </actions>
+        </library>
+
+        <library name="Speak__Pod_Infiltration_Ending">
+          <actions>
+            <do_if value="$PlacedSpeaker">
+              <debug_text text="'Attempt to add line'" chance="$DebugChance"/>
+
+              <include_actions ref="Get_Marine_Related_Ship"/>
+              <do_if value="$MarineRelatedShip">
+                <set_value name="$ShipNPCSpeaker" exact="$MarineRelatedShip.controlentity.{controlpost.aipilot}"/>
+                <do_if value="not $ShipNPCSpeaker">
+                  <!--TODO @Owen check if they are moving around / hidden-->
+                  <find_object_component name="$ShipNPCSpeaker" object="$MarineRelatedShip.controlroom" entityrole="entityrole.service"/>
+                </do_if>
+
+                <set_value name="$Marine1" exact="null"/>
+                <set_value name="$Marine2" exact="null"/>
+                <set_value name="this.$InfiltratingMarines" exact="$Operation.marines.infiltrating.list"/>
+                <do_if value="this.$InfiltratingMarines.count == 1">
+                  <do_if value="$MarineCommanderTemplate and $Operation.marines.infiltrating.{$MarineCommanderTemplate}.exists">
+                    <set_value name="$Marine1" exact="$MarineCommanderTemplate"/>
+                  </do_if>
+                  <do_else>
+                    <set_value name="$Marine1" exact="this.$InfiltratingMarines.{1}"/>
+                  </do_else>
+                </do_if>
+                <do_elseif value="this.$InfiltratingMarines.count">
+                  <shuffle_list list="this.$InfiltratingMarines"/>
+                  <do_if value="$MarineCommanderTemplate and $Operation.marines.infiltrating.{$MarineCommanderTemplate}.exists">
+                    <set_value name="$Marine1" exact="$MarineCommanderTemplate"/>
+                  </do_if>
+                  <do_else>
+                    <set_value name="$Marine1" exact="this.$InfiltratingMarines.{1}"/>
+                  </do_else>
+                  <set_value name="$Marine2" exact="this.$InfiltratingMarines.{2}"/>
+                </do_elseif>
+
+                <do_if value="$Marine1">
+                  <set_value name="$Marine1Page" exact="$Operation.marines.infiltrating.{$Marine1}.page"/>
+                  <set_value name="$Marine2Page" exact="null"/>
+                  <do_if value="$Marine2">
+                    <set_value name="$Marine2Page" exact="$Operation.marines.infiltrating.{$Marine2}.page"/>
+                  </do_if>
+                  <set_value name="$SpeakDef" exact="table[$priority = 60, $lines = [ ] ]"/>
+                  <append_to_list name="$PossibleSpeaks" exact="$SpeakDef"/>
+                  <do_if value="$ShipNPCSpeaker">
+                    <!--Ship NPC: I need an update-->
+                    <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $ShipNPCSpeaker, $page = null, $line = 12204, $delay = 0s, $recipient = $PlacedSpeaker, $broadcast = true ]" chance="80"/>
+                  </do_if>
+                  <!--Marine: Preparing for breach.-->
+                  <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $PlacedSpeaker, $page = $Marine1Page, $line = 12216, $delay = 0.2s, $recipient = $ShipNPCSpeaker, $broadcast = true ] "/>
+                  <do_if value="$Marine2Page" chance="80">
+                    <!--Marine: Sit-rep!-->
+                    <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $PlacedSpeaker, $page = $Marine1Page, $line = 11502, $delay = 0s, $recipient = null, $broadcast = true ] "/>
+                    <!--Marine2: Green.-->
+                    <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $PlacedSpeaker, $page = $Marine2Page, $line = 11503, $delay = 0.9s, $recipient = null, $broadcast = true ] "/>
+                  </do_if>
+
+                  <remove_value name="$Marine1Page"/>
+                  <remove_value name="$Marine2Page"/>
+                </do_if>
+                <remove_value name="$Marine1"/>
+                <remove_value name="$Marine2"/>
+                <remove_value name="this.$InfiltratingMarines"/>
+              </do_if>
+              <remove_value name="$MarineRelatedShip"/>
+            </do_if>
+          </actions>
+        </library>
+
+        <library name="Speak__Breach">
+          <actions>
+            <do_if value="$PlacedSpeaker">
+              <debug_text text="'Attempt to add line ' + Speak__First_Engagement" chance="$DebugChance"/>
+
+              <include_actions ref="Get_Marine_Related_Ship"/>
+              <do_if value="$MarineRelatedShip">
+                <set_value name="$ShipNPCSpeaker" exact="$MarineRelatedShip.controlentity.{controlpost.aipilot}"/>
+                <do_if value="not $ShipNPCSpeaker">
+                  <!--TODO @Owen check if they are moving around / hidden-->
+                  <find_object_component name="$ShipNPCSpeaker" object="$MarineRelatedShip.controlroom" entityrole="entityrole.service"/>
+                </do_if>
+
+                <set_value name="$Marine1" exact="null"/>
+                <set_value name="this.$FightingMarines" exact="$Operation.marines.fighting.list"/>
+                <do_if value="this.$FightingMarines.count">
+                  <do_if value="$MarineCommanderTemplate and $Operation.marines.fighting.{$MarineCommanderTemplate}.exists">
+                    <set_value name="$Marine1" exact="$MarineCommanderTemplate"/>
+                  </do_if>
+                  <do_else>
+                    <set_value name="$Marine1" exact="this.$FightingMarines.random"/>
+                  </do_else>
+                </do_if>
+
+                <do_if value="$Marine1">
+                  <set_value name="$Marine1Page" exact="$Operation.marines.fighting.{$Marine1}.page"/>
+                  <set_value name="$SpeakDef" exact="table[$priority = 60, $lines = [ ] ]"/>
+                  <append_to_list name="$PossibleSpeaks" exact="$SpeakDef"/>
+
+                  <!--Marine: Go! Move it!-->
+                  <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $PlacedSpeaker, $page = $Marine1Page, $line = 12217, $delay = 0s, $recipient = $PlacedSpeaker, $broadcast = true ] "/>
+                  <!--Marine: You are free to engage!-->
+                  <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $PlacedSpeaker, $page = $Marine1Page, $line = 10509, $delay = 0.2s, $recipient = $PlacedSpeaker, $broadcast = true ] " chance="80"/>
+                  <do_if value="$ShipNPCSpeaker">
+                    <!--Ship NPC: Be prepared for combat encounters.-->
+                    <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $ShipNPCSpeaker, $page = null, $line = 5030, $delay = 0.8s, $recipient = $PlacedSpeaker, $broadcast = true ]" chance="40"/>
+                  </do_if>
+
+                  <remove_value name="$Marine1Page"/>
+                </do_if>
+                <remove_value name="$Marine1"/>
+                <remove_value name="this.$FightingMarines"/>
+              </do_if>
+              <remove_value name="$MarineRelatedShip"/>
+            </do_if>
+          </actions>
+        </library>
+
+        <library name="Speak__First_Engagement">
+          <actions>
+            <do_if value="$PlacedSpeaker">
+              <debug_text text="'Attempt to add line ' + Speak__First_Engagement" chance="$DebugChance"/>
+
+              <set_value name="$Marine1" exact="null"/>
+              <do_if value="$Operation.marines.fighting.count">
+                <set_value name="$Marine1" exact="$Operation.marines.fighting.list.random"/>
+              </do_if>
+
+              <do_if value="$Marine1">
+                <set_value name="$Marine1Page" exact="$Operation.marines.fighting.{$Marine1}.page"/>
+                <set_value name="$SpeakDef" exact="table[$priority = 60, $lines = [ ] ]"/>
+                <append_to_list name="$PossibleSpeaks" exact="$SpeakDef"/>
+
+                <!--Marine: Engaging! / Striking! / Tell group leader we've spotted enemy activity.-->
+                <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $PlacedSpeaker, $page = $Marine1Page, $line = [10039, 10040, 10502].random, $delay = 0s, $recipient = $PlacedSpeaker, $broadcast = true ] "/>
+
+                <remove_value name="$Marine1Page"/>
+              </do_if>
+              <remove_value name="$Marine1"/>
+            </do_if>
+          </actions>
+        </library>
+
+        <library name="Speak__Fight_First_Attacker_Killed">
+          <actions>
+            <do_if value="$PlacedSpeaker">
+              <debug_text text="'Attempt to add line ' + Speak__Fight_First_Attacker_Killed" chance="$DebugChance"/>
+
+              <include_actions ref="Get_Marine_Related_Ship"/>
+              <do_if value="$MarineRelatedShip">
+                <set_value name="$ShipNPCSpeaker" exact="$MarineRelatedShip.controlentity.{controlpost.aipilot}"/>
+                <do_if value="not $ShipNPCSpeaker">
+                  <!--TODO @Owen check if they are moving around / hidden-->
+                  <find_object_component name="$ShipNPCSpeaker" object="$MarineRelatedShip.controlroom" entityrole="entityrole.service"/>
+                </do_if>
+
+                <set_value name="$Marine1" exact="null"/>
+                <set_value name="$Marine2" exact="null"/>
+                <set_value name="this.$FightingMarines" exact="$Operation.marines.fighting.list"/>
+                <do_if value="this.$FightingMarines.count">
+                  <shuffle_list list="this.$FightingMarines"/>
+                  <set_value name="$Marine1" exact="this.$FightingMarines.{1}"/>
+                  <do_if value="this.$FightingMarines.count ge 2">
+                    <set_value name="$Marine2" exact="this.$FightingMarines.{2}"/>
+                  </do_if>
+                </do_if>
+
+                <do_if value="$Marine1">
+                  <set_value name="$Marine1Page" exact="$Operation.marines.fighting.{$Marine1}.page"/>
+                  <set_value name="$Marine2Page" exact="null"/>
+                  <do_if value="$Marine2">
+                    <set_value name="$Marine2Page" exact="$Operation.marines.fighting.{$Marine2}.page"/>
+                  </do_if>
+                  <set_value name="$SpeakDef" exact="table[$priority = 60, $lines = [ ] ]"/>
+                  <append_to_list name="$PossibleSpeaks" exact="$SpeakDef"/>
+                  <do_if value="$ShipNPCSpeaker">
+
+                  </do_if>
+                  <do_any>
+                    <do_all>
+                      <!--Ship NPC: Sit-rep! / I need an update-->
+                      <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $ShipNPCSpeaker, $page = null, $line = [11502, 12204].random, $delay = 0s, $recipient = $PlacedSpeaker, $broadcast = true ]"/>
+                      <!--Marine: Fallback!-->
+                      <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $PlacedSpeaker, $page = $Marine1Page, $line = 4013, $delay = 0.2s, $recipient = $PlacedSpeaker, $broadcast = true ] "/>
+                      <!--Ship NPC: Open comms!-->
+                      <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $ShipNPCSpeaker, $page = null, $line = 4024, $delay = 0s, $recipient = $PlacedSpeaker, $broadcast = true ]"/>
+                    </do_all>
+                    <do_all>
+                      <!--Marine: Aaaggghhh-->
+                      <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $PlacedSpeaker, $page = $Marine1Page, $line = 10035, $delay = 0.2s, $recipient = $ShipNPCSpeaker, $broadcast = true ] "/>
+                      <do_if value="$Marine2Page" chance="80">
+                        <!--Marine2: Send backup!-->
+                        <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $PlacedSpeaker, $page = $Marine2Page, $line = 10532, $delay = 0.2s, $recipient = $PlacedSpeaker, $broadcast = true ] "/>
+                      </do_if>
+                    </do_all>
+                    <!--Marine: Send backup! / Tell them to fall back-->
+                    <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $PlacedSpeaker, $page = $Marine1Page, $line = [10532, 10507].random, $delay = 0.2s, $recipient = $PlacedSpeaker, $broadcast = true ] "/>
+                  </do_any>
+
+                  <remove_value name="$Marine1Page"/>
+                  <remove_value name="$Marine2Page"/>
+                </do_if>
+                <remove_value name="$Marine1"/>
+                <remove_value name="$Marine2"/>
+                <remove_value name="this.$FightingMarines"/>
+              </do_if>
+              <remove_value name="$MarineRelatedShip"/>
+            </do_if>
+          </actions>
+        </library>
+
+        <library name="Speak__Fight_Neutral_Combat">
+          <actions>
+            <do_if value="$PlacedSpeaker">
+              <debug_text text="'Attempt to add line ' + Speak__Fight_Neutral_Combat" chance="$DebugChance"/>
+
+              <include_actions ref="Get_Marine_Related_Ship"/>
+              <do_if value="$MarineRelatedShip">
+                <set_value name="$ShipNPCSpeaker" exact="$MarineRelatedShip.controlentity.{controlpost.aipilot}"/>
+                <do_if value="not $ShipNPCSpeaker">
+                  <!--TODO @Owen check if they are moving around / hidden-->
+                  <find_object_component name="$ShipNPCSpeaker" object="$MarineRelatedShip.controlroom" entityrole="entityrole.service"/>
+                </do_if>
+
+                <set_value name="$Marine1" exact="null"/>
+                <set_value name="$Marine2" exact="null"/>
+                <set_value name="this.$FightingMarines" exact="$Operation.marines.fighting.list"/>
+                <do_if value="this.$FightingMarines.count">
+                  <shuffle_list list="this.$FightingMarines"/>
+                  <set_value name="$Marine1" exact="this.$FightingMarines.{1}"/>
+                  <do_if value="this.$FightingMarines.count ge 2">
+                    <set_value name="$Marine2" exact="this.$FightingMarines.{2}"/>
+                  </do_if>
+                </do_if>
+
+                <do_if value="$Marine1">
+                  <set_value name="$Marine1Page" exact="$Operation.marines.fighting.{$Marine1}.page"/>
+                  <set_value name="$Marine2Page" exact="null"/>
+                  <do_if value="$Marine2">
+                    <set_value name="$Marine2Page" exact="$Operation.marines.fighting.{$Marine2}.page"/>
+                  </do_if>
+                  <set_value name="$SpeakDef" exact="table[$priority = 60, $lines = [ ] ]"/>
+                  <append_to_list name="$PossibleSpeaks" exact="$SpeakDef"/>
+                  <do_if value="$ShipNPCSpeaker">
+                    <!--Ship NPC: Sit-rep! / I need an update-->
+                    <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $ShipNPCSpeaker, $page = null, $line = [11502, 12204].random, $delay = 0s, $recipient = $PlacedSpeaker, $broadcast = true ]" chance="80"/>
+                  </do_if>
+                  <do_any>
+                    <!--WEIGHT 1-->
+                    <do_all weight="1">
+                      <!--Marine: One of the teams is pinned down.-->
+                      <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $PlacedSpeaker, $page = $Marine1Page, $line = 12218, $delay = 0.2s, $recipient = $ShipNPCSpeaker, $broadcast = true ] "/>
+                      <do_if value="$Marine2Page" chance="80">
+                        <!--Marine2: Requesting immediate backup!-->
+                        <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $PlacedSpeaker, $page = $Marine2Page, $line = 10602, $delay = 0.2s, $recipient = $PlacedSpeaker, $broadcast = true ] "/>
+                      </do_if>
+                    </do_all>
+
+                    <!--WEIGHT 1-->
+                    <do_all weight="1">
+                      <!--Marine: Holding position.-->
+                      <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $PlacedSpeaker, $page = $Marine1Page, $line = 12220, $delay = 0.2s, $recipient = $ShipNPCSpeaker, $broadcast = true ] "/>
+                      <do_if value="$ShipNPCSpeaker">
+                        <!--Ship NPC: Press on!-->
+                        <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $ShipNPCSpeaker, $page = null, $line = 12205, $delay = 0s, $recipient = $PlacedSpeaker, $broadcast = true ]" chance="80"/>
+                      </do_if>
+                    </do_all>
+
+                    <!--WEIGHT 5-->
+                    <!--Marine: Various combat lines e.g. Let's get them! / Falling back! - HIGHER WEIGHT THAN OTHERS DUE TO THE MULTIPLE POSSIBLE LINES-->
+                    <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $PlacedSpeaker, $page = $Marine1Page, $line = [10529, 10041, 10042, 10051, 10033, 12221, 4009, 12224].random, 
+                                    $delay = 0.2s, $recipient = $ShipNPCSpeaker, $broadcast = true ] " weight="400"/>
+                  </do_any>
+
+                  <remove_value name="$Marine1Page"/>
+                  <remove_value name="$Marine2Page"/>
+                </do_if>
+                <remove_value name="$Marine1"/>
+                <remove_value name="$Marine2"/>
+                <remove_value name="this.$FightingMarines"/>
+              </do_if>
+              <remove_value name="$MarineRelatedShip"/>
+            </do_if>
+          </actions>
+        </library>
+
+        <library name="Speak__Fight_Bad_Situation">
+          <actions>
+            <do_if value="$PlacedSpeaker">
+              <debug_text text="'Attempt to add line ' + Speak__Fight_Bad_Situation" chance="$DebugChance"/>
+
+              <set_value name="$Marine1" exact="null"/>
+              <set_value name="$Marine2" exact="null"/>
+              <set_value name="this.$FightingMarines" exact="$Operation.marines.fighting.list"/>
+              <do_if value="this.$FightingMarines.count">
+                <shuffle_list list="this.$FightingMarines"/>
+                <set_value name="$Marine1" exact="this.$FightingMarines.{1}"/>
+                <do_if value="this.$FightingMarines.count ge 2">
+                  <set_value name="$Marine2" exact="this.$FightingMarines.{2}"/>
+                </do_if>
+              </do_if>
+
+              <do_if value="$Marine1">
+                <set_value name="$Marine1Page" exact="$Operation.marines.fighting.{$Marine1}.page"/>
+                <set_value name="$Marine2Page" exact="null"/>
+                <do_if value="$Marine2">
+                  <set_value name="$Marine2Page" exact="$Operation.marines.fighting.{$Marine2}.page"/>
+                </do_if>
+                <set_value name="$SpeakDef" exact="table[$priority = 60, $lines = [ ] ]"/>
+                <append_to_list name="$PossibleSpeaks" exact="$SpeakDef"/>
+
+                <!--Marine: We're taking heavy losses / They say it's too risky to engage-->
+                <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $PlacedSpeaker, $page = $Marine1Page, $line = [12219, 10505].random, $delay = 0s, $recipient = $PlacedSpeaker, $broadcast = true ] "/>
+                <do_if value="$Marine2Page" chance="80">
+                  <!--Marine2: Tell them to fall back-->
+                  <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $PlacedSpeaker, $page = $Marine2Page, $line = 10507, $delay = 0.2s, $recipient = $PlacedSpeaker, $broadcast = true ] " chance="60"/>
+                </do_if>
+
+                <remove_value name="$Marine1Page"/>
+                <remove_value name="$Marine2Page"/>
+              </do_if>
+              <remove_value name="$Marine1"/>
+              <remove_value name="$Marine2"/>
+              <remove_value name="this.$FightingMarines"/>
+            </do_if>
+          </actions>
+        </library>
+
+        <library name="Speak__Fight_Dire_Situation">
+          <actions>
+            <do_if value="$PlacedSpeaker">
+              <debug_text text="'Attempt to add line ' + Speak__Fight_Dire_Situation" chance="$DebugChance"/>
+
+              <set_value name="$Marine1" exact="null"/>
+              <do_if value="$Operation.marines.fighting.count">
+                <set_value name="$Marine1" exact="$Operation.marines.fighting.list.random"/>
+              </do_if>
+
+              <do_if value="$Marine1">
+                <set_value name="$Marine1Page" exact="$Operation.marines.fighting.{$Marine1}.page"/>
+                <set_value name="$SpeakDef" exact="table[$priority = 60, $lines = [ ] ]"/>
+                <append_to_list name="$PossibleSpeaks" exact="$SpeakDef"/>
+
+                <!--Marine: The commander's dead. We're getting hammered in here! / Sorry, Sir. This isn't looking good.-->
+                <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $PlacedSpeaker, $page = $Marine1Page, $line = [12223, 12227, 12228, 12229].random, $delay = 0s, $recipient = $PlacedSpeaker, $broadcast = true ] "/>
+                <!--Marine: Aagghhh-->
+                <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $PlacedSpeaker, $page = $Marine1Page, $line = 10035, $delay = 0s, $recipient = $PlacedSpeaker, $broadcast = true ] " chance="70"/>
+
+                <remove_value name="$Marine1Page"/>
+              </do_if>
+              <remove_value name="$Marine1"/>
+            </do_if>
+          </actions>
+        </library>
+
+        <library name="Speak__Fight_Good_Situation">
+          <actions>
+            <do_if value="$PlacedSpeaker">
+              <debug_text text="'Attempt to add line ' + Speak__Fight_Good_Situation" chance="$DebugChance"/>
+
+              <set_value name="$Marine1" exact="null"/>
+              <do_if value="$Operation.marines.fighting.count">
+                <set_value name="$Marine1" exact="$Operation.marines.fighting.list.random"/>
+              </do_if>
+
+              <do_if value="$Marine1">
+                <set_value name="$Marine1Page" exact="$Operation.marines.fighting.{$Marine1}.page"/>
+                <set_value name="$SpeakDef" exact="table[$priority = 60, $lines = [ ] ]"/>
+                <append_to_list name="$PossibleSpeaks" exact="$SpeakDef"/>
+
+                <!--Marine: e.g. We've secured several sections. Moving on. / Safe to engage-->
+                <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $PlacedSpeaker, $page = $Marine1Page, $line = [12222, 10504, 10002, 4005].random, $delay = 0s, $recipient = $PlacedSpeaker, $broadcast = true ] "/>
+
+                <remove_value name="$Marine1Page"/>
+              </do_if>
+              <remove_value name="$Marine1"/>
+            </do_if>
+          </actions>
+        </library>
+
+        <library name="Speak__Fight_Very_Good_Situation">
+          <actions>
+            <do_if value="$PlacedSpeaker">
+              <debug_text text="'Attempt to add line ' + Speak__Fight_Very_Good_Situation" chance="$DebugChance"/>
+
+              <set_value name="$Marine1" exact="null"/>
+              <do_if value="$Operation.marines.fighting.count">
+                <set_value name="$Marine1" exact="$Operation.marines.fighting.list.random"/>
+              </do_if>
+
+              <do_if value="$Marine1">
+                <set_value name="$Marine1Page" exact="$Operation.marines.fighting.{$Marine1}.page"/>
+                <set_value name="$SpeakDef" exact="table[$priority = 60, $lines = [ ] ]"/>
+                <append_to_list name="$PossibleSpeaks" exact="$SpeakDef"/>
+
+                <!--Marine: e.g. Reinforcements arriving / Excellent-->
+                <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $PlacedSpeaker, $page = $Marine1Page, $line = [10518, 10090, 10091].random, $delay = 0s, $recipient = $PlacedSpeaker, $broadcast = true ] "/>
+
+                <remove_value name="$Marine1Page"/>
+              </do_if>
+              <remove_value name="$Marine1"/>
+            </do_if>
+          </actions>
+        </library>
+
+        <library name="Speak__Success">
+          <actions>
+            <do_if value="$PlacedSpeaker">
+              <debug_text text="'Attempt to add line ' + Speak__Success" chance="$DebugChance"/>
+
+              <include_actions ref="Get_Marine_Related_Ship"/>
+              <do_if value="$MarineRelatedShip">
+                <set_value name="$ShipNPCSpeaker" exact="$MarineRelatedShip.controlentity.{controlpost.aipilot}"/>
+                <do_if value="not $ShipNPCSpeaker">
+                  <!--TODO @Owen check if they are moving around / hidden-->
+                  <find_object_component name="$ShipNPCSpeaker" object="$MarineRelatedShip.controlroom" entityrole="entityrole.service"/>
+                </do_if>
+
+                <set_value name="$Marine1" exact="null"/>
+                <set_value name="$Marine2" exact="null"/>
+                <set_value name="this.$FightingMarines" exact="$Operation.marines.fighting.list"/>
+                <do_if value="this.$FightingMarines.count">
+                  <shuffle_list list="this.$FightingMarines"/>
+                  <set_value name="$Marine1" exact="this.$FightingMarines.{1}"/>
+                  <do_if value="this.$FightingMarines.count ge 2">
+                    <set_value name="$Marine2" exact="this.$FightingMarines.{2}"/>
+                  </do_if>
+                </do_if>
+
+                <do_if value="$Marine1">
+                  <set_value name="$Marine1Page" exact="$Operation.marines.fighting.{$Marine1}.page"/>
+                  <set_value name="$Marine2Page" exact="null"/>
+                  <do_if value="$Marine2">
+                    <set_value name="$Marine2Page" exact="$Operation.marines.fighting.{$Marine2}.page"/>
+                  </do_if>
+                  <set_value name="$SpeakDef" exact="table[$priority = 60, $lines = [ ] ]"/>
+                  <append_to_list name="$PossibleSpeaks" exact="$SpeakDef"/>
+                  <do_if value="$ShipNPCSpeaker">
+
+                  </do_if>
+                  <!--Marine: We have control. Securing systems.-->
+                  <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $PlacedSpeaker, $page = $Marine1Page, $line = 12230, $delay = 0.2s, $recipient = $ShipNPCSpeaker, $broadcast = true ] "/>
+                  <do_if value="$ShipNPCSpeaker">
+                    <!--Ship NPC: Good work everyone.-->
+                    <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $ShipNPCSpeaker, $page = null, $line = 12208, $delay = 0s, $recipient = $PlacedSpeaker, $broadcast = true ]"/>
+                  </do_if>
+                  <do_else>
+                    <!--Marine: Good work everyone.-->
+                    <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $PlacedSpeaker, $page = $Marine1Page, $line = 12208, $delay = 0.2s, $recipient = $PlacedSpeaker, $broadcast = true ] "/>
+                  </do_else>
+
+                  <!--Marine2: Cheering-->
+                  <append_to_list name="$SpeakDef.$lines" exact="table[$speaker = $PlacedSpeaker, $page = $Marine2Page, $line = 1010, $delay = 0.2s, $recipient = $PlacedSpeaker, $broadcast = true ] "/>
+
+                  <remove_value name="$Marine1Page"/>
+                  <remove_value name="$Marine2Page"/>
+                </do_if>
+                <remove_value name="$Marine1"/>
+                <remove_value name="$Marine2"/>
+                <remove_value name="this.$FightingMarines"/>
+              </do_if>
+              <remove_value name="$MarineRelatedShip"/>
+            </do_if>
+          </actions>
+        </library>
+      </cues>
+    </cue>
+
+    <!--TODO @Owen turn into a library. Move to lib_generic and call from similar cases of ship owner transfer-->
+    <!--event.param = table[$target = Target Ship, $faction = New Faction, $debugchance = Debug Chance]-->
+    <cue name="Transfer_Ownership" instantiate="true" namespace="this">
+      <conditions>
+        <event_cue_signalled/>
+        <check_value value="@event.param.$target.isoperational"/>
+        <check_value value="@event.param.$faction"/>
+      </conditions>
+      <actions>
+        <set_value name="$Target" exact="event.param.$target"/>
+        <set_value name="$Faction" exact="event.param.$faction"/>
+        <set_value name="$DebugChance" exact="@event.param.$debugchance"/>
+
+        <!-- release subordinates -->
+        <set_value name="$subordinates" exact="$Target.subordinates"/>
+        <do_all exact="$subordinates.count" counter="$i">
+          <remove_object_commander object="$subordinates.{$i}"/>
+        </do_all>
+
+        <!-- capture docked ships -->
+        <find_dockingbay name="$dockingbays" object="$Target" multiple="true"/>
+        <debug_text text="'found %s dockingbays on %s %s %s'.[$dockingbays.count, $Target.idcode, $Target.knownname, $Target]" chance="$DebugChance"/>
+        <do_all exact="$dockingbays.count" counter="$i">
+          <set_value name="$locdockedships" exact="$dockingbays.{$i}.docked"/>
+          <do_all exact="$locdockedships.count" counter="$j" reverse="true">
+            <do_if value="$locdockedships.{$j}.hascontext.{$Target}">
+              <do_if value="$locdockedships.{$j}.trueowner == $Faction">
+                <debug_text text="'Skipping ship ' + $locdockedships.{$j}.debugname + ' as it already is of faction ' + $Faction" chance="$DebugChance"/>
+                <continue/>
+              </do_if>
+              <do_elseif value="$locdockedships.{$j}.isunit">
+                <destroy_object object="$locdockedships.{$j}" explosion="false" comment="unit will be collected"/>
+              </do_elseif>
+              <do_elseif value="$locdockedships.{$j}.isdeployable">
+                <collect_deployable object="$Target" deployable="$locdockedships.{$j}"/>
+              </do_elseif>
+              <do_elseif value="$locdockedships.{$j}.iscapturable">
+                <debug_text text="'Changing owner of docked ship ' + $locdockedships.{$j}.debugname" chance="$DebugChance"/>
+                <signal_cue_instantly cue="this.static" param="table[$target = $locdockedships.{$j}, $faction = $Faction]"/>
+              </do_elseif>
+              <do_elseif value="$locdockedships.{$j}.aipilot">
+                <debug_text text="'Ordering docked ship ' + $locdockedships.{$j}.debugname + ' to undock from boarded ship'" chance="$DebugChance"/>
+                <create_order object="$locdockedships.{$j}" id="'Undock'" immediate="true"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'Unable to deal with ship ' + $locdockedships.{$j}.debugname + ' docked on boarded ship ' + $Target.debugname + ' - killing'" filter="error"/>
+                <destroy_object object="$locdockedships.{$j}" explosion="false"/>
+              </do_else>
+            </do_if>
+          </do_all>
+        </do_all>
+
+        <!-- remove people on board. particularly important for crew on board ships that are docked at $Target. -->
+        <do_for_each name="$persontemplate" in="$Target.people.list">
+          <set_value name="$instancedperson" exact="$Target.roleentity.{$persontemplate}"/>
+          <do_if value="$instancedperson">
+            <debug_text text="'Signalling instanced crew to despawn due to being killed - ' + $instancedperson + ' ' + $instancedperson.knownname" chance="$DebugChance"/>
+            <signal_objects object="$instancedperson" param="'npc_despawn'" param2="table[$movementspeed = $instancedperson.runspeed]"/>
+          </do_if>
+          <debug_text text="'removing person ' + $persontemplate" chance="$DebugChance"/>
+          <remove_npc_template object="$Target" template="$persontemplate"/>
+        </do_for_each>
+
+        <!-- release $Target from command hierarchy -->
+        <remove_object_commander object="$Target" comment="Free capship from control of previous owner (which can be a station)"/>
+
+        <!-- kill remaining enemy personnel on-board the seized ship -->
+        <get_control_entities object="$Target" name="$ControlEntities"/>
+        <do_for_each name="$ControlEntity" in="$ControlEntities">
+          <do_if value="($ControlEntity.isclass.npc or $ControlEntity == $Target.assignedaipilot) and $ControlEntity.trueowner != $Faction">
+            <!-- other control entities (computers) will have their owner set through automatically through <set_owner /> on $Target -->
+            <abort_scripts entity="$ControlEntity"/>
+            <dismiss_control_entity object="$Target" actor="$ControlEntity"/>
+            <remove_actor_from_room actor="$ControlEntity"/>
+            <destroy_object object="$ControlEntity"/>
+          </do_if>
+        </do_for_each>
+
+        <!-- transfer ownership -->
+        <debug_text text="'transferring ownership of %s %s %s to %s'.[$Target.idcode, $Target.knownname, $Target, $Faction]" chance="$DebugChance"/>
+        <set_owner object="$Target" faction="$Faction" />
+
+        <!-- clean up order queue -->
+        <cancel_all_orders object="$Target"/>
+        <create_order id="'Wait'" object="$Target" default="true">
+          <param name="allowdocked" value="not $Target.iscapitalship"/>
+        </create_order>
+
+        <reinitialise_control_entities object="$Target"/>
+
+        <cease_fire object="$Target"/>
+      </actions>
+    </cue>
+  </cues>
+</mdscript>

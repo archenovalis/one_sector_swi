@@ -1,0 +1,376 @@
+<?xml version="1.0" encoding="iso-8859-1" ?>
+<aiscript name="move.wareexchange" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" version="2">
+  <!--  Ware Exchange helper for exchanging wares with small/medium ships
+        Author: Adrian
+  -->
+  <params>
+    <param name="tradedeal" />
+    <param name="debugchance" default="0" />
+  </params>
+  <interrupts>
+    <handler ref="TargetInvalidHandler"/>
+  </interrupts>
+  <patch sinceversion="1">
+    <set_value name="$result" exact="false"/>
+  </patch>
+  <patch sinceversion="2">
+    <do_if value="this.assignedcontrolled.iscapitalship and not this.assignedcontrolled.availableunits.{unitcategory.transport}.count and (this.assignedcontrolled == $tradedeal.buyer or $target == $tradedeal.seller)">
+      <do_if value="@this.assignedcontrolled.order.isrunning">
+        <set_order_failed order="this.assignedcontrolled.order" text="{1045, 123}" comment="No available cargo drones."/>
+      </do_if>
+      <signal_objects object="$target" param="'wareexchange_abort'" param2="$tradedeal"/>
+      <signal_objects object="this.assignedcontrolled" param="'wareexchange_abort'" param2="$tradedeal"/>
+    </do_if>
+  </patch>
+  <attention min="unknown">
+    <actions>
+
+      <label name="init" />
+
+      <set_value name="$target" exact="$tradedeal.exchangepartner.{this.object}" />
+      <set_value name="$ispassive" exact="$tradedeal.ispassive.{this.object}" />
+      <set_value name="$result" exact="false"/>
+
+      <do_if value="this.assignedcontrolled.iscapitalship and not this.assignedcontrolled.availableunits.{unitcategory.transport}.count and (this.assignedcontrolled == $tradedeal.buyer or $target == $tradedeal.seller)">
+        <do_if value="@this.assignedcontrolled.order.isrunning">
+          <set_order_failed order="this.assignedcontrolled.order" text="{1045, 123}" comment="No available cargo drones."/>
+        </do_if>
+        <signal_objects object="$target" param="'wareexchange_abort'" param2="$tradedeal"/>
+        <signal_objects object="this.assignedcontrolled" param="'wareexchange_abort'" param2="$tradedeal"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <label name="movetomeet" />
+
+      <!-- Movement to target -->
+      <!--<do_if value="not $ispassive">
+        <do_if value="this.ship.zone != $target.zone">
+          <debug_text text="'%1 move to meet %2'.[this.ship, $target]" chance="$debugchance" />
+          <run_script name="'move.generic'">
+            <param name="destination" value="$target" />
+            <param name="endintargetzone" value="true"/>
+            <param name="debugchance" value="$debugchance"/>
+          </run_script>
+        </do_if>
+      </do_if>-->
+
+      <label name="ready" />
+
+      <!-- Ware Exchange Case: Passive Partner -->
+      <do_if value="$ispassive">
+        <!-- Fly to a safe position -->
+        <get_safe_pos result="$passivepos" object="this.ship" zone="this.zone" radius="this.size/2.0" ignored="this.ship" directionobject="this.ship" direction="quadrant.front" />
+        <move_to object="this.ship" destination="this.zone" forceposition="false" forcerotation="true" finishonapproach="true" >
+          <position value="$passivepos" />
+          <rotation pitch="0deg" roll="0deg" />
+          <interrupt_after_time time="(([this.ship.distanceto.{$passivepos}, 1m].max / [this.ship.maxspeed, 1m].max)s * 2)"/>
+        </move_to>
+        <remove_value name="$passivepos" />
+
+        <debug_text text="'Me %1 (%2), target %3 (%4)'.[this, this.ship.knownname, $target.pilot, $target.knownname]" chance="$debugchance" />
+        <debug_text text="'sending signal: move_wareexchange_ready. trade: ' + $tradedeal" chance="$debugchance"/>
+        <signal_objects object="$target" param="'move_wareexchange_ready'" param2="$tradedeal" />
+        <set_value name="this.$readyexchange" exact="[$tradedeal, 1]"/>
+        <stop_moving object="this.ship" />
+        <!-- command action -->
+        <set_command_action commandaction="commandaction.standingby" />
+        <do_if value="not $target.isoperational">
+          <debug_text text="'exchange partner was destroyed.'" chance="$debugchance"/>
+          <resume label="finish"/>
+        </do_if>
+
+        <do_if value="@$target.pilot.$readyexchange.{1} == $tradedeal and $target.pilot.$readyexchange.{2} ge 1">
+          <debug_text text="'active trader was already ready! trade: ' + $tradedeal" chance="$debugchance"/>
+        </do_if>
+        <do_else>
+          <debug_text text="'waiting for signal: move_wareexchange_ready. trade: ' + $tradedeal" chance="$debugchance"/>
+          <wait>
+            <interrupt>
+              <conditions>
+                <check_any>
+                  <event_object_signalled object="this.ship" param="'move_wareexchange_ready'" param2="$tradedeal" />
+                  <event_object_destroyed object="$target"/>
+                </check_any>
+              </conditions>
+              <actions>
+                <do_if value="event.name == 'event_object_destroyed'">
+                  <debug_text text="'ware exchange partner was destroyed.'" chance="$debugchance"/>
+                  <resume label="finish"/>
+                </do_if>
+                <debug_text text="'active trader is ready! He finished the movement'" chance="$debugchance" />
+              </actions>
+            </interrupt>
+          </wait>
+          <debug_text text="'received signal: move_wareexchange_ready. trade: ' + $tradedeal" chance="$debugchance"/>
+        </do_else>
+
+      </do_if>
+      <!-- Ware Exchange Case: Active Partner -->
+      <do_else>
+        <!-- command action -->
+        <set_command_action commandaction="commandaction.standingby" />
+        <!-- Wait the passive trade to be ready  -->
+        <do_if value="@$target.pilot.$readyexchange.{1} == $tradedeal and $target.pilot.$readyexchange.{2} ge 1">
+          <debug_text text="'passive trader was already ready! trade: ' + $tradedeal" chance="$debugchance"/>
+        </do_if>
+        <do_else>
+          <debug_text text="'wait for passive trader to be ready %1 (pilot %2)'.[@$target.pilot.$readyexchange, $target.pilot]" chance="$debugchance" />
+          <stop_moving object="this.ship" />
+          <debug_text text="'waiting for signal: move_wareexchange_ready. trade: ' + $tradedeal" chance="$debugchance"/>
+          <do_if value="not $target.isoperational">
+            <debug_text text="'exchange partner was destroyed.'" chance="$debugchance"/>
+            <resume label="finish"/>
+          </do_if>
+          <wait>
+            <interrupt>
+              <conditions>
+                <check_any>
+                  <event_object_destroyed object="$target"/>
+                  <event_object_signalled object="this.ship" param="'move_wareexchange_ready'" param2="$tradedeal" />
+                </check_any>
+              </conditions>
+              <actions>
+                <do_if value="event.name == 'event_object_destroyed'">
+                  <debug_text text="'ware exchange partner was destroyed.'" chance="$debugchance"/>
+                  <resume label="finish"/>
+                </do_if>
+                <debug_text text="'%1 passive trader is ready! He finished the movement.'.[player.age]" chance="$debugchance" />
+              </actions>
+            </interrupt>
+          </wait>
+          <debug_text text="'received signal: move_wareexchange_ready. trade: ' + $tradedeal" chance="$debugchance"/>
+        </do_else>
+
+        <!-- NB: moving this here to make sure the passive partner is done moving and will not change sector contexts after this move.
+                TODO: smarter would be to detect if the passive partner is going somewhere, determine where, and go there. for later. will require testing.
+                      better (simpler, more efficient, more readable, and less prone to error) would be to do this move only in order.trade.wareexchange.ship and start this script after. again, for later if there's time still.  -->
+        <do_if value="this.ship.zone != $target.zone">
+          <debug_text text="'%1 move to meet %2'.[this.ship, $target]" chance="$debugchance" />
+          <run_script name="'move.generic'" result="$movesuccess">
+            <param name="destination" value="$target" />
+            <param name="endintargetzone" value="true"/>
+            <param name="debugchance" value="$debugchance"/>
+          </run_script>
+          <do_if value="not $movesuccess">
+            <do_if value="@this.assignedcontrolled.order.isrunning">
+              <set_order_failed order="this.assignedcontrolled.order" text="{1045, 101}" comment="Unable to reach destination."/>
+            </do_if>
+            <debug_text text="'No path to destination. Aborting.'" chance="$debugchance"/>
+            <resume label="finish"/>
+          </do_if>
+        </do_if>
+
+        <!-- Final move to the target -->
+        <get_safe_pos result="$safepos" zone="$target.zone" object="$target" radius="this.ship.size/2.0f + $target.size/2.0f" ignored="this.ship" directionobject="this.ship" />
+        <!-- Move if neccesary -->
+        <do_if value="this.ship.distanceto.{$safepos} gt (this.ship.size/2.0f + $target.size/2.0f)">
+          <move_to object="this.ship" destination="$target.zone" forceposition="true" forcerotation="false" finishonapproach="true" >
+            <position value="$safepos" />
+            <rotation pitch="0deg" roll="0deg" />
+            <interrupt_after_time time="(([this.ship.distanceto.{$safepos}, 1m].max / [this.ship.maxspeed, 1m].max)s * 2)"/>
+          </move_to>
+        </do_if>
+        <remove_value name="$safepos"/>
+        <debug_text text="'sending signal: move_wareexchange_ready. trade: ' + $tradedeal" chance="$debugchance"/>
+        <signal_objects object="$target" param="'move_wareexchange_ready'" param2="$tradedeal" />
+        <set_value name="this.$readyexchange" exact="[$tradedeal, 1]"/>
+      </do_else>
+
+      <!-- NB: at this point, both ships are running the same actions. -->
+      <!-- Align -->
+      <move_to object="this.ship" destination="this.zone" forcerotation="true" forceposition="true" chance="100" >
+        <position value="this.ship.position"/>
+        <rotation pitch="0deg" roll="0deg" />
+        <interrupt_after_time time="1s" />
+      </move_to>
+      <!-- command action -->
+      <set_command_action commandaction="commandaction.standingby" />
+
+      <!-- NB: the two exchange partners split here again, but this time, according to buyer/seller -->
+      <debug_text text="'%5 Trade order. Buyer %1, seller %2, ware %3, amount %4'.[@$tradedeal.buyer.knownname, @$tradedeal.seller.knownname, $tradedeal.ware, $tradedeal.amount, player.age]" chance="$debugchance"/>
+      <!-- Go to collect (buyer) or drop (seller) -->
+      <do_if value="(this.ship == @$tradedeal.buyer) or ($target == @$tradedeal.seller)">
+        <debug_text text="'waiting to collect. this ship buyer %1, target seller %2'.[(this.ship == @$tradedeal.buyer), ($target == @$tradedeal.seller)]" chance="$debugchance" />
+        <resume label="collect" />
+      </do_if>
+
+      <label name="drop" />
+
+      <wait exact="3s" />
+      <do_if value="@$target.pilot.$readyexchange.{1} == $tradedeal and @$target.pilot.$readyexchange.{2} ge 3">
+        <debug_text text="'collector had already started collecting! trade: ' + $tradedeal" chance="$debugchance"/>
+      </do_if>
+      <do_else>
+        <drop_cargo object="this.ship" ware="$tradedeal.ware" exact="$tradedeal.amount" groupname="$drops" unbundle="$tradedeal.unbundle" bundle="$tradedeal.bundle" />
+        <debug_text text="'sending signal: move_wareexchange_drop_started. trade: ' + $tradedeal" chance="$debugchance"/>
+        <signal_objects object="$target" param="'move_wareexchange_drop_started'" param2="$tradedeal"/>
+        <set_value name="this.$readyexchange" exact="[$tradedeal, 2]"/>
+
+        <!-- back away from the object to make space for the exchange partner to approach and pick it up. -->
+        <debug_text text="'backing away'" chance="0"/>
+        <create_position name="$safepos" space="$target" value="this.ship.position" object="this.zone"/>
+        <get_safe_pos result="$safepos" zone="this.zone" value="$safepos" object="this.ship" radius="this.ship.size / 2.0"/>
+        <!--<get_safe_pos result="$safepos" zone="this.zone" object="this.ship" radius="this.ship.size / 2.0" min="[$target.size, this.ship.size].max" max="this.ship.size + $target.size" allowyaxis="false"/>-->
+        <move_to object="this.ship" destination="this.zone" uselocalhighways="false">
+          <position value="$safepos"/>
+          <interrupt_after_time time="(([this.ship.distanceto.{$safepos}, 1m].max / [this.ship.maxspeed, 1m].max)s * 2)"/>
+        </move_to>
+        <remove_value name="$safepos"/>
+        <debug_text text="'sending signal: move_wareexchange_drop_finished. trade: ' + $tradedeal" chance="$debugchance"/>
+        <signal_objects object="$target" param="'move_wareexchange_drop_finished'" param2="$tradedeal" param3="$drops"/>
+        <set_value name="this.$readyexchange" exact="[$tradedeal, 3, $drops]"/>
+      </do_else>
+      <do_if value="(@$target.order.id == 'TradeExchangePassive' or @$target.order.id == 'TradeExchange') and @$target.order.$tradedeal == $tradedeal">
+        <!-- both orders must be set to critical at the same time because cancelling one cancels the other AS LONG AS they are both not critical.
+                if $targetobject is not currently running the order, but we got in a position where we could now execute the trade, we can still proceed.
+                  in that case, the trade will already have gotten cleaned up when the passive partner restarts the order, handled on start, will fail $tradedeal.exists. -->
+        <set_order_state order="this.assignedcontrolled.order" state="orderstate.critical"/>
+        <set_order_state order="$target.order" state="orderstate.critical"/>
+      </do_if>
+
+      <debug_text text="'%4 This ship %1: drop %2 %3'.[this.ship.knownname, $tradedeal.amount, $tradedeal.ware, player.age]" chance="$debugchance" />
+      <resume label="cleanup" />
+
+      <label name="collect" />
+
+      <do_if value="not $target.isoperational">
+        <debug_text text="'exchange partner was destroyed.'" chance="$debugchance"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <do_if value="@$target.pilot.$readyexchange.{1} == $tradedeal and @$target.pilot.$readyexchange.{2} ge 2">
+        <debug_text text="'dropper had already started dropping! trade: ' + $tradedeal" chance="$debugchance"/>
+      </do_if>
+      <do_else>
+        <debug_text text="'waiting for signal: move_wareexchange_drop_started. trade: ' + $tradedeal" chance="$debugchance"/>
+        <wait>
+          <interrupt>
+            <conditions>
+              <check_any>
+                <event_object_destroyed object="$target"/>
+                <event_object_signalled object="this.ship" param="'move_wareexchange_drop_started'" param2="$tradedeal"/>
+                <event_object_signalled object="this.ship" param="'move_wareexchange_drop_finished'" param2="$tradedeal"/>
+              </check_any>
+            </conditions>
+            <actions>
+              <do_if value="event.name == 'event_object_destroyed'">
+                <debug_text text="'ware exchange partner was destroyed.'" chance="$debugchance"/>
+                <resume label="finish"/>
+              </do_if>
+              <do_else>
+                <do_if value="event.param == 'move_wareexchange_drop_finished'">
+                  <debug_text text="'%2 target drops %1'.[event.param3, player.age]" chance="$debugchance" />
+                  <set_value name="$droplist" exact="event.param3.list"/>
+                  <debug_text text="'received signal: move_wareexchange_drop_finished. trade: ' + $tradedeal" chance="$debugchance"/>
+                </do_if>
+                <do_else>
+                  <debug_text text="'received signal: move_wareexchange_drop_started. trade: ' + $tradedeal" chance="$debugchance"/>
+                </do_else>
+              </do_else>
+            </actions>
+          </interrupt>
+        </wait>
+      </do_else>
+      <set_value name="this.$readyexchange" exact="[$tradedeal, 2]"/>
+
+      <do_if value="not $droplist?">
+        <do_if value="@$target.pilot.$readyexchange.{1} == $tradedeal and @$target.pilot.$readyexchange.{2} ge 3">
+          <debug_text text="'dropper had already finished dropping! trade: ' + $tradedeal" chance="$debugchance"/>
+          <set_value name="$droplist" exact="$target.pilot.$readyexchange.{3}.list"/>
+        </do_if>
+        <do_else>
+          <debug_text text="'waiting for signal: move_wareexchange_drop_finished. trade: ' + $tradedeal" chance="$debugchance"/>
+          <wait>
+            <interrupt>
+              <conditions>
+                <check_any>
+                  <event_object_destroyed object="$target"/>
+                  <event_object_signalled object="this.ship" param="'move_wareexchange_drop_finished'" param2="$tradedeal" />
+                </check_any>
+              </conditions>
+              <actions>
+                <do_if value="event.name == 'event_object_destroyed'">
+                  <debug_text text="'ware exchange partner was destroyed.'" chance="$debugchance"/>
+                  <resume label="finish"/>
+                </do_if>
+                <debug_text text="'%2 target drops %1'.[event.param3, player.age]" chance="$debugchance" />
+                <set_value name="$droplist" exact="event.param3.list"/>
+              </actions>
+            </interrupt>
+          </wait>
+          <debug_text text="'received signal: move_wareexchange_drop_finished. trade: ' + $tradedeal" chance="$debugchance"/>
+        </do_else>
+      </do_if>
+      <set_value name="this.$readyexchange" exact="[$tradedeal, 3, $droplist]"/>
+
+      <!-- Collect behaviours -->
+      <run_script name="'order.collect.ship'" >
+        <param name="targetlist" value="$droplist" />
+        <param name="debugchance" value="$debugchance" />
+      </run_script>
+
+      <label name="cleanup" />
+
+      <debug_text text="'cleanup'" chance="$debugchance" />
+
+      <!-- Remove it if Im the one who drops -->
+      <do_if value="$tradedeal.exists">
+        <do_if value="(this.ship == @$tradedeal.buyer) or ($target == @$tradedeal.seller)">
+          <debug_text text="'Success: remove trade. this ship buyer %1, target seller %2'.[(this.ship == @$tradedeal.buyer), ($target == @$tradedeal.seller)]" chance="$debugchance" />
+          <debug_text text="'sending signal: move_wareexchange_done. trade: ' + $tradedeal" chance="$debugchance"/>
+          <signal_objects object="$target" param="'move_wareexchange_done'" param2="$tradedeal"/>
+          <set_value name="this.$readyexchange" exact="[$tradedeal, 4]"/>
+        </do_if>
+        <do_else>
+          <set_command_action commandaction="commandaction.executingtrade" />
+          <do_if value="not $target.isoperational">
+            <debug_text text="'exchange partner was destroyed.'" chance="$debugchance"/>
+            <resume label="finish"/>
+          </do_if>
+
+          <do_if value="@$target.pilot.$readyexchange.{1} == $tradedeal and $target.pilot.$readyexchange.{2} ge 4">
+            <debug_text text="'dropper was already done! trade: ' + $tradedeal" chance="$debugchance"/>
+          </do_if>
+          <do_else>
+            <debug_text text="'waiting for signal: move_wareexchange_done. trade: ' + $tradedeal" chance="$debugchance"/>
+            <!-- this wait is not necessary. remove? -->
+            <wait comment="Wait until is done">
+              <interrupt>
+                <conditions>
+                  <check_any>
+                    <event_object_destroyed object="$target"/>
+                    <event_object_signalled object="this.object" param="'move_wareexchange_done'" param2="$tradedeal"/>
+                  </check_any>
+                </conditions>
+                <actions>
+                  <do_if value="event.name == 'event_object_destroyed'">
+                    <debug_text text="'ware exchange partner was destroyed.'" chance="$debugchance"/>
+                    <resume label="finish"/>
+                  </do_if>
+                </actions>
+              </interrupt>
+            </wait>
+            <debug_text text="'received signal: move_wareexchange_done. trade: ' + $tradedeal" chance="$debugchance"/>
+          </do_else>
+          <set_value name="this.$readyexchange" exact="[$tradedeal, 4]"/>
+        </do_else>
+      </do_if>
+
+      <!-- Align -->
+      <!-- this alignment is not necessary. remove? -->
+      <get_safe_pos result="$safepos" zone="this.zone" object="this.ship" radius="this.ship.size/2.0" ignored="this.ship" directionobject="this.ship" />
+      <move_to object="this.ship" destination="this.zone" forcerotation="true" forceposition="false" >
+        <position value="$safepos"/>
+        <rotation pitch="0deg" roll="0deg" />
+        <interrupt_after_time time="(([this.ship.distanceto.{$safepos}, 1m].max / [this.ship.maxspeed, 1m].max)s * 2)"/>
+      </move_to>
+
+      <set_value name="$result" exact="true"/>
+
+      <label name="finish"/>
+
+      <return value="$result" />
+
+    </actions>
+  </attention>
+</aiscript>

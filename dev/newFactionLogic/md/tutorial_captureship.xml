@@ -1,0 +1,623 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="Tutorial_captureship" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+    <cue name="Start" namespace="this">
+      <conditions>
+        <event_cue_signalled cue="md.Setup.Start" />
+      </conditions>
+      <actions>
+        <do_if value="not md.$TutorialRegister?">
+          <set_value name="md.$TutorialRegister" exact="[]" />
+        </do_if>
+        <append_to_list name="md.$TutorialRegister" exact="Start" />
+      </actions>
+      <cues>
+        <cue name="PlayerDied">
+          <conditions>
+            <event_object_destroyed object="player.entity" />
+          </conditions>
+          <actions>
+            <cancel_cue cue="Start" />
+          </actions>
+        </cue>
+
+        <cue name="Trigger" checkinterval="5s" version="2">
+          <conditions>
+            <check_value value="not md.$SurpressTutorials?" />
+            <check_value value="player.computer" />
+          </conditions>
+          <actions>
+            <set_value name="$DebugChance" exact="100"/>
+            <set_value name="$MissionName" exact="'13) ' + readtext.{30187}.{1}" />
+            <set_value name="$Guide" exact="player.computer" />
+            <create_offer cue="Start" actor="$Guide" name="$MissionName" description="readtext.{30187}.{2}" difficulty="level.trivial" faction="faction.player" type="missiontype.tutorial">
+              <briefing>
+                <objective step="1" action="objective.custom" customaction="{30187,20}" comment="Finding a Ship"/>
+                <objective step="2" action="objective.custom" customaction="{30187,21}" comment="Approaching the Ship"/>
+                <objective step="3" action="objective.custom" customaction="{30187,22}" comment="Claiming the ship"/>
+              </briefing>
+            </create_offer>
+          </actions>
+          <patch sinceversion="2">
+            <do_if value="Start.hasmissionoffer">
+              <set_value name="$MissionName" exact="'13) ' + readtext.{30187}.{1}" />
+              <update_offer cue="Start" name="$MissionName"/>
+            </do_if>
+          </patch>
+          <cues>
+            <cue name="Offer">
+              <cues>
+                <cue name="ConversationStarted" instantiate="true">
+                  <conditions>
+                    <event_conversation_started actor="$Guide" conversation="mission" convparam="Start" />
+                  </conditions>
+                  <actions>
+                    <remove_help all="true" />
+                    <open_conversation_menu menu="MissionBriefingMenu" param="[0, 0, Start, true]" />
+                  </actions>
+                  <cues>
+                    <cue name="ConversationNextSection" instantiate="true">
+                      <conditions>
+                        <event_conversation_next_section actor="$Guide" choiceparam="Start" />
+                      </conditions>
+                      <actions>
+                        <!-- Accept case -->
+                        <do_if value="event.param == 'c_mission_accept'">
+                          <signal_cue cue="Tutorial" />
+                        </do_if>
+                      </actions>
+                    </cue>
+
+                    <cue name="ConversationFinished">
+                      <conditions>
+                        <event_conversation_finished actor="$Guide" />
+                      </conditions>
+                      <actions>
+                        <cancel_cue cue="ConversationStarted" />
+                      </actions>
+                    </cue>
+
+                    <cue name="AcceptMission">
+                      <conditions>
+                        <event_object_signalled object="$Guide" param="'accept'" />
+                      </conditions>
+                      <actions>
+                        <signal_cue cue="Tutorial" />
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="Tutorial" version="2">
+              <conditions>
+                <check_any>
+                  <event_cue_signalled />
+                  <event_object_signalled object="player.entity" param="'start'" param2="Start" />
+                </check_any>
+              </conditions>
+              <actions>
+                <debug_text text="'Tutorial can begin'" chance="$DebugChance" />
+                <cancel_cue cue="Offer" />
+                <signal_cue_instantly cue="md.Tutorials.NewTutorialTriggered" param="Start" />
+                <set_value name="$TutorialStartTime" exact="player.age" />
+                <create_mission cue="Start" offercue="Start" />
+                <cancel_conversation actor="$Guide" />
+                <remove_offer cue="Start" />
+                <remove_help all="true" />
+                <set_value name="$StartDelay" exact="2s"/>
+                <set_value name="$CrewTutorial" exact="false"/>
+                <remove_help all="true"/>
+
+                <find_ship_by_true_owner name="$OwnerlessShip" faction="faction.ownerless" owner="faction.ownerless" space="player.zone" multiple="false"/>
+                <do_if value="not $OwnerlessShip">
+                  <show_help_multi log="false" position="1" force="true" allowclose="false" width="280">
+                    <text line="13001" comment="Small ships can be CAPTURED while capital ships require BOARDING."/>
+                    <text line="13002" comment="During a fight sometimes crew of your opponent may flee."/>
+                    <text line="13006" comment="If a ships hull is nearly breaking, even the captain may leave the ship. This makes that ship ownerless."/>
+                    <text line="13005" comment="Start this tutorial again once you found an ownerless ship."/>
+                  </show_help_multi>
+                  <!-- aborting handled in Abort-cue, after user closes the multihint -->
+                </do_if>
+                <do_elseif value="not player.entity.inventory.{ware.software_scannerobjectmk3}.count and not player.occupiedship.people.marines.count">
+                  <show_help_multi log="false" position="1" force="true" allowclose="false" width="280">
+                    <text line="13001" comment="Small ships can be CAPTURED while capital ships require BOARDING."/>
+                    <text line="13108" comment="Ships are outfitted with advanced security systems. Your scan equipment is currently not sufficient to capture this ship."/>
+                    <text line="13110" comment="Alternatively you could also send a crew member to claim the ship."/>
+                    <text line="13109" comment="Return once you have upgraded your spacesuit's scanner to bypass security or you have hired a crew member."/>
+                  </show_help_multi>
+                  <set_objective step="1" cue="Start" action="objective.custom" customaction="{30187,20}" object="$OwnerlessShip"/>
+                </do_elseif>
+                <do_elseif value="not player.entity.inventory.{ware.software_scannerobjectmk3}.count and player.occupiedship.people.marines.count">
+                  <set_value name="$CrewTutorial" exact="true"/>
+                  <set_objective step="1" cue="Start" action="objective.custom" customaction="{30187,20}" object="$OwnerlessShip"/>
+                </do_elseif>
+                <show_help line="1001" duration="7s" position="1" force="true" width="140" comment="You can abort this tutorial in the Active Missions menu " />
+              </actions>
+              <patch sinceversion="2">
+                <set_value name="$CrewTutorial" exact="false"/>
+              </patch>
+              <cues>
+
+                <cue name="Abort">
+                  <conditions>
+                    <check_any>
+                      <event_ui_triggered screen="'hintclosed'" control="'13001'"/>
+                      <event_mission_aborted cue="Start" />
+                    </check_any>
+                  </conditions>
+                  <actions>
+                    <remove_help all="true"/>
+                    <do_if value="event.name == 'event_ui_triggered'">
+                      <show_notification text="{1015,400}" sound="notification_warning" comment="generic abort notification"/>
+                    </do_if>
+                    <remove_mission cue="Start" type="aborted" />
+                    <signal_cue cue="Cleanup" />
+                  </actions>
+                </cue>
+
+                <cue name="Abort_OtherTutorialStarted">
+                  <conditions>
+                    <event_cue_signalled cue="md.Tutorials.NewTutorialTriggered" />
+                    <check_value value="event.param != Start" />
+                  </conditions>
+                  <actions>
+                    <remove_help all="true"/>
+                    <show_notification text="{1015,400}" sound="notification_warning" comment="Tutorial aborted" />
+                    <remove_mission cue="Start" type="aborted"/>
+                    <signal_cue cue="Cleanup" />
+                  </actions>
+                </cue>
+
+                <cue name="Tutorial_DebugCheat">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <create_ship name="$object" macro="ship_arg_s_heavyfighter_01_a_macro" zone="player.zone">
+                      <owner exact="faction.ownerless" />
+                      <safepos object="player.occupiedship" exact="1250m"/>
+                    </create_ship>
+                  </actions>
+                </cue>
+
+                <cue name="Tutorial_Init">
+                  <conditions>
+                    <event_ui_triggered screen="'hintclosed'" control="'1001'"/>
+                  </conditions>
+                  <delay exact="$StartDelay"/>
+                  <actions>
+                    <!--Create a list of tutorial cues to trigger in what order, and what briefing step they point to-->
+                    <!-- -->
+
+                    <do_if value="$CrewTutorial">
+                      <set_value name="$SignalList" exact="[
+                                [Tutorial_SelectShip, 1],
+                                [Tutorial_ClaimShip, 2],
+                      ]"/>
+                    </do_if>
+                    <do_else>
+                      <set_value name="$SignalList" exact="[
+                                [Tutorial_CaptureShip, 1],
+                                [Tutorial_CaptureLeaveShip, 2],
+                                [Tutorial_CaptureNow, 3],
+                                [Tutorial_CaptureScanComplete, 3],
+                      ]"/>
+                    </do_else>
+                    <set_value name="$Index" exact="0"/>
+                    <signal_cue cue="Tutorial_TriggerNext"/>
+
+                  </actions>
+                </cue>
+
+                <cue name="Tutorial_TriggerNext" instantiate="true">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <set_value name="$Index" operation="add"/>
+                    <do_if value="$Index gt $SignalList.count">
+                      <remove_help all="true"/>
+                      <debug_text text="'Captureship tutorial has been completed'" chance="$DebugChance" />
+                      <show_help line="1002" position="1" force="true" comment="Tutorial Completed!"/>
+                      <show_help line="1003" position="1" force="true" comment="Press $INPUT_ACTION_HELP$ to try other tutorials."/>
+                      <remove_mission cue="Start" type="tutorialcompleted" />
+                      <signal_cue cue="Cleanup" />
+                    </do_if>
+                    <do_else>
+                      <signal_cue cue="$SignalList.{$Index}.{1}"/>
+                      <set_value name="$CurrentStep" exact="$SignalList.{$Index}.{2}"/>
+                      <set_objective_from_briefing cue="Start" step="$CurrentStep"/>
+                    </do_else>
+                  </actions>
+                </cue>
+
+                <cue name="Tutorial_SelectShip">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <remove_help all="true"/>
+                  </actions>
+                  <delay exact="0.5s"/>
+                  <actions>
+                    <set_objective cue="Start" action="objective.custom" customaction="{30187,23}" comment="Select ownerless ship" object="$OwnerlessShip"/>
+                    <do_if value="player.input.controller">
+                      <show_help line="13112" position="1" force="true" comment="(Controller)Select the ship you want to capture by targeting it." allowclose="false" timeout="false"/>
+                    </do_if>
+                    <do_else>
+                      <show_help line="13111" position="1" force="true" comment="Select the ship you want to capture by clicking on it." allowclose="false" timeout="false"/>
+                    </do_else>
+                  </actions>
+                  <cues>
+
+                    <cue name="Tutorial_ShipSelected">
+                      <conditions>
+                        <event_player_changed_target target="$OwnerlessShip"/>
+                      </conditions>
+                      <actions>
+                        <set_objective cue="Start" action="objective.custom" customaction="{30187,24}" comment="Claim ownerless ship" object="$OwnerlessShip"/>
+                        <signal_cue cue="Tutorial_TriggerNext"/>
+                        <cancel_cue cue="Tutorial_SelectShip"/>
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="Tutorial_ClaimShip">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <set_value name="$Deployed" exact="false"/>
+                    <remove_help all="true"/>
+                    <show_help_multi log="false" position="1" force="true" allowclose="false" width="280">
+                      <text line="13113" comment="With the ship selected press $INPUT_STATE_INTERACTION_MENU$ to bring up the interact menu." />
+                      <text line="13114" comment="CLAIM will order your marines to capture an abandoned ship."/>
+                    </show_help_multi>
+                    <show_help line="13115" position="1" force="true" comment="Bring up the interact menu by pressing $INPUT_STATE_INTERACTION_MENU$, thenselect the CLAIM action." allowclose="false" timeout="false"/>
+                    <show_help_overlay id="'interactmenu_claim'" highlightonly="true"/>
+                  </actions>
+                  <cues>
+
+                    <cue name="Tutorial_ShipClaimInProcess">
+                      <conditions>
+                        <event_object_signalled object="player.entity" param="'SendingOutClaimPod'"/>
+                      </conditions>
+                      <actions>
+                        <remove_help all="true"/>
+                        <remove_help_overlay id="'interactmenu_claim'"/>
+                      </actions>
+                      <delay exact="0.5s"/>
+                      <actions>
+                        <set_value name="$Deployes" exact="true"/>
+                        <show_help line="13116" position="1" duration="10s" force="true" comment="Your ship now sends out a pod manned with a marine to capture the ship."/>
+                      </actions>
+                    </cue>
+
+                    <cue name="Tutorial_ShipClaimed">
+                      <conditions>
+                        <event_object_claimed claimed="$OwnerlessShip"/>
+                      </conditions>
+                      <actions>
+                        <remove_help all="true"/>
+                        <show_help_multi log="false" position="1" force="true" allowclose="false">
+                          <text line="13105" comment="The ship is now owned by you."/>
+                          <text line="13117" comment="The marine will be assigned the ships captain, which means you can give it remote commands."/>
+                        </show_help_multi>
+                      </actions>
+                      <cues>
+                        <cue name="Tutorial_ShipClaimed_HintClosed">
+                          <conditions>
+                            <event_ui_triggered screen="'hintclosed'" control="'13105'"/>
+                          </conditions>
+                          <actions>
+                            <signal_cue cue="Tutorial_TriggerNext"/>
+                            <cancel_cue cue="Tutorial_ClaimShip"/>
+                          </actions>
+                        </cue>
+                      </cues>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="Tutorial_CaptureShip">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <show_help line="13021" position="1" force="true" comment="Get up from your seat." />
+                    <set_value name="$NearOwnerlesssShip" exact="false"/>
+                  </actions>
+                  <cues>
+                    <cue name="Tutorial_CaptureShip_ApproachRehint" checkinterval="25s" instantiate="true">
+                      <conditions>
+                        <check_value value="not $NearOwnerlesssShip"/>
+                      </conditions>
+                      <actions>
+                        <show_help line="13020" position="1" force="true" comment="Fly close to the ownerless ship but be careful not to collide." allowclose="false" timeout="false"/>
+                      </actions>
+                    </cue>
+
+                    <cue name="Tutorial_CaptureShip_NearCheck" checkinterval="3s" instantiate="true">
+                      <conditions>
+                        <set_value name="$NearOwnerlesssShip" exact="true"/>
+                        <check_value value="$OwnerlessShip.distanceto.{player.entity} lt 750m"/>
+                      </conditions>
+                      <actions>
+                        <signal_cue cue="Tutorial_CaptureShip_Near"/>
+                      </actions>
+                    </cue>
+
+                    <cue name="Tutorial_CaptureShip_Near">
+                      <conditions>
+                        <event_cue_signalled/>
+                      </conditions>
+                      <actions>
+                        <signal_cue cue="Tutorial_TriggerNext"/>
+                        <cancel_cue cue="Tutorial_CaptureShip"/>
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="Tutorial_CaptureLeaveShip">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <set_value name="$InteractedWithPanel" exact="false"/>
+                    <remove_help all="true" />
+                  </actions>
+                  <delay exact="0.5s"/>
+                  <actions>
+                    <set_objective cue="Start" action="objective.custom" customaction="{30187,21}" comment="Approaching the Ship" object="$OwnerlessShip"/>
+                    <show_help_overlay id="'docked_getup'" highlightonly="true"/>
+                    <do_if value="(player.ship) and (player.occupiedship)">
+                      <signal_cue cue="Tutorial_CaptureLeaveShip_StandUp" comment="Only works due to delay"/>
+                    </do_if>
+                  </actions>
+                  <cues>
+
+                    <cue name="Tutorial_CaptureLeaveShip_StandUp" instantiate="true">
+                      <conditions>
+                        <check_any>
+                          <event_player_started_control/>
+                          <event_cue_signalled/>
+                        </check_any>
+                        <check_value value="(not $InteractedWithPanel) and (not player.controlled.isclass.spacesuit)"/>
+                        <!--check_value value="(player.ship) and (player.occupiedship) and not $InteractedWithPanel"/-->
+                      </conditions>
+                      <actions>
+                        <remove_help all="true"/>
+                        <show_help line="7010" position="1" force="true" comment="...select 'Get Up'..." allowclose="false" timeout="false"/>
+                      </actions>
+                    </cue>
+
+                    <cue name="Tutorial_CaptureLeaveShip_WaitStand" instantiate="true">
+                      <conditions>
+                        <check_any>
+                          <event_player_stopped_control/>
+                          <event_cue_signalled/>
+                        </check_any>
+                        <check_value value="not $InteractedWithPanel"/>
+                        <!--check_value value="(player.ship) and not (player.occupiedship) and not $InteractedWithPanel"/-->
+                      </conditions>
+                      <actions>
+                        <remove_help_overlay id="'docked_getup'"/>
+                        <remove_help all="true" />
+                      </actions>
+                      <delay exact="0.5s"/>
+                      <actions>
+                        <do_if value="player.ship.isclass.ship_s">
+                          <show_help line="7020" position="14" force="true" comment="walk to the exit and interact with the panel." allowclose="false" timeout="false"/>
+                        </do_if>
+                        <do_else>
+                          <show_help line="7021" position="14" force="true" comment="Walk to the elevator and interact with the panel." allowclose="false" timeout="false"/>
+                        </do_else>
+                      </actions>
+                    </cue>
+
+                    <cue name="Tutorial_CaptureLeaveShip_InteractPanel_Open">
+                      <conditions>
+                        <event_ui_triggered screen="'TransporterMenu'" control="''"/>
+                      </conditions>
+                      <actions>
+                        <set_value name="$InteractedWithPanel" exact="true"/>
+                        <remove_help all="true" />
+                      </actions>
+                      <delay exact="0.5s"/>
+                      <actions>
+                        <show_help line="7030" position="14" timeout="false" force="true" comment="This menu shows all possible destinations, including an option to leave your ship using a spacesuit."/>
+                      </actions>
+                      <cues>
+                        <cue name="Scenario2_CaptureLeaveShip_InteractPanel_Close">
+                          <conditions>
+                            <event_ui_triggered screen="'TransporterMenu'" control="'menu_close'"/>
+                          </conditions>
+                          <actions>
+                            <remove_help line="7030"/>
+                            <set_value name="$InteractedWithPanel" exact="false" comment="this re-enables the 'interact with the panel' hint"/>
+                            <reset_cue cue="Tutorial_CaptureLeaveShip_InteractPanel_Open"/>
+                            <signal_cue cue="Tutorial_CaptureLeaveShip_WaitStand"/>
+                          </actions>
+                        </cue>
+                      </cues>
+                    </cue>
+
+
+                    <cue name="Tutorial_CaptureLeaveShip_InteractPanel_UserQuestion_Open">
+                      <conditions>
+                        <event_ui_triggered screen="'UserQuestionMenu'" control="''"/>
+                      </conditions>
+                      <actions>
+                        <set_value name="$InteractingWithPanel" exact="true"/>
+                        <remove_help all="true" />
+                        <show_help line="7031" position="18" timeout="false" force="true" comment="Leave your ship in the spacesuit now!"/>
+                        <show_help_overlay id="'custom_transporter_confirm'" highlightonly="true"/>
+                      </actions>
+                      <cues>
+                        <cue name="Tutorial_CaptureLeaveShip_InteractPanel_UserQuestion_Close">
+                          <conditions>
+                            <event_ui_triggered screen="'UserQuestionMenu'" control="'menu_close'"/>
+                          </conditions>
+                          <actions>
+                            <set_value name="$InteractingWithPanel" exact="false"/>
+                            <remove_help_overlay id="'custom_transporter_confirm'"/>
+                            <remove_help all="true" />
+                            <reset_cue cue="Tutorial_CaptureLeaveShip_InteractPanel_UserQuestion_Open"/>
+                          </actions>
+                        </cue>
+                      </cues>
+                    </cue>
+
+                    <cue name="Tutorial_CaptureLeaveShip_Wait" checkinterval="1s" instantiate="true">
+                      <conditions>
+                        <check_value value="@player.controlled.isclass.spacesuit"/>
+                      </conditions>
+                      <actions>
+                        <signal_cue cue="Tutorial_TriggerNext"/>
+                        <cancel_cue cue="Tutorial_CaptureLeaveShip"/>
+                      </actions>
+                    </cue>
+
+                  </cues>
+                </cue>
+
+                <cue name="Tutorial_CaptureNow">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <remove_help all="true"/>
+                    <set_value name="$ScanMode"  exact="false"/>
+                    <set_value name="$ScanDone"  exact="false"/>
+                  </actions>
+                  <delay exact="0.5s"/>
+                  <actions>
+                    <set_objective cue="Start" action="objective.custom" customaction="{30187,22}" comment="Approaching the Ship" object="$OwnerlessShip"/>
+                    <show_help_multi log="false" position="1" force="true" allowclose="false" width="280">
+                      <text line="13110" comment="If you do not want to go out and claim the ship yourself you could also send a marine to do it for you."/>
+                    </show_help_multi>
+                    <do_if value="player.activity != activity.scan">
+                      <signal_cue cue="Tutorial_CaptureNow_ScanRehint"/>
+                    </do_if>
+                    <do_elseif value="player.activity == activity.scan">
+                      <signal_cue cue="Tutorial_CaptureNow_ModeActivated"/>
+                    </do_elseif>
+                  </actions>
+                  <cues>
+
+                    <cue name="Tutorial_CaptureNow_ScanRehint" instantiate="true">
+                      <conditions>
+                        <event_cue_signalled/>
+                      </conditions>
+                      <actions>
+                        <remove_help all="true"/>
+                        <show_help line="14101" position="1" force="true" comment="Press $INPUT_ACTION_TOGGLE_SCAN_MODE$ to activate SCAN MODE." allowclose="false" timeout="false"/>
+                      </actions>
+                    </cue>
+
+                    <cue name="Tutorial_CaptureNow_ModeActivated" comment="activated via hotkey?">
+                      <conditions>
+                        <check_any>
+                          <event_player_changed_activity activity="activity.scan" />
+                          <event_cue_signalled/>
+                        </check_any>
+                      </conditions>
+                      <actions>
+                        <remove_help all="true"/>
+                        <set_value name="$ScanMode" exact="true"/>
+                        <show_help_multi log="false" position="1" force="true" allowclose="false" width="280">
+                          <text line="13102" comment="Carefully navigate towards the ownerless ship." />
+                          <text line="13103" comment="Find a signal near the entrance of the ship." />
+                          <text line="4121" comment="Make sure the SCAN MODE is active and look directly towards the SIGNAL SOURCE from very close by." />
+                        </show_help_multi>
+                        <show_help line="13104" position="1" force="true" duration="10s" width="200" comment="Fly close to the signal to overwrite the ships security systems." allowclose="false" timeout="false"/>
+                      </actions>
+                      <cues>
+                        <cue name="Tutorial_CaptureNow_ScanReset">
+                          <conditions>
+                            <event_player_changed_activity oldactivity="activity.scan" />
+                          </conditions>
+                          <actions>
+                            <signal_cue cue="Tutorial_CaptureNow_ScanRehint"/>
+                            <reset_cue cue="Tutorial_CaptureNow_ModeActivated"/>
+                          </actions>
+                        </cue>
+
+                        <cue name="Tutorial_CaptureNow_DoneDelayed">
+                          <conditions>
+                            <event_player_signal_unlock_finished/>
+                            <check_value value="event.param.type == signalleaktype.claim" comment="don't accept any other types of signal-leaks"/>
+                            <check_value value="event.param2 == $OwnerlessShip" comment="... or leaks from any other object"/>
+                          </conditions>
+                          <actions>
+                            <set_value name="$ScanDone" exact="true" comment="The moment you unlock the leak, it won't be found anymore by "/>
+                            <remove_help all="true" />
+                          </actions>
+                          <delay exact="0.5s"/>
+                          <actions>
+                            <signal_cue cue="Tutorial_TriggerNext"/>
+                            <cancel_cue cue="Tutorial_CaptureNow"/>
+                          </actions>
+                        </cue>
+                      </cues>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="Tutorial_CaptureScanComplete">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <show_help_multi log="false" position="1" force="true" allowclose="false" width="280">
+                      <text line="13118" comment="The ship is now owned by you. You can enter either the new or old ship personally." />
+                      <text line="13107" comment="Assign a captain to give remote commands."/>
+                    </show_help_multi>
+                  </actions>
+                  <cues>
+                    <cue name="Tutorial_CaptureScanComplete_HintClosed">
+                      <conditions>
+                        <check_any>
+                          <event_ui_triggered screen="'hintclosed'" control="'13118'"/>
+                        </check_any>
+                      </conditions>
+                      <actions>
+                        <signal_cue cue="Tutorial_TriggerNext"/>
+                        <cancel_cue cue="Tutorial_CaptureScanComplete"/>
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="Cleanup">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <remove_help_overlay all="true"/>
+                <debug_text text="'cleanup'" chance="$DebugChance"/>
+                <do_if value="$BriefingCutsceneStarted?">
+                  <stop_cutscene key="$CutsceneKey"/>
+                </do_if>
+                <do_if value="$Beacons?">
+                  <destroy_group group="$Beacons"/>
+                </do_if>
+                <remove_offer cue="Start"/>
+                <remove_mission cue="Start" />
+                <reset_cue cue="Trigger"/>
+              </actions>
+            </cue>
+
+          </cues>
+        </cue>
+
+      </cues>
+    </cue>
+  </cues>
+</mdscript>

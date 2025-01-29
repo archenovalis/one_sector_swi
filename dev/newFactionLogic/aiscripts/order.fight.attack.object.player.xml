@@ -1,0 +1,160 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<aiscript name="order.fight.attack.object.player" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd">
+  <!-- wrapper for the attack order which includes listener for event_player_changed_target.
+        should still be functional if the player then leaves command of this.ship's commander.
+        main purpose is to limit listeners for event_player_changed_target -->
+  <order id="Attack_Player" name="{1041, 431}" description="{1041, 432}" category="internal" allowinloop="false">
+    <params>
+      <param name="primarytarget" required="true" type="object" text="{1041, 10126}" comment="Target. The object to fight with">
+        <input_param name="class" value="[class.defensible]"/>
+      </param>
+      <param name="secondarytargets" default="null" type="list" text="{1041, 10149}" comment="Secondary targets. The secondary targets to fight after $target (Optional)">
+        <input_param name="type" value="'object'"/>
+        <input_param name="class" value="[class.defensible]"/>
+      </param>
+      <param name="escort" default="null" type="object" text="{1041, 10038}" advanced="true" comment="Object to escort - stay at 'pursuedistance' and shoot enemies attacking this" />
+      <param name="pursuedistance" default="[this.ship.maxradarrange, 1km].max" type="internal" text="{1041, 10090}" comment="Pursue distance. Distance to pursue/escort (if pursuetargets false or 'escort' provided). Default: max radar range">
+        <input_param name="min" value="1km"/>
+        <input_param name="max" value="[this.ship.maxradarrange, 1km].max"/>
+        <input_param name="step" value="1km"/>
+      </param>
+      <param name="pursuetargets" default="if this.ship.isplayerowned then true else false" type="bool" advanced="true" text="{1041, 10091}" comment="Pursue targets. Pursue the target no matter what. Default: false" />
+      <param name="allowothertargets" default="if this.ship.isplayerowned then false else true" type="bool" text="{1041, 10010}" comment="Attack all enemies. Whether the script shall keep running when all primary targets have been destroyed. Default: true for non-player-owned ships" />
+      <param name="checkrelation" default="if this.ship.isplayerowned then @this.ship.mayattack.{$primarytarget} else true" type="bool" text="{1041, 10081}" advanced="true" comment="Only engage hostiles. Check may attack (faction enemy relation). Default: true for non-player-owned ships" />
+      <param name="disable" default="false" type="bool" text="{1041, 10114}" comment="Shoot to disable. Instructs this ship to only try to disable the target or targets without destroying it."/>
+      <param name="disablehullpercentagethreshold" default="20" type="number" text="{1041, 10152}" advanced="true" comment="Disable hull threshold. If disable is set, this ship will stop firing if the hull of the target is at or below this percentage.">
+        <input_param name="startvalue" value="20"/>
+        <input_param name="min" value="0"/>
+        <input_param name="max" value="100"/>
+        <input_param name="step" value="1"/>
+      </param>
+      <param name="disabletargets" default="[]" type="internal" text="{1041, 10029}" comment="Targets to disable. If defined and $disable is true, only these targets will be disabled. If not defined and $disable is true, $primarytarget and $secondarytargets will be marked for disabling. IMPORTANT: if populated, caller must signal defencenpc to stop firing."/>
+      <param name="minrange" default="this.ship.maxcombatrange.all * 0.6" type="number" text="{1041, 10072}" advanced="true" comment="Minimum range. Minimum distance we should try to maintain relative to the target.">
+        <input_param name="startvalue" value="this.ship.maxcombatrange.all * 0.6"/>
+        <input_param name="min" value="0"/>
+        <input_param name="max" value="this.ship.maxcombatrange.all"/>
+        <input_param name="step" value="this.ship.maxcombatrange.all / 10"/>
+      </param>
+      <param name="maxrange" default="this.ship.maxcombatrange.all * 0.9" type="number" text="{1041, 10062}" advanced="true" comment="Maximum range. Maximum distance we should try to maintain relative to the target.">
+        <input_param name="startvalue" value="this.ship.maxcombatrange.all * 0.9"/>
+        <input_param name="min" value="0"/>
+        <input_param name="max" value="this.ship.maxcombatrange.all"/>
+        <input_param name="step" value="this.ship.maxcombatrange.all / 10"/>
+      </param>
+      <param name="maintaindistance" default="true" type="internal" text="{1041, 10023}" comment="Carrier range. If a carrier, use radar range instead of weapon range to determine range thresholds."/>
+      <param name="squad_attack" default="false" type="bool" text="{1041, 10118}" advanced="true" comment="Squad attack. Command the whole squadron to attack, Default: false"/>
+      <param name="boardingbehavior" default="null" type="internal" comment="Boarding behavior. If not null, the behavior assigned to this ship while boarding primarytarget."/>
+      <param name="behaviortargetclasses" default="[]" type="internal" comment="Behavior target classes. Target classes associated with boardingbehavior. disablehullpercentagethreshold will be ignored if current target is a behavior target. (Otherwise, we could have a situation where the hull threshold is reached but the boarding phase threshold has not been reached thus stalling the boarding operation.)"/>
+      <param name="uncover" default="true" type="internal" text="{1041, 10097}" comment="Remove cover. Remove cover ownership upon attack. Default: true" />
+      <param name="targetclasses" default="[]" type="internal" comment="Target classes. List of classes considered valid for attack."/>
+
+      <param name="radius" default="null" type="internal" comment="disengage if target goes beyond this distance relative to radiusanchorpos in radiusanchorspace"/>
+      <param name="radiusanchorpos" default="null" type="internal"/>
+      <param name="radiusanchorspace" default="null" type="internal"/>
+
+      <param name="allowboost" default="true" type="bool" text="{1041, 10161}" comment="Allow boost. Passed on to combat movement scripts to allow boost while in combat."/>
+      <param name="forceprimarytarget" default="false" type="internal" comment="Force the ship to attack primarytarget even if it is not a defensible. $primarytarget.canbeattacked still has to be true. not compatible with $allowothertargets and $secondarytargets."/>
+      <param name="enforceradius" default="if this.ship.isplayerowned then true else false" type="internal" comment="Disengages hostile targets outside radius if a radius is defined."/>
+      <param name="internalorder" type="bool" default="false" advanced="true" text="{1041, 10159}" comment="Order results from an automated behavior."/>
+      <param name="debugchance" type="bool" default="0" advanced="true" text="{1041, 10086}" comment="Print debug output">
+        <input_param name="truevalue" value="100"/>
+      </param>
+    </params>
+    <requires>
+      <match shiptype="shiptype.lasertower" negate="true"/>
+      <match class="class.spacesuit" negate="true"/>
+    </requires>
+    <location condition="$primarytarget.canbeattacked" object="$primarytarget" additionalobjects="$secondarytargets"/>
+  </order>
+  <interrupts>
+    <handler>
+      <conditions>
+        <event_player_changed_target/>
+        <check_value value="event.param.canbeattacked"/>
+        <check_value value="event.param != $primarytarget"/>
+        <check_value value="this.assignedcontrolled.commander and (this.assignedcontrolled.commander == player.occupiedship)"/>
+        <check_value value="this.assignedcontrolled.mayattack.{event.param} or this.assignedcontrolled.commander.mayattack.{event.param}"/>
+        <check_value value="$internalorder"/>
+        <check_value value="this.assignedcontrolled.assignment == assignment.attack"/>
+      </conditions>
+      <actions>
+        <set_value name="$_newtarget" exact="event.param"/>
+
+        <do_if value="@$_newtarget.canbeattacked">
+          <do_if value="$primarytarget != $_newtarget">
+            <debug_text text="'commander switched targets. shifting focus to %s %s %s.'.[@$_newtarget.idcode, @$_newtarget.knownname, $_newtarget]" chance="$debugchance"/>
+            <set_value name="$primarytarget" exact="$_newtarget"/>
+            <do_if value="@this.assignedcontrolled.order.id == 'Attack_Player'">
+              <edit_order_param order="this.assignedcontrolled.order" param="'primarytarget'" value="$_newtarget"/>
+            </do_if>
+            <remove_value name="$_newtarget"/>
+            <abort_called_scripts resume="start"/>
+          </do_if>
+        </do_if>
+        <do_else>
+          <debug_text text="'commander stopped attacking. standing down.'" chance="$debugchance"/>
+          <remove_value name="$_newtarget"/>
+          <set_value name="$abort"/>
+          <abort_called_scripts resume="finish"/>
+        </do_else>
+        <remove_value name="$_newtarget"/>
+      </actions>
+    </handler>
+  </interrupts>
+  <attention min="unknown">
+    <actions>
+
+      <label name="start"/>
+
+      <run_script name="'order.fight.attack.object'">
+        <param name="primarytarget" value="$primarytarget"/>
+        <param name="secondarytargets" value="$secondarytargets"/>
+        <param name="escort" value="$escort"/>
+        <param name="pursuedistance" value="$pursuedistance"/>
+        <param name="pursuetargets" value="$pursuetargets"/>
+        <param name="allowothertargets" value="$allowothertargets"/>
+        <param name="checkrelation" value="$checkrelation"/>
+        <param name="disable" value="$disable"/>
+        <param name="disablehullpercentagethreshold" value="$disablehullpercentagethreshold"/>
+        <param name="disabletargets" value="$disabletargets"/>
+        <param name="minrange" value="$minrange"/>
+        <param name="maxrange" value="$maxrange"/>
+        <param name="maintaindistance" value="$maintaindistance"/>
+        <param name="squad_attack" value="$squad_attack"/>
+        <param name="boardingbehavior" value="$boardingbehavior"/>
+        <param name="behaviortargetclasses" value="$behaviortargetclasses"/>
+        <param name="uncover" value="$uncover"/>
+        <param name="targetclasses" value="$targetclasses"/>
+        <param name="radius" value="$radius"/>
+        <param name="radiusanchorpos" value="$radiusanchorpos"/>
+        <param name="radiusanchorspace" value="$radiusanchorspace"/>
+        <param name="allowboost" value="$allowboost"/>
+        <param name="forceprimarytarget" value="$forceprimarytarget"/>
+        <param name="enforceradius" value="$enforceradius"/>
+        <param name="internalorder" value="$internalorder"/>
+        <param name="debugchance" value="$debugchance"/>
+      </run_script>
+
+      <label name="finish"/>
+
+      <stop_moving object="this.assignedcontrolled"/>
+      <set_to_default_flight_control_model object="this.assignedcontrolled"/>
+
+      <set_value name="$defaultorder" exact="this.assignedcontrolled.defaultorder"/>
+      <do_if value="@$speak and not this.assignedcontrolled.nextorder and (@$defaultorder.id != 'Patrol') and (@$defaultorder.id != 'ProtectPosition') and (@$defaultorder.id != 'ProtectShip') and (@$defaultorder.id != 'ProtectStation') and (@$defaultorder.id != 'Plunder') and (@$defaultorder.id != 'Police') and (not this.assignedcontrolled.commander or (this.assignedcontrolled.commander == player.occupiedship)) and notification.npc_await_orders.active">
+        <set_value name="$speakline" exact="10304" comment="Awaiting orders."/>
+        <run_script name="'player.interaction'">
+          <param name="Line" value="$speakline"/>
+          <param name="MaxQueueDelay" value="10s"/>
+          <param name="caption" value="{1016,6}.[this.assignedcontrolled.knownname, this.assignedcontrolled.idcode]"/>
+          <param name="interactive" value="false"/>
+          <param name="debugchance" value="$debugchance"/>
+        </run_script>
+      </do_if>
+
+      <do_if value="$abort? and @this.assignedcontrolled.order.exists">
+        <cancel_order order="this.assignedcontrolled.order"/>
+      </do_if>
+    </actions>
+  </attention>
+</aiscript>

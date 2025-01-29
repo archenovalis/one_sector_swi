@@ -1,0 +1,315 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<mdscript name="Player_Evaluator" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+    <library name="GetTotalValue" purpose="run_actions">
+      <actions>
+        <return value="@ValueManager.$TotalValue"/>
+      </actions>
+    </library>
+
+    <library name="GetValueBySector" purpose="run_actions">
+      <params>
+        <param name="Sector"/>
+        <param name="IncludeShips" default="true"/>
+        <param name="IncludeStations" default="true"/>
+      </params>
+      <actions>
+        <set_value name="$Result" exact="0Cr"/>
+        <do_if value="$IncludeShips">
+          <set_value name="$Result" operation="add" exact="@ValueManager.$ShipValueBySector.{$Sector}"/>
+        </do_if>
+        <do_if value="$IncludeStations">
+          <set_value name="$Result" operation="add" exact="@ValueManager.$StationValueBySector.{$Sector}"/>
+        </do_if>
+        <return value="$Result"/>
+      </actions>
+    </library>
+
+    <!--Find the sector which has the worth at the requested factor of total empire worth, with the total empire worth being at 1.0.
+    All sectors are sorted by value and iterated over, checking if their worth, combined with the previous sectors, matches the requested worth factor.
+    
+    This is useful to find sectors which contributes certain value to the empire.
+    For example, there is a 1k Cr S ship in Argon Prime but a 99k Cr M ship in The Void. The empire value, would be 100k Cr, which is 1.0.
+    Requesting the sector at the value factor of < 0.01 would return AP, but anything >= 0.01 would be TV.-->
+    <library name="GetSectorAtPlottedValueFactor" purpose="run_actions">
+      <params>
+        <param name="Factor" comment="0.0 to 1.0"/>
+        <param name="IncludeShips" default="true"/>
+        <param name="IncludeStations" default="true"/>
+        <param name="IgnoreList" default="null"/>
+        <param name="AllowFallback" default="false" comment="Fall back to the closest non-ignorable sector even if it has a factor score lower than requested?"/>
+        <param name="DebugChance" default="0"/>
+      </params>
+      <actions>
+        <do_if value="ValueManager.$TotalValue == 0">
+          <return value="null"/>
+        </do_if>
+
+        <do_if value="$AllowFallback and (not $IgnoreList or $IgnoreList.count == 0)">
+          <!--If no IgnoreList is provided then no point having the AllowFallback switch to be true-->
+          <set_value name="$AllowFallback" exact="false"/>
+        </do_if>
+        
+        <interpolate_value value="$Factor" result="$TargetValue">
+          <linear mininput="0.0f" maxinput="1.0f" minoutput="0Cr" maxoutput="ValueManager.$TotalValue"/>
+        </interpolate_value>
+
+        <debug_text text="'Factor ' + $Factor + ' of ' + ValueManager.$TotalValue + ' which is ' + $TargetValue" chance="$DebugChance"/>
+
+        <do_if value="$IncludeShips and $IncludeStations">
+          <set_value name="$TableRef" exact="ValueManager.$TotalValueBySector"/>
+        </do_if>
+        <do_elseif value="$IncludeShips">
+          <set_value name="$TableRef" exact="ValueManager.$ShipValueBySector"/>
+        </do_elseif>
+        <do_else>
+          <set_value name="$TableRef" exact="ValueManager.$StationValueBySector"/>
+        </do_else>
+        <set_value name="$SortedSectors" exact="$TableRef.keys.sorted"/>
+
+        <set_value name="$CombinedValue" exact="0Cr"/>
+        <do_for_each name="$Sector" in="$SortedSectors">
+          <set_value name="$SectorValue" exact="$TableRef.{$Sector}"/>
+          <set_value name="$CombinedValue" operation="add" exact="$SectorValue"/>
+          <debug_text text="$Sector.debugname + ' ' + $CombinedValue" chance="$DebugChance"/>
+          <do_if value="(not $IgnoreList or $IgnoreList.indexof.{$Sector} == 0)">
+            <do_if value="$CombinedValue ge $TargetValue">
+              <do_if value="$FallbackSector? and abs($TargetValue - $FallbackValue) lt abs($TargetValue - $SectorValue)">
+                <debug_text text="'Selected fallback sector ' + $FallbackSector.debugname + ' with value ' + $FallbackValue" chance="$DebugChance"/>
+                <return value="$FallbackSector"/>
+              </do_if>
+              <do_else>
+                <debug_text text="'Selected sector ' + $Sector.debugname" chance="$DebugChance"/>
+                <return value="$Sector"/>
+              </do_else>
+            </do_if>
+            <do_elseif value="$AllowFallback">
+              <set_value name="$FallbackSector" exact="$Sector"/>
+              <set_value name="$FallbackValue" exact="$SectorValue"/>
+            </do_elseif>
+          </do_if>
+        </do_for_each>
+        <do_if value="$FallbackSector?">
+          <debug_text text="'Selected fallback sector ' + $FallbackSector.debugname + ' with value ' + $FallbackValue" chance="$DebugChance"/>
+          <return value="$FallbackSector"/>
+        </do_if>
+
+        <return value="null"/>
+      </actions>
+    </library>
+    
+    <library name="GetMilitaryValue" purpose="run_actions">
+      <params>
+        <param name="IncludeShips" default="true"/>
+        <param name="IncludeStations" default="true"/>
+      </params>
+      <actions>
+        <set_value name="$Result" exact="0Cr"/>
+        <do_if value="$IncludeShips">
+          <set_value name="$Result" operation="add" exact="ValueManager.$MilitaryShipValue"/>
+        </do_if>
+        <do_if value="$IncludeStations">
+          <set_value name="$Result" operation="add" exact="ValueManager.$MilitaryStationValue"/>
+        </do_if>
+        <return value="$Result"/>
+      </actions>
+    </library>
+
+    <library name="GetMilitaryValueBySector" purpose="run_actions">
+      <params>
+        <param name="Sector"/>
+        <param name="IncludeShips" default="true"/>
+        <param name="IncludeStations" default="true"/>
+      </params>
+      <actions>
+        <set_value name="$Result" exact="0Cr"/>
+        <do_if value="$IncludeShips">
+          <set_value name="$Result" operation="add" exact="@ValueManager.$MilitaryShipValueBySector.{$Sector}"/>
+        </do_if>
+        <do_if value="$IncludeStations">
+          <set_value name="$Result" operation="add" exact="@ValueManager.$MilitaryStationValueBySector.{$Sector}"/>
+        </do_if>
+        <return value="$Result"/>
+      </actions>
+    </library>
+      
+    <cue name="ValueManager" namespace="this">
+      <conditions>
+        <event_cue_signalled cue="md.Setup.Start" />
+      </conditions>
+      <actions>
+        <set_value name="$DebugChance" exact="0"/>
+
+        <set_value name="$TotalValue" exact="0Cr"/>
+        <set_value name="$MilitaryShipValue" exact="0Cr"/>
+        <set_value name="$MilitaryStationValue" exact="0Cr"/>
+        <set_value name="$MajorShipyards" exact="0"/>
+
+        <set_value name="$TotalValueBySector" exact="table[]"/>
+        <set_value name="$ShipValueBySector" exact="table[]"/>
+        <set_value name="$StationValueBySector" exact="table[]"/>
+
+        <set_value name="$MilitaryShipValueBySector" exact="table[]"/>
+        <set_value name="$MilitaryStationValueBySector" exact="table[]"/>
+
+        <set_value name="$Temp_TotalValueBySector" exact="table[]"/>
+        <set_value name="$Temp_ShipValueBySector" exact="table[]"/>
+        <set_value name="$Temp_StationValueBySector" exact="table[]"/>
+
+        <set_value name="$Temp_MilitaryShipValueBySector" exact="table[]"/>
+        <set_value name="$Temp_MilitaryStationValueBySector" exact="table[]"/>
+
+        <set_value name="$NextEvalTime" exact="player.age + 10s"/>
+      </actions>
+      <cues>
+
+        <cue name="ValueManager_StartEval" checkinterval="5s">
+          <conditions>
+            <check_value value="player.age gt $NextEvalTime"/>
+          </conditions>
+          <actions>
+            <!--Create variables to store the results while go over the universe. We'll then save them to the manager cue variables when we're done.-->
+            <set_value name="$Temp_TotalValue" exact="0Cr"/>
+            <set_value name="$Temp_MilitaryShipValue" exact="0Cr"/>
+            <set_value name="$Temp_MilitaryStationValue" exact="0Cr"/>
+            <set_value name="$Temp_MajorShipyards" exact="0"/>
+
+            <clear_table table="$Temp_TotalValueBySector"/>
+            <clear_table table="$Temp_ShipValueBySector"/>
+            <clear_table table="$Temp_StationValueBySector"/>
+
+            <clear_table table="$Temp_MilitaryShipValueBySector"/>
+            <clear_table table="$Temp_MilitaryStationValueBySector"/>
+          </actions>
+          <cues>
+
+            <cue name="ValueManager_EvalShips">
+              <actions>
+                <find_ship_by_true_owner name="$Ships" faction="faction.player" space="player.galaxy" multiple="true"/>
+              </actions>
+              <cues>
+                <cue name="ValueManager_EvalShip">
+                  <actions>
+                    <do_if value="$Ships.count">
+                      <set_value name="$Ship" exact="$Ships.last"/>
+                      <do_if value="$Ship.isoperational">
+                        <set_value name="$Sector" exact="if $Ship.zone.isclass.highway then $Ship.zone.exit.sector else $Ship.sector"/>
+                        <do_if value="$Sector">
+                          <set_value name="$ShipVal" exact="$Ship.buildresourcevalue"/>
+                          <set_value name="$Temp_TotalValue" exact="$ShipVal" operation="add"/>
+                          <set_value name="$Temp_ShipValueBySector.{$Sector}" exact="$ShipVal" operation="add"/>
+                          <set_value name="$Temp_TotalValueBySector.{$Sector}" exact="$ShipVal" operation="add"/>
+                          <do_if value="$Ship.ismilitary">
+                            <set_value name="$Temp_MilitaryShipValue" exact="$ShipVal" operation="add"/>
+                            <set_value name="$Temp_MilitaryShipValueBySector.{$Sector}" exact="$ShipVal" operation="add"/>
+                          </do_if>
+                        </do_if>
+                      </do_if>
+                      <!--Remove from the back of the list-->
+                      <remove_value name="$Ships.last"/>
+                    </do_if>
+                  </actions>
+                  <!--Delay reset by a frame so we're not evaluating everything at once-->
+                  <delay exact="1ms"/>
+                  <actions>
+                    <do_if value="$Ships.count">
+                      <reset_cue cue="this"/>
+                    </do_if>
+                    <do_else>
+                      <signal_cue cue="ValueManager_EvalStations"/>
+                    </do_else>
+                  </actions>
+                </cue>
+
+              </cues>
+            </cue>
+            
+            <cue name="ValueManager_EvalStations">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <find_station_by_true_owner name="$Stations" faction="faction.player" space="player.galaxy" multiple="true"/>
+              </actions>
+              <cues>
+                <cue name="ValueManager_EvalStation">
+                  <actions>
+                    <do_if value="$Stations.count">
+                      <set_value name="$Station" exact="$Stations.last"/>
+                      <do_if value="$Station.isoperational">
+                        <set_value name="$Sector" exact="$Station.sector"/>
+                        <set_value name="$StationVal" exact="$Station.buildresourcevalue"/>
+                        <set_value name="$Temp_TotalValue" exact="$StationVal" operation="add"/>
+                        <set_value name="$Temp_StationValueBySector.{$Sector}" exact="$StationVal" operation="add"/>
+                        <set_value name="$Temp_TotalValueBySector.{$Sector}" exact="$StationVal" operation="add"/>
+                        <do_if value="$Station.ismilitary">
+                          <set_value name="$Temp_MilitaryStationValue" exact="$StationVal" operation="add"/>
+                          <set_value name="$Temp_MilitaryStationValueBySector.{$Sector}" exact="$StationVal" operation="add"/>
+                        </do_if>
+                        <do_if value="$Station.isshipyard">
+                          <set_value name="$Temp_MajorShipyards" operation="add"/>
+                        </do_if>
+                      </do_if>
+                      <!--Remove from the back of the list-->
+                      <remove_value name="$Stations.last"/>
+                    </do_if>
+                  </actions>
+                  <!--Delay reset by a frame so we're not evaluating everything at once-->
+                  <delay exact="1ms"/>
+                  <actions>
+                    <do_if value="$Stations.count">
+                      <reset_cue cue="this"/>
+                    </do_if>
+                    <do_else>
+                      <signal_cue cue="ValueManager_FinishEval"/>
+                    </do_else>
+                  </actions>
+                </cue>
+
+              </cues>
+            </cue>
+
+            <cue name="ValueManager_FinishEval">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <set_value name="$TotalValue" exact="$Temp_TotalValue"/>
+                <set_value name="$MilitaryShipValue" exact="$Temp_MilitaryShipValue"/>
+                <set_value name="$MilitaryStationValue" exact="$Temp_MilitaryStationValue"/>
+                <set_value name="$MajorShipyards" exact="$Temp_MajorShipyards"/>
+
+                <!--Set the master variables to reference the temp result tables and then have the temp variables forget about them-->
+                <set_value name="$TotalValueBySector" exact="$Temp_TotalValueBySector"/>
+                <set_value name="$ShipValueBySector" exact="$Temp_ShipValueBySector"/>
+                <set_value name="$StationValueBySector" exact="$Temp_StationValueBySector"/>
+                <set_value name="$Temp_TotalValueBySector" exact="table[]"/>
+                <set_value name="$Temp_ShipValueBySector" exact="table[]"/>
+                <set_value name="$Temp_StationValueBySector" exact="table[]"/>
+
+                <set_value name="$MilitaryShipValueBySector" exact="$Temp_MilitaryShipValueBySector"/>
+                <set_value name="$MilitaryStationValueBySector" exact="$Temp_MilitaryStationValueBySector"/>
+                <set_value name="$MilitaryShipValueBySector" exact="table[]"/>
+                <set_value name="$MilitaryStationValueBySector" exact="table[]"/>
+
+                <do_all chance="$DebugChance">
+                  <debug_text text="'$TotalValue ' + $TotalValue"/>
+                  <debug_text text="'$MilitaryShipValue ' + $MilitaryShipValue"/>
+                  <debug_text text="'$MilitaryStationValue ' + $MilitaryStationValue"/>
+                  <debug_text text="'$MajorShipyards ' + $MajorShipyards"/>
+                  <debug_text text="'$MilitaryShipValueBySector num sectors ' + $MilitaryShipValueBySector.keys.count"/>
+                  <debug_text text="'$MilitaryStationValueBySector num sectors ' + $MilitaryStationValueBySector.keys.count"/>
+                </do_all>
+
+                <set_value name="$NextEvalTime" exact="player.age + 30s"/>
+                <reset_cue cue="ValueManager_StartEval"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+      </cues>
+    </cue>
+  </cues>
+
+</mdscript>

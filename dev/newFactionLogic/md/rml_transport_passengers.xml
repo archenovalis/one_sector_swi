@@ -1,0 +1,376 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_Transport_Passengers" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--
+    This RML is intended for use in Master-Missions. 
+    It handles guiding the player to an NPC on station A which then has to be transported to station B. 
+    
+    $feedbackvalue:
+    -106 Containing ship does not exist
+    -105 Cue parameters not defined
+    -104 A Passenger is not on the player ship at the start
+    -103 No DestinationStation or DestinationDock exists
+    -102 $Passengers group is empty
+    -101 $Passengers is not of type group
+    -100: Undefined failure. Defaulted to -100
+    -6 Station no longer has a dock
+    -5: Timeout
+    -4: No EndDock could be found
+    -3: No StartDock could be found
+    -2: Dock destroyed by player
+    -1: Passenger killed
+    1: Passengers Successfully transported-->
+
+    <!--TODO @Owen allow docking at platforms with no mission actor slots if they don't have to stand around-->
+    <library name="TransportPassengers" version="2">
+      <documentation>
+        <todo>
+          <item date="18/07/2011" author="Owen Lake" description="Destination Criteria" priority="medium"/>
+        </todo>
+      </documentation>
+      <params>
+        <param name="EndSignalCue"/>
+        <param name="MissionCue"/>
+        <param name="StartStep" default="1" comment="Briefing step to start the mission on"/>
+        <param name="UpdateBriefing" default="true" comment="Update the briefing objective step when the objective is updated"/>
+
+        <param name="Passengers" comment="List of people templates to transport"/>
+        <param name="Ship" comment="The containing ship of the passengers"/>
+        <param name="DestinationStation" default="null"  comment="Destination station to drop off the passengers"/>
+        <param name="DestinationDock" default="null" comment="Destination dock (i.e landing platform) to drop off the passengers"/>
+        <param name="TimeOut" default="null" comment="Amount of time before the mission fails through time out"/>
+        <param name="CheckEnemy" default="false" comment="Check whether the station or dock is an enemy and end the RML"/>
+
+        <param name="DebugChance" default="0" />
+      </params>
+      <actions>
+        <set_value name="$feedbackvalue" exact="0"/>
+        <create_list name="$ErrorList"/>
+
+        <!--TODO: Check if station or dock exists-->
+        <do_if value="not $EndSignalCue or not $MissionCue">
+          <append_to_list name="$ErrorList" exact="-105"/>
+        </do_if>
+        <do_if value="typeof $Passengers != datatype.list">
+          <append_to_list name="$ErrorList" exact="-101"/>
+        </do_if>
+        <do_elseif value="not $Ship.exists">
+          <append_to_list name="$ErrorList" exact="-106"/>
+        </do_elseif>
+        <do_elseif value="not $DestinationStation and not $DestinationDock">
+          <append_to_list name="$ErrorList" exact="-103"/>
+        </do_elseif>
+        <do_else>
+          <do_if value="$Passengers.count" exact="0">
+            <append_to_list name="$ErrorList" exact="-102"/>
+          </do_if>
+          <do_else>
+            <!--Check all passengers are in the ship-->
+            <set_value name="$ShipPeople" exact="$Ship.people.list"/>
+            <do_all exact="$Passengers.count" counter="$i">
+              <do_if value="not $ShipPeople.indexof.{$Passengers.{$i}}">
+                <append_to_list name="$ErrorList" exact="-104"/>
+                <break/>
+              </do_if>
+            </do_all>
+          </do_else>
+        </do_else>
+      </actions>
+      <cues>
+
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="1"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup"/>
+          </actions>
+        </cue>
+
+        <cue name="StartMission" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="0"/>
+          </conditions>
+          <actions>
+            <debug_text text="'TransportPassengers Start'" chance="$DebugChance" />
+            <set_value name="$EndTime" exact="null"/>
+            <do_if value="@$TimeOut">
+              <do_if value="typeof $TimeOut == datatype.time">
+                <do_if value="$TimeOut" min="1">
+                  <set_value name="$EndTime" exact="player.age + $TimeOut"/>
+                  <signal_cue cue="TimeOut" />
+                </do_if>
+              </do_if>
+            </do_if>
+            <do_if value="$DestinationStation.exists">
+              <do_if value="$UpdateBriefing">
+                <update_mission cue="$MissionCue">
+                  <briefing>
+                    <objective step="$StartStep" action="objective.dockat" object="$DestinationStation"/>
+                  </briefing>
+                </update_mission>
+              </do_if>
+              <set_objective cue="$MissionCue" step="$StartStep" action="objective.dockat" object="$DestinationStation" endtime="$EndTime"/>
+              <signal_cue cue="DestinationStation_Wait" />
+            </do_if>
+            <do_else>
+              <do_if value="$UpdateBriefing">
+                <update_mission cue="$MissionCue">
+                  <briefing>
+                    <objective step="$StartStep" action="objective.dockat" object="$DestinationDock"/>
+                  </briefing>
+                </update_mission>
+              </do_if>
+              <set_objective cue="$MissionCue" step="$StartStep" action="objective.dockat" object="$DestinationDock" endtime="$EndTime"/>
+              <signal_cue cue="DestinationDockDestroyed_Wait" />
+            </do_else>
+          </actions>
+          <cues>
+            <cue name="PlayerDocked" instantiate="true">
+              <conditions>
+                <event_object_docked object="$Ship"/>
+              </conditions>
+              <actions>
+                <set_value name="$Success" exact="true"/>
+                <do_if value="$DestinationStation.exists">
+                  <do_if value="$Ship.container != $DestinationStation">
+                    <set_value name="$Success" exact="false"/>
+                  </do_if>
+                </do_if>
+                <do_if value="$DestinationDock.exists">
+                  <do_if value="$Ship.dock != $DestinationDock">
+                    <set_value name="$Success" exact="false"/>
+                  </do_if>
+                </do_if>
+                <!--TODO: Destination Matching Criteria-->
+
+                <do_if value="$Success" exact="true">
+                  <set_value name="$feedbackvalue" exact="1"/>
+                  <signal_cue cue="Cleanup"/>
+                </do_if>
+              </actions>
+            </cue>
+
+            <cue name="StationFactionBecameEnemy" onfail="cancel">
+              <conditions>
+                <check_value value="$CheckEnemy"/>
+              </conditions>
+              <cues>
+                <cue name="StationFactionBecameEnemy_Check" checkinterval="5s" instantiate="true">
+                  <actions>
+                    <do_if value="$DestinationStation.exists">
+                      <do_if value="$DestinationStation.owner.hasrelation.enemy.{faction.player}">
+                        <set_value name="$feedbackvalue" exact="-2" />
+                        <signal_cue cue="Cleanup" />
+                      </do_if>
+                    </do_if>
+                    <do_else>
+                      <do_if value="$DestinationDock.owner.hasrelation.enemy.{faction.player}">
+                        <set_value name="$feedbackvalue" exact="-2" />
+                        <signal_cue cue="Cleanup" />
+                      </do_if>
+                    </do_else>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <!--TOdO @Owen #EntityTypes event that a person has been removed matching the template of a passenger-->
+            <!--<cue name="PassengerLost" instantiate="true">
+              <conditions>
+                <event_object_destroyed group="$Passengers"/>
+              </conditions>
+              <delay exact="1s" />
+              <actions>
+                <set_value name="$feedbackvalue" exact="-1"/>
+                <signal_cue cue="Cleanup"/>
+              </actions>
+            </cue>-->
+          </cues>
+        </cue>
+
+        <cue name="DestinationDockDestroyed_Wait">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <cues>
+            <cue name="DestinationDockDestroyed">
+              <conditions>
+                <event_object_destroyed object="$DestinationDock" />
+              </conditions>
+              <actions>
+                <debug_text text="'EndDock got destroyed'" chance="$DebugChance" />
+                <do_if value="@event.param.isplayerowned">
+                  <set_value name="$feedbackvalue" exact="-2" />
+                  <signal_cue cue="Cleanup" />
+                  <cancel_cue cue="this"/>
+                </do_if>
+              </actions>
+              <!--Delay so we don't find any docking bays currently being destroyed-->
+              <delay exact="1ms"/>
+              <actions>
+                <find_dockingbay name="$EndDock1" excluded="$DestinationDock" object="$DestinationDock.station">
+                  <match_dock size="$Ship.docksize" walkable="true"/>
+                </find_dockingbay>
+                <do_if value="$EndDock1">
+                  <set_value name="$DestinationStation" exact="$DestinationDock.station" />
+                  <set_value name="$DestinationDock" exact="null" />
+                  <do_if value="$UpdateBriefing">
+                    <update_mission cue="$MissionCue">
+                      <briefing>
+                        <objective step="$StartStep" action="objective.dockat" object="$DestinationStation" endtime="$EndTime"/>
+                      </briefing>
+                    </update_mission>
+                  </do_if>
+                  <set_objective cue="$MissionCue" step="$StartStep" action="objective.dockat" object="$DestinationStation" endtime="$EndTime"/>
+                  <signal_cue cue="DestinationStation_Wait" />
+                  <cancel_cue cue="DestinationDockDestroyed_Wait" />
+                </do_if>
+                <do_else>
+                  <set_value name="$feedbackvalue" exact="-4" />
+                  <signal_cue cue="Cleanup" />
+                </do_else>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="DestinationStation_Wait">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <cues>
+            <cue name="DestinationStation_Destroyed">
+              <conditions>
+                <event_object_destroyed object="$DestinationStation"/>
+              </conditions>
+              <actions>
+                <do_if value="@event.param.isplayerowned">
+                  <set_value name="$feedbackvalue" exact="-2" />
+                  <signal_cue cue="Cleanup" />
+                </do_if>
+                <do_else>
+                  <set_value name="$feedbackvalue" exact="-6" />
+                  <signal_cue cue="Cleanup" />
+                </do_else>
+              </actions>
+            </cue>
+            <cue name="NoDockAvailable" checkinterval="5s">
+              <conditions>
+                <count_dockingbays object="$DestinationStation" exact="0">
+                  <match_dock size="$Ship.docksize" walkable="true"/>
+                </count_dockingbays>
+              </conditions>
+              <actions>
+                <set_value name="$feedbackvalue" exact="-6" />
+                <signal_cue cue="Cleanup" />
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="TimeOut">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <delay exact="$TimeOut" />
+          <actions>
+            <set_value name="$feedbackvalue" exact="-5" />
+            <signal_cue cue="Cleanup" />
+          </actions>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <!--TODO remove_objective-->
+
+            <do_if value="$feedbackvalue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'ERROR: Feedback value is 0 and no error values were set. Defaulting to -100'" chance="$DebugChance" />
+                <set_value name="$feedbackvalue" exact="-100"/>
+              </do_if>
+              <do_else>
+                <set_value name="$feedbackvalue" exact="$ErrorList.{1}"/>
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+                    <do_if value="$ErrorList.{$Counter}" exact="-106">
+                      <set_value name="$FeedbackText" exact="'Containing ship does not exist'"/>
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-105">
+                      <set_value name="$FeedbackText" exact="'Cue parameters not defined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-104">
+                      <set_value name="$FeedbackText" exact="'A Passenger is not on the player ship at the start'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-103">
+                      <set_value name="$FeedbackText" exact="'No DestinationStation or DestinationDock exists'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-102">
+                      <set_value name="$FeedbackText" exact="'$Passengers group is empty'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'$Passengers is not of type group'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-100">
+                      <set_value name="$FeedbackText" exact="'Undefined failure. Defaulted to -100'"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                    </do_else>
+
+                    <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+              <do_if value="$feedbackvalue" exact="-6">
+                <set_value name="$FeedbackText" exact="{30004,6040}" comment="'No dock available'"/>
+              </do_if>
+              <do_if value="$feedbackvalue" exact="-5">
+                <set_value name="$FeedbackText" exact="{30004,6002}" comment="'Timeout'"/>
+              </do_if>
+              <do_elseif value="$feedbackvalue" exact="-4">
+                <set_value name="$FeedbackText" exact="{30004,6040}" comment="'No EndDock could be found'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="-3">
+                <set_value name="$FeedbackText" exact="{30004,6040}" comment="'No StartDock could be found'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="-2">
+                <set_value name="$FeedbackText" exact="{30004,6040}" comment="'Dock turned enemy or was destroyed'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="-1">
+                <set_value name="$FeedbackText" exact="{30004,6043}" comment="'Passenger killed'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="1">
+                <!--<set_value name="$FeedbackText" exact="'Passengers Successfully transported'"/>-->
+              </do_elseif>
+
+              <do_if value="$feedbackvalue" min="1">
+                <debug_text text="'Mission Successful. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_if>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission Failed. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+            <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$feedbackvalue"/>
+            <signal_cue cue="$EndSignalCue"/>
+            <cancel_cue cue="TransportPassengers"/>
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

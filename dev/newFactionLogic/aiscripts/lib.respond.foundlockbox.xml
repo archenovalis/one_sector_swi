@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="utf-8"?>
+<aiscript name="lib.respond.foundlockbox" priority="1" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd">
+  <!-- library script to determine response to finding a lockbox. -->
+  <params>
+    <param name="lockbox"/>
+    <param name="debugchance" default="0"/>
+  </params>
+  <attention min="unknown">
+    <actions>
+      <do_if value="not $lockbox">
+        <debug_text text="'lib.respond.foundlockbox called with no lockbox set'" filter="error"/>
+        <return/>
+      </do_if>
+      <do_elseif value="not $lockbox.exists or not $lockbox.isoperational">
+        <debug_text text="'lib.respond.foundlockbox called with invalid lockbox. exists: %s, isoperational: %s'.[$lockbox.exists, $lockbox.isoperational]" filter="error"/>
+        <return/>
+      </do_elseif>
+
+      <set_value name="$mode" exact="'foundlockbox'"/>
+      <set_value name="$title" exact="{1036, 131}"/>
+      <set_value name="$text" exact="{1036, 133}.[this.assignedcontrolled.name, this.assignedcontrolled.idcode, this.sector.name]"/>
+
+      <!-- trigger interaction if not disabled -->
+      <!-- don't bother the player about common lockboxes -->
+      <do_if value="this.isplayerowned and this.assignedcontrolled.signal.{$mode}.shouldaskplayer and ($lockbox.rarity ge 2)">
+        <show_notification text="$title + '\n' + $text" priority="1" comment="Found Lockbox"/>
+
+        <!-- INTERACTION: found a lockbox -->
+        <run_script name="'player.interaction'" result="$responseresult">
+          <param name="Line" value="11605" comment="We found something out here."/>
+          <param name="UIText" value="{1015, 35}.[this.ship.idcode, this.ship.name]" comment="Requesting Orders"/>
+          <param name="ConversationParam" value="'g_playerownedship_foundlockbox'"/>
+          <param name="MaxQueueDelay" value="10s"/>
+          <param name="caption" value="{1015, 269} + ' - ' + {1016,6}.[this.assignedcontrolled.knownname, this.assignedcontrolled.idcode]" comment="Found a lockbox"/>
+          <param name="debugchance" value="$debugchance"/>
+        </run_script>
+        <do_if value="@$responseresult.{1} and $responseresult.{2}">
+          <set_value name="$response" exact="$responseresult.{1}"/>
+          <set_value name="$responsename" exact="$responseresult.{2}"/>
+        </do_if>
+      </do_if>
+
+      <do_if value="not $lockbox.exists or not $lockbox.isoperational">
+        <!-- lockbox could no longer exist after player.interaction -->
+        <return/>
+      </do_if>
+
+      <do_if value="not @$response">
+        <set_value name="$response" exact="this.assignedcontrolled.signal.{$mode}.response.id"/>
+        <!-- NB: below will not change anything until the matching isplayerowned condition in interrupt.foundlockbox is removed. -->
+        <do_if value="not this.isplayerowned and ((@this.assignedcontrolled.order.id == 'Explore') or (@this.assignedcontrolled.order.id == 'MiningRoutine' and this.assignedcontrolled.order.$resourcescout))">
+          <!-- exploring ships always collect lockboxes they find unless they were explicitly told not to -->
+          <set_value name="$response" exact="'collect'"/>
+        </do_if>
+      </do_if>
+      <do_if value="not @$responsename">
+        <set_value name="$responsename" exact="this.assignedcontrolled.signal.{$mode}.response.name"/>
+      </do_if>
+      <debug_text text="'response: ' + $response" chance="$debugchance"/>
+      <do_if value="this.isplayerowned">
+        <set_known object="$lockbox" known="true"/>
+        <write_to_logbook category="general" title="$title" text="$text + '\n' + {1001, 9322} + {1001, 120} + ' ' + $responsename" interaction="showonmap" object="$lockbox"/>
+      </do_if>
+
+      <!-- act on response based on interaction or defined default -->
+      <do_if value="@$response">
+        <do_if value="($response == 'collect')">
+          <do_if value="this.assignedcontrolled.iscapitalship or not $lockbox.exists or not this.assignedcontrolled.dps.lasers.all">
+            <set_value name="$response" exact="'ignore'"/>
+          </do_if>
+        </do_if>
+        <do_elseif value="not this.isplayerowned and not this.assignedcontrolled.iscapitalship and this.assignedcontrolled.dps.lasers.all">
+          <do_if value="this.trueowner == faction.teladi">
+            <set_value name="$response" exact="'collect'" chance="50"/>
+          </do_if>
+          <do_elseif value="this.zone.policefaction != this.trueowner">
+            <set_value name="$response" exact="'collect'" chance="20"/>
+          </do_elseif>
+        </do_elseif>
+
+        <do_if value="$response == 'collect'">
+          <create_order id="'CollectLockbox'" object="this.assignedcontrolled" immediate="true" override="true">
+            <param name="target" value="$lockbox"/>
+            <param name="debugchance" value="$debugchance"/>
+          </create_order>
+        </do_if>
+        <do_elseif value="$response == 'wait'">
+          <create_order id="'WaitForSignal'" object="this.assignedcontrolled" immediate="true" override="true">
+            <param name="releasesignal" value="['playerownedship_proceed']"/>
+            <param name="timeout" value="0s"/>
+            <param name="debugchance" value="$debugchance"/>
+          </create_order>
+        </do_elseif>
+        <do_elseif value="$response == 'ignore'">
+          <!-- do nothing. resume orders. -->
+        </do_elseif>
+        <do_else>
+          <debug_text text="'unhandled response to signal %s: %s. handle?'.[$mode, $response]" filter="error"/>
+        </do_else>
+      </do_if>
+    </actions>
+  </attention>
+</aiscript>

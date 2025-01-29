@@ -1,0 +1,296 @@
+<?xml version="1.0" encoding="iso-8859-1" ?>
+<aiscript name="lib.ammo.drones" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" priority="1">
+  <params>
+    <param name="object" default="null" />
+    <param name="configentity" default="null" />
+    <param name="order_macrolist" default="null" />
+    <param name="order_warelist" default="null" />
+    <param name="order_pricelist" default="null" />
+    <param name="order_amountlist" default="null" />
+    <param name="raw_warelist" default="null" />
+    <param name="debugchance" default="0" />
+  </params>
+  <attention min="unknown">
+    <actions>
+
+      <do_if value="not $object.exists">
+        <set_value name="$object" exact="this.defensible" />
+      </do_if>
+
+      <do_if value="$object.isclass.station and not $object.tradenpc.exists">
+        <!-- since the manager is required for the trade logic of stations, nothing happens without one -->
+        <return value="false"/>
+      </do_if>
+
+      <!-- in case the lists have not been passed in, set them up now -->
+      <do_if value="not $order_macrolist">
+        <create_list name="$order_macrolist" />
+      </do_if>
+      <do_if value="not $order_warelist">
+        <create_list name="$order_warelist" />
+      </do_if>
+      <do_if value="not $order_pricelist">
+        <create_list name="$order_pricelist" />
+      </do_if>
+      <do_if value="not $order_amountlist">
+        <create_list name="$order_amountlist" />
+      </do_if>
+      <do_if value="not $raw_warelist">
+        <create_list name="$raw_warelist" />
+      </do_if>
+
+      <set_value name="$isplayerowned" exact="$object.isplayerowned"/>
+      <set_value name="$unitcapacity" exact="$object.units.maxcount" />
+      <set_value name="$actualcapacity" exact="$unitcapacity"/>
+      <set_value name="$usedunits" exact="$object.units.count"/>
+      <set_value name="$categorylist" exact="[unitcategory.transport, unitcategory.repair, unitcategory.build, unitcategory.defence]" />
+
+      <!-- build raw warelist, raw_macrolist and default data set based on distribution rules -->
+      <create_list name="$raw_macrolist"/>
+      <do_all exact="$categorylist.count" counter="$c">
+        <set_value name="$category" exact="$categorylist.{$c}" />
+        <set_value name="$maxmk" exact="$category.maxmk" />
+        <do_all exact="$maxmk" counter="$mk">
+          <!-- we stick to the first possible macro for the chosen unitcategory and mk for now -->
+          <set_value name="$macro" exact="@$category.mk.{$mk}.list.{1}"/>
+          <do_if value="$macro">
+            <do_if value="$raw_macrolist.indexof.{$macro} == 0">
+              <append_to_list name="$raw_macrolist" exact="$macro" />
+            </do_if>
+            <!-- make sure the respective ware is in the raw list -->
+            <set_value name="$ware" exact="$macro.ware"/>
+            <do_if value="$ware and $raw_warelist.indexof.{$ware} == 0">
+              <append_to_list name="$raw_warelist" exact="$ware" />
+            </do_if>
+          </do_if>
+        </do_all>
+      </do_all>
+
+      <do_if value="$unitcapacity gt 0">
+
+        <!-- build default data set based on distribution rules -->
+        <create_list name="$default_macros"/>
+        <create_list name="$default_amounts"/>
+        <set_value name="$defaultcapacity" exact="0"/>
+        <evaluate_unit_storage object="$object" categories="$defaultcategories" mks="$defaultmks" amounts="$defaultamounts" macros="$defaultmacros" />
+
+        <do_all exact="$defaultmacros.count" counter="$m">
+          <set_value name="$category" exact="$defaultcategories.{$m}" />
+          <do_if value="$categorylist.indexof.{$category} == 0">
+            <!-- if the defaults reserve some space for a unit type that we are not interested in (e.g. unitcategory.police), subtract that from the available amounts -->
+            <set_value name="$actualcapacity" exact="$defaultamounts.{$m}" operation="subtract"/>
+            <set_value name="$usedunits" exact="$object.units.count - $object.units.{$category}.count"/>
+            <continue />
+          </do_if>
+          <set_value name="$macro" exact="$defaultmacros.{$m}" />
+          <set_value name="$amount" exact="$defaultamounts.{$m}" />
+          <!-- only use the defaults if it's an NPC station OR automatic supply is on for this type -->
+          <do_if value="(not $isplayerowned) or
+                 ($category == unitcategory.transport and @$configentity.$config_supply_automatic_units_trade) or
+                 ($category == unitcategory.defence and @$configentity.$config_supply_automatic_units_defence) or
+                 ($category == unitcategory.build and @$configentity.$config_supply_automatic_units_build) or
+                 ($category == unitcategory.repair and @$configentity.$config_supply_automatic_units_repair)
+          ">
+            <!-- if we have a default distribution defined for this unitcategory and mk then add it to the default dataset (we will deal with rounding issues later) -->
+            <do_if value="$macro">
+              <append_to_list name="$default_macros" exact="$macro"/>
+              <append_to_list name="$default_amounts" exact="$amount"/>
+              <set_value name="$defaultcapacity" exact="$amount" operation="add"/>
+            </do_if>
+          </do_if>
+        </do_all>
+
+        <!--
+        <do_if value="$debugchance gt 0">
+          <do_all exact="$default_macros.count" counter="$m">
+            <debug_text text="'default: %1 of macro %2'.[$default_amounts.{$m}, $default_macros.{$m}]" />
+          </do_all>
+        </do_if>
+        -->
+
+        <create_list name="$want_macrolist"/>
+        <create_list name="$want_amountlist"/>
+
+        <!-- process manually configured amounts -->
+        <set_value name="$usablecapacity" exact="$actualcapacity"/>
+        <do_if value="$isplayerowned and @$configentity.$config_supply_macros.count">
+          <set_value name="$config_macros" exact="$configentity.$config_supply_macros"/>
+          <set_value name="$config_amounts" exact="$configentity.$config_supply_amounts"/>
+          <do_all exact="$raw_macrolist.count" counter="$c">
+            <set_value name="$macro" exact="$raw_macrolist.{$c}"/>
+            <do_if value="$macro">
+              <set_value name="$configindex" exact="$config_macros.indexof.{$macro}"/>
+              <do_if value="$configindex gt 0">
+                <set_value name="$amount" exact="$config_amounts.{$configindex}"/>
+                <!-- add configured supply items to order-list -->
+                <append_to_list name="$want_macrolist" exact="$macro"/>
+                <append_to_list name="$want_amountlist" exact="$amount"/>
+                <!-- reduce usable capacity by the defined amount -->
+                <set_value name="$usablecapacity" exact="$amount" operation="subtract"/>
+                <!-- take manually configured supply out of default list -->
+                <set_value name="$defaultindex" exact="$default_macros.indexof.{$macro}"/>
+                <do_if value="$defaultindex gt 0">
+                  <remove_value name="$default_macros.{$defaultindex}"/>
+                  <remove_value name="$default_amounts.{$defaultindex}"/>
+                </do_if>
+              </do_if>
+            </do_if>
+          </do_all>
+        </do_if>
+
+        <do_if value="($usablecapacity gt 0) and ($defaultcapacity gt 0)">
+          <!-- now add what is left in the defaults to our want lists-->
+          <set_value name="$fraction" exact="[($usablecapacity)f / $defaultcapacity, 1.0f].min"/>
+          <do_all exact="$default_macros.count" counter="$d">
+            <set_value name="$amount" exact="($default_amounts.{$d} * $fraction)i"/>
+            <do_if value="$amount gt 0">
+              <append_to_list name="$want_macrolist" exact="$default_macros.{$d}"/>
+              <append_to_list name="$want_amountlist" exact="$amount"/>
+              <set_value name="$usablecapacity" exact="$amount" operation="subtract"/>
+            </do_if>
+          </do_all>
+        </do_if>
+
+        <do_if value="(not $isplayerowned) and ($usablecapacity gt 0) and ($want_macrolist.count gt 0)">
+          <!-- for NPC stations we distribute the remaining amount over the want-list -->
+          <set_value name="$permacroamount" exact="$usablecapacity / $want_macrolist.count"/>
+          <set_value name="$extra" exact="$usablecapacity % $want_macrolist.count"/>
+          <do_all exact="$want_macrolist.count" counter="$w">
+            <do_if value="$usablecapacity gt 0">
+              <set_value name="$want_amountlist.{$w}" exact="$permacroamount" operation="add"/>
+              <set_value name="$usablecapacity" exact="$permacroamount" operation="subtract"/>
+              <do_if value="$extra gt 0">
+                <set_value name="$want_amountlist.{$w}" operation="add"/>
+                <set_value name="$usablecapacity" operation="subtract"/>
+                <set_value name="$extra" operation="subtract"/>
+              </do_if>
+            </do_if>
+          </do_all>
+        </do_if>
+
+        <do_if value="$isplayerowned and $object.isclass.station and $configentity.exists">
+          <!-- for player stations we store the want-list back to the blackboard of the manager so the menus can display the data -->
+          <do_if value="$configentity.$config_supply_default_macros?">
+            <!-- can't directly set the value as that might overwrite data from lib.ammo.missiles -->
+            <do_all exact="$want_macrolist.count" counter="$m">
+              <set_value name="$macroindex" exact="@$configentity.$config_supply_default_macros.indexof.{$want_macrolist.{$m}}"/>
+              <do_if value="$macroindex gt 0">
+                <!-- update existing entry -->
+                <set_value name="$configentity.$config_supply_default_amounts.{$macroindex}" exact="$want_amountlist.{$m}"/>
+              </do_if>
+              <do_else>
+                <!-- add new entry -->
+                <append_to_list name="$configentity.$config_supply_default_macros" exact="$want_macrolist.{$m}"/>
+                <append_to_list name="$configentity.$config_supply_default_amounts" exact="$want_amountlist.{$m}"/>
+              </do_else>
+            </do_all>
+          </do_if>
+          <do_else>
+            <!-- fresh new list -->
+            <set_value name="$configentity.$config_supply_default_macros" exact="$want_macrolist"/>
+            <set_value name="$configentity.$config_supply_default_amounts" exact="$want_amountlist"/>
+          </do_else>
+        </do_if>
+
+        <do_if value="$debugchance gt 0">
+          <do_all exact="$want_macrolist.count" counter="$m">
+            <set_value name="$macro" exact="$want_macrolist.{$m}"/>
+            <do_if value="$isplayerowned and 
+                   (($macro.unitcategory == unitcategory.transport and not @$configentity.$config_supply_automatic_units_trade) or
+                   ($macro.unitcategory == unitcategory.defence and not @$configentity.$config_supply_automatic_units_defence) or
+                   ($macro.unitcategory == unitcategory.build and not @$configentity.$config_supply_automatic_units_build) or
+                   ($macro.unitcategory == unitcategory.repair and not @$configentity.$config_supply_automatic_units_repair))
+            ">
+              <debug_text text="'want %1(RELATIVE) of macro %2'.[$want_amountlist.{$m}, $macro]" />
+            </do_if>
+            <do_else>
+              <debug_text text="'want %1(ABSOLUTE) of macro %2'.[$want_amountlist.{$m}, $macro]" />
+            </do_else>
+          </do_all>
+        </do_if>
+
+        <debug_text text="'used units: %1, usable capacity: %2, wanted macros: %3'.[$usedunits, $actualcapacity, $want_macrolist]" chance="$debugchance" />
+
+        <!-- now figure out how to distribute the amounts -->
+        <do_all exact="$want_macrolist.count" counter="$w">
+          <set_value name="$macro" exact="$want_macrolist.{$w}"/>
+          <set_value name="$wantamount" exact="$want_amountlist.{$w}"/>
+          <set_value name="$haveamount" exact="$object.units.{$macro}.count" />
+          <do_if value="$isplayerowned and
+                 (($macro.unitcategory == unitcategory.transport and not @$configentity.$config_supply_automatic_units_trade) or
+                 ($macro.unitcategory == unitcategory.defence and not @$configentity.$config_supply_automatic_units_defence) or
+                 ($macro.unitcategory == unitcategory.build and not @$configentity.$config_supply_automatic_units_build) or
+                 ($macro.unitcategory == unitcategory.repair and not @$configentity.$config_supply_automatic_units_repair))
+          ">
+            <!-- player owned and automatic handling is OFF, that means wanted amounts are RELATIVE -->
+            <do_if value="$wantamount gt 0">
+              <!-- buy wantamount -->
+              <set_value name="$needamount" exact="[$wantamount, $actualcapacity - $usedunits].min" />
+            </do_if>
+            <do_else>
+              <!-- sell wantamount -->
+              <set_value name="$needamount" exact="[$wantamount, -$object.units.{$macro}.count].max" />
+            </do_else>
+          </do_if>
+          <do_else>
+            <!-- wanted amounts are ABSOLUTE -->
+            <do_if value="$wantamount gt $haveamount">
+              <!-- buy difference -->
+              <set_value name="$needamount" exact="[$wantamount - $haveamount, $actualcapacity - $usedunits].min" />
+            </do_if>
+            <do_else>
+              <!-- sell difference -->
+              <set_value name="$needamount" exact="[$wantamount - $haveamount, -$object.units.{$macro}.count].max" />
+            </do_else>
+          </do_else>
+          <set_value name="$ware" exact="$macro.ware"/>
+          <do_if value="$ware">
+            <do_if value="$wantamount != 0">
+              <set_value name="$fillpercent" exact="[0.0f, [($haveamount)f / $wantamount, 2.0f].min].max" comment="clamp fillpercent between 0 and 2 or the price calculations will be off!" />
+            </do_if>
+            <do_else>
+              <set_value name="$fillpercent" exact="0.0f" />
+            </do_else>
+            <do_if value="$needamount lt 0">
+              <!-- if automatic handling is OFF, then try to sell excess units-->
+              <do_if value="not $isplayerowned or (
+                     ($macro.unitcategory == unitcategory.transport and not @$configentity.$config_supply_automatic_units_trade) or
+                     ($macro.unitcategory == unitcategory.defence and not @$configentity.$config_supply_automatic_units_defence) or
+                     ($macro.unitcategory == unitcategory.build and not @$configentity.$config_supply_automatic_units_build) or
+                     ($macro.unitcategory == unitcategory.repair and not @$configentity.$config_supply_automatic_units_repair))">
+                <!-- use the average price for selling units -->
+                <set_value name="$price" exact="$ware.averageprice - (($ware.averageprice - $ware.minprice)f * ($fillpercent - 1.0f))" />
+                <debug_text text="'sell %1 %2 for %3Cr each, fillpercent: %4'.[-$needamount, $ware.name, $price/1Cr, $fillpercent]" chance="$debugchance" />
+
+                <append_to_list name="$order_macrolist" exact="$macro" />
+                <append_to_list name="$order_warelist" exact="$ware" />
+                <append_to_list name="$order_pricelist" exact="$price" />
+                <append_to_list name="$order_amountlist" exact="$needamount" />
+              </do_if>
+            </do_if>
+            <do_elseif value="$needamount gt 0">
+              <do_if value="($fillpercent lt 0.7f) or $isplayerowned">
+                <!-- use the average price as the lower end to make sure the offers are attractive -->
+                <set_value name="$price" exact="$ware.averageprice + (($ware.maxprice - $ware.averageprice)f * (1.0f - $fillpercent))" />
+                <append_to_list name="$order_macrolist" exact="$macro" />
+                <append_to_list name="$order_warelist" exact="$ware" />
+                <append_to_list name="$order_pricelist" exact="$price" />
+                <append_to_list name="$order_amountlist" exact="$needamount" />
+                <set_value name="$usedunits" exact="$needamount" operation="add"/>
+              </do_if>
+            </do_elseif>
+          </do_if>
+        </do_all>
+      </do_if>
+
+      <return value="$order_macrolist.count gt 0">
+        <retval name="macros" value="$order_macrolist" />
+        <retval name="wares" value="$order_warelist" />
+        <retval name="prices" value="$order_pricelist" />
+        <retval name="amounts" value="$order_amountlist" />
+        <retval name="raw_wares" value="$raw_warelist" />
+      </return>
+
+    </actions>
+  </attention>
+</aiscript>

@@ -1,0 +1,243 @@
+<?xml version="1.0" encoding="utf-8"?>
+<aiscript name="order.salvage.crush" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" version="6">
+  <order id="SalvageCrush" name="{1041,831}" description="{1041,832}" category="salvage" allowinloop="false">
+    <params>
+      <param name="target" required="true" type="object" text="{1041,10126}" comment="Target. The wreck or scrap cube to salvage.">
+        <input_param name="canbedismantled" value="true"/>
+      </param>
+      <param name="internalorder" type="internal" default="not this.ship.isplayerowned" comment="Will be passed on to move.generic for blacklist enforcement."/>
+      <param name="debugchance" type="bool" default="0" advanced="true" text="{1041,10086}" comment="Print debug output">
+        <input_param name="truevalue" value="100"/>
+      </param>
+    </params>
+    <requires>
+      <match shiptype="shiptype.compactor"/>
+    </requires>
+    <location object="$target" condition="$target.exists"/>
+  </order>
+  <interrupts>
+    <handler ref="SectorChangeHandler"/>
+    <handler ref="TargetInvalidHandler"/>
+    <handler ref="AttackHandler"/>
+    <handler ref="MissileLockHandler" />
+    <handler ref="ScannedHandler"/>
+    <handler ref="InspectedHandler"/>
+    <handler ref="FoundAbandonedHandler"/>
+    <handler ref="FoundLockboxHandler"/>
+    <handler ref="ResupplyHandler"/>
+    <handler ref="TideHandler"/>
+    <handler consume="false">
+      <conditions>
+        <check_any>
+          <event_object_signalled object="this.assignedcontrolled" param="'salvagecrush_abort'"/>
+          <check_all>
+            <event_object_order_cancelled object="this.assignedcontrolled" immediate="false"/>
+            <check_value value="this.assignedcontrolled.order.state == orderstate.critical"/>
+          </check_all>
+        </check_any>
+      </conditions>
+      <actions>
+        <debug_text text="'abort called on %s %s %s with order %s in critical state. handling.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, @this.assignedcontrolled.order.id]" chance="$debugchance"/>
+        <set_value name="$cleanupmasstraffic"/>
+        <abort_called_scripts resume="finish"/>
+      </actions>
+    </handler>
+    <handler>
+      <conditions>
+        <event_object_salvage_claim_lost object="this.assignedcontrolled"/>
+        <check_value value="not $target.dismantlingobject or ($target.dismantlingobject != this.assignedcontrolled)"/>
+      </conditions>
+      <actions>
+        <debug_text text="'%s (%s, %s) lost salvage claim on %s (%s, %s) in %s to %s (%s, %s). aborting.'.[event.object.knownname, event.object.idcode, event.object, @event.param.knownname, @event.param, @event.param.macro, @event.param.sector, @event.param2.knownname, @event.param2.idcode, @event.param2]" chance="$debugchance"/>
+        <abort_called_scripts resume="finish"/>
+      </actions>
+    </handler>
+    <handler>
+      <conditions>
+        <event_unit_destroyed object="this.assignedcontrolled"/>
+        <check_value value="not this.assignedcontrolled.units.{unitcategory.build}.count"/>
+      </conditions>
+      <actions>
+        <debug_text text="'%s %s %s lost all builder drones. aborting.'.[event.object.idcode, event.object.knownname, event.object]" chance="$debugchance"/>
+        <do_if value="@this.assignedcontrolled.order.isrunning">
+          <set_order_failed order="this.assignedcontrolled.order" text="{1045,139}" comment="No available builder drones." recurring="$internalorder"/>
+        </do_if>
+        <set_value name="$cleanupmasstraffic"/>
+        <abort_called_scripts resume="finish"/>
+      </actions>
+    </handler>
+  </interrupts>
+  <patch sinceversion="3">
+    <do_if value="$target.canbedismantled">
+      <debug_text text="this.assignedcontrolled.knownname + ' is assigning ' + $target + ' as the dismantle target'" filter="savegame"/>
+      <assign_dismantling_target object="this.assignedcontrolled" wreck="$target"/>
+    </do_if>
+  </patch>
+  <patch sinceversion="5">
+    <do_if value="not $target.exists">
+      <debug_text text="'PATCH: target no longer exists. cleaning up.'" filter="savegame"/>
+      <do_if value="this.assignedcontrolled.order.state == orderstate.critical">
+        <signal_objects object="this.assignedcontrolled" param="'salvagecrush_abort'"/>
+      </do_if>
+      <do_else>
+        <!-- implicitly restarts the script. script should redirect to finish on passing "not $target.canbedismantled" -->
+        <edit_order_param order="this.assignedcontrolled.order" param="'debugchance'" value="$debugchance"/>
+      </do_else>
+    </do_if>
+  </patch>
+  <patch sinceversion="6">
+    <set_value name="$XP_Category" exact="'ship_dismantle_capship'"/>
+    <do_if value="@$target.isrealclass.station">
+      <set_value name="$XP_Category" exact="'ship_dismantle_station'"/>
+    </do_if>
+  </patch>
+  <attention min="unknown">
+    <actions>
+
+      <do_if value="this.assignedcontrolled.type != shiptype.compactor">
+        <debug_text text="'%s %s %s cannot dismantle objects. aborting.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled]" filter="error"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <do_if value="not $target.canbedismantled">
+        <debug_text text="'%s %s %s %s is not a valid target for dismantling. aborting.'.[@$target.class, @$target.idcode, @$target.knownname, $target]" chance="$debugchance"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <do_if value="not this.assignedcontrolled.units.{unitcategory.build}.count">
+        <do_if value="@this.assignedcontrolled.order.isrunning">
+          <set_order_failed order="this.assignedcontrolled.order" text="{1045,139}" comment="No available builder drones." recurring="$internalorder"/>
+        </do_if>
+        <debug_text text="'no available build drones. aborting.'" chance="$debugchance"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <set_value name="$claimedsalvage" exact="this.assignedcontrolled.claimedsalvage"/>
+      <do_if value="$claimedsalvage and ($claimedsalvage != $target)">
+        <clear_dismantling_target object="this.assignedcontrolled" wreck="$claimedsalvage"/>
+      </do_if>
+      <remove_value name="$claimedsalvage"/>
+      <do_if value="not $target.salvageclaimants.indexof.{this.assignedcontrolled}">
+        <assign_dismantling_target object="this.assignedcontrolled" wreck="$target"/>
+        <do_if value="not $target.salvageclaimants.indexof.{this.assignedcontrolled}">
+          <set_value name="$failedassign"/>
+        </do_if>
+      </do_if>
+
+      <set_command command="command.recycle"/>
+
+      <do_if value="$failedassign? or ($target.dismantlingobject and ($target.dismantlingobject != this.assignedcontrolled))">
+        <do_if value="@this.assignedcontrolled.order.isrunning">
+          <set_order_failed order="this.assignedcontrolled.order" text="{1045,140}" comment="Target is already being dismantled." recurring="$internalorder"/>
+        </do_if>
+        <debug_text text="'target already assigned to %s %s %s. aborting.'.[@$target.dismantlingobject.idcode, @$target.dismantlingobject.knownname, $target.dismantlingobject]" chance="$debugchance"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <!-- done after we have verified that assignment was successfully set. -->
+      <set_region_object_persistence object="$target"/>
+
+      <set_value name="$XP_Category" exact="'ship_dismantle_capship'"/>
+      <do_if value="$target.isrealclass.station">
+        <set_value name="$XP_Category" exact="'ship_dismantle_station'"/>
+      </do_if>
+
+      <debug_text text="'%s (%s, %s) made a salvage claim on %s (%s) in %s.'.[this.assignedcontrolled.knownname, this.assignedcontrolled.idcode, this.assignedcontrolled, $target.knownname, $target, @$target.sector.knownname]" chance="$debugchance"/>
+      <do_if value="$target.bboxdistanceto.{this.assignedcontrolled} gt (this.assignedcontrolled.size + 1km)">
+        <run_script name="'move.generic'" result="$movesuccess">
+          <param name="destination" value="$target"/>
+          <param name="allowwreck" value="true"/>
+          <param name="strictblacklist" value="$internalorder"/>
+          <param name="debugchance" value="$debugchance"/>
+        </run_script>
+        <do_if value="not $movesuccess">
+          <debug_text text="'no path to destination. aborting.'" chance="$debugchance"/>
+          <do_if value="@this.assignedcontrolled.order.isrunning">
+            <set_order_failed order="this.assignedcontrolled.order" text="{1045, 101}" comment="Unable to reach destination." recurring="$internalorder"/>
+          </do_if>
+          <resume label="finish"/>
+        </do_if>
+      </do_if>
+
+      <debug_text text="'movement done.\ntarget: %s %s %s %s\ndistance to target edge: %sm\ndistance to target center: %sm\ntarget size: %sm'.[@$target.realclass, @$target.idcode, @$target.knownname, $target, this.assignedcontrolled.bboxdistanceto.{$target}, this.assignedcontrolled.distanceto.{$target}, $target.size]" chance="$debugchance"/>
+
+      <label name="dismantle"/>
+
+      <do_if value="not $target.canbedismantled">
+        <debug_text text="'%s %s %s %s can no longer be dismantled. aborting.'.[@$target.class, @$target.idcode, @$target.knownname, $target]" chance="$debugchance"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <do_if value="$target.dismantlingobject and ($target.dismantlingobject != this.assignedcontrolled)">
+        <do_if value="@this.assignedcontrolled.order.isrunning">
+          <set_order_failed order="this.assignedcontrolled.order" text="{1045,140}" comment="Target is already being dismantled." recurring="$internalorder"/>
+        </do_if>
+        <debug_text text="'Target already being dismantled by %s %s %s. Aborting.'.[@$target.dismantlingobject.idcode, @$target.dismantlingobject.knownname, $target.dismantlingobject]" chance="$debugchance"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <debug_text text="player.age + ': %s %s %s started dismantling %s %s %s'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, $target.macro, @$target.knownname, $target]" chance="$debugchance"/>
+      <set_order_state order="this.assignedcontrolled.order" state="orderstate.critical"/>
+      <do_if value="$internalorder">
+        <clear_recurring_order_failure object="this.assignedcontrolled" id="this.assignedcontrolled.order.id"/>
+      </do_if>
+      <start_dismantling object="this.assignedcontrolled" wreck="$target"/>
+      <do_if value="not $target.dismantlingobject or ($target.dismantlingobject != this.assignedcontrolled)">
+        <debug_text text="'failed to start_dismantling %s %s %s'.[@$target.macro, @$target.knownname, $target]" chance="$debugchance"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <wait>
+        <interrupt>
+          <conditions>
+            <check_any>
+              <event_object_destroyed object="$target" check="false" />
+              <check_all>
+                <event_object_dismantled_object object="this.assignedcontrolled"/>
+                <check_value value="not $target.canbedismantled"/>
+              </check_all>
+            </check_any>
+          </conditions>
+          <actions>
+            <do_if value="event.name == 'event_object_destroyed'">
+              <debug_text text="'%s (%s, %s) in %s is aborting wait because $target has been destroyed!'.[this.assignedcontrolled.knownname, this.assignedcontrolled.idcode, this.assignedcontrolled, @this.sector.knownname]" chance="$debugchance"/>
+            </do_if>
+          </actions>
+        </interrupt>
+      </wait>
+
+      <detach_from_masstraffic object="this.assignedcontrolled" sinceversion="2" wait="true" />
+
+      <apply_experience entity="this" experience="$XP_Category" factor="1.0"/>
+      <apply_experience object="this.assignedcontrolled" role="entityrole.service" experience="$XP_Category" factor="1.0"/>
+
+      <debug_text text="player.age + ': %s %s %s finished dismantling %s %s.\ntarget can be dismantled: %s'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, @$target.knownname, $target, $target.canbedismantled]" chance="$debugchance"/>
+
+      <label name="finish"/>
+
+      <do_if value="$target.exists">
+        <clear_dismantling_target object="this.assignedcontrolled" wreck="$target"/>
+      </do_if>
+      <do_if value="$cleanupmasstraffic?">
+        <abort_dismantling object="this.assignedcontrolled"/>
+        <detach_from_masstraffic object="this.assignedcontrolled" wait="false" sinceversion="4">
+          <interrupt_after_time time="1s"/>
+        </detach_from_masstraffic>
+      </do_if>
+      <stop_moving object="this.assignedcontrolled"/>
+
+    </actions>
+  </attention>
+  <on_abort>
+    <do_if value="this.assignedcontrolled.isoperational">
+      <do_if value="$target.exists">
+        <clear_dismantling_target object="this.assignedcontrolled" wreck="$target"/>
+      </do_if>
+      <!-- NB: do not abort_dismantling here. aborting involves detaching from masstraffic which blocks, should always be done in finish. -->
+      <stop_moving object="this.assignedcontrolled"/>
+    </do_if>
+    <do_if value="$target.exists">
+      <set_region_object_persistence object="$target" persistent="false"/>
+    </do_if>
+  </on_abort>
+</aiscript>

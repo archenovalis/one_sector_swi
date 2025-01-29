@@ -1,0 +1,160 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<aiscript name="masstraffic.handler.attacked" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" priority="9">
+  <params>
+    <param name="attacker" default="null" />
+    <param name="abortscript" default="false" />
+  </params>
+  <interrupts>
+    <library>
+      <handler name="MassTrafficAttackHandler">
+        <conditions>
+          <event_object_attacked object="this.defensible"/>
+        </conditions>
+        <actions>
+          <set_value name="$abortscript" exact="false" />
+          <!--<debug_text text="'%1(%2) has been attacked by %3(%4)'.[this.ship.knownname, this.ship, event.param.knownname, event.param]" />-->
+          <do_if value="not global.$last_npc_notification?">
+            <set_value name="global.$last_npc_notification" exact="0s"/>
+          </do_if>
+          <do_if value="event.param" exact="player.controlled">
+
+            <set_value name="$Speak" exact="false"/>
+            <set_value name="$Speak_Line" exact="0"/>
+
+            <!--Only say something if no one has said anything for a few seconds-->
+            <do_if value="global.$last_npc_notification" max="player.age - 50s">
+              <set_value name="$Speak" exact="this.page != 0"/>
+            </do_if>
+
+            <!-- TODO: select adequate responses based on type (police, smuggler, civillian...) -->
+            <!-- TODO @Klaus: Improve this to fit other combat usecases better -->
+            <do_if value="$Speak">
+              <do_if value="this.ship.hullpercentage" min="0" max="20">
+                <set_value name="$Speak_Line" list="[10028, 10029]" comment="(hull warning)"/>
+              </do_if>
+              <do_elseif value="this.ship.hullpercentage" max="80">
+                <set_value name="$Speak_Line" list="[10016, 10017, 10018, 10019]" comment="(heavy fire)"/>
+              </do_elseif>
+              <do_elseif value="this.ship.shieldpercentage" min="5" max="50">
+                <set_value name="$Speak_Line" list="[10047, 10048, 10049]" comment="(shields low)"/>
+              </do_elseif>
+              <do_else>
+                <set_value name="$Speak_Line" list="[10047, 10048, 10049]" comment="(mid fire)"/>
+              </do_else>
+            </do_if>
+
+            <do_if value="$Speak_Line">
+              <start_conversation actor="this" conversation="Speak" type="unqueued" convparam="$Speak_Line" />
+              <set_value name="global.$last_npc_notification" exact="player.age"/>
+            </do_if>
+
+            <!--cleanup -->
+            <remove_value name="$Speak"/>
+            <remove_value name="$Speak_Line"/>
+
+          </do_if>
+
+          <!-- <set_value name="this.$attackcounter" operation="add" />
+          <do_if value="this.$attackcounter gt 1"> -->
+          <do_if value="event.param.isoperational">
+            <set_value name="$attacker" exact="event.param" />
+            <do_if value="(player.age - @this.$lastsignal) gt 3s and this.sector">
+              <!-- send a signal to surrounding ships that we've been attacked so they can initiate evasive maneuvers etc. -->
+              <find_gravidar_contact class="class.ship" groupname="$surroundingships" object="this.ship" docked="false" multiple="true">
+                <match_context macro="this.sector.macro"/>
+                <match_distance object="this.ship" max="300m" />
+              </find_gravidar_contact>
+              <do_for_each name="$locship" in="$surroundingships" reverse="true">
+                <do_if value="($locship.sector != this.sector) or not this.assignedcontrolled.cansee.{$locship}">
+                  <remove_from_group group="$surroundingships" object="$locship"/>
+                </do_if>
+              </do_for_each>
+              <do_if value="$surroundingships.count">
+                <signal_objects group="$surroundingships" param="'attack'" param2="event.param" param3="this.ship" />
+                <remove_value name="$surroundingships" />
+                <set_value name="this.$lastsignal" exact="player.age" />
+              </do_if>
+            </do_if>
+          </do_if>
+          <!-- </do_if>
+          <do_else>
+            <set_value name="$abortscript" exact="true" />
+          </do_else> -->
+
+          <run_interrupt_script name="'masstraffic.handler.attacked'">
+            <param name="attacker" value="@$attacker" />
+            <param name="abortscript" value="@$abortscript" />
+          </run_interrupt_script>
+
+        </actions>
+      </handler>
+    </library>
+  </interrupts>
+  <attention min="visible">
+    <actions>
+
+      <do_if value="$abortscript">
+        <return />
+      </do_if>
+
+      <set_value name="$debugchance" exact="0" />
+      <!-- <set_value name="this.$attackcounter" exact="0" /> -->
+
+      <label name="start" />
+      <!-- decide whether to flee or to fight -->
+      <do_if value="this.defensible.dps.all gt 0">
+        <do_if value="@$attacker.isoperational">
+          <do_if value="$attacker.mayattack.{this.ship.commander} or $attacker.mayattack.{this.ship}">
+            <!-- TODO: compare DPS/attackstrength values, also take additional values into account, like fight skill and morale -->
+            <resume label="attack" />
+          </do_if>
+        </do_if>
+        <return />
+      </do_if>
+      <!-- default to fleeing -->
+      <resume label="flee" />
+
+      <!-- ATTACK -->
+      <label name="attack" />
+      <start_attack object="this.ship" target="$attacker" />
+      <run_script name="'order.fight.attack.object'">
+        <param name="primarytarget" value="$attacker" />
+        <param name="escort" value="@this.ship.commander" />
+        <param name="pursuedistance" value="@this.ship.commander.size/2" />
+        <param name="allowothertargets" value="false" />
+      </run_script>
+      <stop_attack object="this.ship" target="$attacker" />
+      <resume label="returntomasstraffic" />
+
+      <!-- FLEE -->
+      <label name="flee" />
+      <run_script name="'masstraffic.flee'" />
+      <resume label="returntomasstraffic" />
+
+      <!-- RETURN TO MASSTRAFFIC -->
+      <label name="returntomasstraffic"/>
+      <do_if value="this.ship.ismasstraffic" >
+        <debug_text text="'Return to masstraffic...'" chance="$debugchance" />
+        <set_flight_behaviour object="this.ship" flightbehaviour="flightbehaviour.closetoobject" />
+        <set_flight_control_model object="this.ship" flightcontrolmodel="flightcontrolmodel.steering" />
+        <return_to_masstraffic object="this.ship" />
+      </do_if>
+
+    </actions>
+  </attention>
+  <attention min="unknown">
+    <actions>
+      <label name="start" />
+      <label name="attack" />
+      <label name="flee" />
+      <label name="returntomasstraffic"/>
+
+      <set_value name="$debugchance" exact="0" />
+      <do_if value="this.ship.exists">
+        <debug_text text="'Generic mass traffic ship self-destructing (OOS)'" chance="$debugchance" />
+        <destroy_object object="this.ship" explosion="false" />
+      </do_if>
+    </actions>
+  </attention>
+
+</aiscript>

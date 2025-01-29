@@ -1,0 +1,343 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<aiscript name="orders.base" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" version="5">
+  <!--
+
+  Base wrapper script to execute all orders.
+
+  Author: Klaus / Adrian
+  Date: 2015-06-26
+
+  -->
+  <interrupts>
+    <handler ref="UseCaseAttackHandler" />
+    <handler ref="ResupplyHandler"/>
+    <handler>
+      <conditions>
+        <check_any>
+
+          <!-- Abort order script if order in non-critical state was cancelled, so we can continue with the next order -->
+          <check_all>
+            <event_object_order_cancelled object="$object" immediate="true" />
+            <!-- Important: The event may be received after the cancelled order returned or was already removed, so a new order could already have started in the meantime. -->
+            <!-- A cancelled order cannot be running any more, so if there is a running order, it is a different one and we should not interrupt. -->
+            <check_value value="not @$object.order.isrunning" />
+          </check_all>
+
+          <!-- If default order is running and a new order is ready to be started, abort the default order handling. -->
+          <!-- In other cases we don't have to (and shouldn't) react to the order_ready event, we just wait for the previous order script to return normally. -->
+          <!-- The order_ready event is triggered also for default orders getting ready, which should not interrupt a running order in the queue. -->
+          <check_all>
+            <!-- Wait until a current order is ready (order attribute is checked whenever the event triggers) -->
+            <event_object_order_ready object="$object" order="$object.order" />
+            <check_value value="$defaultorder and not $object.order.isrunning"/>
+          </check_all>
+
+          <!-- For infinite orders, abort when sync point is released or when a new order is added -->
+          <check_all>
+            <!-- abort when sync point is released -->
+            <event_object_order_syncpoint_released object="$object" />
+            <!-- NOTE: An infinite order that uses the critical state (if it exists at all) cannot use this and has to implement its own events/checks -->
+            <check_value value="$object.order.state != orderstate.critical" />
+          </check_all>
+
+        </check_any>
+        <!-- Ignore these events while a trade computer exists -->
+        <check_value value="@$tradecomputer" negate="true" />
+      </conditions>
+      <actions>
+        <do_if value="this.isplayerowned" chance="0">
+          <debug_text text="'trigger is: %s for object %s (%s). this object is %s (%s). order: %s. this is %s.'.[event.name, $object.knownname, $object, this.object.knownname, this.object, $object.order.id, this.knownname]"/>
+        </do_if>
+        <!--<debug_text text="'aborting ' + event.name + ', defaultorder: ' + @$defaultorder"/>-->
+        <do_if value="event.name == 'event_object_order_syncpoint_released' and event.param == $object.order">
+          <cancel_order order="event.param" keepinloop="true" />
+        </do_if>
+        <abort_called_scripts resume="loop" />
+      </actions>
+    </handler>
+  </interrupts>
+
+  <init>
+    <set_value name="$defaultorder" exact="false" />
+    <set_value name="$object" exact="this.assignedcontrolled" />
+    <do_if value="not $object">
+      <debug_text text="'Script orders.base started on entity that is not a control entity'" filter="error" />
+    </do_if>
+  </init>
+
+  <patch sinceversion="2">
+    <do_if value="@this.$attacktarget">
+      <!-- NB: blackboard variable is set in fight.attack.object.fighter for retrieval by subordinates joining their commander after attack has started. variable must be cleared if $object is no longer doing an attack order or is doing an attack order not directed at the recorded target. -->
+      <do_if value="not @this.$attacktarget.canbeattacked or ($object.order.id != 'Attack') or (($object.order.$primarytarget != this.$attacktarget) and (not @$object.order.$secondarytargets.indexof.{this.$attacktarget}))">
+        <remove_value name="this.$attacktarget"/>
+      </do_if>
+    </do_if>
+  </patch>
+  <patch sinceversion="4">
+    <do_for_each name="$locsub" in="this.assignedcontrolled.subordinates">
+      <do_for_each name="$locorder" in="$locsub.orders" reverse="true">
+        <do_if value="($locorder.id == 'DockAndWait') and ($locorder.$destination == this.assignedcontrolled) and not @this.$recalling_subordinates.indexof.{$locorder}">
+          <cancel_order order="$locorder"/>
+        </do_if>
+      </do_for_each>
+    </do_for_each>
+  </patch>
+  <patch sinceversion="5">
+    <do_if value="@$object.assigneddock and $object.dock != $object.assigneddock and $object.order.id != 'DockAt' and ($object.order.id != 'WaitForVenture' or not $object.assigneddock.isventureronly)">
+      <debug_text text="'PATCH: %s %s %s has an assigned dock at %s %s %s but is not docking. removing docking request.\ncurrent order: %s\nnext order: %s'.[@$object.idcode, @$object.knownname, $object, @$object.assigneddock.container.idcode, @$object.assigneddock.container.knownname, $object.assigneddock.container, @$object.order.id, @$object.nextorder.id]" filter="savegame"/>
+      <remove_docking_request ship="$object" container="$object.assigneddock.container"/>
+    </do_if>
+  </patch>
+
+  <attention min="unknown">
+    <actions>
+
+      <do_if value="this == player.entity">
+        <debug_text text="'Attempted to run orders.base on player entity.'" filter="error"/>
+        <return/>
+      </do_if>
+
+      <label name="loop" />
+
+      <!-- If there's a trade computer, wait until it's done -->
+      <do_while value="$object.tradecomputer">
+        <set_value name="$tradecomputer" exact="true" />
+        <do_if value="not $object.dock">
+          <destroy_object object="$object.tradecomputer" explosion="false"/>
+          <break/>
+        </do_if>
+        <wait exact="1min">
+          <interrupt>
+            <conditions>
+              <event_object_destroyed object="$object.tradecomputer" />
+            </conditions>
+          </interrupt>
+        </wait>
+      </do_while>
+      <do_if value="@$tradecomputer">
+        <debug_text text="'Trade computer removed, resuming control'" />
+        <remove_value name="$tradecomputer" />
+      </do_if>
+
+      <do_if value="@$object.order.state != orderstate.ready">
+        <!-- No order available, use fallback script for default behaviour -->
+        <set_value name="$defaultorder" exact="true" />
+        <!-- request a default order with a lib script that creates a new order -->
+        <run_script name="'lib.request.orders'">
+          <param name="object" value="$object"/>
+        </run_script>
+        <!-- Check if a new order is available -->
+        <do_if value="@$object.order.state != orderstate.ready">
+          <debug_text text="'Script lib.request.orders returned but no new order in the queue'" />
+          <wait exact="100ms" />
+          <resume label="loop" />
+        </do_if>
+      </do_if>
+
+      <do_if value="$object.order.isinloop">
+        <signal_objects object="$object" param="'resupply'" param2="[false]" param3="0" comment="param2 = [urgent?, resupplystationID], param3 = $debugchance"/>
+      </do_if>
+
+      <!-- Order is ready to be started -->
+      <!-- In case the ship is docked, first create an immediate undock order
+            NB: ships that are docked do not have to park to trade.
+            ships that are parked do have to dock to have anything built. -->
+      <!-- undocking for TransferWorkers handled in the corresponding script. -->
+      <do_if value="$object.isclass.ship and ($object.dock or $object.parkedat) and ($object.order.id != 'Undock') and ($object.order.id != 'TransferWorkers')">
+        <debug_text text="'docked? %1. parked? %2. present order: %3. next order: %4'.[$object.dock, $object.parkedat, @$object.order.id, @$object.nextorder.id]" chance="0"/>
+
+        <!-- NB: remove releasesignal params in Undock calls if we remove the undock-specific requirement to tell a ship to proceed. -->
+        <do_if value="(not $object.dock or (if $object.isunit then $object.dock.isunitdockingallowed else $object.dock.isdockingallowed))
+                        and ($object.order.trade
+                          or $object.order.build
+                          or ($object.order.id == 'DockAt')
+                          or ($object.order.id == 'DockAndWait')
+                          or ((($object.order.id == 'Wait') or ($object.order.id == 'WaitForSignal')) and $object.order.$allowdocked and not $object.iscapitalship and not @$object.dock.container.isclass.buildstorage)
+                          or (($object.order.id == 'WaitForSignal') and $object.order.$allowparked)
+                          or ($object.order.id == 'Repair')
+                          or ($object.order.id == 'Equip')
+                          or ($object.order.id == 'Recycle')
+                          or ($object.order.id == 'Escort')
+                          or ($object.order.id == 'Assist')
+                          or ($object.order.id == 'Resupply')
+                          or ($object.order.id == 'Player_DockToTrade')
+                          or ($object.order.id == 'AssignCommander')
+                          or ($object.order.id == 'DepositInventory')
+                          or ($object.order.id == 'Venture')
+                          or ($object.order.id == 'WaitForVenture')
+                          or ($object.order.id == 'MoveDie'))">
+          <do_if value="$object.dock">
+            <set_value name="$parkingcontainer" exact="$object.dock.container"/>
+          </do_if>
+          <do_elseif value="$object.parkedat">
+            <do_if value="$object.parkedat.container">
+              <set_value name="$parkingcontainer" exact="$object.parkedat.container"/>
+            </do_if>
+            <do_else>
+              <set_value name="$parkingcontainer" exact="$object.parkedat"/>
+            </do_else>
+          </do_elseif>
+
+          <do_if value="$object.order.trade and @$object.order.trade.exchangepartner.{$object}.isoperational">
+            <!-- we have to undock to trade if: -->
+            <debug_text text="'condition 3: %s, loccontainer: %s, loccontainer is not exchangepartner: %s, has no common context: %s'.[($object.container and ($object.container != $object.order.trade.exchangepartner.{$object}) and not $object.order.trade.exchangepartner.{$object}.hascontext.{$object.container}), $object.container, ($object.container != $object.order.trade.exchangepartner.{$object}), not $object.order.trade.exchangepartner.{$object}.hascontext.{$object.container}]" chance="0"/>
+            <!-- we are docked, -->
+            <do_if value="$object.dock">
+              <!-- we are not docked at exchangepartner,
+                and exchangepartner is not docked at us,
+                and we and exchangepartner are not docked at the same container -->
+              <do_if value="not $object.hascontext.{$object.order.trade.exchangepartner.{$object}} and not $object.order.trade.exchangepartner.{$object}.hascontext.{$object} and not $object.order.trade.exchangepartner.{$object}.hascontext.{$object.container}">
+                <set_value name="$undock"/>
+              </do_if>
+              <!-- or we are trading with a station and our current dock is not equipped for trades. -->
+              <do_elseif value="not $object.order.trade.isshiptoship and not @$object.dock.istradingallowed">
+                <set_value name="$undock"/>
+              </do_elseif>
+            </do_if>
+            <!-- or we are parked at exchangepartner, (currently only used by capship to capship ware exchange) -->
+            <do_elseif value="$object.parkedat and ($parkingcontainer != $object.order.trade.exchangepartner.{$object})">
+              <set_value name="$undock"/>
+            </do_elseif>
+          </do_if>
+          <do_elseif value="$object.order.build and ($object.order.build.object != $parkingcontainer or ($parkingcontainer.isclass.station and not @$object.dock.isbuildingallowed))">
+            <set_value name="$undock"/>
+          </do_elseif>
+          <do_elseif value="($object.order.id == 'DockAt' or $object.order.id == 'DockAndWait') and $object.isunit and $object.commander and (@$object.dock.container == $object.commander) and ($object.order.$destination == $object.commander)">
+            <!-- defence drone is docked at its owner and has an order dock and wait where it's docked. can happen if a shoal of drones is launched and the commander of the shoal either docks or dies before all subordinates have launched. -->
+            <debug_text text="'unit %s %s %s is docked at %s %s %s and has orders to dock at it. collecting.'.[$object.idcode, $object.knownname, $object, $object.dock.container.idcode, $object.dock.container.knownname, $object.dock.container]" chance="0"/>
+            <do_if value="$object.commander.units.{$object.unitcategory}.count gt $object.commander.availableunits.{$object.unitcategory}.count">
+              <collect_unit object="$object.commander" unit="$object"/>
+            </do_if>
+            <do_else>
+              <destroy_object object="$object" explosion="false"/>
+            </do_else>
+            <wait sinceversion="1"/>
+          </do_elseif>
+          <do_elseif value="($object.order.id == 'DockAt' or $object.order.id == 'DockAndWait') 
+                    and (($object.order.$destination != $parkingcontainer) 
+                      or ($object.dock.exists 
+                        and (($object.order.$ventureplatform != $object.dock.ventureplatform) 
+                          or ($object.order.$building and $parkingcontainer.isclass.station and not @$object.dock.isbuildingallowed) 
+                          or ($object.order.$trading and $parkingcontainer.isclass.station and not @$object.dock.istradingallowed) 
+                          or (not $object.order.$allowplayeronly and $object.dock.isplayeronly))))">
+            <set_value name="$undock"/>
+          </do_elseif>
+          <do_elseif value="$object.order.id == 'Player_DockToTrade' and ($object.order.$destination != $parkingcontainer or not $object.dock.istradingallowed)">
+            <set_value name="$undock"/>
+          </do_elseif>
+          <do_elseif value="$object.order.id == 'Repair' and $object.order.$destination != $parkingcontainer">
+            <set_value name="$undock"/>
+          </do_elseif>
+          <!-- undock handling for non-carrier-based ships that are docked at their commander moved to order.fight.escort to deal with carrier vs non-carrier differentiation. -->
+          <do_elseif value="$object.order.id == 'Escort' and not $object.allcommanders.indexof.{$parkingcontainer}">
+            <set_value name="$undock"/>
+          </do_elseif>
+          <do_elseif value="$object.order.id == 'Assist' and @$object.order.$baseorder.id != 'DockAndWait'">
+            <set_value name="$undock"/>
+          </do_elseif>
+          <!-- NB: the Resupply script is an evaluation script. all actions are done by orders that Resupply add. so you don't have to move until after resupply is done, and in case of checks after just finishing a part of Resupply (such as Repair), further resupply actions will likely be done at the same station. -->
+          <do_elseif value="$object.order.id == 'Resupply'">
+            <!-- do not undock -->
+          </do_elseif>
+          <do_elseif value="($object.order.id == 'DepositInventory') 
+                     and (($object.order.$destination and ($object.order.$destination != $parkingcontainer)) 
+                      or (not $object.order.$destination and ($parkingcontainer != $object.trueowner.headquarters)))">
+            <debug_text text="'destination: %s %s %s, parkingcontainer: %s %s %s, parkingcontainer == headquarters: %s'.[@$object.order.$destination.idcode, @$object.order.$destination.knownname, $object.order.$destination, @$parkingcontainer.idcode, @$parkingcontainer.knownname, $parkingcontainer, $parkingcontainer == this.trueowner.headquarters]" chance="0"/>
+            <set_value name="$undock"/>
+          </do_elseif>
+          <do_elseif value="($object.order.id == 'MoveDie') and (not $object.order.$atstation or not $object.hascontext.{$object.order.$atstation})">
+            <set_value name="$undock"/>
+          </do_elseif>
+          <remove_value name="$parkingcontainer"/>
+        </do_if>
+        <do_else>
+          <set_value name="$undock"/>
+          <set_value name="$uselaunchtubes" exact="@$object.dock.islaunchtube or (@$object.dock.isstorage and (($object.order.id == 'Attack') or ($object.order.id == 'Lasertower')))"/>
+        </do_else>
+      </do_if>
+
+      <do_if value="global.$Time_PlayerStoppedControl? and (this != player.entity) and (@global.$LastPlayerShip == $object) and $object.isplayerowned">
+        <do_if value="player.shouldplayertaxiwaitforplayer and player.age le global.$Time_PlayerStoppedControl + 1min">
+          <!-- NB: order below can be removed if one of three conditions is met:
+              - player takes over the same ship (via md.Setup.PlayerControlledChanged)
+              - player takes over a different ship that is not of class spacesuit (via md.Setup.PlayerControlledChanged)
+              - or player signals the pilot to proceed (signal sent via menu_interactmenu or md.Conversations, order then completes.)
+
+              var: global.$WaitForSignalID removed in the same cases and at the same logical locations. -->
+          <do_if value="global.$WaitForSignalID? and global.$WaitForSignalID.exists">
+            <debug_text text="'WaitForSignal or DockAndWait order was about to be added due to the player getting up, but another ship already has this order. ship will not wait.'" filter="error"/>
+          </do_if>
+          <do_elseif value="$object.order">
+            <do_if value="$object.dock">
+              <do_if value="$undock?">
+                <create_order name="global.$WaitForSignalID" object="$object" id="'DockAndWait'" immediate="true">
+                  <param name="destination" value="$object.dock.container"/>
+                  <param name="releasesignal" value="['playerownedship_proceed']"/>
+                </create_order>
+              </do_if>
+              <remove_value name="$undock"/>
+              <remove_value name="$uselaunchtubes"/>
+            </do_if>
+            <do_elseif value="$object.order.id != 'WaitForSignal' or $object.order.$releasesignal != ['playerownedship_proceed']">
+              <create_order name="global.$WaitForSignalID" object="$object" id="'WaitForSignal'" immediate="true">
+                <param name="releasesignal" value="['playerownedship_proceed']"/>
+                <param name="timeout" value="0s"/>
+                <param name="alignwithecliptic" value="false"/>
+              </create_order>
+            </do_elseif>
+            <debug_text text="'%s %s taking over command of %s %s from the player. time since player rescinded control: %ss'.[this.name, this, this.assignedcontrolled.name, this.assignedcontrolled, player.age - global.$Time_PlayerStoppedControl]" chance="0"/>
+          </do_elseif>
+        </do_if>
+      </do_if>
+
+      <do_if value="$undock?">
+        <create_order object="$object" id="'Undock'" immediate="true">
+          <param name="releasesignal" value="if $object.isplayerowned and not this.$skipwait? and @$object.dock.isdockingallowed then ['playerownedship_proceed'] else null"/>
+          <param name="skipwait" value="this.$skipwait? or not @$object.dock.isdockingallowed"/>
+          <param name="uselaunchtubes" value="@$uselaunchtubes"/>
+        </create_order>
+      </do_if>
+      <!-- implicitly checks not $object.dock -->
+      <do_elseif value="@$object.assigneddock and $object.dock != $object.assigneddock and $object.order.id != 'DockAt' and ($object.order.id != 'WaitForVenture' or not $object.assigneddock.isventureronly)">
+        <debug_text text="'%s %s %s has an assigned dock at %s %s %s but is not docking. removing docking request.\ncurrent order: %s\nnext order: %s'.[@$object.idcode, @$object.knownname, $object, @$object.assigneddock.container.idcode, @$object.assigneddock.container.knownname, $object.assigneddock.container, @$object.order.id, @$object.nextorder.id]" chance="0"/>
+        <remove_docking_request ship="$object" container="$object.assigneddock.container"/>
+      </do_elseif>
+      <remove_value name="$undock"/>
+      <remove_value name="$uselaunchtubes"/>
+      <!-- set in order.wait and order.dock.wait if a new order becomes ready. -->
+      <remove_value name="this.$skipwait"/>
+
+      <!-- Process new order in queue / default order -->
+      <set_value name="$defaultorder" exact="$object.order == $object.defaultorder" />
+      <!--<do_if value="$object.dock and $object.order and $object.order.id != 'Undock' and not ($object.order.trade or $object.order.build or $object.order.id == 'DockAt' or $object.order.id == 'DockAndWait' or ((($object.order.id == 'Wait') or ($object.order.id == 'WaitForSignal')) and $object.order.$allowdocked and not $object.iscapitalship) or (($object.order.id == 'WaitForSignal') and $object.order.$allowparked) or $object.order.id == 'Repair' or $object.order.id == 'Equip' or $object.order.id == 'Escort' or $object.order.id == 'Resupply' or $object.order.id == 'Player_DockToTrade' or $object.order.id == 'AssignCommander')">
+        <debug_text text="'%s %s %s %s about to execute order %s while docked'.[$object.class, $object.idcode, $object.knownname, $object, $object.order.id]" chance="0"/>
+        <assert value="false" text="'check debug output for ' + this" break="always"/>
+      </do_if>-->
+      <debug_text text="'%s %s starting %s order'.[$object.knownname, $object, $object.order.id]" chance="0"/>
+      <run_order_script order="$object.order" />
+
+      <!-- set in interrupt.tide. exists only if signal could not be acted upon when sent. -->
+      <do_if value="this.$fleetide?">
+        <signal_objects object="this.assignedcontrolled" param="this.$fleetide.{1}" param2="this.$fleetide.{2}"/>
+        <remove_value name="this.$fleetide"/>
+      </do_if>
+
+      <!-- Delay to prevent infinite loop, just in case the default order script returns immediately -->
+      <do_if value="$defaultorder and $object.order == $object.defaultorder">
+        <!-- Default order finished, but there's no order ready in the queue -->
+        <do_if value="$object.defaultorder">
+          <debug_text text="'Default order script %s returned but no new order in the queue'.[$object.defaultorder.id]" />
+          <!--<assert value="false" text="'check output log for %s %s'.[this.knownname, this]" break="always"/>-->
+        </do_if>
+        <do_else>
+          <debug_text text="'Default order script cancelled itself and returned without a delay, but no new order in the queue'"/>
+        </do_else>
+        <wait exact="100ms" />
+      </do_if>
+
+      <!-- Return to process orders -->
+      <resume label="loop" />
+
+    </actions>
+  </attention>
+</aiscript>

@@ -1,0 +1,651 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="Tutorial_map_advanced" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+    <cue name="Start" namespace="this">
+      <conditions>
+        <event_cue_signalled cue="md.Setup.Start" />
+      </conditions>
+      <actions>
+        <do_if value="not md.$TutorialRegister?">
+          <set_value name="md.$TutorialRegister" exact="[]" />
+        </do_if>
+        <append_to_list name="md.$TutorialRegister" exact="Start" />
+      </actions>
+      <cues>
+        <cue name="PlayerDied">
+          <conditions>
+            <event_object_destroyed object="player.entity" />
+          </conditions>
+          <actions>
+            <cancel_cue cue="Start" />
+          </actions>
+        </cue>
+
+        <cue name="Trigger" checkinterval="5s" version="2">
+          <conditions>
+            <check_value value="not md.$SurpressTutorials?" />
+            <check_value value="player.computer" />
+            <!--count_ships owner="faction.player" space="player.cluster" comment="player has another ship with a pilot nearby">
+              <match_content controlpost="controlpost.aipilot"/>
+            </count_ships-->
+          </conditions>
+          <actions>
+            <set_value name="$DebugChance" exact="0"/>
+            <set_value name="$MissionName" exact="' 9) ' + readtext.{30194}.{1}" />
+            <set_value name="$Guide" exact="player.computer" />
+            <create_offer cue="Start" actor="$Guide" name="$MissionName" description="readtext.{30194}.{2}" difficulty="level.trivial" faction="faction.player" type="missiontype.tutorial">
+              <briefing>
+                <objective step="1" action="objective.custom" customaction="{30194,20}"/>
+                <objective step="2" action="objective.custom" customaction="{30194,21}"/>
+                <objective step="3" action="objective.custom" customaction="{30194,22}"/>
+              </briefing>
+            </create_offer>
+          </actions>
+          <patch sinceversion="2">
+            <do_if value="Start.hasmissionoffer">
+              <set_value name="$MissionName" exact="' 9) ' + readtext.{30194}.{1}" />
+              <update_offer cue="Start" name="$MissionName"/>
+            </do_if>
+          </patch>
+          <cues>
+            <cue name="Offer">
+              <cues>
+                <cue name="ConversationStarted" instantiate="true">
+                  <conditions>
+                    <event_conversation_started actor="$Guide" conversation="mission" convparam="Start" />
+                  </conditions>
+                  <actions>
+                    <remove_help all="true" />
+                    <open_conversation_menu menu="MissionBriefingMenu" param="[0, 0, Start, true]" />
+                  </actions>
+                  <cues>
+                    <cue name="ConversationNextSection" instantiate="true">
+                      <conditions>
+                        <event_conversation_next_section actor="$Guide" choiceparam="Start" />
+                      </conditions>
+                      <actions>
+                        <!-- Accept case -->
+                        <do_if value="event.param == 'c_mission_accept'">
+                          <signal_cue cue="Tutorial" />
+                        </do_if>
+                      </actions>
+                    </cue>
+
+                    <cue name="ConversationFinished">
+                      <conditions>
+                        <event_conversation_finished actor="$Guide" />
+                      </conditions>
+                      <actions>
+                        <cancel_cue cue="ConversationStarted" />
+                      </actions>
+                    </cue>
+
+                    <cue name="AcceptMission">
+                      <conditions>
+                        <event_object_signalled object="$Guide" param="'accept'" />
+                      </conditions>
+                      <actions>
+                        <signal_cue cue="Tutorial" />
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="Tutorial">
+              <conditions>
+                <check_any>
+                  <event_cue_signalled />
+                  <event_object_signalled object="player.entity" param="'start'" param2="Start" />
+                </check_any>
+              </conditions>
+              <actions>
+                <debug_text text="'Tutorial can begin'" chance="$DebugChance" />
+                <cancel_cue cue="Offer" />
+                <signal_cue_instantly cue="md.Tutorials.NewTutorialTriggered" param="Start" />
+                <set_value name="$TutorialStartTime" exact="player.age" />
+                <create_mission cue="Start" offercue="Start" />
+                <cancel_conversation actor="$Guide" />
+                <remove_offer cue="Start" />
+                <remove_help all="true" />
+                <set_value name="$StartDelay" exact="2s"/>
+                <remove_help all="true"/>
+
+                <find_ship_by_true_owner name="$PlayerShipsNear" faction="faction.player" hascontrolentity="controlpost.aipilot" space="player.galaxy" multiple="true" />
+
+                <do_if value="($PlayerShipsNear.count == 0) and player.ship">
+                  <show_help line="6001" duration="7s" position="1" force="true" comment="For this tutorial you need..."/>
+                  <show_notification text="{1015,407}" sound="notification_warning" />
+                  <remove_mission cue="Start" type="aborted" />
+                  <signal_cue cue="Cleanup" />
+                </do_if>
+                <do_else>
+                  <show_help line="1001" duration="7s" position="1" force="true" width="140" comment="You can abort this tutorial in the Active Missions menu " />
+                </do_else>
+              </actions>
+              <cues>
+
+                <cue name="Abort">
+                  <conditions>
+                    <event_mission_aborted cue="Start" />
+                  </conditions>
+                  <actions>
+                    <remove_help all="true"/>
+                    <remove_mission cue="Start" type="aborted" />
+                    <signal_cue cue="Cleanup" />
+                  </actions>
+                </cue>
+
+                <cue name="Abort_OtherTutorialStarted">
+                  <conditions>
+                    <event_cue_signalled cue="md.Tutorials.NewTutorialTriggered" />
+                    <check_value value="event.param != Start" />
+                  </conditions>
+                  <actions>
+                    <remove_help all="true"/>
+                    <show_notification text="{1015,400}" sound="notification_warning" comment="Tutorial aborted" />
+                    <remove_mission cue="Start" type="aborted"/>
+                    <signal_cue cue="Cleanup" />
+                  </actions>
+                </cue>
+
+                <cue name="Tutorial_Init">
+                  <delay exact="$StartDelay"/>
+                  <actions>
+                    <!--Create a list of tutorial cues to trigger in what order, and what briefing step they point to-->
+                    <!-- -->
+                    <set_value name="$SignalList" exact="[
+                                [Tutorial_Orders, 1],
+                                [Tutorial_OrderQueue, 2],
+                                [Tutorial_ShipBehaviour, 3],
+                    ]"/>
+
+                    <set_value name="$Index" exact="0"/>
+                    <signal_cue cue="Tutorial_TriggerNext"/>
+
+                  </actions>
+                </cue>
+
+                <cue name="Tutorial_TriggerNext" instantiate="true">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <set_value name="$Index" operation="add"/>
+                    <do_if value="$Index gt $SignalList.count">
+                      <remove_help all="true"/>
+                      <debug_text text="'Squads tutorial has been completed'" chance="$DebugChance" />
+                      <show_help line="1002" position="1" force="true" comment="Tutorial Completed!"/>
+                      <show_help line="1003" position="1" force="true" comment="Press $INPUT_ACTION_HELP$ to try other tutorials."/>
+                      <remove_mission cue="Start" type="tutorialcompleted" />
+                      <signal_cue cue="Cleanup" />
+                    </do_if>
+                    <do_else>
+                      <signal_cue cue="$SignalList.{$Index}.{1}"/>
+                      <set_value name="$CurrentStep" exact="$SignalList.{$Index}.{2}"/>
+                      <set_objective_from_briefing cue="Start" step="$CurrentStep"/>
+                    </do_else>
+                  </actions>
+                </cue>
+
+                <cue name="Tutorial_Orders">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <set_value name="$MenuWasOpen" exact="false"/>
+                    <set_value name="$PropTabWasOpen" exact="false"/>
+                    <set_value name="$FlyToWasOpen" exact="false"/>
+                    <show_help_multi log="false" position="1" force="true" allowclose="false" width="200">
+                      <text line="992" comment="These yellow-framed boxes are tips. Click the arrow after you have read them to proceed to the next one."/>
+                    </show_help_multi>
+                    <do_if value="player.input.controller">
+                      <show_help line="5004" position="1" force="true" comment="Open Map (Controller)" allowclose="false" timeout="false"/>
+                    </do_if>
+                    <do_else>
+                      <show_help line="5001" position="1" force="true" comment="Press $INPUT_ACTION_OPEN_MAP$ to open the MAP menu" allowclose="false" timeout="false"/>
+                    </do_else>
+                  </actions>
+                  <cues>
+
+                    <cue name="Tutorial_Orders_Debug" instantiate="true">
+                      <conditions>
+                        <event_cue_signalled/>
+                      </conditions>
+                      <actions>
+                        <create_ship name="$TheLastShip" zone="player.zone" macro="macro.ship_arg_m_frigate_01_a_macro">
+                          <pilot group="argon.pilot">
+                            <owner exact="faction.player"/>
+                          </pilot>
+                          <owner exact="faction.player"/>
+                          <position object="player.entity" exact="4km"/>
+                        </create_ship>
+                      </actions>
+                    </cue>
+
+                    <cue name="Tutorial_Orders_MenuOpen">
+                      <conditions>
+                        <event_ui_triggered screen="'MapMenu'" control="''"/>
+                      </conditions>
+                      <actions>
+                        <remove_help all="true" />
+                        <set_value name="$MenuWasOpen" exact="true"/>
+                      </actions>
+                      <delay exact="0.5s"/>
+                      <actions>
+                        <show_help_overlay id="'map_sidebar_propertyowned'" highlightonly="true" />
+                        <show_help line="6010" position="1" force="true" comment="Open the PROPERTY OWNED tab to see all your ships" allowclose="false" timeout="false"/>
+                      </actions>
+                      <cues>
+
+                        <cue name="Tutorial_Orders_PropertyOwnedOpen" version="2">
+                          <conditions>
+                            <event_ui_triggered screen="'MapMenu'" control="'propertyowned'"/>
+                          </conditions>
+                          <actions>
+                            <remove_help all="true" />
+                            <remove_help_overlay id="'map_sidebar_propertyowned'"/>
+                            <set_value name="$PropTabWasOpen" exact="true"/>
+                            <set_value name="$SelectedShip" exact="false"/>
+                            <set_value name="$OpenContextMenu" exact="false"/>
+                            <show_help_multi log="false" position="1" force="true" allowclose="false">
+                              <text line="6020" comment="The ship you are currently inside, is brighter than all others"/>
+                            </show_help_multi>
+                          </actions>
+                          <patch sinceversion="2">
+                            <set_value name="$SelectedShip" exact="false"/>
+                            <set_value name="$OpenContextMenu" exact="false"/>
+                          </patch>
+                          <cues>
+
+                            <cue name="Tutorial_Orders_ShipSelected">
+                              <conditions>
+                                <event_ui_triggered screen="'hintclosed'" control="'6020'"/>
+                              </conditions>
+                              <actions>
+                                <show_help line="6030" comment="Select one of the other ships" position="1" force="true" allowclose="false" timeout="false"/>
+                              </actions>
+                              <cues>
+
+                                <cue name="Tutorial_Orders_ShipWasSelected">
+                                  <conditions>
+                                    <event_ui_triggered screen="'MapMenu'" control="'selection_ship'"/>
+                                    <check_value value="component.{event.param3}.owner == faction.player"/>
+                                  </conditions>
+                                  <actions>
+                                    <remove_help all="true"/>
+                                  </actions>
+                                  <delay exact="0.5s"/>
+                                  <actions>
+                                    <set_value name="$SelectedShip" exact="true"/>
+                                    <show_help line="if player.input.controller then 6101 else 6100" duration="5s" comment="Open a context menu anywhere on the map" position="1" force="true" allowclose="false" timeout="false"/>
+                                  </actions>
+                                  <cues>
+
+                                    <cue name="Tutorial_Orders_ContextMenuOpen_v4">
+                                      <conditions>
+                                        <event_ui_triggered screen="'InteractMenu'" control="''"/>
+                                      </conditions>
+                                      <actions>
+                                        <remove_help all="true"/>
+                                        <set_value name="$OpenContextMenu" exact="true"/>
+                                        <show_help line="6110"  position="1" force="true" duration="5s" comment="The menu now shows ACTIONS for the previous selected ship"/>
+                                        <show_help line="6120" position="1" duration="4s" force="true" comment="Select the FLY TO action" allowclose="false" timeout="false"/>
+                                      </actions>
+                                      <cues>
+
+                                        <cue name="Tutorial_Orders_ContextMenuHintClosed_v4">
+                                          <conditions>
+                                            <event_ui_triggered screen="'hintclosed'" control="'6110'"/>
+                                          </conditions>
+                                          <actions>
+                                            <show_help_overlay id="'interactmenu_flyto'" highlightonly="true"/>
+                                          </actions>
+                                          <cues>
+                                            <cue name="Tutorial_Orders_FlyToAction_v5">
+                                              <conditions>
+                                                <event_ui_triggered screen="'InteractMenu'" control="'flyto'"/>
+                                              </conditions>
+                                              <actions>
+                                                <remove_help all="true" />
+                                                <remove_help_overlay id="'interactmenu_flyto'"/>
+                                                <set_value name="$FlyToWasOpen" exact="true"/>
+                                                <show_help_multi log="false" position="1" force="true" allowclose="false" width="200">
+                                                  <text line="6021" comment="The map now shows the target position for the fly to order"/>
+                                                  <text line="6122" comment="You can move this position around by dragging it"/>
+                                                  <text line="6130" comment="Rotate the map to see the order line in 3D"/>
+                                                  <text line="if player.input.controller then 6143 else 6141" comment="Click and drag anywhere on the command line to add a waypoint / Press $INPUT_STATE_CONTROLLERMOUSEBUTTON_LEFT$ anywhere on the command line and drag to add a waypoint."/>
+                                                  <text line="6142" comment="Commands can lead anywhere in 3D space."/>
+                                                </show_help_multi>
+                                                <show_help_overlay id="'interactmenu_removethisorder'" highlightonly="true"/>
+                                                <do_if value="player.input.controller">
+                                                  <show_help line="6151" position="1" force="true" comment="(Controller)Open a context menu anywhere on the map" allowclose="false" timeout="false"/>
+                                                </do_if>
+                                                <do_else>
+                                                  <show_help line="6150" position="1" force="true" comment="Right click on the waypoint and select DELETE." allowclose="false" timeout="false"/>
+                                                </do_else>
+                                              </actions>
+                                              <cues>
+
+                                                <cue name="Tutorial_Orders_RemoveOrder_v5">
+                                                  <conditions>
+                                                    <check_any>
+                                                      <event_ui_triggered screen="'InteractMenu'" control="'removethisorder'"/>
+                                                      <event_ui_triggered screen="'InteractMenu'" control="'removeallorders'"/>
+                                                    </check_any>
+                                                  </conditions>
+                                                  <actions>
+                                                    <remove_help all="true"/>
+                                                    <remove_help_overlay id="'interactmenu_removethisorder'"/>
+                                                    <signal_cue cue="Tutorial_TriggerNext"/>
+                                                    <cancel_cue cue="Tutorial_Orders"/>
+                                                  </actions>
+                                                </cue>
+                                              </cues>
+                                            </cue>
+
+                                          </cues>
+                                        </cue>
+
+                                      </cues>
+                                    </cue>
+
+                                  </cues>
+                                </cue>
+
+                              </cues>
+                            </cue>
+                          </cues>
+                        </cue>
+                      </cues>
+                    </cue>
+
+                  </cues>
+                </cue>
+
+                <cue name="Tutorial_OrderQueue">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <show_help line="6200" position="1" force="true" comment="In the behavior menu all orders given to a ship are shown in a queue"/>
+                    <set_value name="$InfoWasOpen" exact="false"/>
+                    <set_value name="$BehaviourWasOpen" exact="false"/>
+                    <set_value name="$ExploreAdded" exact="false"/>
+                    <set_value name="$ExploreRemoved" exact="false"/>
+                  </actions>
+                  <delay exact="0.5s"/>
+                  <actions>
+                    <show_help_overlay id="'map_sidebar_information'" highlightonly="true"/>
+                    <show_help line="6212" position="1" force="true" comment="Open the INFO menu." allowclose="false" timeout="false"/>
+                  </actions>
+                  <cues>
+
+                    <cue name="Tutorial_OrderQueue_InfoOpen">
+                      <conditions>
+                        <event_ui_triggered screen="'MapMenu'" control="'info'"/>
+                      </conditions>
+                      <actions>
+                        <remove_help_overlay id="'map_sidebar_information'"/>
+                        <set_value name="$InfoWasOpen" exact="true"/>
+                        <remove_help all="true" />
+                      </actions>
+                      <delay exact="0.5s"/>
+                      <actions>
+                        <show_help_overlay id="'mapst_ao_orderqueue'" highlightonly="true"/>
+                        <show_help line="6214" position="1" force="true" comment="Select the BEHAVIOUR TAB." allowclose="false" timeout="false"/>
+                      </actions>
+                      <cues>
+
+                        <cue name="Tutorial_OrderQueue_BehaviourOpen" version="2">
+                          <conditions>
+                            <event_ui_triggered screen="'MapMenu'" control="'orderqueue'"/>
+                          </conditions>
+                          <actions>
+                            <remove_help_overlay id="'mapst_ao_orderqueue'"/>
+                            <set_value name="$BehaviourShipSelected" exact="false"/>
+                            <remove_help all="true" />
+                            <set_value name="$BehaviourWasOpen" exact="true"/>
+                          </actions>
+                          <delay exact="0.5s"/>
+                          <actions>
+                            <show_help line="6030" comment="Select one of your other ships." duration="5s" position="1" force="true" allowclose="false" timeout="false"/>
+                            <show_help_overlay id="'interactmenu_explore'" highlightonly="true"/>
+                          </actions>
+                          <patch sinceversion="2">
+                            <set_value name="$BehaviourShipSelected" exact="false"/>
+                          </patch>
+                          <cues>
+
+                            <cue name="Tutorial_OrderQue_ShipWasSelected">
+                              <conditions>
+                                <event_ui_triggered screen="'MapMenu'" control="'selection_ship'"/>
+                                <check_value value="component.{event.param3}.owner == faction.player"/>
+                              </conditions>
+                              <actions>
+                                <remove_help all="true"/>
+                                <set_value name="$BehaviourShipSelected" exact="true"/>
+                                <show_help line="if player.input.controller then 6211 else 6210" duration="10s" position="1" force="true" comment="Right click an area in space and add an EXPLORE order" allowclose="false" timeout="false"/>
+                              </actions>
+                              <cues>
+
+                              </cues>
+                            </cue>
+
+                            <cue name="Tutorial_OrderQueue_ExploreAdd">
+                              <conditions>
+                                <event_ui_triggered screen="'InteractMenu'" control="'explore'"/>
+                              </conditions>
+                              <actions>
+                                <remove_help_overlay id="'interactmenu_explore'"/>
+                                <set_value name="$ExploreAdded" exact="true"/>
+                                <remove_help all="true" />
+                                <show_help_multi log="false" position="1" force="true" allowclose="false" width="200">
+                                  <text line="6220" comment="Note how the EXPLORE order was added at the end of the queue"/>
+                                  <text line="6221" comment="Orders can be moved up or down or can be deleted in the BEHAVIOR menu"/>
+                                </show_help_multi>
+                              </actions>
+                              <delay exact="0.5s"/>
+                              <actions>
+                                <show_help_overlay id="'map_orderqueue'" highlightonly="true"/>
+                              </actions>
+                              <cues>
+                                <cue name="Tutorial_OrderQueueHintClose">
+                                  <conditions>
+                                    <event_ui_triggered screen="'hintclosed'" control="'6220'"/>
+                                  </conditions>
+                                  <actions>
+                                    <remove_help_overlay id="'map_orderqueue'"/>
+                                  </actions>
+                                  <delay exact="0.5s"/>
+                                  <actions>
+                                    <show_help_overlay id="'map_ordercancel'" highlightonly="true"/>
+                                    <show_help line="6222" position="1" force="true" comment="Delete the EXPLORE order" allowclose="false" timeout="false"/>
+                                  </actions>
+                                </cue>
+                                
+                                <cue name="Tutorial_OrderQueue_ExploreRemoved">
+                                  <conditions>
+                                    <check_any>
+                                      <event_ui_triggered screen="'MapMenu'" control="'deleteallorders'" comment="clicked the 'delete all' button"/>
+                                      <event_ui_triggered screen="'MapMenu'" control="'deleteorder'" comment="deleted specified order"/>
+                                      <event_ui_triggered screen="'InteractMenu'" control="'removethisorder'" comment="clicked the 'delete all' button in the context menu"/>
+                                      <event_ui_triggered screen="'InteractMenu'" control="'removeallorders'" comment="deleted specified order in context menu"/>
+                                    </check_any>
+                                  </conditions>
+                                  <actions>
+                                    <remove_help_overlay all="true"/>
+                                    <remove_help_overlay id="'map_ordercancel'"/>
+                                    <signal_cue cue="Tutorial_TriggerNext"/>
+                                    <cancel_cue cue="Tutorial_OrderQueue"/>
+                                  </actions>
+                                </cue>
+                              </cues>
+                            </cue>
+
+                          </cues>
+                        </cue>
+                      </cues>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="Tutorial_ShipBehaviour">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <remove_help all="true" />
+                  </actions>
+                  <delay exact="0.5s"/>
+                  <actions>
+                    <show_help_overlay id="'map_defaultorder'" highlightonly="true"/>
+                    <show_help_multi log="false" position="1" force="true" allowclose="false" width="200">
+                      <text line="6300" comment="Below the ORDER QUEUE you see the ships default BEHAVIOR"/>
+                      <text line="6310" comment="A behavior is a PERMANENT assignment for a ship"/>
+                    </show_help_multi>
+                    <set_value name="$PropertyOwnedOpened" exact="false"/>
+                    <set_value name="$BehaviourChanged" exact="false"/>
+                    <set_value name="$DefendDone" exact="false"/>
+                  </actions>
+                  <cues>
+                    <cue name="Tutorial_ShipBehaviour_HintClose">
+                      <conditions>
+                        <event_ui_triggered screen="'hintclosed'" control="'6300'"/>
+                      </conditions>
+                      <actions>
+                        <remove_help_overlay id="'map_defaultorder'"/>
+                      </actions>
+                      <delay exact="0.5s"/>
+                      <actions>
+                        <show_help_overlay id="'map_behaviourassignement'" highlightonly="true"/>
+                        <show_help line="6311" position="1" force="true" comment="Click on the BEHAVIOR to change it" allowclose="false" timeout="false"/>
+                      </actions>
+                      <cues>
+                       
+                      </cues>
+                    </cue>
+
+                    <cue name="Tutorial_ShipBehaviour_Changed">
+                      <conditions>
+                        <event_ui_triggered screen="'MapMenu'" control="'DefaultBehaviour'"/>
+                      </conditions>
+                      <actions>
+                        <set_value name="$BehaviourChanged" exact="true"/>
+                        <remove_help_overlay id="'map_behaviourassignement'"/>
+                        <remove_help all="true" />
+                      </actions>
+                      <delay exact="1s"/>
+                      <actions>
+                        <show_help_multi log="false" position="18" force="true" allowclose="false" width="200">
+                          <text line="6320" comment="Some behavior require a CAPTAIN with higher SKILL level"/>
+                          <text line="6321" comment="The captain will gain higher skills during his assignments"/>
+                        </show_help_multi>
+                        <set_value name="$PropertyOwnedOpened" exact="false"/>
+                      </actions>
+                      <delay exact="2s"/>
+                      <actions>
+                        <show_help_overlay id="'map_sidebar_propertyowned'" highlightonly="true" />
+                      </actions>
+                      <cues>
+                        <cue name="Tutorial_ShipBehaviour_PropertyOwned">
+                          <conditions>
+                            <event_ui_triggered screen="'hintclosed'" control="'6320'"/>
+                          </conditions>
+                          <actions>
+                            <show_help line="6400" position="18" force="true" comment="Open the PROPERTY OWNED list" allowclose="false" timeout="false"/>
+                          </actions>
+                          <cues>
+
+                            <cue name="Tutorial_ShipBehaviour_PropertyOwnedOpen" version="2">
+                              <conditions>
+                                <event_ui_triggered screen="'MapMenu'" control="'propertyowned'"/>
+                              </conditions>
+                              <actions>
+                                <remove_help_overlay id="'map_sidebar_propertyowned'"/>
+                                <remove_help all="true"/>
+                                <set_value name="$InteractOpened" exact="false"/>
+                                <set_value name="$PropertyOwnedOpened" exact="true"/>
+                                <show_help line="if player.input.controller then 6411 else 6410" duration="5s" position="1" force="true" comment="Select your second ship and then RIGHT CLICK on your current ship" allowclose="false" timeout="false"/>
+                              </actions>
+                              <patch sinceversion="2">
+                                <set_value name="$InteractOpened" exact="false"/>
+                                <set_value name="$PropertyOwnedOpened" exact="true"/>
+                              </patch>
+                              <cues>
+
+                                <cue name="Tutorial_ShipBehaviour_ContextDefend">
+                                  <conditions>
+                                    <event_ui_triggered screen="'InteractMenu'" control="''"/>
+                                  </conditions>
+                                  <actions>
+                                    <remove_help all="true"/>
+                                    <set_value name="$InteractOpened" exact="true"/>
+                                  </actions>
+                                  <delay exact="0.5s"/>
+                                  <actions>
+                                    <show_help_overlay id="'interactmenu_assign_defence'" highlightonly="true"/>
+                                    <show_help line="6420" duration="5s" position="1" force="true" comment="Assign the ship to DEFEND your current ship" allowclose="false" timeout="false"/>
+                                  </actions>
+                                </cue>
+
+                                <cue name="Tutorial_ShipBehaviour_Defend">
+                                  <conditions>
+                                    <event_ui_triggered screen="'InteractMenu'" control="'assign'"/>
+                                  </conditions>
+                                  <actions>
+                                    <set_value name="$DefendDone" exact="true"/>
+                                    <remove_help_overlay id="'interactmenu_assign_defence'"/>
+                                    <remove_help all="true" />
+                                    <show_help line="6430" position="1" force="true" comment="You have now set up a squad."/>
+                                  </actions>
+                                  <cues>
+                                    <cue name="Tutorial_ShipBehaviour_Defend_DoneDelayed">
+                                      <conditions>
+                                        <event_ui_triggered screen="'hintclosed'" control="'6430'"/>
+                                      </conditions>
+                                      <actions>
+                                        <signal_cue cue="Tutorial_TriggerNext"/>
+                                        <cancel_cue cue="Tutorial_ShipBehaviour"/>
+                                      </actions>
+                                    </cue>
+                                  </cues>
+                                </cue>
+                              </cues>
+                            </cue>
+                          </cues>
+                        </cue>
+                      </cues>
+                    </cue>
+                  </cues>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="Cleanup">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <remove_help_overlay all="true"/>
+                <debug_text text="'cleanup'" chance="$DebugChance"/>
+                <do_if value="$BriefingCutsceneStarted?">
+                  <stop_cutscene key="$CutsceneKey"/>
+                </do_if>
+                <do_if value="$Beacons?">
+                  <destroy_group group="$Beacons"/>
+                </do_if>
+                <remove_offer cue="Start"/>
+                <remove_mission cue="Start" />
+                <reset_cue cue="Trigger"/>
+              </actions>
+            </cue>
+
+          </cues>
+        </cue>
+
+      </cues>
+    </cue>
+  </cues>
+</mdscript>

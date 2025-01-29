@@ -1,0 +1,325 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_Race_Timetrial" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--
+    $feedbackvalue:
+    -104: The first of $TrackObjects is not in the $StartSector
+    -103: $StartSector is not valid
+    -102: No valid track objects
+    -101: EndSignalCue or MissionCue not defined
+    -100: Undefined failure. Defaulted to -100
+    -1: $Ship was destroyed
+    -2: No remaining $TrackObjects
+    1: Finished all laps-->
+    
+    <library name="RaceTimetrial">
+      <params>
+        <param name="EndSignalCue" />
+        <param name="MissionCue" />
+        <param name="ReportSignalCue" default="null"  comment="Cue to be signalled during the mission with various feedback"/>
+        <param name="StartStep"       default="1" />
+        <param name="UpdateBriefing"  default="true" />
+        
+        <param name="ObjectiveText"                   comment="Objective text. Objective action is 'Race'"/>
+        <param name="TrackObjects"                    comment="List of trigger objects to fly through" />
+        <param name="Laps"            default="1"     comment="Number of laps to complete"/>
+        <param name="StartSector"                     comment="Sector to start the race from"/>
+        <param name="StartPos"                        comment="Sector position to start the race from"/>
+        <param name="StartRadius"     default="500m"/>
+        <param name="Ship"            default="null"  comment="Ship which must be flown. If omitted, the player can fly any ship"/>
+        <!--TODO Min lap time-->
+        
+        <param name="DebugChance"     default="0" />
+      </params>
+      <actions>
+        <set_value name="$feedbackvalue" exact="0"/>
+        <create_list name="$ErrorList" />
+
+        <do_if value="not $MissionCue or not $EndSignalCue">
+          <append_to_list name="$ErrorList" exact="-101" />
+        </do_if>
+
+        <do_if value="not $TrackObjects.count">
+          <append_to_list name="$ErrorList" exact="-102" />
+        </do_if>
+
+        <do_if value="not $StartSector.exists">
+          <append_to_list name="$ErrorList" exact="-103" />
+        </do_if>
+
+        <do_if value="$TrackObjects.{1}.sector != $StartSector">
+          <append_to_list name="$ErrorList" exact="-103" />
+        </do_if>
+      </actions>
+      <cues>
+        <cue name="SignalCleanUp" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count != 0" />
+          </conditions>
+          <actions>
+            <signal_cue cue="CleanUp" />
+          </actions>
+        </cue>
+        
+        <cue name="Start" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count == 0" />
+          </conditions>
+          <actions>
+            <do_if value="$UpdateBriefing">
+              <update_mission cue="$MissionCue">
+                <briefing>
+                  <objective step="$StartStep" action="objective.race" text="$ObjectiveText"/>
+                </briefing>
+              </update_mission>
+            </do_if>
+            <set_value name="$LastObjective" exact="null"/>
+            <set_value name="$StartObject" exact="$TrackObjects.{1}"/>
+          </actions>
+          <cues>
+            <cue name="ShipChecker" onfail="cancel">
+              <conditions>
+                <check_value value="$Ship.isoperational and $Ship.isclass.ship"/>
+              </conditions>
+              <cues>
+                <cue name="ShipDestroyed">
+                  <conditions>
+                    <event_object_destroyed object="$Ship"/>
+                  </conditions>
+                  <actions>
+                    <set_value name="$FeedbackValue" exact="-1" />
+                    <signal_cue cue="CleanUp" />
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+            
+            <cue name="FlyToStart">
+              <actions>
+                <set_value name="$PlayerControlled" exact="player.controlled"/>
+                <!--Check if the player is flying a ship-->
+                <do_if value="$Ship and $PlayerControlled != $Ship">
+                  <set_objective cue="$MissionCue" step="$StartStep" action="objective.embark" object="$Ship" silent="$LastObjective == 'embark'" updatebriefing="true"/>
+                  <set_value name="$LastObjective" exact="'embark'"/>
+                </do_if>
+                <do_elseif value="not $Ship and not $PlayerControlled">
+                  <set_objective cue="$MissionCue" step="$StartStep" action="objective.embark" text="{30004,1056}" silent="$LastObjective == 'embark'" updatebriefing="true"/>
+                  <set_value name="$LastObjective" exact="'embark'"/>
+                </do_elseif>
+                
+                <!--Check if the ship is in the correct location-->
+                <do_elseif value="player.sector != $StartSector or $PlayerControlled.distanceto.[$StartSector, $StartPos] gt 500m">
+                  <set_objective cue="$MissionCue" step="$StartStep" action="objective.flyto" object="$StartSector" offset="$StartPos" radius="$StartRadius" silent="$LastObjective == 'flyto'" updatebriefing="true"/>
+                  <set_value name="$LastObjective" exact="'flyto'"/>
+                </do_elseif>
+
+                <do_elseif value="$PlayerControlled.speed gt 2m">
+                  <set_objective cue="$MissionCue" step="$StartStep" action="objective.hold_position" object="$StartSector" offset="$StartPos" radius="$StartRadius" silent="$LastObjective == 'hold'" updatebriefing="true"/>
+                  <set_value name="$LastObjective" exact="'hold'"/>
+                </do_elseif>
+
+                <do_else>
+                  <!--<set_value name="$ShipPos" exact="$PlayerControlled.relativeposition.{$StartSector}"/>-->
+                  <set_value name="$FirstGatePos" exact="$StartObject.relativeposition.{$StartSector}"/>
+                  <check_object object="$StartObject" result="$LookAtResult">
+                    <match_is_in_view_of object="$PlayerControlled" vertical="10deg" horizontal="10deg"/>
+                  </check_object>
+                  <!--<check_object object="$StartSector" result="$LookAtResult">
+                    <match_is_in_view_of x="$ShipPos.x - $FirstGatePos.x" y="$ShipPos.y - $FirstGatePos.y" z="$ShipPos.z - $FirstGatePos.z" yaw="$PlayerControlled.rotation.yaw" pitch="$PlayerControlled.rotation.pitch" vertical="10deg" horizontal="10deg"/>
+                  </check_object>-->
+                  <!--<debug_text text="$LookAtResult"/>-->
+                  <do_if value="not $LookAtResult">
+                    <set_objective cue="$MissionCue" step="$StartStep" action="objective.lookat" object="$StartSector" offset="$FirstGatePos" silent="$LastObjective == 'lookat'" updatebriefing="true"/>
+                    <set_value name="$LastObjective" exact="'lookat'"/>
+                  </do_if>
+                  <do_elseif value="$LastObjective == 'wait'">
+                    <do_if value="player.age gt $StartTime">
+                      <signal_cue cue="RaceStart"/>
+                      <set_value name="$LastObjective" exact="'start'"/>
+                    </do_if>
+                    <do_else>
+                      <set_objective cue="$MissionCue" step="$StartStep" action="objective.wait" text="'' + (0.5 + $StartTime - player.age)i" object="$StartSector" offset="$FirstGatePos" silent="player.age lt $NextPing" updatebriefing="true"/>
+                      <set_value name="$LastObjective" exact="'wait'"/>
+                      <do_if value="player.age ge $NextPing">
+                        <set_value name="$NextPing" exact="player.age + 1s"/>
+                      </do_if>
+                    </do_else>
+                  </do_elseif>
+                  <do_else>
+                    <set_value name="$StartTime" exact="player.age + 3s"/>
+                    <set_value name="$NextPing" exact="player.age + 1s"/>
+                    <set_objective cue="$MissionCue" step="$StartStep" action="objective.wait" text="'' + (0.5 + $StartTime - player.age)i" object="$StartSector" offset="$FirstGatePos" silent="false" updatebriefing="true"/>
+                    <set_value name="$LastObjective" exact="'wait'"/>
+                  </do_else>
+                </do_else>
+              </actions>
+              <delay exact="if $LastObjective == 'wait' then 50ms else 2s"/>
+              <actions>
+                <do_if value="$LastObjective != 'start'">
+                  <reset_cue cue="FlyToStart"/>
+                </do_if>
+              </actions>
+            </cue>
+
+            <cue name="RaceStart">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <set_value name="$CurrentLap" exact="1"/>
+                <set_value name="$LapStartTime" exact="player.age"/>
+                <set_value name="$RaceStartTime" exact="player.age"/>
+                <set_value name="$Target" exact="null"/>
+                <do_if value="$ReportSignalCue">
+                  <signal_cue_instantly cue="$ReportSignalCue" param="table[$id = 'race_started']"/>
+                </do_if>
+              </actions>
+              <cues>
+                <cue name="RaceStart_FlyTo">
+                  <actions>
+                    <do_for_each in="$TrackObjects" counter="$i" reverse="true">
+                      <do_if value="not $TrackObjects.{$i}.exists">
+                        <remove_value name="$TrackObjects.{$i}"/>
+                      </do_if>
+                    </do_for_each>
+
+                    <do_if value="$TrackObjects.count == 0">
+                      <set_value name="$Target" exact="null"/>
+                      <set_value name="$FeedbackValue" exact="-2" />
+                      <signal_cue cue="CleanUp"/>
+                      <cancel_cue cue="this"/>
+                    </do_if>
+
+                    <do_elseif value="not $Target.exists">
+                      <set_value name="$Target" exact="$TrackObjects.{1}"/>
+                    </do_elseif>
+                    <do_else>
+                      <do_if value="$Target == $TrackObjects.last">
+                        <set_value name="$Target" exact="null"/>
+                        <do_if value="$Laps gt 0 and $CurrentLap ge $Laps">
+                          <set_value name="$FeedbackValue" exact="1" />
+                          <signal_cue cue="CleanUp"/>
+                          <cancel_cue cue="this"/>
+                        </do_if>
+                        <do_else>
+                          <do_if value="$ReportSignalCue">
+                            <signal_cue_instantly cue="$ReportSignalCue" param="table[$id = 'lap_finished', $lap = $CurrentLap, $laptime = (player.age - $LapStartTime), $racetime = (player.age - $RaceStartTime)]"/>
+                          </do_if>
+                          <set_value name="$CurrentLap" operation="add"/>
+                          <set_value name="$LapStartTime" exact="player.age"/>
+                          <reset_cue cue="this"/>
+                        </do_else>
+                      </do_if>
+                      <do_else>
+                        <set_value name="$Target" exact="$TrackObjects.{$TrackObjects.indexof.{$Target} + 1}"/>
+                      </do_else>
+                    </do_else>
+                    <do_if value="$Target">
+                      <set_objective cue="$MissionCue" step="$StartStep" action="objective.flyto" object="$Target" updatebriefing="true"/>
+                    </do_if>
+                  </actions>
+                  <cues>
+                    <cue name="TargetTriggered">
+                      <conditions>
+                        <event_object_triggered object="$Target"/>
+                        <check_any>
+                          <check_value value="$Ship and event.param == $Ship and $Ship == player.controlled"/>
+                          <check_value value="not $Ship and event.param == player.controlled"/>
+                        </check_any>
+                      </conditions>
+                      <actions>
+                        <signal_cue_instantly cue="$ReportSignalCue" param="table[$id = 'checkpoint', $lap = $CurrentLap, $laptime = (player.age - $LapStartTime), $racetime = (player.age - $RaceStartTime), $checkpoint = $TrackObjects.indexof.{$Target}]"/>
+                        <reset_cue cue="RaceStart_FlyTo"/>
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+              </cues>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="CleanUp">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <actions>
+            <!--
+    $feedbackvalue:
+    -104: The first of $TrackObjects is not in the $StartSector
+    -103: $StartSector is not valid
+    -102: No valid track objects
+    -101: EndSignalCue or MissionCue not defined
+    -100: Undefined failure. Defaulted to -100
+    -1: $Ship was destroyed
+    -2: No remaining $TrackObjects
+    1: Finished all laps-->
+            <do_if value="$FeedbackValue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'ERROR - $FeedbackValue is zero and no error values were set. Defaulting to -100'" chance="$DebugChance" />
+                <set_value name="$FeedbackValue" exact="-100" />
+              </do_if>
+              <do_else>
+                <set_value name="$FeedbackValue" exact="$ErrorList.{1}" />
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+                    <do_if value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'The first of $TrackObjects is not in the $StartSector'" />
+                    </do_if>
+
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-102">
+                      <set_value name="$FeedbackText" exact="'No valid track objects'" />
+                    </do_elseif>
+
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-103">
+                      <set_value name="$FeedbackText" exact="'$StartSector is not valid'" />
+                    </do_elseif>
+
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-104">
+                      <set_value name="$FeedbackText" exact="'The first of $TrackObjects is not in the $StartSector'" />
+                    </do_elseif>
+
+                    <debug_text text="'Mission Error. Feedback ID: ' + $ErrorLst.{$Counter} + ' - ' + $FeedbackText"  filter="error"/>
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+
+              <do_if value="$FeedbackValue" exact="1">
+                <set_value name="$FeedbackText" exact="'Finished all laps'" />
+              </do_if>
+              <do_elseif value="$FeedbackValue" exact="-1">
+                <set_value name="$FeedbackText" exact="'$Ship was destroyed'" />
+              </do_elseif>
+              <do_elseif value="$FeedbackValue" exact="-2">
+                <set_value name="$FeedbackText" exact="'No remaining $TrackObjects'" />
+              </do_elseif>
+
+              <do_if value="$FeedbackValue" min="1">
+                <debug_text text="'Mission successful. Feedback ID: ' + $FeedbackValue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_if>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission failed. Feedback ID: ' + $FeedbackValue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+
+            <do_if value="$EndSignalCue">
+              <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+              <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$FeedbackValue" />
+              <signal_cue cue="$EndSignalCue" />
+            </do_if>
+            <cancel_cue cue="RaceTimetrial" />
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

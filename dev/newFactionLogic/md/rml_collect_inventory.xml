@@ -1,0 +1,323 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_Collect_Inventory" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--
+    $feedbackvalue:
+    Mission Errors <=-100
+    -104: EndSignalCue was not defined while FinishOnCompletion is true 
+    -103: no valid entry in $WaresParam
+    -102: MissionCue not defined
+    -101: Provided $WaresParam is not a table
+    -100: Undefined failure. Defaulted to -100
+    
+    Player Fails
+    
+    Player Success
+    1: Player collected all wares
+    2: Player already had all wares-->
+
+    <library name="CollectInventory" version="3">
+      <params>
+        <param name="EndSignalCue" default="null" comment="Must be provided if FinishOnCompletion is true"/>
+        <param name="MissionCue"/>
+        <param name="StartStep" default="1" comment="Briefing step to start the mission on"/>
+        <param name="UpdateBriefing" default="true" comment="Update the briefing objective step when the objective is updated"/>
+        <param name="Objective" default="objective.collect" comment="Objective type for collecting the inventory"/>
+        <param name="ObjectiveObject" default="null" comment="optional"/>
+        <param name="ObjectiveGroup" default="null" comment="optional, if provided, ignores ObjectiveObject" />
+
+        <param name="WaresParam" comment="Table of inventory wares table.{$ware} = amount"/>
+        <param name="FinishOnCompletion" default="true" comment="Finish when all wares completed. false means that the caller has to end the library.
+               Useful if you want to handle the player losing the wares"/>
+
+        <param name="CollectedWareSignalCue" default="null" comment="Fired when the player has collected a ware. param == ware"/>
+        <param name="LostWareSignalCue" default="null" comment="Fired when the player has lost a ware dropping it below the wanted amount. param == ware"/>
+        <param name="AllCollectedSignalCue" default="null" comment="Fired when the player has collected all wares"/>
+
+        <param name="DebugChance" default="0"/>
+      </params>
+      <actions>
+        <set_value name="$feedbackvalue" exact="0"/>
+        <create_list name="$ErrorList"/>
+
+        <do_if value="not $MissionCue">
+          <append_to_list name="$ErrorList" exact="-102"/>
+        </do_if>
+        <do_if value="$FinishOnCompletion">
+          <do_if value="not $EndSignalCue">
+            <append_to_list name="$ErrorList" exact="-104"/>
+          </do_if>
+        </do_if>
+
+        <do_if value="typeof $WaresParam != datatype.table">
+          <append_to_list name="$ErrorList" exact="-101"/>
+        </do_if>
+        <do_elseif value="$WaresParam.keys.count == 0">
+          <append_to_list name="$ErrorList" exact="-103"/>
+        </do_elseif>
+        <do_else>
+
+          <!--Take the ware params and create a new table for use of the RML
+          $Wares.{$ware} = 
+            table.$WantedAmount = target amount of inventory
+            table.$LastAmount = last known held amount of inventory-->
+          <set_value name="$Wares" exact="table[]"/>
+          <do_for_each in="$WaresParam" name="$Ware" valuename="$WareAmount">
+            <do_if value="$Ware.isinventory">
+              <do_if value="$WareAmount gt 0">
+                <set_value name="$NewWareTable" exact="table[]"/>
+                <set_value name="$NewWareTable.$WantedAmount" exact="$WareAmount"/>
+                <set_value name="$NewWareTable.$LastAmount" exact="player.entity.inventory.{$Ware}.count"/>
+                <set_value name="$Wares.{$Ware}" exact="$NewWareTable"/>
+              </do_if>
+              <do_else>
+                <debug_text text="'Error: Provided ware amount is not positive: ' + $WaresParam.{$Counter}"/>
+              </do_else>
+            </do_if>
+            <do_else>
+              <debug_text text="'Error: Provided ware is not an inventory ware: ' + $WaresParam.{$Counter}"/>
+            </do_else>
+          </do_for_each>
+
+          <do_if value="$Wares.keys.count == 0">
+            <append_to_list name="$ErrorList" exact="-103"/>
+          </do_if>
+        </do_else>
+      </actions>
+      <patch sinceversion="2">
+        <set_value name="$FirstRun" exact="true"/>
+      </patch>
+      <patch sinceversion="3" state="complete">
+        <set_value name="$Objective" exact="objective.collect"/>
+        <set_value name="$LastObjectiveWare" exact="null"/>
+
+        <!--convert the old ware list into a table-->
+        <set_value name="$OldWaresList" exact="$Wares"/>
+        <set_value name="$Wares" exact="table[]"/>
+        <do_for_each in="$OldWaresList" name="$OldList">
+          <set_value name="$NewWareTable" exact="table[]"/>
+          <set_value name="$NewWareTable.$WantedAmount" exact="$OldList.{$WaresIndex__Amount}"/>
+          <set_value name="$NewWareTable.$LastAmount" exact="$OldList.{$WaresIndex__Done}"/>
+          <set_value name="$Wares.{$OldList.{$WaresIndex__Ware}}.{$NewWareTable}"/>
+        </do_for_each>
+      </patch>
+      <cues>
+
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="1"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup"/>
+          </actions>
+        </cue>
+
+        <cue name="StartMission" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" exact="0"/>
+          </conditions>
+          <actions>
+            <set_value name="$FirstRun" exact="true"/>
+            <set_value name="$LastObjectiveWare" exact="null"/>
+          </actions>
+          <delay exact="0.5s"/>
+          <actions>
+            <signal_cue cue="Set_Objectives"/>
+          </actions>
+          <cues>
+            <cue name="Set_Objectives" instantiate="true">
+              <conditions>
+                <check_any>
+                  <check_all>
+                    <event_cue_signalled/>
+                    <check_value value="$FirstRun"/>
+                  </check_all>
+                  <event_inventory_added object="player.entity"/>
+                  <event_inventory_removed object="player.entity"/>
+                </check_any>
+              </conditions>
+              <actions>
+                <set_value name="$DoneWares" exact="[]"/>
+                <set_value name="$NeedWares" exact="[]"/>
+
+                <do_for_each in="$Wares" name="$Ware" valuename="$WareTable">
+                  <set_value name="$NewAmount" exact="player.entity.inventory.{$Ware}.count"/>
+                  <do_if value="$LostWareSignalCue and $NewAmount lt $WareTable.$LastAmount">
+                    <!--Player had enough of a ware but lost some-->
+                    <signal_cue_instantly cue="$LostWareSignalCue" param="$Ware"/>
+                  </do_if>
+                  <do_if value="$CollectedWareSignalCue and $WareTable.$LastAmount lt $WareTable.$WantedAmount and $NewAmount gt $WareTable.$WantedAmount">
+                    <!--Player now has enough of a ware-->
+                    <signal_cue_instantly cue="$CollectedWareSignalCue" param="$Ware"/>
+                  </do_if>
+                  <!--Update the last known held amount by the player-->
+                  <set_value name="$WareTable.$LastAmount" exact="$NewAmount"/>
+                  <do_if value="$WareTable.$LastAmount ge $WareTable.$WantedAmount">
+                    <append_to_list name="$DoneWares" exact="$Ware"/>
+                  </do_if>
+                  <do_else>
+                    <append_to_list name="$NeedWares" exact="$Ware"/>
+                  </do_else>
+                </do_for_each>
+
+                <set_value name="$Step" exact="$StartStep"/>
+                <do_if value="$UpdateBriefing">
+                  <!--Two passes. First, processing $DoneWares. Second, processing $NeedWares-->
+                  <do_all exact="2" counter="$i">
+                    <set_value name="$BriefingWares" exact="if $i == 1 then $DoneWares else $NeedWares"/>
+                    <do_for_each in="$BriefingWares" name="$Ware" counter="$k">
+                      <!--TODO: Support 1008 text id-->
+                      <do_if value="$Wares.{$Ware}.$WantedAmount == 1">
+                        <set_value name="$BriefingText" exact="$Ware.name" />
+                        <set_value name="$ObjectiveText" exact="$Ware.name" />
+                      </do_if>
+                      <do_else>
+                        <substitute_text text="$BriefingText" source="readtext.{1004}.{1007}">
+                          <replace string="'$AMOUNT$'" with="$Wares.{$Ware}.$WantedAmount"/>
+                          <replace string="'$WARE$'" with="$Ware"/>
+                        </substitute_text>
+                        <substitute_text text="$ObjectiveText" source="readtext.{1004}.{1009}">
+                          <replace string="'$AMOUNT$'" with="$Wares.{$Ware}.$WantedAmount"/>
+                          <replace string="'$WARE$'" with="$Ware"/>
+                        </substitute_text>
+                      </do_else>
+                      <update_mission cue="$MissionCue">
+                        <briefing>
+                          <objective step="$Step" action="$Objective" text="$BriefingText" encyclopedia="$Ware"/>
+                        </briefing>
+                      </update_mission>
+
+                      <do_if value="$i == 2 and $k == 1">
+                        <!--Processing the first entry of $NeedWares. Set the objective-->
+                        <set_value name="$LastObjectiveWare" exact="$Ware"/>
+                        <set_objective_from_briefing cue="$MissionCue" step="$Step"/>
+                        <do_if value="$Wares.{$Ware}.$WantedAmount gt 1">
+                          <!--TODO @Owen would be nice to not have these duplicated set_objectives for amounts gt 1. Would be fine if update_objective_progress could also set up the progress.-->
+                          <do_if value="$ObjectiveGroup">
+                            <set_objective cue="$MissionCue" action="$Objective" text="$ObjectiveText" group="$ObjectiveGroup">
+                              <progress text="{1004,2002}" progress="$Wares.{$Ware}.$LastAmount" max="$Wares.{$Ware}.$WantedAmount"/>
+                            </set_objective>
+                          </do_if>
+                          <do_elseif value="$ObjectiveObject">
+                            <set_objective cue="$MissionCue" action="$Objective" text="$ObjectiveText" object="$ObjectiveObject">
+                              <progress text="{1004,2002}" progress="$Wares.{$Ware}.$LastAmount" max="$Wares.{$Ware}.$WantedAmount"/>
+                            </set_objective>
+                          </do_elseif>
+                          <do_else>
+                            <set_objective cue="$MissionCue" action="$Objective" text="$ObjectiveText">
+                              <progress text="{1004,2002}" progress="$Wares.{$Ware}.$LastAmount" max="$Wares.{$Ware}.$WantedAmount"/>
+                            </set_objective>
+                          </do_else>
+                        </do_if>
+                        <do_else>
+                          <do_if value="$ObjectiveGroup">
+                            <set_objective cue="$MissionCue" action="$Objective" text="$ObjectiveText" group="$ObjectiveGroup"/>
+                          </do_if>
+                          <do_elseif value="$ObjectiveObject">
+                            <set_objective cue="$MissionCue" action="$Objective" text="$ObjectiveText" object="$ObjectiveObject"/>
+                          </do_elseif>
+                          <do_else>
+                            <set_objective cue="$MissionCue" action="$Objective" text="$ObjectiveText"/>
+                          </do_else>
+                        </do_else>
+                      </do_if>
+                      <set_value name="$Step" operation="add"/>
+                    </do_for_each>
+                  </do_all>
+
+                  <do_if value="not $NeedWares.count">
+                    <do_if value="$AllCollectedSignalCue">
+                      <signal_cue_instantly cue="$AllCollectedSignalCue"/>
+                    </do_if>
+                    <do_if value="$FinishOnCompletion">
+                      <set_value name="$feedbackvalue" exact="if $FirstRun then 2 else 1"/>
+                      <signal_cue cue="Cleanup"/>
+                    </do_if>
+                  </do_if>
+                </do_if>
+
+                <remove_value name="$DoneWares"/>
+                <remove_value name="$NeedWares"/>
+                <remove_value name="$BriefingText"/>
+                <remove_value name="$ObjectiveText"/>
+                <remove_value name="$Ware"/>
+
+                <set_value name="$FirstRun" exact="false"/>
+              </actions>
+            </cue>
+
+          </cues>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <do_if value="$feedbackvalue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'ERROR: Feedback value is 0 and no error values were set. Defaulting to -100'"/>
+                <set_value name="$feedbackvalue" exact="-100"/>
+              </do_if>
+              <do_else>
+                <set_value name="$feedbackvalue" exact="$ErrorList.{1}"/>
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+                    <do_if value="$ErrorList.{$Counter}" exact="-104">
+                      <set_value name="$FeedbackText" exact="'EndSignalCue was not defined while FinishOnCompletion is true'"/>
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-103">
+                      <set_value name="$FeedbackText" exact="'no valid entry in $WaresParam'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-102">
+                      <set_value name="$FeedbackText" exact="'MissionCue not defined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'Provided $WaresParam is not a table'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-100">
+                      <set_value name="$FeedbackText" exact="'Undefined failure. Defaulted to -100'"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                    </do_else>
+
+                    <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+
+              <do_if value="$feedbackvalue" exact="1">
+                <set_value name="$FeedbackText" exact="'Player collected all wares'"/>
+              </do_if>
+              <do_elseif value="$feedbackvalue" exact="2">
+                <set_value name="$FeedbackText" exact="'Player already had all wares'"/>
+              </do_elseif>
+
+              <do_if value="$feedbackvalue" min="1">
+                <debug_text text="'Mission Successful. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_if>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission Failed. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+            <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$feedbackvalue"/>
+            <signal_cue cue="$EndSignalCue"/>
+            <cancel_cue cue="CollectInventory"/>
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

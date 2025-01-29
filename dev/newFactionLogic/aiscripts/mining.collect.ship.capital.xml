@@ -1,0 +1,330 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<aiscript name="mining.collect.ship.capital" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" version="2">
+  <!--
+  
+  Asteroid gathering logic
+  Only visible attention level, low level handled on mining.collect.ship
+  
+  Only supports capital ships
+  
+  -->
+  <params>
+    <param name="destination" comment="[space, position]"/>
+    <param name="ware"/>
+    <param name="secwares"/>
+    <param name="dronelaunchdelay"/>
+    <param name="debugchance"/>
+
+    <!-- debug_eco -->
+    <param name="time_started"/>
+    <param name="debug_eco" default="0"/>
+  </params>
+  <interrupts>
+    <handler ref="TargetInvalidHandler" />
+  </interrupts>
+  <init>
+    <!-- Destination no longer exists -->
+    <do_if value="not $destination.{1}.exists">
+      <debug_text text="'input destination, %s %s %s, does not exist.'.[$destination.{1}.class, $destination.{1}.knownname, $destination.{1}]" filter="error"/>
+      <return value="'aborted'"/>
+    </do_if>
+
+    <do_if value="$destination.{1}.isclass.sector">
+      <set_value name="$sector" exact="$destination.{1}"/>
+      <set_value name="$pos" exact="$destination.{2}"/>
+    </do_if>
+    <do_elseif value="$destination.{1}.sector">
+      <set_value name="$sector" exact="$destination.{1}.sector"/>
+      <create_position name="$pos" space="$sector" value="$destination.{2}" object="$destination.{1}"/>
+    </do_elseif>
+    <do_else>
+      <debug_text text="'ERROR: destination %s %s %s is neither a sector nor in a sector.'.[$destination.{1}.class, $destination.{1}.knownname, $destination.{1}]" filter="error"/>
+      <return value="'nosector'"/>
+    </do_else>
+  </init>
+  <patch sinceversion="1" early="true">
+    <set_value name="$effectivescantime" exact="1s"/>
+  </patch>
+  <patch sinceversion="1">
+    <set_value name="$efficiency" exact="1.0f"/>
+    <set_value name="$effectivescantime" exact="$dronelaunchdelay"/>
+    <do_if value="@$checkware">
+      <do_if value="this.isplayerowned">
+        <set_value name="$evalware" exact="$checkware"/>
+        <set_value name="$basescantime" exact="$effectivescantime"/>
+        <include_interrupt_actions ref="CalculateMiningEfficiency"/>
+        <set_value name="$efficiency" exact="$_result_efficiency"/>
+        <set_value name="$effectivescantime" exact="$_result_scantime"/>
+        <remove_value name="$_result_scantime"/>
+        <remove_value name="$_result_efficiency"/>
+        <remove_value name="$basescantime"/>
+        <remove_value name="$evalware"/>
+      </do_if>
+    </do_if>
+  </patch>
+  <patch sinceversion="2">
+    <do_if value="(this.assignedcontrolled.attention ge attention.visible) and @$asteroids.count and @$target.exists">
+      <!-- Attack asteroids with mining lasers -->
+      <set_turret_targets object="this.assignedcontrolled" target="$asteroids" weaponmode="weaponmode.mining" clearpreferred="false" preferredtarget="$target"/>
+      <shoot_at object="this.assignedcontrolled" target="$target" tolerance="10.0deg" weaponmode="weaponmode.mining"/>
+    </do_if>
+  </patch>
+  <attention min="visible">
+    <actions>
+
+      <!-- check that this is a capital ship -->
+      <assert value="this.ship.isclass.[class.ship_l, class.ship_xl]" text="'Error: mining.collect.capital logic runing on a small ship'" />
+
+      <set_value name="$moving" exact="false"/>
+      <set_value name="$target" exact="null"/>
+
+      <do_while value="this.ship.cargo.{$ware}.free">
+        <!-- Command action -->
+        <set_command_action commandaction="commandaction.searchingresources" />
+        <!-- Drones destroyed -->
+        <do_if value="not this.ship.units.collect.{$ware}.count">
+          <return value="'nodrones'" />
+        </do_if>
+
+        <set_value name="$checkware" exact="$ware"/>
+        <!-- 20% chance to gather secondary wares that can be mined -->
+        <do_if value="@$secwares.count" chance="10">
+          <!-- <set_value name="$checkware" exact="$secwares.random"/> -->
+          <set_value name="$tryware" exact="$secwares.random"/>
+          <!-- evaluate if should use a secondary ware -->
+          <do_if value="(this.ship.units.collect.{$tryware}.count and this.ship.cargo.{$tryware}.free)">
+            <debug_text text="'IZ mining: try other ware (%1)'.[$tryware]" chance="$debugchance" />
+            <set_value name="$checkware" exact="$tryware"/>
+          </do_if>
+          <remove_value name="$tryware" />
+        </do_if>
+
+        <set_value name="$efficiency" exact="1.0f"/>
+        <set_value name="$effectivescantime" exact="$dronelaunchdelay"/>
+        <do_if value="this.isplayerowned">
+          <set_value name="$evalware" exact="$checkware"/>
+          <set_value name="$basescantime" exact="$effectivescantime"/>
+          <include_interrupt_actions ref="CalculateMiningEfficiency"/>
+          <set_value name="$efficiency" exact="$_result_efficiency"/>
+          <set_value name="$effectivescantime" exact="$_result_scantime"/>
+          <remove_value name="$_result_scantime"/>
+          <remove_value name="$_result_efficiency"/>
+          <remove_value name="$basescantime"/>
+          <remove_value name="$evalware"/>
+        </do_if>
+
+        <!-- find pickup (filtered by ownership) and target -->
+        <set_value name="$pickuptarget" exact="false"/>
+        <find_asteroid_in_cluster name="$pickup" cluster="this.cluster" refobject="this.ship" canpickup="true" multiple="true" maxdistance="4km" ware="$checkware" />
+        <do_all exact="$pickup.count" counter="$i" reverse="true">
+          <do_if value="$pickup.{$i}.owner">
+            <remove_value name="$pickup.{$i}" />
+          </do_if>
+          <do_elseif value="not $pickup.{$i}.canbepickedup">
+            <debug_text text="'%1 in %2 cannot be picked up!'.[$pickup.{$i}, $pickup.{$i}.sector.knownname]" chance="$debugchance"/>
+            <remove_value name="$pickup.{$i}" />
+          </do_elseif>
+          <do_elseif value="$pickup.{$i}.wares.{$checkware}.count le 0">
+            <remove_value name="$pickup.{$i}" />
+          </do_elseif>
+        </do_all>
+
+        <!-- Find asteroids if there is no target -->
+        <do_if value="not $target.exists">
+          <!-- find asteroids and calculate their total hull -->
+          <set_value name="$asteroidhull" exact="0"/>
+          <set_value name="$scanrange" exact="3km + this.ship.size"/>
+          <do_if value="$increasescanrange?">
+            <remove_value name="$increasescanrange"/>
+            <set_value name="$scanrange" exact="55km"/>
+          </do_if>
+          <find_asteroid_in_cluster name="$asteroids" cluster="this.cluster" refobject="this.ship" canpickup="false" multiple="true" maxdistance="$scanrange" ware="$checkware" />
+          <!-- Check asteroids and take the biggest -->
+          <do_if value="$asteroids.count" min="1">
+            <set_value name="$target" exact="null"/>
+            <set_value name="$bestasteroidhull" exact="0"/>
+            <do_all exact="$asteroids.count" counter="$i">
+              <set_value name="$asteroidhull" exact="$asteroids.{$i}.hull" operation="add"/>
+              <do_if value="(not $target.exists or $asteroids.{$i}.hull lt $bestasteroidhull) and $asteroids.{$i}.wares.count">
+                <set_value name="$target" exact="$asteroids.{$i}"/>
+                <set_value name="$bestasteroidhull" exact="$asteroids.{$i}.hull"/>
+              </do_if>
+            </do_all>
+            <do_if value="not $target.exists">
+              <set_value name="$increasescanrange"/>
+              <debug_text text="'no viable asteroids found. increasing scan range.'" chance="$debugchance"/>
+            </do_if>
+            <remove_value name="$bestasteroidhull"/>
+          </do_if>
+          <do_else>
+            <!-- Find again with bigger range (only one now) -->
+            <find_asteroid_in_cluster name="$target" cluster="this.cluster" refobject="this.ship" canpickup="false" multiple="false" maxdistance="55km" ware="$checkware" />
+            <set_value name="$asteroids" exact="[$target]"/>
+          </do_else>
+          <remove_value name="$scanrange"/>
+
+          <!-- If any target found, set it as a new position -->
+          <do_if value="$target.exists">
+            <set_region_object_persistence object="$target" />
+            <set_value name="$targetpos" exact="$target.position"/>
+            <set_value name="$moving" exact="false" comment="to restart the movement" />
+            <debug_text text="'firing on %s asteroids'.[$asteroids.count]" chance="$debugchance"/>
+            <!-- Attack asteroids with mining lasers -->
+            <set_turret_targets object="this.ship" target="$asteroids" weaponmode="weaponmode.mining" clearpreferred="false" preferredtarget="$target" />
+            <!-- Also mining weapon (just in case it has) -->
+            <shoot_at object="this.ship" target="$target" weaponmode="weaponmode.mining" />
+          </do_if>
+        </do_if>
+
+        <!-- Move/Stop -->
+        <do_if value="$pickup.count ge this.ship.availableunits.collect.{$checkware}.count">
+          <!-- enough targets in range, stop moving -->
+          <set_value name="$moving" exact="false"/>
+          <debug_text text="'%1 movement stopped [pickup count: %2, asteroid count: %3 (%4)]'.[player.age, $pickup.count, $asteroids.count, ($asteroidhull)L]" chance="$debugchance"/>
+          <stop_moving object="this.ship" immediate="false"/>
+          <!-- Command action -->
+          <set_command_action commandaction="commandaction.waitingdrones" />
+        </do_if>
+        <do_elseif value="$moving">
+          <do_if value="this.ship.distanceto.{$targetpos} lt this.ship.size * 2">
+            <set_value name="$moving" exact="false"/>
+            <debug_text text="'%1 movement stopped because we are almost there [pickup count: %2, asteroid count: %3 (%4)]'.[player.age, $pickup.count, $asteroids.count, ($asteroidhull)L]" chance="$debugchance"/>
+            <set_value name="$randmaxpos" max="this.ship.size * 2"/>
+            <stop_moving object="this.ship" immediate="false"/>
+          </do_if>
+        </do_elseif>
+        <do_else >
+          <!-- not enough targets in range, start moving -->
+          <!-- Move -->
+          <do_if value="$target.exists">
+            <!-- Check if the target can be hit (check mining turrets) -->
+            <find_object_component object="this.ship" name="$turrets" multiple="true" class="class.turret" weaponmode="weaponmode.mining" />
+
+            <!-- If there is view for any turret, break the iteration -->
+            <set_value name="$view" exact="false" />
+            <do_all exact="$turrets.count" counter="$i" reverse="true" comment="in reverse because usually the front turret is the last, so the iteration breaks earlier">
+              <check_line_of_sight object="$turrets.{$i}" target="$target" name="$result" />
+              <!-- TODO: use the weapon range -->
+              <do_if value="$result and (($turrets.{$i}.distanceto.{$target} + $target.size) lt 2900m)">
+                <set_value name="$view" exact="true" />
+                <debug_text text="'target view in %1. Distance %2'.[$i, $turrets.{$i}.distanceto.{$target}]" chance="$debugchance" />
+                <break />
+              </do_if>
+            </do_all>
+            <!-- If there is no view with any turret, move to the target -->
+            <do_if value="not $view">
+
+              <set_value name="$miningdpstable" exact="table[]"/>
+              <set_value name="$quadrants" exact="[quadrant.back, quadrant.left, quadrant.right, quadrant.front]"/>
+              <do_all exact="$quadrants.count" counter="$i">
+                <set_value name="$miningdpstable.{$quadrants.{$i}}" exact="this.ship.dps.turrets.fortarget.{$target}.{$quadrants.{$i}}"/>
+              </do_all>
+              <set_value name="$optimalquadrant" exact="$miningdpstable.keys.sorted.last"/>
+              <remove_value name="$miningdpstable"/>
+              <remove_value name="$quadrants"/>
+              <debug_text text="'%s %s optimal quadrant for %s %s is %s with dps %s.'.[this.ship.knownname, this.ship, $target.knownname, $target, $optimalquadrant, this.ship.dps.turrets.fortarget.{$target}.{$optimalquadrant}]" chance="$debugchance"/>
+
+              <set_value name="$moving" exact="true"/>
+
+              <!-- first try to rotate on the spot -->
+              <debug_text text="'aligning ' + $optimalquadrant + ' with asteroid: ' + $target" chance="$debugchance"/>
+              <do_if value="$optimalquadrant == quadrant.front">
+                <create_orientation name="$rot" orientation="look_at" refobject="$target">
+                  <position object="this.ship"/>
+                </create_orientation>
+              </do_if>
+              <do_elseif value="$optimalquadrant == quadrant.left">
+                <create_orientation name="$rot" orientation="align_left" refobject="$target">
+                  <position object="this.ship"/>
+                </create_orientation>
+              </do_elseif>
+              <do_elseif value="$optimalquadrant == quadrant.right">
+                <create_orientation name="$rot" orientation="align_right" refobject="$target">
+                  <position object="this.ship"/>
+                </create_orientation>
+              </do_elseif>
+              <do_elseif value="$optimalquadrant == quadrant.back">
+                <create_orientation name="$rot" orientation="look_away" refobject="$target">
+                  <position object="this.ship"/>
+                </create_orientation>
+              </do_elseif>
+
+              <move_to object="this.ship" destination="$target.zone" finishonapproach="true" forceposition="false" forcerotation="true" abortpath="true" uselocalhighways="false" >
+                <position object="this.ship" max="@$randmaxpos" />
+                <rotation value="$rot" />
+                <interrupt_after_time time="500ms" />
+              </move_to>
+              <remove_value name="$randmaxpos" />
+              <do_if value="$target.exists">
+                <debug_text text="'flying to asteroid: ' + $target" chance="$debugchance"/>
+                <move_to object="this.ship" destination="$target.zone" finishonapproach="true" forceposition="false" abortpath="false" uselocalhighways="false">
+                  <position object="$target" />
+                  <rotation value="$rot"/>
+                  <interrupt_after_time time="10s"/>
+                  <interrupt>
+                    <conditions>
+                      <event_object_attacked_object object="this.assignedcontrolled" attacked="$target"/>
+                    </conditions>
+                  </interrupt>
+                </move_to>
+              </do_if>
+            </do_if>
+          </do_if>
+          <do_else>
+            <!-- No asteroids, target or pickable so move to a random place-->
+            <get_safe_pos result="$targetpos" object="this.ship" space="this.zone" zone="this.zone" radius="this.ship.size" min="1km" max="50km" ignored="this.ship"/>
+            <debug_text text="'%1 movement started Random destination [pickup count: %2, asteroid count: %3 (%4)]'.[player.age, $pickup.count, $asteroids.count, ($asteroidhull)L]" chance="$debugchance"/>
+            <set_value name="$moving" exact="true"/>
+            <move_to object="this.ship" destination="this.zone" finishonapproach="true" forceposition="false" abortpath="true" uselocalhighways="false">
+              <position value="$targetpos"/>
+              <interrupt_after_time time="20s"/>
+            </move_to>
+          </do_else>
+        </do_else>
+
+        <!-- launch drone to pick up the target -->
+        <do_if value="$pickup.count and this.ship.availableunits.{unitcategory.orecollector}.count">
+          <set_value name="$pickuptarget" exact="$pickup.random"/>
+          <set_region_object_persistence object="$pickuptarget" persistent="true" />
+          <launch_drone name="$drone" object="this.ship" category="unitcategory.orecollector" exact="1"/>
+          <do_if value="$drone.isoperational">
+            <debug_text text="'%1 drone launched [pickup count: %2, asteroid count: %3 (%4)]'.[player.age, $pickup.count, $asteroids.count, ($asteroidhull)L]" chance="$debugchance"/>
+            <start_script name="'mining.collect.drone'" object="$drone.pilot">
+              <param name="homebase" value="this.ship" />
+              <param name="target" value="$pickuptarget"/>
+              <param name="debugchance" value="$debugchance"/>
+            </start_script>
+            <set_owner object="$pickuptarget" faction="this.ship.owner"/>
+            <!-- command action waiting drone -->
+            <set_command_action commandaction="commandaction.waitingdrones" />
+          </do_if>
+          <do_else>
+            <debug_text text="'%1 no drone available [pickup count: %2, asteroid count: %3 (%4)]'.[player.age, $pickup.count, $asteroids.count, ($asteroidhull)L]" chance="$debugchance"/>
+          </do_else>
+        </do_if>
+
+        <wait exact="$effectivescantime"/>
+      </do_while>
+
+      <debug_text text="player.age+' less than 5% free cargo space'" chance="$debugchance"/>
+
+
+      <!-- Stop mining lasers -->
+      <stop_shooting object="this.ship" weaponmode="weaponmode.mining"/>
+      <cease_fire object="this.ship" weaponmode="weaponmode.mining" comment="for turrets" />
+
+      <return value="'cargofull'" />
+
+    </actions>
+  </attention>
+  <attention min="unknown">
+    <actions>
+      <!-- Go back to unknown attention level of mining.collect.ship -->
+      <return value="'attention_change'"/>
+    </actions>
+  </attention>
+  <on_abort>
+    <!-- Stop mining lasers -->
+    <cease_fire object="this.ship" weaponmode="weaponmode.mining" comment="for turrets" />
+  </on_abort>
+</aiscript>

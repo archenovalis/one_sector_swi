@@ -1,0 +1,534 @@
+<?xml version="1.0" encoding="iso-8859-1" ?>
+<mdscript name="Upkeep_Management" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--Increment cuename if value is to be changed-->
+    <cue name="AllowMultiMissions_V1">
+      <actions>
+        <set_value name="md.$AllowMultiMissions" exact="true"/>
+      </actions>
+    </cue>
+
+    <!--Library to break after adding a mission if multiple missions are not allowed-->
+    <library name="PostMissionAddedActions">
+      <actions>
+        <do_if value="not md.$AllowMultiMissions">
+          <break/>
+        </do_if>
+      </actions>
+    </library>
+
+    <cue name="Find_Start" version="2" mapeditor="false">
+      <delay exact="5s"/>
+      <actions>
+        <set_value name="$DebugChance" exact="0"/>
+        <find_cluster name="$Clusters" multiple="true"/>
+        <do_if value="$Clusters.count" exact="0">
+          <remove_value name="$Clusters"/>
+          <reset_cue cue="Find_Start"/>
+        </do_if>
+        <debug_text text="$Clusters.count + ' clusters found'" chance="$DebugChance"/>
+
+        <do_if value="$ResourceProbeTable?">
+          <clear_table table="$ResourceProbeTable"/>
+        </do_if>
+        <do_else>
+          <set_value name="$ResourceProbeTable" exact="table[]"/>
+        </do_else>
+      </actions>
+      <patch sinceversion="2">
+        <set_value name="$ResourceProbeTable" exact="table[]"/>
+      </patch>
+      <cues>
+        <cue name="Find_Start_Wait">
+          <conditions>
+            <event_cue_completed cue="Find_Start"/>
+          </conditions>
+          <cues>
+            <cue name="Find_Select_Cluster">
+              <actions>
+                <do_if value="$Clusters.count" min="1">
+                  <set_value name="$Cluster" exact="$Clusters.{$Clusters.count}"/>
+                  <remove_value name="$Clusters.{$Clusters.count}"/>
+                  <do_if value="player.cluster == $Cluster">
+                    <set_value name="$Delay" exact="10ms"/>
+                  </do_if>
+                  <do_else>
+                    <set_value name="$Delay" exact="50ms"/>
+                  </do_else>
+                </do_if>
+                <do_else>
+                  <remove_value name="$Clusters"/>
+                  <reset_cue cue="Find_Start"/>
+                </do_else>
+              </actions>
+              <cues>
+                <cue name="Find_Objects">
+                  <delay exact="$Delay"/>
+                  <actions>
+                    <find_ship_by_true_owner name="$Objects" faction="faction.player" unit="false" space="$Cluster" multiple="true"/>
+                    <find_station_by_true_owner name="$Objects" faction="faction.player" space="$Cluster" checkoperational="false" multiple="true" append="true">
+                      <match state="componentstate.wreck" negate="true"/>
+                    </find_station_by_true_owner>
+                    <debug_text text="$Objects.count + ' objects found ' + ' in ' + $Cluster.name" chance="$DebugChance"/>
+                    <do_if value="$Objects.count">
+                      <set_value name="$ObjectIDX" exact="$Objects.count"/>
+                    </do_if>
+                    <do_else>
+                      <reset_cue cue="Find_Select_Cluster"/>
+                    </do_else>
+                  </actions>
+                  <cues>
+                    <cue name="Find_Objects_Wait">
+                      <conditions>
+                        <event_cue_completed cue="Find_Objects"/>
+                      </conditions>
+                      <cues>
+                        <cue name="Find_Check_Object">
+                          <delay exact="50ms"/>
+                          <actions>
+                            <do_if value="$ObjectIDX" min="6">
+                              <set_value name="$Amount" exact="5"/>
+                            </do_if>
+                            <do_else>
+                              <set_value name="$Amount" exact="$ObjectIDX"/>
+                            </do_else>
+                            <do_all exact="$Amount">
+                              <set_value name="$Object" exact="$Objects.{$ObjectIDX}"/>
+                              <include_actions ref="CheckObject"/>
+                              <remove_value name="$Objects.{$ObjectIDX}"/>
+                              <set_value name="$ObjectIDX" operation="subtract"/>
+                            </do_all>
+
+                            <assert value="$ObjectIDX == $Objects.count" text="'$ObjectIDX (' + $ObjectIDX + ') became out of sync with the object list with count: ' + $Objects.count + ' [Owen]'" break="1"/>
+
+                            <do_if value="$ObjectIDX" min="1">
+                              <reset_cue cue="Find_Check_Object"/>
+                            </do_if>
+                            <do_else>
+                              <reset_cue cue="Find_Select_Cluster"/>
+                            </do_else>
+                          </actions>
+                        </cue>
+                      </cues>
+                    </cue>
+                  </cues>
+                </cue>
+              </cues>
+            </cue>
+          </cues>
+        </cue>
+      </cues>
+    </cue>
+
+    <!--***Management Libraries***-->
+
+    <!--Required values:
+    $NPC: Either the associated NPC or null
+    $Object: The object the upkeep mission is about
+    $MissionCue: The instanced cue the mission will be added to
+    $ID: String to identify the mission
+    -->
+    <library name="RegisterUpkeep">
+      <actions>
+        <set_value name="$StartMission"/>
+        <do_if value="$NPC">
+          <set_value name="$Associated" exact="$NPC"/>
+          <do_if value="not $NPC.$UpkeepMissions?">
+            <create_list name="$NPC.$UpkeepMissions"/>
+          </do_if>
+
+          <!--Blackboard entry structure: [$ID, $MissionCue]-->
+
+          <do_for_each name="$UpkeepDefinition" in="$NPC.$UpkeepMissions">
+            <do_if value="$UpkeepDefinition.{1}" exact="$ID">
+              <debug_text text="$ID + ' mission already exists for this NPC. Do not add another.'" chance="$DebugChance"/>
+              <set_value name="$ExistingInstance" exact="$UpkeepDefinition.{2}"/>
+              <remove_value name="$StartMission"/>
+              <break/>
+            </do_if>
+          </do_for_each>
+          <do_if value="$StartMission?">
+            <debug_text text="'Adding upkeep mission ' + $ID + ' to ' + $Object.knownname" chance="$DebugChance"/>
+            <append_to_list name="$NPC.$UpkeepMissions" exact="[$ID, $MissionCue, $Object]"/>
+          </do_if>
+        </do_if>
+        <do_else>
+          <set_value name="$Associated" exact="$Object"/>
+          <do_if value="not md.$ObjectUpkeepMissions?">
+            <create_list name="md.$ObjectUpkeepMissions"/>
+          </do_if>
+
+          <!--md.$ObjectUpkeepMissions structure [$ID, $MissionCue, $Object-->
+
+          <do_for_each name="$ObjectUpkeepDefinition" in="md.$ObjectUpkeepMissions">
+            <do_if value="$ObjectUpkeepDefinition.{1}" exact="$ID">
+              <do_if value="$ObjectUpkeepDefinition.{3}" exact="$Object">
+                <debug_text text="$ID + ' mission already exists for this ship. Do not add another.'" chance="$DebugChance"/>
+                <set_value name="$ExistingInstance" exact="$ObjectUpkeepDefinition.{2}"/>
+                <remove_value name="$StartMission"/>
+                <break/>
+              </do_if>
+            </do_if>
+          </do_for_each>
+          <do_if value="$StartMission?">
+            <debug_text text="'Adding upkeep mission ' + $ID + ' to ' + $Object.knownname" chance="$DebugChance"/>
+            <append_to_list name="md.$ObjectUpkeepMissions" exact="[$ID, $MissionCue, $Object]"/>
+          </do_if>
+        </do_else>
+      </actions>
+    </library>
+
+    <library name="UnregisterUpkeep">
+      <actions>
+        <do_if value="$NPC">
+          <!--If NPC was killed, $NPC may be a valid ID but no longer exists-->
+          <do_if value="$NPC.exists">
+            <set_value name="$Index" exact="$NPC.$UpkeepMissions.indexof.{[$ID, $MissionCue, $Object]}"/>
+            <assert value="$Index" text="'A upkeep mission has ended but the NPC does not have it on their blackboard'"/>
+            <do_if value="$Index">
+              <remove_value name="$NPC.$UpkeepMissions.{$Index}"/>
+            </do_if>
+          </do_if>
+        </do_if>
+        <do_else>
+          <set_value name="$Index" exact="md.$ObjectUpkeepMissions.indexof.{[$ID, $MissionCue, $Object]}"/>
+          <assert value="$Index" text="'A upkeep mission has ended but the md.$ObjectUpkeepMissions does not have it on their blackboard'"/>
+          <do_if value="$Index">
+            <remove_value name="md.$ObjectUpkeepMissions.{$Index}"/>
+          </do_if>
+        </do_else>
+      </actions>
+    </library>
+
+    <library name="Check_ResourceProbes">
+      <actions>
+        <set_value name="$Order" exact="$Object.defaultorder"/>
+        <do_if value="$Order.id == 'MiningRoutine_Basic' or $Order.id == 'MiningRoutine_Advanced' or $Order.id == 'MiningRoutine_Expert' or $Order.id == 'MiningRoutine'">
+          <!--Check for Resource Probes deployed-->
+          <find_sector_in_range object="$Order.$range" name="$Spaces" mindistance="$Order.$minbuy" maxdistance="$Order.$maxbuy" multiple="true"/>
+          <set_value name="$HasProbe" exact="false"/>
+          <do_for_each name="$MiningSpace" in="$Spaces">
+            <do_if value="$ResourceProbeTable.{$MiningSpace}?">
+              <do_if value="$ResourceProbeTable.{$MiningSpace}">
+                <set_value name="$HasProbe" exact="true"/>
+                <break/>
+              </do_if>
+            </do_if>
+            <do_else>
+              <find_object name="$ResourceProbe" deployablecategory="deployablecategory.resourceprobe" owner="faction.player" space="$MiningSpace"/>
+              <set_value name="$ResourceProbeTable.{$MiningSpace}" exact="$ResourceProbe.exists"/>
+              <do_if value="$ResourceProbe">
+                <set_value name="$HasProbe" exact="true"/>
+                <break/>
+              </do_if>
+            </do_else>
+          </do_for_each>
+
+          <do_if value="$HasProbe">
+            <signal_objects object="$Object" param="'upkeep_resource_probe_present'"/>
+          </do_if>
+          <do_else>
+            <signal_cue_instantly cue="md.Upkeep.Deploy_Probe_Start_V2" param="[null, $Object, $Spaces]"/>
+            <include_actions ref="PostMissionAddedActions"/>
+          </do_else>
+          <remove_value name="$ResourceProbe"/>
+          <remove_value name="$HasProbe"/>
+        </do_if>
+        <remove_value name="$Order"/>
+      </actions>
+    </library>
+
+    <!--event.param = [$Object, $Delay]-->
+    <cue name="TriggerObjectCheck" instantiate="true">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <set_value name="$Object" exact="event.param.{1}"/>
+        <set_value name="$Delay" exact="event.param.{2}"/>
+        <do_if value="not $ResourceProbeTable?">
+          <set_value name="$ResourceProbeTable" exact="table[]"/>
+        </do_if>
+        <set_value name="$DebugChance" exact="0"/>
+      </actions>
+      <cues>
+        <cue name="TriggerObjectCheck_Delay">
+          <delay exact="$Delay"/>
+          <actions>
+            <include_actions ref="CheckObject"/>
+          </actions>
+        </cue>
+      </cues>
+    </cue>
+
+    <!--$Object must be set-->
+    <!--##############
+    WARNING! Be wary with counter="", that it's not used in the cues which reference this library
+    ##################-->
+    <library name="CheckObject">
+      <actions>
+        <debug_text text="'Checking ' + $Object + ' ' + $Object.knownname" chance="$DebugChance"/>
+
+        <do_if value="$Object.exists and @$Object.isplayerowned">
+          <do_if value="$Object != player.occupiedship">
+
+            <do_if value="not md.$AllowMultiMissions">
+              <!--Check if $Object already has upkeep mission (remove this section if multiple missions are to be allowed)-->
+              <set_value name="$HasMission" exact="false"/>
+              <do_if value="md.$ObjectUpkeepMissions?">
+                <do_all exact="md.$ObjectUpkeepMissions.count" counter="$UpkeepMissionCounter">
+                  <do_if value="md.$ObjectUpkeepMissions.{$UpkeepMissionCounter}.{3}" exact="$Object">
+                    <set_value name="$HasMission" exact="true"/>
+                    <break/>
+                  </do_if>
+                </do_all>
+              </do_if>
+              <do_if value="not $HasMission">
+                <get_control_entities name="$Entities" object="$Object"/>
+                <do_all exact="$Entities.count" counter="$EntitiesCounter">
+                  <do_if value="$Entities.{$EntitiesCounter}.$UpkeepMissions?">
+                    <do_all exact="$Entities.{$EntitiesCounter}.$UpkeepMissions.count" counter="$UpkeepMissionCounter">
+                      <do_if value="$Entities.{$EntitiesCounter}.$UpkeepMissions.{$UpkeepMissionCounter}.{3}" exact="$Object">
+                        <set_value name="$HasMission" exact="true"/>
+                        <break/>
+                      </do_if>
+                    </do_all>
+                    <do_if value="$HasMission">
+                      <break/>
+                    </do_if>
+                  </do_if>
+                </do_all>
+              </do_if>
+            </do_if>
+
+            <do_if value="md.$AllowMultiMissions or not @$HasMission">
+              <!--We use a do_all exact="1" here so we can use <break/> after we add a mission. If multiple missions are not allowed PostMissionAddedActions will break the loop-->
+              <do_all exact="1">
+                <!--L and XL Ships-->
+                <do_if value="$Object.isclass.ship_l or $Object.isclass.ship_xl">
+
+                  <do_if value="$Object.canhavecontrolentity.{controlpost.aipilot} and not $Object.assignedpilot" comment="check if the ship has a pilot assigned (irrelevant of the fact if he is in the pilot chair)">
+                    <signal_cue_instantly cue="md.Upkeep.Acquire_Control_Entity_Start" param="[null, $Object, controlpost.aipilot]"/>
+                    <include_actions ref="PostMissionAddedActions"/>
+                  </do_if>
+
+                  <do_elseif value="$Object.defaultorder">
+                    <include_actions ref="Check_ResourceProbes"/>
+                  </do_elseif>
+
+                  <!--
+                  <do_if value="$Object.buildmodule">
+                    <do_if value="$Object.units.{unitcategory.build}.count lt 5">
+                      <signal_cue_instantly cue="md.Upkeep.Deliver_Unit_Start" param="[null, $Object, table[{unitcategory.build} = 5]]"/>
+                      <include_actions ref="PostMissionAddedActions"/>
+                    </do_if>
+                  </do_if>-->
+
+                  <!--TODO @Owen #EntityTypes Post boarding upkeep missions-->
+                  <!--<find_object_component name="$Marine" owner="faction.player" controlpost="controlpost.boarding" object="$Object"/>
+                  <do_if value="$Marine.exists">
+                    <add_to_group groupname="$MarineGroup" object="$Marine"/>
+                    <signal_cue_instantly cue="md.Upkeep.Pickup_Person_Start" param="[null, $Object, 'Marine', $MarineGroup]"/>
+                    <include_actions ref="PostMissionAddedActions"/>
+                  </do_if>-->
+
+                  <!--<do_if value="$Object.primarypurpose == purpose.mine">
+                    <do_if value="$Object.cargo.hastag.bulk">
+                      <do_if value="$Object.units.{unitcategory.orecollector}.count lt 5">
+                        <signal_cue_instantly cue="md.Upkeep.Deliver_Unit_Start" param="[null, $Object, table[{unitcategory.orecollector} = 5]]"/>
+                        <include_actions ref="PostMissionAddedActions"/>
+                      </do_if>
+                    </do_if>
+                  </do_if>
+
+                  <do_if value="$Object.primarypurpose == purpose.mine">
+                    <do_if value="$Object.cargo.hastag.liquid">
+                      <do_if value="$Object.units.{unitcategory.gascollector}.count lt 5">
+                        <signal_cue_instantly cue="md.Upkeep.Deliver_Unit_Start" param="[null, $Object, table[{unitcategory.gascollector} = 5]]"/>
+                        <include_actions ref="PostMissionAddedActions"/>
+                      </do_if>
+                    </do_if>
+                  </do_if>
+
+                  <do_if value="$Object.primarypurpose == purpose.trade or $Object.primarypurpose == purpose.mine">
+                    <do_if value="$Object.units.{unitcategory.transport}.count lt 5">
+                      <signal_cue_instantly cue="md.Upkeep.Deliver_Unit_Start" param="[null, $Object, table[{unitcategory.transport} = 5]]"/>
+                      <include_actions ref="PostMissionAddedActions"/>
+                    </do_if>
+                  </do_if>-->
+
+                </do_if>
+
+                <!--S and M Ships-->
+                <do_elseif value="($Object.isclass.ship_s or $Object.isclass.ship_m) and not $Object.isunit">
+                  <do_if value="$Object.canhavecontrolentity.{controlpost.aipilot} and not $Object.assignedpilot" comment="check if the ship has a pilot assigned (irrelevant of the fact if he is in the pilot chair)">
+                    <signal_cue_instantly cue="md.Upkeep.Acquire_Control_Entity_Start" param="[null, $Object, controlpost.aipilot]"/>
+                    <include_actions ref="PostMissionAddedActions"/>
+                  </do_if>
+                  <do_elseif value="$Object.defaultorder">
+                    <include_actions ref="Check_ResourceProbes"/>
+                  </do_elseif>
+                </do_elseif>
+                  
+                <!--Stations-->
+                <do_elseif value="$Object.isrealclass.station">
+                  <do_if value="not @$Object.buildstorage.buildmodule.constructionvessel.exists and @$Object.buildingmodule.isbuilding">
+                    <do_if value="$Object.buildingmodule.requiresconstructionvessel">
+                      <!--Assign builder if required-->
+                      <signal_cue_instantly cue="md.Upkeep.Assign_Builder_Start" param="[null, $Object]"/>
+                      <include_actions ref="PostMissionAddedActions"/>
+                    </do_if>
+                  </do_if>
+                  
+                  <do_if value="$Object.isoperational">
+                    <!--Operational stations-->
+                    <do_if value="$Object.tradenpc">
+                      <set_value name="$TradeNPC" exact="$Object.tradenpc"/>
+                      <do_if value="$Object.hasownaccount and not $Object.istraderestricted">
+                        <set_value name="$ProductionMoney" exact="$Object.productionmoney"/>
+                        <!--Trigger upkeep mission when below 90% of production money-->
+                        <do_if value="($Object.money * 10) le ($ProductionMoney * 9)">
+                          <!--Upkeep mission is to get above the production money-->
+                          <signal_cue_instantly cue="md.Upkeep.Transfer_Resource_Money_Start" param="[$TradeNPC, $Object, $ProductionMoney]"/>
+                          <include_actions ref="PostMissionAddedActions"/>
+                        </do_if>
+                        <do_else>
+                          <!--NPC may have enough money due to the wanted amount decreasing. Inform mission.-->
+                          <signal_objects object="$TradeNPC" param="'RML_Transfer_Money'" param2="$ProductionMoney"/>
+                        </do_else>
+                      </do_if>
+
+                      <set_value name="$Subordinates" exact="$Object.subordinates.{assignment.trade}"/>
+
+                      <set_value name="$HasWares" exact="false"/>
+                      <set_value name="$Needs_Subordinate_Trade_Ship_Result" exact="false"/>
+                      <!--Check trade wares-->
+                      <set_value name="$Wares" exact="[]"/>
+                      <do_for_each name="$Ware" in="$Object.tradewares.list">
+                        <do_if value="not $Ware.hastag.minable">
+                          <append_to_list name="$Wares" exact="$Ware"/>
+                        </do_if>
+                      </do_for_each>
+                      <do_if value="$Wares.count">
+                        <set_value name="$HasWares" exact="true"/>
+                        <do_for_each name="$Subordinate" in="$Subordinates">
+                          <run_actions ref="md.Upkeep.Needs_Subordinate_Trade_Ship_Lib" result="$Needs_Subordinate_Trade_Ship_Result">
+                            <param name="Ship" value="$Subordinate"/>
+                            <param name="Wares" value="$Wares"/>
+                          </run_actions>
+                          <do_if value="$Needs_Subordinate_Trade_Ship_Result">
+                            <break/>
+                          </do_if>
+                        </do_for_each>
+                      </do_if>
+                      <do_if value="not $Needs_Subordinate_Trade_Ship_Result">
+                        <!--Check non-intermeditate resources-->
+                        <clear_list list="$Wares"/>
+                        <do_for_each name="$Ware" in="$Object.resources.pure.list">
+                          <do_if value="not $Ware.hastag.minable">
+                            <append_to_list name="$Wares" exact="$Ware"/>
+                          </do_if>
+                        </do_for_each>
+                        <do_if value="$Wares.count">
+                          <set_value name="$HasWares" exact="true"/>
+                          <do_for_each name="$Subordinate" in="$Subordinates">
+                            <run_actions ref="md.Upkeep.Needs_Subordinate_Trade_Ship_Lib" result="$Needs_Subordinate_Trade_Ship_Result">
+                              <param name="Ship" value="$Subordinate"/>
+                              <param name="Wares" value="$Wares"/>
+                            </run_actions>
+                            <do_if value="$Needs_Subordinate_Trade_Ship_Result">
+                              <break/>
+                            </do_if>
+                          </do_for_each>
+                        </do_if>
+                      </do_if>
+                      <do_if value="$HasWares and not $Needs_Subordinate_Trade_Ship_Result">
+                        <signal_cue_instantly cue="md.Upkeep.Assign_Subordinate_Start" param="[$TradeNPC, $Object, md.Upkeep.Needs_Subordinate_Trade_Ship_Lib, null]"/>
+                        <include_actions ref="PostMissionAddedActions"/>
+                      </do_if>
+                      <remove_value name="$Assign_Subordinate_Trade_Ship_Result"/>
+
+                      <run_actions ref="md.Upkeep.Needs_Subordinate_Mining_Ship_Lib" result="$Needs_Subordinate_Mining_Ship_Result">
+                        <param name="Commander" value="$Object"/>
+                      </run_actions>
+
+                      <do_all exact="$Needs_Subordinate_Mining_Ship_Result.count" counter="$Result_Counter">
+                        <signal_cue_instantly cue="md.Upkeep.Assign_Subordinate_Start" param="[$TradeNPC, $Object, md.Upkeep.Needs_Subordinate_Mining_Ship_Lib, $Needs_Subordinate_Mining_Ship_Result.{$Result_Counter}]"/>
+                        <include_actions ref="PostMissionAddedActions"/>
+                      </do_all>
+
+                      <!--
+                      TODO @Owen review this upkeep mission once it is possible to actually acquire them
+                      <do_if value="$Object.units.{unitcategory.transport}.count lt 5">
+                        <signal_cue_instantly cue="md.Upkeep.Deliver_Unit_Start" param="[null, $Object, table[{unitcategory.transport} = 5]]"/>
+                        <include_actions ref="PostMissionAddedActions"/>
+                      </do_if>-->
+
+                      <remove_value name="$TradeNPC"/>
+                      <remove_value name="$Subordinates"/>
+                      <remove_value name="$HasWares"/>
+                      <remove_value name="$Wares"/>
+                    </do_if>
+                    <do_elseif value="$Object.canhavecontrolentity.{controlpost.manager} and not $Object.assignedcontrolentity.{controlpost.manager}">
+                      <!--Get trade manager-->
+                      <signal_cue_instantly cue="md.Upkeep.Acquire_Control_Entity_Start" param="[null, $Object, controlpost.manager]"/>
+                      <include_actions ref="PostMissionAddedActions"/>
+                    </do_elseif>
+
+                    <do_if value="not (($Object.cargo.capacity.solid gt 0) and ($Object.cargo.capacity.liquid) and ($Object.cargo.capacity.container gt 0))">
+                      <!--Station requires added storage-->
+                      <set_value name="$SolidCapacity" exact="$Object.cargo.capacity.solid"/>
+                      <set_value name="$LiquidCapacity" exact="$Object.cargo.capacity.liquid"/>
+                      <set_value name="$ContainerCapacity" exact="$Object.cargo.capacity.container"/>
+                      <create_list name="$MissingStorage"/>
+                      <set_value name="$ResourceList" exact=" $Object.resources.list"/>
+                      <do_all exact="$ResourceList.count" counter="$ware">
+                        <do_if value="$ResourceList.{$ware}.hastag.solid and $SolidCapacity == 0">
+                          <debug_text text="$Object + ' ' + $Object.name + ' needs Solid Storage'" chance="$DebugChance"/>
+                          <append_to_list name="$MissingStorage" exact="'solid'" chance=" if $MissingStorage.indexof.{'solid'} then 0 else 100"/>
+                        </do_if>
+                        <do_if value="$ResourceList.{$ware}.hastag.liquid and $LiquidCapacity == 0">
+                          <debug_text text="$Object + ' ' + $Object.name + ' needs Liquid Storage'" chance="$DebugChance"/>
+                          <append_to_list name="$MissingStorage" exact="'liquid'" chance=" if $MissingStorage.indexof.{'liquid'} then 0 else 100"/>
+                        </do_if>
+                        <do_if value="$ResourceList.{$ware}.hastag.container and $ContainerCapacity == 0">
+                          <debug_text text="$Object + ' ' + $Object.name + ' needs Container Storage'" chance="$DebugChance"/>
+                          <append_to_list name="$MissingStorage" exact="'container'" chance="if $MissingStorage.indexof.{'container'} then 0 else 100"/>
+                        </do_if>
+                      </do_all>
+                      <debug_text text="'MissingStorage: ' + $MissingStorage" chance="$DebugChance"/>
+                      <do_if value="$MissingStorage.count">
+                        <signal_cue_instantly cue="md.Upkeep.Extend_Storage_Start" param="[null, $Object, $MissingStorage]"/>
+                        <include_actions ref="PostMissionAddedActions"/>
+                      </do_if>
+                      <remove_value name="$SolidCapacity"/>
+                      <remove_value name="$LiquidCapacity"/>
+                      <remove_value name="$ContainerCapacity"/>
+                    </do_if>
+
+                    <do_if value="(not $Object.units.{unitcategory.transport}.count) and (($Object.cargo.capacity.solid gt 0 ) or ($Object.cargo.capacity.liquid gt 0) or ($Object.cargo.capacity.container gt 0)) and ($Object.units.maxcount gt 0)">
+                      <!--Build Ware Drones if required-->
+                      <signal_cue_instantly cue="md.Upkeep.Restock_Drones_Start" param="[null, $Object]"/>
+                      <include_actions ref="PostMissionAddedActions"/>
+                    </do_if>
+
+                    <do_if value="$Object.processingmodules.count gt 0 and $Object.subordinates.{assignment.salvage}.count lt 1">
+                      <!--Assign scrap ship if scrap module present-->
+                      <signal_cue_instantly cue="md.Upkeep.Assign_Salvage_Start" param="[null, $Object]"/>
+                      <include_actions ref="PostMissionAddedActions"/>
+                    </do_if>
+                  </do_if>
+
+                  <!--TODO @Owen Call Upkeep.Extend_Object_Start if a module with a certain capability needs to be created-->
+                </do_elseif>
+              </do_all>
+            </do_if>
+          </do_if>
+        </do_if>
+      </actions>
+    </library>
+
+  </cues>
+</mdscript>
+

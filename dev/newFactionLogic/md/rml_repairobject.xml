@@ -1,0 +1,388 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_RepairObject" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--
+    This RML is intended for use in Master-Missions. 
+    It handles checking if the player transported (any) ware to the specified station
+    
+    $feedbackvalue:
+    -103 $Targets did not contain any valid targets
+    -102 $Targets not provided defined.
+    -101 Cue parameters not defined
+    -100: Undefined failure. Defaulted to -100
+    -1: Some targets were destroyed
+    -2: Some targets were hacked
+    1: object repaired-->
+
+    <library name="RepairObject" version="2">
+      <params>
+        <param name="EndSignalCue"/>
+        <param name="MissionCue"/>
+        <param name="StartStep"       default="1"     comment="Briefing step to start the mission on"/>
+        <param name="UpdateBriefing"  default="true"  comment="Update the briefing objective step when the objective is updated"/>
+        <param name="DebugChance"     default="0" />
+        <param name="SingularObjectiveText"           comment="The text for the mission objective when there is one object."/>
+        <param name="MultipleObjectiveText"           comment="The text for the mission objective when there are multiple objects."/>
+
+        <param name="TargetsParam"     default="null" comment="Group of target components to repair"/>
+        <param name="TargetSpecs"      default="table[]" comment="Broad requirements of what needs to be repaired"/>
+        <param name="RepairPercentage" default="100"  comment="Target minimum storage-level in %"/>
+        <param name="TargetCount"      default="5"  comment="Target minimum storage-level in %"/>
+        <param name="RepairedObjSignalCue" default="null" comment="Cue to be signalled when an object is repaired event.param = repaired object"/>
+      </params>
+      <actions>
+        <set_value name="$feedbackvalue" exact="0"/>
+        <create_list name="$ErrorList"/>
+
+        <do_if value="not $EndSignalCue or not $MissionCue">
+          <append_to_list name="$ErrorList" exact="-101"/>
+        </do_if>
+        <do_if value="$TargetsParam == null and not $TargetSpecs.keys.count">
+          <append_to_list name="$ErrorList" exact="-102"/>
+        </do_if>
+
+        <set_value name="$HasValidFilter" exact="false"/>
+        <create_group groupname="$Targets"/>
+        <create_group groupname="$ObjectiveTargets"/>
+        <do_if value="$TargetsParam != null">
+          <do_all exact="$TargetsParam.count" counter="$i">
+            <do_if value="$TargetsParam.{$i}.isrealclass.object or $TargetsParam.{$i}.object.exists">
+              <add_to_group groupname="$Targets" object="$TargetsParam.{$i}"/>
+            </do_if>
+          </do_all>
+
+        </do_if>
+        <do_elseif value="$TargetSpecs.keys.count">
+          <do_if value="typeof @$TargetSpecs.$faction == datatype.faction">
+            <set_value name="$Faction" exact="$TargetSpecs.$Faction"/>
+            <set_value name="$HasValidFilter" exact="true"/>
+          </do_if>
+          <do_if value="typeof @$TargetSpecs.$deployablecategory == datatype.deployablecategory">
+            <set_value name="$DeployableCategory" exact="$TargetSpecs.$deployablecategory"/>
+            <set_value name="$HasValidFilter" exact="true"/>
+          </do_if>
+          <do_if value="typeof @$TargetSpecs.$objectmacro == datatype.macro">
+            <set_value name="$ObjectMacro" exact="$TargetSpecs.$objectmacro"/>
+            <set_value name="$HasValidFilter" exact="true"/>
+          </do_if>
+          <do_if value="@$TargetSpecs.$allycoalition">
+            <set_value name="$AllyCoalition" exact="true"/>
+            <set_value name="$HasValidFilter" exact="true"/>
+          </do_if>
+        </do_elseif>
+
+        <do_if value="not $Targets.count and not $HasValidFilter">
+          <append_to_list name="$ErrorList" exact="-103"/>
+        </do_if>
+
+      </actions>
+      <patch sinceversion="2">
+        <set_value name="$RepairedObjSignalCue" exact="null"/>
+      </patch>
+      <cues>
+
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="1"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup"/>
+          </actions>
+        </cue>
+
+        <cue name="StartMission" onfail="cancel" version="2">
+          <conditions>
+            <check_value value="$ErrorList.count" min="0"/>
+          </conditions>
+          <actions>
+            <set_value name="$RepairedAmount" exact="0"/>
+            <create_group groupname="$AlreadyRepaired"/>
+            <do_if value="$Targets.count">
+              <set_value name="$OriginalAmount" exact="$Targets.count"/>
+
+              <!-- check if anything was repaired already -->
+              <do_all exact="$Targets.count" counter="$i" reverse="true">
+                <do_if value="$Targets.{$i}.hullpercentage ge $RepairPercentage">
+                  <set_value name="$RepairedAmount" operation="add"/>
+                  <remove_from_group group="$Targets" object="$Targets.{$i}"/>
+                </do_if>
+              </do_all>
+            </do_if>
+            <do_else>
+              <set_value name="$OriginalAmount" exact="$TargetCount" comment="for the 2nd vague variation"/>
+            </do_else>
+
+            <!-- 
+              Satellites meeting the repair-criteria are already removed in StartMission, and then the $Targets group is empty (leading to no guidance and waiting for an empty target-group to be repaired (so blocking progress)
+              This will happen if multiple missions pick the same satellite, possible even as a next mission in a chain. Not great, but autocomplete to avoid the mission from hanging with no guidance
+            -->
+            <do_if value="$Targets.count == 0">
+              <set_value name="$feedbackvalue" exact="1" comment="success"/>
+              <signal_cue cue="Cleanup"/>
+            </do_if>
+
+            <set_value name="$SilentUpdate" exact="false"/>
+            <signal_cue cue="UpdateBriefing"/>
+          </actions>
+          <patch sinceversion="2">
+            <do_if value="$Targets.count == 0">
+              <set_value name="$autocomplete" exact="true"/>
+            </do_if>
+          </patch>
+          <cues>
+
+            <cue name="CheckMissionInitial" onfail="cancel">
+              <conditions>
+                <check_value value="$autocomplete?"/>
+              </conditions>
+              <actions>
+                <set_value name="$feedbackvalue" exact="1" comment="success"/>
+                <signal_cue cue="Cleanup"/>
+              </actions>
+            </cue>
+
+            <cue name="CheckMissionStatus" instantiate="true">
+              <conditions>
+                <event_object_hull_repaired group="$Targets"/>
+                <check_value value="event.param.hullpercentage ge $RepairPercentage"/>
+              </conditions>
+              <actions>
+                <set_value name="$RepairedAmount" operation="add"/>
+                <do_if value="$RepairedObjSignalCue">
+                  <signal_cue_instantly cue="$RepairedObjSignalCue" param="event.param"/>
+                </do_if>
+                <remove_from_group group="$Targets" object="event.param"/>
+                <do_if value="$Targets.count == 0">
+                  <set_value name="$feedbackvalue" exact="1" comment="success"/>
+                  <signal_cue cue="Cleanup"/>
+                </do_if>
+                <do_else>
+                  <set_value name="$SilentUpdate" exact="false"/>
+                  <signal_cue cue="UpdateBriefing"/>
+                </do_else>
+              </actions>
+            </cue>
+
+            <cue name="CheckMissionStatus_Unspecified" instantiate="true" comment="For the less straight-forward mission requirements">
+              <conditions>
+                <event_player_repaired_object/>
+                <check_value value="not $TargetsParam and event.param2.hullpercentage ge $RepairPercentage"/>
+                <check_value value="not $AlreadyRepaired.indexof.{event.param2}"/>
+                <check_value value="not @$Faction or $Faction == event.param2.owner"/>
+                <check_value value="not @$DeployableCategory or $DeployableCategory == event.param2.deployablecategory"/>
+                <check_value value="not @$DeployableMacro or $DeployableMacro == event.param2.macro"/>
+                <check_value value="not @$AllyCoalition or faction.player.iscoalitionally.{event.param2}"/>
+              </conditions>
+              <actions>
+                <set_value name="$RepairedAmount" operation="add"/>
+                <do_if value="$RepairedObjSignalCue">
+                  <signal_cue_instantly cue="$RepairedObjSignalCue" param="event.param2"/>
+                </do_if>
+                <do_if value="$RepairedAmount ge $TargetCount">
+                  <set_value name="$feedbackvalue" exact="1" comment="success"/>
+                  <signal_cue cue="Cleanup"/>
+                </do_if>
+                <do_else>
+                  <add_to_group groupname="$AlreadyRepaired" object="event.param2"/>
+                  <set_value name="$SilentUpdate" exact="false"/>
+                  <signal_cue cue="UpdateBriefing"/>
+                </do_else>
+              </actions>
+            </cue>
+
+            <cue name="CheckMissionFailureDestroyed" instantiate="true">
+              <conditions>
+                <event_object_destroyed group="$Targets"/>
+              </conditions>
+              <actions>
+                <!-- An object to be repaired got destroyed, fail mission -->
+                <set_value name="$feedbackvalue" exact="-1" comment="fail"/>
+                <signal_cue cue="Cleanup"/>
+              </actions>
+            </cue>
+
+            <cue name="CheckMissionFailureHacked" instantiate="true">
+              <conditions>
+                <event_object_changed_true_owner group="$Targets"/>
+              </conditions>
+              <actions>
+                <!-- An object to be repaired got hacked (by anyone), fail mission -->
+                <set_value name="$feedbackvalue" exact="-2" comment="fail"/>
+                <signal_cue cue="Cleanup"/>
+              </actions>
+            </cue>
+
+          </cues>
+        </cue>
+
+        <cue name="ObjectiveTicker" instantiate="true" checkinterval="5s">
+          <actions>
+            <signal_cue cue="UpdateBriefing"/>
+          </actions>
+        </cue>
+
+        <cue name="UpdateBriefing" instantiate="true" comment="Called each time a briefing-update is needed">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <set_value name="$NearObjects" exact="[]"/>
+            <set_value name="$DistantObjects" exact="[]"/>
+            <clear_group group="$ObjectiveTargets"/>
+            <do_all exact="$Targets.count" counter="$i">
+              <do_if value="$Targets.{$i}.isrealclass.object">
+                <do_if value="$Targets.{$i}.sector == player.sector and $Targets.{$i}.bboxdistanceto.{player.entity} lt 10km">
+                  <append_to_list name="$NearObjects" exact="$Targets.{$i}"/>
+                </do_if>
+                <add_to_group groupname="$ObjectiveTargets" object="$Targets.{$i}"/>
+              </do_if>
+              <do_elseif value="$Targets.{$i}.object.exists">
+                <do_if value="$NearObjects.indexof.{$Targets.{$i}.object}">
+                  <!--The object of $Targets.{$i} is nearby. Add $Targets.{$i} as an objective target-->
+                  <add_to_group groupname="$ObjectiveTargets" object="$Targets.{$i}"/>
+                </do_if>
+                <do_elseif value="$DistantObjects.indexof.{$Targets.{$i}.object}">
+                  <!--The object of $Targets.{$i} is distant. Add $Targets.{$i}.object as an objective target-->
+                  <add_to_group groupname="$ObjectiveTargets" object="$Targets.{$i}.object"/>
+                </do_elseif>
+                <do_elseif value="$Targets.{$i}.sector == player.sector and $Targets.{$i}.object.bboxdistanceto.{player.entity} lt 10km">
+                  <!--A object of $Targets.{$i} is nearby. Add it to the $NearObject list so similar components don't have to check the distance. Add $Targets.{$i} as an objective target-->
+                  <append_to_list name="$NearObjects" exact="$Targets.{$i}.object"/>
+                  <add_to_group groupname="$ObjectiveTargets" object="$Targets.{$i}"/>
+                </do_elseif>
+                <do_else>
+                  <!--A object of $Targets.{$i} is distant. Add it to the $DistantObjects list so similar components don't have to check the distance. Add $Targets.{$i}.object as an objective target-->
+                  <append_to_list name="$DistantObjects" exact="$Targets.{$i}.object"/>
+                  <add_to_group groupname="$ObjectiveTargets" object="$Targets.{$i}.object"/>
+                </do_else>
+              </do_elseif>
+            </do_all>
+
+            <do_if value="$UpdateBriefing">
+              <update_mission cue="$MissionCue">
+                <briefing>
+                  <objective step="$StartStep" action="objective.repair" text="if $Targets.count gt 1 then $MultipleObjectiveText else $SingularObjectiveText"/>
+                </briefing>
+              </update_mission>
+            </do_if>
+
+            <do_if value="$OriginalAmount == 1">
+              <set_objective cue="$MissionCue" step="$StartStep" action="objective.repair" text="if $Targets.count gt 1 then $MultipleObjectiveText else $SingularObjectiveText" group="$ObjectiveTargets" silent="$SilentUpdate"/>
+            </do_if>
+            <do_else>
+              <set_objective cue="$MissionCue" step="$StartStep" action="objective.repair" text="if $Targets.count gt 1 then $MultipleObjectiveText else $SingularObjectiveText" group="$ObjectiveTargets" silent="$SilentUpdate">
+                <progress progress="$RepairedAmount" max="$OriginalAmount" text="{30004,1003}"/>
+              </set_objective>
+            </do_else>
+            <set_value name="$SilentUpdate" exact="true"/>
+          </actions>
+        </cue>
+
+        <cue name="DistanceToShipsCheck" onfail="cancel">
+          <conditions>
+            <check_value value="$Targets.count and $Targets.{1}.isclass.ship"/>
+          </conditions>
+          <actions>
+            <create_group groupname="$Commandeered"/>
+          </actions>
+          <cues>
+            <cue name="DistanceToShipInterval" checkinterval="5s" instantiate="true">
+              <actions>
+                <do_all exact="$Targets.count" counter="$ship_i">
+                  <do_if value="($Targets.{$ship_i}.distanceto.{player.entity} le 20km) and (not ($Targets.{$ship_i}.iscommandeered))">
+                    <commandeer_object object="$Targets.{$ship_i}"/>
+                    <create_order id="'Wait'" object="$Targets.{$ship_i}" default="true" comment="stay put"/>
+                    <add_to_group groupname="$Commandeered" object="$Targets.{$ship_i}"/>
+                  </do_if>
+                  <do_elseif value="@$Commandeered.{$ship_i}.distanceto.{player.entity} gt 20km">
+                    <release_commandeered_object object="$Targets.{$ship_i}"/>
+                    <remove_from_group group="$Commandeered" object="$Targets.{$ship_i}"/>
+                  </do_elseif>
+                </do_all>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <!--TODO remove_objective-->
+
+            <do_if value="$feedbackvalue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'ERROR: Feedback value is 0 and no error values were set. Defaulting to -100'"/>
+                <set_value name="$feedbackvalue" exact="-100"/>
+              </do_if>
+              <do_else>
+                <set_value name="$feedbackvalue" exact="$ErrorList.{1}"/>
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+                    <do_if value="$ErrorList.{$Counter}" exact="-103">
+                      <set_value name="$FeedbackText" exact="'$Targets did not contain any valid targets'"/>
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-102">
+                      <set_value name="$FeedbackText" exact="'$Targets parameter left undefined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'Cue parameters not defined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-100">
+                      <set_value name="$FeedbackText" exact="'Undefined failure. Defaulted to -100'"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                    </do_else>
+
+                    <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+
+              <do_if value="$feedbackvalue" exact="-1">
+                <set_value name="$FeedbackText" exact="{30004,6027}" comment="'failed - object was destroyed'"/>
+              </do_if>
+              <do_elseif value="$feedbackvalue" exact="-2">
+                <set_value name="$FeedbackText" exact="{30004,6120}" comment="'failed - object was hacked'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="1">
+                <set_value name="$FeedbackText" exact="'success - object repaired'"/>
+              </do_elseif>
+
+              <do_if value="$feedbackvalue" min="1">
+                <debug_text text="'Mission Successful. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_if>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission Failed. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+          </actions>
+          <delay exact="10s" comment="to avoid the player spacesuit being dragged away from the ship right on completion"/>
+          <actions>
+            <do_if value="@$Commandeered.count">
+              <do_all exact="$Commandeered.count" counter="$commandeered_i">
+                <release_commandeered_object object="$Commandeered.{$commandeered_i}"/>
+              </do_all>
+            </do_if>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+            <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$feedbackvalue"/>
+            <signal_cue cue="$EndSignalCue"/>
+            <cancel_cue cue="RepairObject"/>
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

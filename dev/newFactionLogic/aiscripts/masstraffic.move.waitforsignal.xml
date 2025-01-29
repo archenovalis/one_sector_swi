@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!--
+this script launches a drone, waits for a signal and docks it again
+-->
+<aiscript name="masstraffic.move.waitforsignal" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd">
+  <params>
+    <param name="homebase" comment="the homebase to return to"/>
+    <param name="launching" default="true" comment="whether this drone is still in its launch movement"/>
+    <param name="signal" default="null"/>
+    <param name="debugchance" default="0"/>
+  </params>
+  <interrupts>
+    <handler ref="TargetInvalidHandler"/>
+    <handler>
+      <conditions>
+        <event_object_signalled object="this.assignedcontrolled" param="$signal"/>
+      </conditions>
+      <actions>
+        <abort_called_scripts resume="dock"/>
+      </actions>
+    </handler>
+  </interrupts>
+  <init>
+    <set_command command="command.movetozone" param="this.zone"/>
+  </init>
+  <attention min="unknown">
+    <actions>
+
+      <label name="start"/>
+
+      <label name="launch"/>
+
+      <do_if value="$launching and $homebase.exists">
+        <debug_text text="player.age + ' launching'" chance="$debugchance"/>
+        <!-- this assumes that this.assignedcontrolled is created facing the point it is supposed to go to which is current as of 349060 -->
+        <get_safe_pos result="$safepos" zone="this.zone" object="this.assignedcontrolled" direction="quadrant.front" directionobject="this.assignedcontrolled" radius="this.assignedcontrolled.size * 2.0"/>
+        <create_position name="$dockpos" space="$homebase" value="$safepos" object="this.zone"/>
+
+        <debug_text text="player.age + ' MOVE 1: %s %s %s moving to position %s relative to %s %s %s, %sm away.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, $dockpos, @$homebase.idcode, @$homebase.knownname, $homebase, this.assignedcontrolled.distanceto.[$homebase, $dockpos]]" chance="$debugchance"/>
+        <find_ship name="$otherships" space="this.zone" macro="this.assignedcontrolled.macro" multiple="true">
+          <match_distance max="this.assignedcontrolled.size * 2" object="this.assignedcontrolled"/>
+        </find_ship>
+        <do_all exact="$otherships.count" counter="$i">
+          <disable_collisions_between object="this.assignedcontrolled" target="$otherships.{$i}"/>
+        </do_all>
+        <disable_collisions_between object="this.assignedcontrolled" target="$homebase"/>
+        <set_avoid_collisions object="this.assignedcontrolled" bigobjects="false" smallobjects="true"/>
+        <set_flight_control_model object="this.assignedcontrolled" flightcontrolmodel="flightcontrolmodel.spline" />
+
+        <move_to object="this.assignedcontrolled" destination="$homebase" finishonapproach="true" forcesteering="false" relativemovement="false">
+          <position value="$dockpos"/>
+        </move_to>
+        <debug_text text="player.age + ' successfully launched'" chance="$debugchance"/>
+        <enable_collisions_between object="this.assignedcontrolled" target="$homebase"/>
+        <reset_avoid_collisions object="this.assignedcontrolled"/>
+
+        <!-- Park on a slight offset to support multiple launches -->
+        <debug_text text="player.age+' parking closeby'" chance="$debugchance"/>
+        <get_safe_pos result="$safepos" zone="this.zone" z="this.assignedcontrolled.size * 5" object="this.assignedcontrolled" max="this.assignedcontrolled.size * 2" radius="this.assignedcontrolled.size / 2.0"/>
+        <set_value name="$rot" exact="this.assignedcontrolled.rotation"/>
+        <create_position name="$evalpos" space="this.zone" value="$dockpos" object="$homebase"/>
+        <create_orientation name="$rot" orientation="look_away" refposition="$evalpos" maxpitch="0deg">
+          <position value="$safepos" space="this.zone"/>
+        </create_orientation>
+        <remove_value name="$evalpos"/>
+
+        <debug_text text="player.age + ' MOVE 2: %s %s %s moving to parking position %s relative to %s %s %s, %sm away.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, $safepos, @$homebase.idcode, @$homebase.knownname, $homebase, this.assignedcontrolled.distanceto.{$safepos}]" chance="$debugchance"/>
+        <set_value name="$time_start" exact="player.age"/>
+        <move_to object="this.assignedcontrolled" destination="this.zone" forcesteering="false" forcerotation="true">
+          <position value="$safepos"/>
+          <rotation pitch="0deg" yaw="$rot.yaw" roll="0deg"/>
+        </move_to>
+        <debug_text text="'movement ended after %s seconds. distance to position: %sm'.[player.age - $time_start, this.assignedcontrolled.distanceto.{$safepos}]" chance="$debugchance"/>
+        <debug_text text="player.age + ' successfully parked'" chance="$debugchance"/>
+      </do_if>
+
+      <set_command command="command.wait"/>
+      <stop_moving object="this.assignedcontrolled"/>
+
+      <do_if value="$signal">
+        <wait/>
+      </do_if>
+      <do_else>
+        <debug_text text="'signal parameter was not set. proceeding to clean up.'" chance="$debugchance"/>
+      </do_else>
+
+      <label name="dock"/>
+
+      <set_value name="$docking"/>
+
+      <do_if value="$homebase.isoperational">
+        <set_command command="command.dockat" param="$homebase"/>
+        <do_if value="@$dockpos">
+          <create_orientation name="$dockrot" orientation="look_at" refobject="$homebase">
+            <position value="$dockpos" space="$homebase"/>
+          </create_orientation>
+          <move_to object="this.assignedcontrolled" destination="$homebase" finishonapproach="true" forcesteering="false" forcerotation="false" radius="this.assignedcontrolled.size / 2.0">
+            <position value="$dockpos"/>
+            <rotation value="$dockrot"/>
+          </move_to>
+        </do_if>
+
+        <disable_collisions_between object="this.assignedcontrolled" target="$homebase"/>
+        <set_avoid_collisions object="this.assignedcontrolled" bigobjects="false" smallobjects="true"/>
+        <!-- First it will fly with Generic behaviour, and at the last way point Dock behaviour -->
+        <debug_text text="player.age+' returning to homebase %1[%2] in %3 (masstrafficdock)'.[$homebase.knownname, $homebase, $homebase.zone.knownname]" chance="$debugchance"/>
+
+        <dock_masstraffic_drone object="this.assignedcontrolled" destination="$homebase"/>
+      </do_if>
+      <do_else>
+        <!-- Auto destroy because homebase is gone -->
+        <destroy_object object="this.assignedcontrolled" explosion="true"/>
+      </do_else>
+
+      <!-- we are only down here if docking didn't work, most likely because the homebase is dead, we just wait until the low-attention case cleans up -->
+      <stop_moving object="this.assignedcontrolled"/>
+      <wait max="5s"/>
+
+      <debug_text text="'%s %s %s was not docked at %s %s %s following dock_masstraffic_drone. trying again.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, @$homebase.idcode, @$homebase.knownname, $homebase]" filter="error"/>
+      <resume label="dock"/>
+
+    </actions>
+  </attention>
+</aiscript>

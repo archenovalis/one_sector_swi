@@ -1,0 +1,598 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="Tutorial_spacesuit" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+    <cue name="Start" namespace="this">
+      <conditions>
+        <event_cue_signalled cue="md.Setup.Start"/>
+      </conditions>
+      <actions>
+        <do_if value="not md.$TutorialRegister?">
+          <set_value name="md.$TutorialRegister" exact="[]" />
+        </do_if>
+        <append_to_list name="md.$TutorialRegister" exact="Start" />
+      </actions>
+      <cues>
+        <cue name="PlayerDied">
+          <conditions>
+            <event_object_destroyed object="player.entity" />
+          </conditions>
+          <actions>
+            <cancel_cue cue="Start" />
+          </actions>
+        </cue>
+
+        <cue name="Trigger" checkinterval="5s" version="2">
+          <conditions>
+            <check_value value="not md.$SurpressTutorials?" />
+            <check_value value="player.computer" />
+          </conditions>
+          <actions>
+            <set_value name="$DebugChance" exact="0"/>
+            <set_value name="$MissionName" exact="' 7) ' + readtext.{30193}.{1}" />
+            <set_value name="$Guide" exact="player.computer" />
+            <create_offer cue="Start" actor="$Guide" name="$MissionName" description="readtext.{30193}.{2}" difficulty="level.trivial" faction="faction.player" type="missiontype.tutorial">
+              <briefing>
+                <objective step="1" action="objective.custom" customaction="{30193,20}" comment="Enter spacesuit"/>
+                <objective step="2" action="objective.custom" customaction="{30193,21}" comment="Spacesuit Items"/>
+                <objective step="3" action="objective.custom" customaction="{30193,22}" comment="Docking"/>
+              </briefing>
+            </create_offer>
+          </actions>
+          <patch sinceversion="2">
+            <do_if value="Start.hasmissionoffer">
+              <set_value name="$MissionName" exact="' 7) ' + readtext.{30193}.{1}" />
+              <update_offer cue="Start" name="$MissionName"/>
+            </do_if>
+          </patch>
+          <cues>
+            <cue name="Offer">
+              <cues>
+                <cue name="ConversationStarted" instantiate="true">
+                  <conditions>
+                    <event_conversation_started actor="$Guide" conversation="mission" convparam="Start" />
+                  </conditions>
+                  <actions>
+                    <remove_help all="true" />
+                    <open_conversation_menu menu="MissionBriefingMenu" param="[0, 0, Start, true]" />
+                  </actions>
+                  <cues>
+                    <cue name="ConversationNextSection" instantiate="true">
+                      <conditions>
+                        <event_conversation_next_section actor="$Guide" choiceparam="Start" />
+                      </conditions>
+                      <actions>
+                        <!-- Accept case -->
+                        <do_if value="event.param == 'c_mission_accept'">
+                          <signal_cue cue="Tutorial" />
+                        </do_if>
+                      </actions>
+                    </cue>
+
+                    <cue name="ConversationFinished">
+                      <conditions>
+                        <event_conversation_finished actor="$Guide" />
+                      </conditions>
+                      <actions>
+                        <cancel_cue cue="ConversationStarted" />
+                      </actions>
+                    </cue>
+
+                    <cue name="AcceptMission">
+                      <conditions>
+                        <event_object_signalled object="$Guide" param="'accept'" />
+                      </conditions>
+                      <actions>
+                        <signal_cue cue="Tutorial" />
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="Tutorial">
+              <conditions>
+                <check_any>
+                  <event_cue_signalled />
+                  <event_object_signalled object="player.entity" param="'start'" param2="Start" />
+                </check_any>
+              </conditions>
+              <actions>
+                <debug_text text="'Tutorial can begin'" chance="$DebugChance" />
+                <cancel_cue cue="Offer" />
+                <signal_cue_instantly cue="md.Tutorials.NewTutorialTriggered" param="Start" />
+                <set_value name="$TutorialStartTime" exact="player.age" />
+                <create_mission cue="Start" offercue="Start" />
+                <cancel_conversation actor="$Guide" />
+                <remove_offer cue="Start" />
+                <remove_help all="true" />
+                <set_value name="$StartDelay" exact="2s"/>
+
+                <!-- setup for this tutorial -->
+                <do_if value="not player.ship or (player.ship and (not player.ship.parent.isclass.zone or player.ship.parent.isclass.highway))">
+                  <show_help line="1021" duration="7s" position="1" force="true" comment="This tutorial must be started from a ship in space."/>
+                  <show_notification text="{1015,403}" sound="notification_warning" />
+                  <remove_mission cue="Start" type="aborted" />
+                  <signal_cue cue="Cleanup" />
+                </do_if>
+                <do_else>
+                  <show_help line="1001" duration="7s" position="1" force="true" width="140" comment="You can abort this tutorial in the Active Missions menu " />
+                </do_else>
+
+              </actions>
+              <cues>
+
+                <cue name="Abort">
+                  <conditions>
+                    <event_mission_aborted cue="Start" />
+                  </conditions>
+                  <actions>
+                    <remove_help all="true"/>
+                    <remove_mission cue="Start" type="aborted" />
+                    <signal_cue cue="Cleanup" />
+                  </actions>
+                </cue>
+
+                <cue name="Abort_OtherTutorialStarted">
+                  <conditions>
+                    <event_cue_signalled cue="md.Tutorials.NewTutorialTriggered" />
+                    <check_value value="event.param != Start" />
+                  </conditions>
+                  <actions>
+                    <remove_help all="true"/>
+                    <show_notification text="{1015,400}" sound="notification_warning" comment="Tutorial aborted" />
+                    <remove_mission cue="Start" type="aborted"/>
+                    <signal_cue cue="Cleanup" />
+                  </actions>
+                </cue>
+
+                <cue name="Tutorial_Init">
+                  <delay exact="$StartDelay"/>
+                  <actions>
+                    <!--Create a list of tutorial cues to trigger in what order, and what briefing step they point to-->
+                    <set_value name="$SignalList" exact="[
+                                [Tutorial_LeaveShip, 1],
+                                [Tutorial_SpacesuitItems, 2],
+                                [Tutorial_EnterShip, 3],
+                    ]"/>
+
+                    <set_value name="$Index" exact="0"/>
+                    <signal_cue cue="Tutorial_TriggerNext"/>
+                  </actions>
+                </cue>
+
+                <cue name="Tutorial_TriggerNext" instantiate="true">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <set_value name="$Index" operation="add"/>
+                    <do_if value="$Index gt $SignalList.count">
+                      <remove_help all="true"/>
+                      <debug_text text="'Spacesuit tutorial has been completed'" chance="$DebugChance" />
+                      <show_help line="1002" position="1" force="true" comment="Tutorial Completed!" />
+                      <show_help line="1003" position="1" force="true" comment="Press $INPUT_ACTION_HELP$ to try other tutorials."/>
+                      <remove_mission cue="Start" type="tutorialcompleted" />
+                      <signal_cue cue="Cleanup" />
+                    </do_if>
+                    <do_else>
+                      <signal_cue cue="$SignalList.{$Index}.{1}"/>
+                      <set_value name="$CurrentStep" exact="$SignalList.{$Index}.{2}"/>
+                      <set_objective_from_briefing cue="Start" step="$CurrentStep"/>
+                    </do_else>
+                  </actions>
+                </cue>
+
+                <cue name="Tutorial_LeaveShip" version="2">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <set_value name="$InteractedWithPanel" exact="false"/>
+                    <set_value name="$PlayerShip" exact="player.ship"/>
+                    <remove_help all="true"/>
+                    <show_help_multi position="1" force="true" allowclose="false" width="200">
+                      <text line="992" comment="These yellow-framed boxes are tips. Click the arrow after you have read them to proceed to the next one."/>
+                      <text line="7001" comment="You are always equipped with a spacesuit."/>
+                      <text line="7002" comment="You will automatically enter your spacesuit when you leave the ship."/>
+                    </show_help_multi>
+                    <set_objective cue="Start" action="objective.custom" customaction="{30193,30}" comment="Leave the spaceship"/>
+                  </actions>
+                  <patch sinceversion="2">
+                    <set_value name="$PlayerShip" exact="player.ship"/>
+                  </patch>
+                  <cues>
+
+                    <cue name="Tutorial_LeaveShip_HintClosed">
+                      <conditions>
+                        <event_ui_triggered screen="'hintclosed'" control="'992'"/>
+                      </conditions>
+                      <actions>
+                        <show_help_overlay id="'docked_getup'" highlightonly="true"/>
+                      </actions>
+                      <delay exact="0.5s"/>
+                      <actions>
+                        <do_if value="(player.ship) and (player.occupiedship)">
+                          <signal_cue cue="Tutorial_LeaveShip_StandUp_v2" comment="Only works due to delay"/>
+                        </do_if>
+                      </actions>
+                      <cues>
+
+                        <cue name="Tutorial_LeaveShip_StandUp_v2" instantiate="true">
+                          <conditions>
+                            <check_any>
+                              <event_player_started_control/>
+                              <event_cue_signalled/>
+                            </check_any>
+                            <check_value value="(not $InteractedWithPanel) and (not player.controlled.isclass.spacesuit)"/>
+                          </conditions>
+                          <actions>
+                            <remove_help all="true"/>
+                            <show_help line="7010" position="18" force="true" comment="...select 'Get Up'..." allowclose="false" timeout="false"/>
+                          </actions>
+                        </cue>
+
+                      </cues>
+                    </cue>
+
+                    <cue name="Tutorial_LeaveShip_WaitStand" instantiate="true">
+                      <conditions>
+                        <check_any>
+                          <event_player_stopped_control/>
+                          <event_cue_signalled/>
+                        </check_any>
+                        <check_value value="not $InteractedWithPanel"/>
+                        <!--check_value value="(player.ship) and not (player.occupiedship) and not $InteractedWithPanel"/-->
+                      </conditions>
+                      <actions>
+                        <remove_help all="true" />
+                        <remove_help_overlay id="'docked_getup'"/>
+                      </actions>
+                      <delay exact="0.5s"/>
+                      <actions>
+                        <remove_help all="true"/>
+                        <do_if value="player.ship.isclass.ship_s">
+                          <show_help line="7020" position="18" force="true" comment="walk to the exit and interact with the panel." allowclose="false" timeout="false"/>
+                        </do_if>
+                        <do_else>
+                          <show_help line="7021" position="18" force="true" comment="Walk to the elevator and interact with the panel." allowclose="false" timeout="false"/>
+                        </do_else>
+                      </actions>
+                    </cue>
+
+                    <cue name="Tutorial_LeaveShip_InteractPanel_Open">
+                      <conditions>
+                        <event_ui_triggered screen="'TransporterMenu'" control="''"/>
+                      </conditions>
+                      <actions>
+                        <set_value name="$InteractedWithPanel" exact="true"/>
+                        <remove_help all="true" />
+                      </actions>
+                      <delay exact="0.5s"/>
+                      <actions>
+                        <show_help line="7030" position="18" force="true" comment="This menu shows all possible destinations, including an option to leave your ship using a spacesuit."/>
+                      </actions>
+                      <cues>
+                        <cue name="Scenario2_CaptureLeaveShip_InteractPanel_Close">
+                          <conditions>
+                            <event_ui_triggered screen="'TransporterMenu'" control="'menu_close'"/>
+                          </conditions>
+                          <actions>
+                            <remove_help line="7030"/>
+                            <set_value name="$InteractedWithPanel" exact="false" comment="this re-enables the 'interact with the panel' hint"/>
+                            <reset_cue cue="Tutorial_LeaveShip_InteractPanel_Open"/>
+                            <signal_cue cue="Tutorial_LeaveShip_WaitStand"/>
+                          </actions>
+                        </cue>
+                      </cues>
+                    </cue>
+
+
+                    <cue name="Tutorial_CaptureLeaveShip_InteractPanel_UserQuestion_Open">
+                      <conditions>
+                        <event_ui_triggered screen="'UserQuestionMenu'" control="''"/>
+                      </conditions>
+                      <actions>
+                        <set_value name="$InteractingWithPanel" exact="true"/>
+                        <remove_help all="true" />
+                        <show_help line="7031" position="18" timeout="false" force="true" comment="Leave your ship in the spacesuit now!"/>
+                        <show_help_overlay id="'custom_transporter_confirm'" highlightonly="true"/>
+                      </actions>
+                      <cues>
+                        <cue name="Tutorial_CaptureLeaveShip_InteractPanel_UserQuestion_Close">
+                          <conditions>
+                            <event_ui_triggered screen="'UserQuestionMenu'" control="'menu_close'"/>
+                          </conditions>
+                          <actions>
+                            <set_value name="$InteractingWithPanel" exact="false"/>
+                            <remove_help_overlay id="'custom_transporter_confirm'"/>
+                            <remove_help all="true" />
+                            <reset_cue cue="Tutorial_CaptureLeaveShip_InteractPanel_UserQuestion_Open"/>
+                          </actions>
+                        </cue>
+                      </cues>
+                    </cue>
+
+                    <!--cue name="Tutorial_LeaveShip_InteractPanel_Close">
+                      <conditions>
+                        <event_ui_triggered screen="'TransporterMenu'" control="'menu_close'"/>
+                      </conditions>
+                      <actions>
+                      </actions>
+                    </cue-->
+
+                    <cue name="Tutorial_LeaveShip_Wait" checkinterval="1s" instantiate="true">
+                      <conditions>
+                        <check_value value="@player.controlled.isclass.spacesuit"/>
+                      </conditions>
+                      <actions>
+                        <signal_cue cue="Tutorial_TriggerNext"/>
+                        <cancel_cue cue="Tutorial_LeaveShip"/>
+                      </actions>
+                    </cue>
+
+                  </cues>
+                </cue>
+
+                <cue name="Tutorial_SpacesuitItems">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <remove_help all="true" />
+                    <show_help_multi position="1" force="true" allowclose="false" width="200">
+                      <text line="7100" comment="Be careful maneouvering in the spacesuit."/>
+                      <text line="7101" comment="."/>
+                      <text line="7102" comment="."/>
+                      <text line="if player.input.controller then 2002 else 2012" comment="."/>
+                      <text line="7110" comment="."/>
+                    </show_help_multi>
+
+                    <set_value name="$InWeaponTutorial" exact="false" comment="busy trying a specific spacesuit-weapon?"/>
+                    <set_value name="$InactivityTimeout" exact="player.age + 60s"/>
+                  </actions>
+                  <cues>
+                    <cue name="Tutorial_SpacesuitItems_Delay">
+                      <conditions>
+                        <event_ui_triggered screen="'hintclosed'" control="'7100'"/>
+                      </conditions>
+                      <delay exact="7s" comment="give player a chance to experiment with spacesuit-movement"/>
+                      <actions>
+                        <show_help_multi position="1" force="true" allowclose="false" width="240">
+                          <text line="7111" comment="Do not move too far away from your ships dock."/>
+                          <text line="7120" comment="."/>
+                          <text line="if player.input.controller then 7131 else 7130" comment="Select the groups you have installed to get more information."/>
+                        </show_help_multi>
+                        <set_objective cue="Start" action="objective.custom" customaction="{30193,31}" comment="Try out the spacesuit equipment"/>
+                      </actions>
+                      <cues>
+
+                        <cue name="Tutorial_SpacesuitItems_Tools">
+                          <conditions>
+                            <event_ui_triggered screen="'hintclosed'" control="'7111'"/>
+                          </conditions>
+                          <cues>
+                            <cue name="Tutorial_SpaceSuit_ResetInactivity" instantiate="true">
+                              <conditions>
+                                <check_any>
+                                  <event_player_activated_weapon/>
+                                  <event_ui_triggered screen="'DockedMenu'" control="''"/>
+                                  <event_ui_triggered screen="'DockedMenu'" control="'menu_close'"/>
+                                </check_any>
+                              </conditions>
+                              <actions>
+                                <debug_text text="'reset-inactivity'" chance="$DebugChance"/>
+                                <set_value name="$InactivityTimeout" exact="player.age + 30s"/>
+                                <remove_help all="true"/>
+                                <show_help line="if player.input.controller then 7245 else 7244" position="1" force="true" comment="Try out other spacesuit upgrades by changing your primary weapon." allowclose="false" timeout="false"/>
+                              </actions>
+                            </cue>
+
+                            <cue name="Tutorial_SpaceSuit_Tool_Launcher" instantiate="true">
+                              <conditions>
+                                <event_player_activated_weapon/>
+                                <check_value value="event.param.macro == macro.spacesuit_gen_bomblauncher_01_macro"/>
+                              </conditions>
+                              <actions>
+                                <remove_help all="true" />
+                                <debug_text text="'selected launcher'" chance="$DebugChance"/>
+                                <set_value name="$InWeaponTutorial" exact="true"/>
+                                <show_help line="7200" position="1" force="true" comment="The launcher works like a missile launcher on ships. You can equip it with explosives or with EMP bombs."/>
+                              </actions>
+                              <cues>
+                                <cue name="Tutorial_SpaceSuit_Tool_Launcher_Rehint" checkinterval="25s" instantiate="true">
+                                  <conditions>
+                                    <check_value value="not @$ShipMenuOpen"/>
+                                  </conditions>
+                                  <delay exact="0.5"/>
+                                  <actions>
+                                    <show_help line="7210" position="18" force="true" comment="Open the ship menu \($INPUT_ACTION_OPEN_COCKPIT_MENU$\) to ..."/>
+                                  </actions>
+                                </cue>
+
+                                <cue name="Tutorial_SpaceSuit_Tool_Launcher_ShipMenuOpen">
+                                  <conditions>
+                                    <event_ui_triggered screen="'DockedMenu'" control="''"/>
+                                    <check_value value="event.param2 == ''"/>
+                                  </conditions>
+                                  <actions>
+                                    <set_value name="$ShipMenuOpen" exact="true"/>
+                                    <remove_help all="true" />
+                                  </actions>
+                                  <delay exact="0.5s"/>
+                                  <actions>
+                                    <show_help_multi position="5" force="true" allowclose="false" width="200">
+                                      <text line="7220" comment=""/>
+                                      <text line="7221" comment=""/>
+                                      <text line="7222" comment=""/>
+                                      <text line="7230" comment=""/>
+                                    </show_help_multi>
+                                  </actions>
+                                </cue>
+
+                                <cue name="Tutorial_SpaceSuit_Tool_Launcher_ShipMenuClose">
+                                  <conditions>
+                                    <event_ui_triggered screen="'DockedMenu'" control="'menu_close'"/>
+                                  </conditions>
+                                  <actions>
+                                    <remove_help all="true" />
+                                  </actions>
+                                  <delay exact="0.5s"/>
+                                  <actions>
+                                    <show_help_multi position="1" force="true" allowclose="false" width="200">
+                                      <text line="7240" comment="You would launch bombs with the fire primary weapon button"/>
+                                      <text line="7241" comment=""/>
+                                      <text line="7242" comment=""/>
+                                      <text line="7243" comment=""/>
+                                      <text line="if player.input.controller then 7245 else 7244" comment="Try out other spacesuit upgrades by ..."/>
+                                    </show_help_multi>
+                                  </actions>
+                                  <cues>
+                                    <cue name="Tutorial_SpaceSuit_Tool_Launcher_Done">
+                                      <conditions>
+                                        <event_ui_triggered screen="'hintclosed'" control="'7240'"/>
+                                      </conditions>
+                                      <actions>
+                                        <set_value name="$InWeaponTutorial" exact="false"/>
+                                        <set_value name="$InactivityTimeout" exact="player.age + 15s"/>
+                                      </actions>
+                                    </cue>
+                                  </cues>
+                                </cue>
+                              </cues>
+                            </cue>
+
+                            <cue name="Tutorial_SpaceSuit_Tool_RepairLaser" instantiate="true">
+                              <conditions>
+                                <event_player_activated_weapon/>
+                                <check_value value="event.param.macro == macro.spacesuit_gen_repairweapon_01_macro"/>
+                              </conditions>
+                              <actions>
+                                <remove_help all="true" />
+                                <debug_text text="'selected repairlaser'" chance="$DebugChance"/>
+                                <set_value name="$InWeaponTutorial" exact="true"/>
+                                <show_help_multi position="1" force="true" allowclose="false" width="200">
+                                  <text line="7300" comment=""/>
+                                  <text line="7310" comment=""/>
+                                  <text line="7311" comment=""/>
+                                  <text line="7312" comment="Try out other spacesuit upgrades by ..."/>
+                                </show_help_multi>
+                              </actions>
+                              <cues>
+                                <cue name="Tutorial_SpaceSuit_Tool_Repairlaser_Done">
+                                  <conditions>
+                                    <event_ui_triggered screen="'hintclosed'" control="'7300'"/>
+                                  </conditions>
+                                  <actions>
+                                    <set_value name="$InWeaponTutorial" exact="false"/>
+                                    <set_value name="$InactivityTimeout" exact="player.age + 15s"/>
+                                  </actions>
+                                </cue>
+                              </cues>
+                            </cue>
+
+                            <cue name="Tutorial_SpaceSuit_Tool_Laser" instantiate="true">
+                              <conditions>
+                                <event_player_activated_weapon/>
+                                <check_value value="event.param.macro == macro.spacesuit_gen_laser_01_macro"/>
+                              </conditions>
+                              <actions>
+                                <remove_help all="true" />
+                                <debug_text text="'selected laser'" chance="$DebugChance"/>
+                                <set_value name="$InWeaponTutorial" exact="true"/>
+                                <show_help_multi position="1" force="true" allowclose="false" width="200">
+                                  <text line="7400" comment=""/>
+                                  <text line="7401" comment=""/>
+                                  <text line="7402" comment="Try out other spacesuit upgrades by ..."/>
+                                </show_help_multi>
+                              </actions>
+                              <cues>
+                                <cue name="Tutorial_SpaceSuit_Tool_Laser_Done">
+                                  <conditions>
+                                    <event_ui_triggered screen="'hintclosed'" control="'7400'"/>
+                                  </conditions>
+                                  <actions>
+                                    <set_value name="$InWeaponTutorial" exact="false"/>
+                                    <set_value name="$InactivityTimeout" exact="player.age + 15s"/>
+                                  </actions>
+                                </cue>
+                              </cues>
+                            </cue>
+
+                            <cue name="Tutorial_SpaceSuit_Tool_InactivityTimeout" checkinterval="5s">
+                              <conditions>
+                                <check_value value="player.age ge $InactivityTimeout"/>
+                                <check_value value="not $InWeaponTutorial"/>
+                              </conditions>
+                              <actions>
+                                <signal_cue cue="Tutorial_TriggerNext"/>
+                                <cancel_cue cue="Tutorial_SpacesuitItems"/>
+                              </actions>
+                            </cue>
+
+                          </cues>
+                        </cue>
+
+                      </cues>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="Tutorial_EnterShip">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <remove_help all="true"/>
+                    <set_objective cue="Start" action="objective.custom" customaction="{30193,32}" comment="Return into the spaceship" object="$PlayerShip"/>
+                    <show_help_multi position="1" force="true" allowclose="false" width="200">
+                      <text line="7500" comment="Target your own ship and request docking permission."/>
+                      <text line="7510" comment="Press $INPUT_ACTION_DOCK$ or use the ship menu \($INPUT_ACTION_OPEN_COCKPIT_MENU$\) to request docking permission"/>
+                      <text line="7520" comment="Carefully steer into the XS dock of your ship."/>
+                    </show_help_multi>
+                    <show_help line="7510" position="1" force="true" duration="7s" comment="Press $INPUT_ACTION_DOCK$ or use the ship menu \($INPUT_ACTION_OPEN_COCKPIT_MENU$\) to request docking permission" allowclose="false" timeout="false"/>
+                  </actions>
+                  <cues>
+
+                    <cue name="Tutorial_EnterShip_Wait" checkinterval="1s">
+                      <conditions>
+                        <check_value value="player.ship"/>
+                        <check_value value="not player.ship.isclass.spacesuit"/>
+                      </conditions>
+                      <actions>
+                        <remove_help all="true" />
+                        <signal_cue cue="Tutorial_TriggerNext"/>
+                        <cancel_cue cue="Tutorial_EnterShip"/>
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="Cleanup">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <remove_help_overlay all="true"/>
+                <debug_text text="'cleanup'" chance="$DebugChance"/>
+                <do_if value="$BriefingCutsceneStarted?">
+                  <stop_cutscene key="$CutsceneKey"/>
+                </do_if>
+                <do_if value="$Beacons?">
+                  <destroy_group group="$Beacons"/>
+                </do_if>
+                <remove_offer cue="Start"/>
+                <remove_mission cue="Start" />
+                <reset_cue cue="Trigger"/>
+              </actions>
+            </cue>
+
+          </cues>
+        </cue>
+
+      </cues>
+    </cue>
+  </cues>
+</mdscript>

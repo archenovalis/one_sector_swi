@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="GM_Rescue_Ship_Lib" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!-- Internal helpers, don't call from outside of this file! -->
+    
+    <library name="SpawnMines">
+      <!-- Input: $Difficulty, $HostileMacro or $HostileMacro-list, $HostileFaction, $HostileAmount, $HostileRange, $Sector, $Offset. 
+           Output: $Hostiles-group -->
+      <actions>
+        
+        <do_all exact="$HostileAmount">
+          <do_if value="typeof $HostileMacro == datatype.macro">
+            <set_value name="$SpawnMacro" exact="$HostileMacro"/>
+          </do_if>
+          <do_elseif value="typeof $HostileMacro == datatype.list">
+            <set_value name="$SpawnMacro" exact="$HostileMacro.random"/>
+          </do_elseif>
+          <do_else>
+            <assert value="0" text="'Invalid HostileMacro'"/>
+          </do_else>
+
+          <set_value name="$xRotation" min="0deg" max="359deg" />
+          <set_value name="$yRotation" min="0deg" max="359deg" />
+          <set_value name="$zRotation" min="0deg" max="359deg" />
+          <create_object groupname="$Hostiles" macro="$SpawnMacro" sector="$Sector" owner="$HostileFaction">
+            <safepos object="$SalvageShip" min="250m" max="$HostileRange" />
+            <rotation yaw="$xRotation" pitch="$yRotation" roll="$zRotation" />
+          </create_object>
+        </do_all>
+
+        <!-- disable relation-changes of the mines -->
+        <do_all exact="$Hostiles.count" counter="$Counter">
+          <set_object_relation_behaviour object="$Hostiles.{$Counter}" disable="true" />
+        </do_all>
+
+      </actions>
+    </library>
+
+    <library name="SpawnSalvage_Call" purpose="run_actions">
+      <params>
+        <param name="SalvageShipDef"/>
+        <param name="SalvageShipFaction"/>
+        <param name="SalvageShipPilot" default="true"/>
+        <param name="Sector"/>
+        <param name="Offset"/>
+      </params>
+      <actions>
+        <include_actions ref="md.GM_Rescue_Ship_Lib.SpawnSalvage" comment="returns $SalvageShip"/>
+        <return value="$SalvageShip"/>
+      </actions>
+    </library>
+
+    <library name="SpawnSalvage">
+      <!-- Input: $SalvageShipDef, $SalvageShipFaction, $SalvageShipPilot, $Sector, $Offset. 
+           Output: $SalvageShip -->
+      <actions>
+
+        <do_if value="$SalvageShipPilot">
+          <create_ship name="$SalvageShip" capturable="false" sector="$Sector" ref="$SalvageShipDef" missioncue="namespace">
+            <owner exact="$SalvageShipFaction" overridenpc="true" />
+            <pilot>
+              <select faction="$SalvageShipFaction" tags="[tag.commander]"/>
+            </pilot>
+            <loadout>
+              <level min="0" max="0.5" profile="decreasing" scale="2"/>
+            </loadout>
+            <safepos value="$Offset" />
+          </create_ship>
+
+          <set_known object="$SalvageShip" known="true" comment="Avoid 'unknown ship' in the HUD"/>
+
+          <!-- force pilot to wait and do nothing -->
+          <create_order id="'Wait'" object="$SalvageShip" default="true">
+            <param name="noattackresponse" value="true"/>
+          </create_order>
+          <set_object_signal_response object="$SalvageShip" signal="'policehalt'" response="'comply'"/>
+        </do_if>
+        <do_else>
+          <create_ship name="$SalvageShip" capturable="true" sector="$Sector" ref="$SalvageShipDef" missioncue="namespace">
+            <people>
+              <fillpercent exact="0"/>
+            </people>
+            <owner exact="$SalvageShipFaction"/>
+            <pilot actor="null" />
+            <safepos value="$Offset" />
+          </create_ship>
+          <add_to_group groupname="global.$IgnoredAbandonedShips" object="$SalvageShip" comment="prevent i.e. Yaki from claiming the ship"/>
+        </do_else>
+
+      </actions>
+    </library>
+
+    <!-- Setup Variations -->
+
+    <library name="Setup_Variation_BoardSalvageShip">
+      <!-- input: $Difficulty, $SalvageShipDef, $SalvageShipFaction, $HostileFaction, $HostileAmount, $HostileRange, $Sector, $Offset 
+           output: $SalvageShip (ownerless / ignoring $SalvageShipFaction, no crew), $Hostiles -->
+      <actions>
+        <set_value name="$SalvageShipFaction" exact="faction.ownerless" comment="override whatever was passed in"/>
+        <set_value name="$SalvageShipPilot" exact="false"/>
+        <include_actions ref="md.GM_Rescue_Ship_Lib.SpawnSalvage"/>
+        <set_object_docking_enabled object="$SalvageShip" enabled="false" comment="Block docking"/>
+
+        <set_value name="$HostileMacro" exact="[macro.weapon_gen_mine_01_macro]" comment="static mine" />
+        <include_actions ref="md.GM_Rescue_Ship_Lib.SpawnMines"/>
+
+      </actions>
+    </library>
+
+    <library name="Setup_Variation_SeekingMines">
+      <!-- input: $Difficulty, $SalvageShipDef, $SalvageShipFaction, $HostileFaction, $HostileAmount, $HostileRange, $Sector, $Offset 
+           output: $SalvageShip (owned with crew), $Hostiles -->
+      <actions>
+
+        <set_value name="$SalvageShipPilot" exact="true"/>
+        <include_actions ref="md.GM_Rescue_Ship_Lib.SpawnSalvage"/>
+        <set_object_docking_enabled object="$SalvageShip" enabled="false" comment="Block docking"/>
+        
+        <do_any>
+          <!--set_value name="$HostileMacro" exact="[macro.weapon_gen_mine_02_macro]" comment="followrange=1000, no friend-foe detection (see objecteditor)" /-->
+          <set_value name="$HostileMacro" exact="[macro.weapon_gen_mine_03_macro]" comment="followrange=1000, friend-foe detection (see objecteditor)" />
+        </do_any>
+        <include_actions ref="md.GM_Rescue_Ship_Lib.SpawnMines"/>
+
+        <!-- Only enemy to player - we neither want the seeker-mines to home in on the SalvageShip, nor for them to start chasing any passing ship -->
+        <do_all exact="$Hostiles.count" counter="$Counter">
+          <set_object_foe_list object="$Hostiles.{$Counter}" factions="[faction.player]"/>
+        </do_all>
+
+      </actions>
+    </library>
+
+  </cues>
+</mdscript>

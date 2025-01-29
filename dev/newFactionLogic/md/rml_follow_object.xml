@@ -1,0 +1,226 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_Follow_Object" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--
+    $feedbackvalue:
+    -104: Invalid range parameters
+    -103: Invalid $Target parameter
+    -102: MissionCue not defined
+    -101: EndSignalCue is not defined while EndOnCompletion is true
+    -100: Undefined failure. Defaulted to -100
+    -2: Target destroyed by player
+    -1: Target destroyed
+    
+   -->
+
+    <!--TODO @Owen some fail conditions for losing the ship-->
+    <library name="FollowObject" namespace="this">
+      <params>
+        <param name="EndSignalCue" default="null" comment="WARNING: EndSignalCue must be set if EndOnCompletion is true"/>
+        <param name="MissionCue" />
+        <param name="StartStep" default="1" comment="Briefing step to start the mission on"/>
+        <param name="UpdateBriefing" default="true" comment="Update the briefing objective step when the objective is updated"/>
+
+        <!--Target params-->
+        <param name="Target"/>
+        <param name="TargetAlias" default="null" comment="Define optional objective target text (defaults to object name)"/>
+
+        <!--Distances-->
+        <param name="Range_Min"                 comment="Distance which the target considers too close"/>
+        <param name="Range_Max"                 comment="Distance which is considered too far from the object"/>
+        <param name="ShowRadius" default="true" comment="Show the $Range_Max radius in the objective"/>
+
+        <param name="ApproachObjective"     default="objective.flyto"   comment="Objective when outside of $Range_Max"/>
+        <param name="FollowObjective"       default="objective.follow"  comment="Objective when within $Range_Max"/>
+        
+        <param name="RangeChangeSignalCue"  default="null" comment="Cue to be signalled when the player entity has crossed a range boundary.
+               event.param = [$CurrentRange, $PreviousRange] (the ranges are either 'close', 'good' or 'distant')"/>
+
+        <param name="DebugChance" default="0"/>
+      </params>
+      <actions>
+        <set_value name="$feedbackvalue" exact="0" />
+        <create_list name="$ErrorList"/>
+
+        <do_if value="not $EndSignalCue and $EndOnCompletion">
+          <append_to_list name="$ErrorList" exact="-101"/>
+        </do_if>
+
+        <do_if value="not $MissionCue">
+          <append_to_list name="$ErrorList" exact="-102"/>
+        </do_if>
+
+        <do_if value="not $Target.isrealclass.object">
+          <append_to_list name="$ErrorList" exact="-103"/>
+        </do_if>
+
+        <do_if value="not $Range_Max or $Range_Max le $Range_Min">
+          <append_to_list name="$ErrorList" exact="-104"/>
+        </do_if>
+
+        <do_if value="$ErrorList.count" exact="0">
+          <debug_text text="'Follow target is: ' + $Target + ' ' + $Target.knownname + ' - Follow range: ' + $Range_Min + ' to ' + $Range_Max" chance="$DebugChance"/>
+        </do_if>
+      </actions>
+      <cues>
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" />
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup" />
+          </actions>
+        </cue>
+
+        <cue name="StartMission" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count == 0" />
+          </conditions>
+          <actions>
+            <set_value name="$FirstRun" exact="true"/>
+            <set_value name="$CurrentRange" exact="null"/>
+
+            <do_if value="$UpdateBriefing">
+              <update_mission cue="$MissionCue">
+                <briefing>
+                  <objective step="$StartStep" action="$FollowObjective" object="$Target" text="if $TargetAlias then $TargetAlias else $Target.knownname"/>
+                </briefing>
+              </update_mission>
+            </do_if>
+          </actions>
+          <cues>
+
+            <cue name="CheckCurrentLocation" checkinterval="1s" instantiate="true">
+              <actions>
+                <set_value name="$InSector" exact="$Target.sector == player.sector"/>
+                <set_value name="$CurDistance" exact="if $InSector then $Target.bboxdistanceto.{player.entity} else null"/>
+                <set_value name="$PreviousRange" exact="$CurrentRange"/>
+
+                <do_if value="$InSector">
+                  <do_if value="$CurDistance lt $Range_Min">
+                    <set_value name="$CurrentRange" exact="'close'"/>
+                  </do_if>
+                  <do_elseif value="$CurDistance lt $Range_Max">
+                    <set_value name="$CurrentRange" exact="'good'"/>
+                  </do_elseif>
+                  <do_else>
+                    <set_value name="$CurrentRange" exact="'distant'"/>
+                  </do_else>
+                </do_if>
+                <do_else>
+                  <set_value name="$CurrentRange" exact="'distant'"/>
+                </do_else>
+
+                <do_if value="$CurrentRange != $PreviousRange">
+                  <do_if value="$CurrentRange == 'close'">
+                    <set_objective cue="$MissionCue" step="$StartStep" action="objective.custom" customaction="{30004,5503}" object="$Target" text="if $TargetAlias then $TargetAlias else $Target.knownname" updatebriefing="true"/>
+                  </do_if>
+                  <do_elseif value="$CurrentRange == 'good'">
+                    <!--TODO @Owen @Matthias - removed if $ShowRadius then $Range_Max else 0
+                    showing the radius makes the target box disappear for the ship. While it may make sense if the target was a space, it doesn't for an object IMO-->
+                    <set_objective cue="$MissionCue" step="$StartStep" action="$FollowObjective" object="$Target" text="if $TargetAlias then $TargetAlias else $Target.knownname" updatebriefing="true"/>
+                  </do_elseif>
+                  <do_elseif value="$CurrentRange == 'distant'">
+                    <set_objective cue="$MissionCue" step="$StartStep" action="$ApproachObjective" object="$Target" text="if $TargetAlias then $TargetAlias else $Target.knownname" radius="if $ShowRadius then $Range_Max else 0" updatebriefing="true"/>
+                  </do_elseif>
+
+                  <!--HACK TODO @Owen having to set the briefing step manually after this to stop the set_objective complaining that they don't match-->
+                  <update_mission cue="$MissionCue">
+                    <briefing>
+                      <objective step="$StartStep" action="$FollowObjective" object="$Target" text="if $TargetAlias then $TargetAlias else $Target.knownname"/>
+                    </briefing>
+                  </update_mission>
+                  
+                  <do_if value="$RangeChangeSignalCue">
+                    <signal_cue_instantly cue="$RangeChangeSignalCue" param="[$CurrentRange, $PreviousRange]"/>
+                  </do_if>
+                </do_if>
+              </actions>
+            </cue>
+
+            <cue name="TargetDestroyed">
+              <conditions>
+                <event_object_destroyed object="$Target"/>
+              </conditions>
+              <actions>
+                <do_if value="@event.param.isplayerowned">
+                  <set_value name="$feedbackvalue" exact="-2"/>
+                </do_if>
+                <do_else>
+                  <set_value name="$feedbackvalue" exact="-1"/>
+                </do_else>
+                <signal_cue cue="Cleanup"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <do_if value="$feedbackvalue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'ERROR: Feedback value is 0 and no error values were set. Defaulting to -100'" chance="$DebugChance"/>
+                <set_value name="$feedbackvalue" exact="-100"/>
+              </do_if>
+              <do_else>
+                <set_value name="$feedbackvalue" exact="$ErrorList.{1}"/>
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+                    <do_if value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'EndSignalCue is not defined while EndOnCompletion is true'"/>
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-102">
+                      <set_value name="$FeedbackText" exact="'MissionCue not defined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-103">
+                      <set_value name="$FeedbackText" exact="'Invalid $Target parameter'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-104">
+                      <set_value name="$FeedbackText" exact="'Invalid range parameters'"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                    </do_else>
+
+                    <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+              <do_if value="$feedbackvalue" exact="-2">
+                <set_value name="$FeedbackText" exact="{30004,6020}" comment="'Target destroyed'"/>
+              </do_if>
+              <do_elseif value="$feedbackvalue" exact="-1">
+                <set_value name="$FeedbackText" exact="{30004,6020}" comment="'Target destroyed'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" min="1">
+                <debug_text text="'Mission Successful. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission Failed. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+
+            <do_if value="$EndSignalCue">
+              <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+              <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$feedbackvalue"/>
+              <signal_cue cue="$EndSignalCue"/>
+            </do_if>
+            <cancel_cue cue="FollowObject"/>
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

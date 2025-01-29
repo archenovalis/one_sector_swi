@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<mdscript name="Skill_Gain" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+    <cue name="Init">
+      <conditions>
+        <event_cue_signalled cue="md.Setup.Start"/>
+      </conditions>
+      <actions>
+        <set_value name="$DebugChance" exact="0"/>
+      </actions>
+      <cues>
+        <library name="ApplyExperience">
+          <actions>
+            <debug_text text="'%s. applying xp with category: %s'.[this, $xpcat]" chance="$DebugChance"/>
+            <apply_experience object="player.occupiedship" role="entityrole.service" experience="$xpcat" factor="$xpfact"/>
+            <do_if value="player.occupiedship.assignedcontrolentity.{controlpost.aipilot}">
+              <set_value name="$locnpc" exact="player.occupiedship.assignedcontrolentity.{controlpost.aipilot}"/>
+              <apply_experience entity="$locnpc" experience="$xpcat" factor="$xpfact / 2.0"/>
+              <debug_text text="'relief pilot: %s: p: %s, mng: %s, e: %s, b: %s, mrl: %s'.[$locnpc.combinedskill, $locnpc.skill.piloting, $locnpc.skill.management, $locnpc.skill.engineering, $locnpc.skill.boarding, $locnpc.skill.morale]" chance="$DebugChance"/>
+              <remove_value name="$locnpc"/>
+            </do_if>
+            <do_for_each name="$person" in="player.occupiedship.people.list" chance="$DebugChance">
+              <debug_text text="'%s: %s: p: %s, mng: %s, e: %s, b: %s, mrl: %s'.[player.occupiedship.people.{$person}.name, player.occupiedship.people.{$person}.combinedskill, player.occupiedship.people.{$person}.skill.piloting, player.occupiedship.people.{$person}.skill.management, player.occupiedship.people.{$person}.skill.engineering, player.occupiedship.people.{$person}.skill.boarding, player.occupiedship.people.{$person}.skill.morale]"/>
+            </do_for_each>
+          </actions>
+        </library>
+
+        <cue name="PlayerDestroysObject" instantiate="true">
+          <conditions>
+            <event_player_killed_object/>
+            <check_value value="event.param.isclass.destructible"/>
+            <check_value value="event.param.isclass.defensible or event.param.defensible"/>
+            <check_value value="event.param.owner and (event.param.owner != faction.player) and (event.param.owner != faction.ownerless)"/>
+          </conditions>
+          <actions>
+            <set_value name="$xpfact" exact="1.0"/>
+
+            <do_if value="event.param.isrealclass.ship">
+              <do_if value="event.param.iscapitalship and not player.occupiedship.iscapitalship">
+                <set_value name="$xpcat" exact="'ship_kill_hard'"/>
+              </do_if>
+              <do_elseif value="not event.param.isrealclass.ship_xs">
+                <set_value name="$xpcat" exact="'ship_kill_easy'"/>
+              </do_elseif>
+            </do_if>
+            <do_elseif value="event.param.isrealclass.station">
+              <set_value name="$xpcat" exact="'ship_kill_station'"/>
+            </do_elseif>
+            <do_elseif value="event.param.isrealclass.module">
+              <set_value name="$xpcat" exact="'ship_kill_stationmodule'"/>
+            </do_elseif>
+            <do_else>
+              <set_value name="$xpcat" exact="'ship_kill_surfaceelement'"/>
+            </do_else>
+
+            <do_if value="$xpcat?">
+              <debug_text text="'target: %s %s %s %s'.[@event.param.class, @event.param.idcode, @event.param.knownname, event.param]" chance="$DebugChance"/>
+              <include_actions ref="ApplyExperience"/>
+            </do_if>
+          </actions>
+        </cue>
+
+        <cue name="PlayerOpensLockbox" instantiate="true">
+          <conditions>
+            <event_player_killed_object/>
+            <check_value value="event.param.isclass.lock and event.param.parent.isclass.lockbox"/>
+            <!-- last lock destroyed is still operational when event is dispatched. -->
+            <check_value value="event.param.parent.locks.operational.count le 1"/>
+            <check_value value="event.param.owner != faction.player"/>
+          </conditions>
+          <actions>
+            <set_value name="$xpfact" exact="1.0"/>
+            <set_value name="$xpcat" exact="'ship_opened_lockbox'"/>
+            <include_actions ref="ApplyExperience"/>
+          </actions>
+        </cue>
+
+        <cue name="PlayerFinds" instantiate="true">
+          <conditions>
+            <event_gravidar_has_scanned group="global.$PlayerControlledGroup"/>
+            <check_value value="event.object.sector and event.object == player.occupiedship"/>
+            <count_gravidar_contacts result="$found" object="event.object" known="false" min="1">
+              <match_context macro="event.object.sector.macro"/>
+              <match owner="event.object.trueowner" negate="true"/>
+              <match_any>
+                <match class="class.station"/>
+                <match class="class.gate"/>
+              </match_any>
+            </count_gravidar_contacts>
+          </conditions>
+          <actions>
+            <set_value name="$xpfact" exact="1.0"/>
+
+            <debug_text text="'found:'" chance="$DebugChance"/>
+            <do_for_each name="$object" in="$found">
+              <debug_text text="'%s %s %s'.[$object.class, $object.knownname, $object]" chance="$DebugChance"/>
+              <!-- objects found by gravidar within radar range not always set to known. -->
+              <set_known object="$object" known="true"/>
+              <do_if value="$object.isclass.station">
+                <set_value name="$xpcat" exact="'ship_discovered_station'"/>
+                <do_if value="$object.isfactionheadquarters">
+                  <set_value name="$xpcat" exact="'ship_discovered_station_hq'"/>
+                </do_if>
+                <do_elseif value="$object.istradestation or $object.isshipyard or $object.iswharf or $object.istradestation or $object.isequipmentdock or $object.ispiratebase or ($object.owner == faction.xenon) or ($object.owner == faction.khaak)">
+                  <set_value name="$xpcat" exact="'ship_discovered_station_important'"/>
+                </do_elseif>
+              </do_if>
+              <do_elseif value="$object.isclass.gate">
+                <set_value name="$xpcat" exact="'ship_discovered_gate'"/>
+              </do_elseif>
+
+              <do_if value="$xpcat?">
+                <include_actions ref="ApplyExperience"/>
+                <remove_value name="$xpcat"/>
+              </do_if>
+            </do_for_each>
+          </actions>
+        </cue>
+      </cues>
+    </cue>
+  </cues>
+</mdscript>

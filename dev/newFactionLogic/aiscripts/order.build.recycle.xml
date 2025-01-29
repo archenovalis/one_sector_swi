@@ -1,0 +1,268 @@
+<?xml version="1.0" encoding="utf-8"?>
+<aiscript name="order.build.recycle" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" priority="3" version="2">
+  <!--Build order to fly to an object and recycle itself
+  If cancelled, the build task is removed from the building object-->
+  <order id="Recycle" name="{1041, 721}" description="{1041, 722}" category="internal" allowinloop="false">
+    <params>
+      <param name="build" type="build" default="null" text="{1041, 10153}" advanced="true" comment="Build">
+        <input_param name="playerreadonly" value="true"/>
+      </param>
+      <param name="usecover" type="bool" default="not this.ship.isplayerowned and not this.ship.trueowner.iseconomic" text="Use Cover" advanced="true"/>
+      <param name="cannotdock" type="internal" default="false" text="{1041, 10133}" comment="Unable to dock. used for error handling in case of inability to dock"/>
+      <param name="internalorder" type="bool" default="false" advanced="true" text="{1041, 10159}" comment="Order results from an automated behavior."/>
+      <param name="debugchance" type="bool" default="0" advanced="true" text="{1041, 10086}" comment="Print debug output">
+        <input_param name="truevalue" value="100"/>
+      </param>
+    </params>
+    <requires>
+      <match shiptype="shiptype.lasertower" negate="true"/>
+      <match class="class.spacesuit" negate="true"/>
+    </requires>
+    <location object="$build.object" condition="@$build.object.exists"/>
+  </order>
+  <!-- to do: determine if any further interrupts are needed. add here as necessary. -->
+  <interrupts>
+    <library>
+      <actions name="AssumeCover">
+        <do_if value="$usecover">
+          <set_value name="$noattackresponse" comment="read in interrupt.attacked"/>
+          <set_value name="$potentialcoverfactions" exact="global.$smugglercoverfactions.clone"/>
+          <remove_from_list name="$potentialcoverfactions" exact="this.trueowner"/>
+          <shuffle_list list="$potentialcoverfactions"/>
+          <do_for_each name="$locfaction" in="$potentialcoverfactions">
+            <do_if value="not this.sector or not this.sector.owner.hasrelation.enemy.{$locfaction}">
+              <set_value name="$coverfaction" exact="$potentialcoverfactions.random"/>
+              <signal_objects object="player.galaxy" param="'Cover'" param2="[this.assignedcontrolled, $coverfaction]"/>
+              <debug_text text="'%s %s %s assumed cover as %s'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, $coverfaction]" chance="$debugchance"/>
+              <break/>
+            </do_if>
+          </do_for_each>
+        </do_if>
+      </actions>
+    </library>
+    <handler ref="AttackHandler"/>
+    <handler ref="MissileLockHandler" />
+    <handler ref="ScannedHandler"/>
+    <handler ref="InspectedHandler"/>
+    <handler ref="FoundAbandonedHandler"/>
+    <handler ref="FoundLockboxHandler"/>
+    <handler>
+      <conditions>
+        <event_object_changed_sector object="this.assignedcontrolled"/>
+        <debug_text text="'%s %s %s\nchanged sectors from %s to %s\ncover: %s\nsector owner: %s\nhostile sector: %s'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, @event.param2.knownname, @event.param.knownname, this.coverowner, @event.param.owner, @event.param.owner.mayattack.{this.assignedcontrolled}]" debugchance="0"/>
+        <check_value value="$usecover"/>
+        <check_value value="@event.param.owner.mayattack.{this.assignedcontrolled}"/>
+      </conditions>
+      <actions>
+        <do_if value="event.param.owner and event.param.owner.mayattack.{this.trueowner}">
+          <include_interrupt_actions ref="AssumeCover"/>
+          <debug_text text="'%s %s %s in dangerous space owned by %s.\nchanging cover to %s'.[@this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, this.sector.owner, $coverfaction]" chance="$debugchance"/>
+        </do_if>
+        <do_else>
+          <debug_text text="'%s %s %s arrived in friendly sector: %s, owned by %s. dropping cover.'.[@this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, event.param.knownname, event.param.owner]" chance="$debugchance"/>
+          <signal_objects object="this.assignedcontrolled" param="'LoseCover'" param2="false"/>
+        </do_else>
+      </actions>
+    </handler>
+  </interrupts>
+  <init>
+    <set_command command="command.recycle"/>
+  </init>
+  <patch sinceversion="2">
+    <do_if value="not $build.exists">
+      <do_if value="$destination_station.exists">
+        <debug_text text="this.assignedcontrolled + ' ' + this.assignedcontrolled.knownname + ' had an aborted recycle order but the destination still exists. Requesting a new recycle order'" filter="savegame"/>
+        <add_build_to_recycle_ship object="$destination_station" buildobject="this.assignedcontrolled" faction="$destination_station.trueowner"/>
+      </do_if>
+      <do_else>
+        <debug_text text="this.assignedcontrolled + ' ' + this.assignedcontrolled.knownname + ' had an aborted recycle order and the destination was destroyed. Requesting a new default order'" filter="savegame"/>
+        <cancel_order order="this.assignedcontrolled.defaultorder"/>
+        <cancel_all_orders object="this.assignedcontrolled"/>
+      </do_else>
+    </do_if>
+  </patch>
+  <attention min="unknown">
+    <actions>
+      <label name="init"/>
+
+      <!-- short wait to prevent any further blocking actions in case this order has already been cancelled at this point. in that case, order will stop after the blocking action. important for actions that act upon this order. -->
+      <wait exact="1ms"/>
+
+      <do_if value="not $build.exists">
+        <debug_text text="'Build task does not exist ' + $build + ' - aborting'" filter="error"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <do_if value="not @$build.object.exists">
+        <debug_text text="'Build task does not have a building object assigned ' + $build + ' - aborting'" filter="error"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <do_if value="$build.buildobject != this.ship">
+        <debug_text text="'Build task is not set to build this ship ' + $build + ' - aborting'" filter="error"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <do_if value="not $build.isrecycleshipbuild">
+        <debug_text text="'Build task is not set to modify the ship ' + $build + ' - aborting'" filter="error"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <do_if value="not $build.object.builds.queued.indexof.{$build}">
+        <debug_text text="'Build task is not queued at the object ' + $build + ' - aborting'" filter="error"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <set_value name="$destination_station" exact="$build.object"/>
+      <!--TODO @Owen check if there are subordinates and unassign them?-->
+
+      <do_if value="(@this.ship.dock.container == $destination_station) or (this.ship.parkedat and ((this.ship.parkedat == $destination_station) or this.ship.parkedat.hascontext.{$destination_station}))">
+        <resume label="await_recycling"/>
+      </do_if>
+
+      <do_if value="@this.sector.owner.mayattack.{this.assignedcontrolled}">
+        <debug_text text="'in hostile territory owned by %s. checking for suitable cover.'.[this.sector.owner]" chance="$debugchance"/>
+        <include_interrupt_actions ref="AssumeCover"/>
+      </do_if>
+
+      <!-- if we are not where the station is, go there. -->
+      <do_if value="$destination_station.zone" exact="this.zone" negate="true">
+        <debug_text text="'%1 (%2) needs to go to %3, %4, %5 to resupply at %6. Going there.'.[this.ship.knownname, this.ship, $destination_station.zone.knownname, $destination_station.sector.knownname, $destination_station.cluster.knownname, $destination_station.knownname]" chance="$debugchance"/>
+        <run_script name="'move.generic'" result="$movesuccess">
+          <param name="destination" value="$destination_station"/>
+          <param name="endintargetzone" value="true"/>
+          <param name="strictblacklist" value="$internalorder"/>
+          <param name="debugchance" value="$debugchance"/>
+        </run_script>
+        <do_if value="not $movesuccess">
+          <do_if value="@this.assignedcontrolled.order.isrunning">
+            <set_order_failed order="this.assignedcontrolled.order" text="{1045, 101}" comment="Unable to reach destination."/>
+          </do_if>
+          <debug_text text="'Unable to move to destination %s %s possibly due to blacklist. Returning.'.[$destination_station.class, @$destination_station.knownname]" chance="$debugchance"/>
+          <resume label="finish"/>
+        </do_if>
+      </do_if>
+
+      <!-- DockAndWait should return shortly after docking since it is called immediately. -->
+      <do_if value="not $cannotdock">
+        <create_order object="this.ship" id="'DockAndWait'" immediate="true">
+          <param name="destination" value="$destination_station"/>
+          <param name="building" value="true"/>
+          <param name="dockfollowers" value="false"/>
+          <param name="callerid" value="this.ship.order"/>
+          <param name="debugchance" value="$debugchance"/>
+        </create_order>
+        <wait exact="1ms"/>
+      </do_if>
+      <do_else>
+        <debug_text text="'cannot dock. aborting.'" chance="$debugchance"/>
+        <resume label="finish"/>
+      </do_else>
+
+      <label name="await_recycling"/>
+
+      <set_value name="$wait" exact="true"/>
+      <do_while value="true">
+        <set_value name="$wait" exact="false"/>
+        
+        <do_if value="not $build.exists">
+          <debug_text text="'Build task does not exist ' + $build + ' - aborting'" filter="error"/>
+          <resume label="finish"/>
+        </do_if>
+
+        <set_value name="$playerhascontext" exact="player.entity.hascontext.{this.assignedcontrolled}"/>
+        <do_if value="not $playerhascontext">
+          <do_if value="this.assignedcontrolled.dock and player.entity.hascontext.{this.assignedcontrolled.dock}">
+            <do_if value="player.entity.floortags.indexof.{tag.walk_dockingbay}">
+              <set_value name="$playerhascontext" exact="true"/>
+            </do_if>
+          </do_if>
+        </do_if>
+        <do_if value="$playerhascontext">
+          <do_if value="not $playerembarkedtime?">
+            <set_value name="$playerembarkedtime" exact="player.age"/>
+            <debug_text text="'The player is on board the ship set to be recycled. Wait for them to disembark.'" chance="$debugchance"/>
+            <set_value name="$wait" exact="true"/>
+          </do_if>
+          <do_elseif value="player.age gt $playerembarkedtime + 2min">
+            <debug_text text="'The player has been on board the ship set to be recycled for too long. Kick them off.'" chance="$debugchance"/>
+            <set_value name="$playerteleportobject" exact="null"/>
+            <do_if value="player.canforceteleportto.{this.assignedcontrolled.object}">
+              <set_value name="$playerteleportobject" exact="this.assignedcontrolled.object"/>
+            </do_if>
+            <do_else>
+              <debug_text text="'Unable to teleport the player to ' + ' ' + @this.assignedcontrolled.object + ' ' + @this.assignedcontrolled.object.knownname + ' - Finding some random ship'" filter="error"/>
+              <find_ship_by_true_owner name="$playerwarpships" faction="faction.player" space="player.galaxy" unit="false" multiple="true"/>
+              <do_for_each in="$playerwarpships">
+                <do_if value="player.canforceteleportto.{loop.element}">
+                  <set_value name="$playerteleportobject" exact="loop.element"/>
+                  <break/>
+                </do_if>
+              </do_for_each>
+              <do_if value="not $playerteleportobject">
+                <find_ship name="$playerwarpships" space="player.galaxy" unit="false" multiple="true"/>
+                <do_for_each in="$playerwarpships">
+                  <do_if value="player.canforceteleportto.{loop.element}">
+                    <set_value name="$playerteleportobject" exact="loop.element"/>
+                    <break/>
+                  </do_if>
+                </do_for_each>
+              </do_if>
+            </do_else>
+            <do_if value="$playerteleportobject">
+              <fade_screen fadeout="0.1s" fadein="1s"/>
+              <teleport_player object="$playerteleportobject" force="true" instant="true"/>
+            </do_if>
+            <!--else - RIP player-->
+          </do_elseif>
+          <do_else>
+            <set_value name="$wait" exact="true"/>
+          </do_else>
+        </do_if>
+
+        <do_if value="$wait">
+          <wait exact="10s"/>
+        </do_if>
+        <do_else>
+          <resume label="recycle"/>
+        </do_else>
+      </do_while>
+
+      <label name="recycle"/>
+
+      <!--Set order state to critical and lock down the ship. The recycling should start ASAP.-->
+      <set_order_state order="this.assignedcontrolled.order" state="orderstate.critical"/>
+
+      <debug_text text="'%s %s %s getting recycled at %s %s %s in sector %s.'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, $destination_station.idcode, $destination_station.knownname, $destination_station, $destination_station.sector.knownname]" chance="$debugchance"/>
+
+      <!--Signal the destination with an 'equip_request' to wake the shiptrader-->
+      <signal_objects object="$destination_station" param="'equip_request'"/>
+
+      <!--The ship should no longer do anything as the shiptrader will begin the process and wreck the ship-->
+      <do_while value="$build.exists">
+        <wait exact="1min"/>
+      </do_while>
+
+      <label name="finish"/>
+
+      <!-- insert cleanup in case of order failure here. -->
+      <do_if value="(@this.assignedcontrolled.defaultorder.id == 'RecycleDefault') and $destination_station.exists">
+        <set_value name="$stationstoavoid" exact="this.assignedcontrolled.defaultorder.$stationstoavoid.clone"/>
+        <append_to_list name="$stationstoavoid" exact="$destination_station"/>
+        <edit_order_param order="this.assignedcontrolled.defaultorder" param="'stationstoavoid'" value="$stationstoavoid"/>
+      </do_if>
+
+      <!-- short wait to allow order-related events to fire in case the order ends without hitting any blocking actions. -->
+      <wait exact="1ms"/>
+    </actions>
+  </attention>
+  <on_abort>
+    <do_if value="$build.exists and $build.object.isoperational and (this.ship.parkedat == $build.object)">
+      <do_if value="this.$unparkreleasesignal">
+        <!-- if we have to abort, send release signal immediately. -->
+        <signal_objects object="$build.object" param="this.$unparkreleasesignal.{1}" param2="@this.$unparkreleasesignal.{2}"/>
+      </do_if>
+      <disconnect_from_trade_location ship="this.ship"/>
+    </do_if>
+  </on_abort>
+</aiscript>

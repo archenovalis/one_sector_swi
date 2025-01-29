@@ -1,0 +1,251 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<aiscript name="order.repair" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" priority="3" version="2">
+  <!--Fly to a suitable object to repair-->
+
+  <order id="Repair" name="{1041, 211}" description="{1041, 212}" category="internal" infinite="false" allowinloop="false">
+    <params>
+      <param name="destination" type="object" text="{1041, 10027}" comment="Destination. NB: destination MUST have a ship trader.">
+        <input_param name="class" value="[class.station]" />
+        <input_param name="hasbuildmodule" value="1"/>
+      </param>
+      <param name="hullpercent" text="{1041, 10046}" type="number" default="this.ship.hullpercentage" advanced="true" comment="Hull repair percent">
+        <input_param name="max" value="100"/>
+        <input_param name="min" value="this.ship.hullpercentage"/>
+        <input_param name="startvalue" value="this.ship.hullpercentage"/>
+      </param>
+      <param name="damagedcomponents" type="list" default="[]" advanced="true" text="{1041, 10122}" comment="Subcomponents to repair">
+        <input_param name="type" value="'object'"/>
+        <input_param name="class" value="[class.destructible]"/>
+        <input_param name="context" value="this.object"/>
+      </param>
+      <param name="repairall" type="bool" default="false" advanced="true" text="{1041, 10100}" comment="Repair everything"/>
+      <param name="acceptedcost" type="money" default="if this.ship.isplayerowned then this.ship.repairprice else -1Cr" text="{1041, 10099}" advanced="true" comment="Repair cost"/>
+      <param name="urgent" default="this.ship.isplayerowned" type="internal" text="{1041, 10138}" comment="Urgent"/>
+      <param name="blacklist_stations" text="{1041, 10120}" type="internal" default="[]" comment="Stations to avoid. List of stations that should not be considered for repair."/>
+      <param name="subordinaterepairorders" default="table[]" type="internal" comment="Subordinate repair orders. Table of repair orders for subordinates"/>
+      <param name="subordinateorders" type="internal" default="[]" comment="Subordinate orders"/>
+      <param name="cannotdock" type="internal" default="false" text="{1041, 10133}" comment="Unable to dock. used for error handling in case of inability to dock"/>
+      <param name="internalorder" type="bool" default="false" advanced="true" text="{1041, 10159}" comment="Order results from an automated behavior."/>
+      <param name="debugchance" type="bool" default="0" advanced="true" text="{1041, 10086}" comment="Print debug output">
+        <input_param name="truevalue" value="100"/>
+      </param>
+    </params>
+    <requires>
+      <match shiptype="shiptype.lasertower" negate="true"/>
+      <match class="class.spacesuit" negate="true"/>
+    </requires>
+    <location object="$destination" condition="@$destination.exists"/>
+  </order>
+  <!-- to do: determine if any further interrupts are needed. add here as necessary. -->
+  <interrupts>
+    <handler ref="AttackHandler"/>
+    <handler ref="MissileLockHandler" />
+    <handler ref="ScannedHandler"/>
+    <handler ref="InspectedHandler"/>
+    <handler ref="FoundAbandonedHandler"/>
+    <handler ref="TideHandler"/>
+  </interrupts>
+  <init>
+    <set_command command="command.repair"/>
+
+    <do_if value="$subordinaterepairorders.keys.count">
+      <debug_text text="'subordinaterepairorders keys count: %s, key 1: %s, key 1 value: %s'.[$subordinaterepairorders.keys.count, $subordinaterepairorders.keys.{1}, $subordinaterepairorders.{$subordinaterepairorders.keys.{1}}]" chance="$debugchance"/>
+    </do_if>
+  </init>
+  <patch sinceversion="1">
+    <!-- patched to true since that is safer. if no path is possible, order should be called again with the proper flag set. -->
+    <set_value name="$internalorder" exact="this.isplayerowned"/>
+  </patch>
+  <attention min="unknown">
+    <actions>
+      <label name="init"/>
+
+      <!-- short wait to prevent any further blocking actions in case this order has already been cancelled at this point. in that case, order will stop after the blocking action. important for actions that act upon this order. -->
+      <wait exact="1ms" sinceversion="2"/>
+
+      <do_if value="not $destination.isoperational">
+        <debug_text text="'destination no longer operational. aborting.'" chance="$debugchance"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <do_if value="not $destination.shiptrader">
+        <debug_text text="'destination %s %s %s %s does not have a shiptrader. station cannot do repairs. aborting.'.[$destination.class, $destination.idcode, $destination.knownname, $destination]" filter="error"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <set_value name="$damaged" exact="false"/>
+
+      <do_if value="this.ship.hull != this.ship.maxhull">
+        <set_value name="$damaged" exact="true"/>
+      </do_if>
+      <do_else>
+        <find_object_component name="$check_damagedcomponents" object="this.ship" checkoperational="false" multiple="true">
+          <!--<match class="class.ship" checkoperational="false" negate="true"/>-->
+          <match_any>
+            <match restorable="true" comment="wrecked"/>
+            <match repairable="true" invulnerable="false">
+              <match_hull min="100" negate="true"/>
+            </match>
+            <match needsrepair="true" invulnerable="false">
+              <match_hull min="100" negate="true"/>
+            </match>
+          </match_any>
+        </find_object_component>
+        <do_if value="$check_damagedcomponents.count gt 0 and $check_damagedcomponents.{1}.exists">
+          <set_value name="$damaged" exact="true"/>
+          <do_if value="$repairall">
+            <set_value name="$damagedcomponents" exact="$check_damagedcomponents"/>
+          </do_if>
+        </do_if>
+      </do_else>
+
+      <do_if value="not $damaged">
+        <debug_text text="'Not damaged. Aborting'" chance="$debugchance"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <do_if value="$destination.exists">
+        <do_if value="(@this.ship.dock.container == $destination) or (this.ship.parkedat and ((this.ship.parkedat == $destination) or this.ship.parkedat.hascontext.{$destination}))">
+          <debug_text text="'already docked at %s %s. proceeding to repair.'.[$destination.knownname, $destination]" chance="$debugchance"/>
+          <resume label="repair"/>
+        </do_if>
+        <resume label="flyto"/>
+      </do_if>
+
+      <label name="finddestination"/>
+
+      <!--TODO: Find suitable destination-->
+      <do_if value="not $destination.exists">
+        <debug_text text="'No suitable destination to repair found. Aborting'" chance="$debugchance"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <label name="flyto"/>
+
+      <!-- if we are not where the station is, go there. -->
+      <do_if value="$destination.zone" exact="this.zone" negate="true">
+        <debug_text text="'%1 (%2) needs to go to %3, %4, %5 to resupply at %6. Going there.'.[this.ship.knownname, this.ship, $destination.zone.knownname, $destination.sector.knownname, $destination.cluster.knownname, $destination.knownname]" chance="$debugchance"/>
+        <run_script name="'move.generic'" result="$movesuccess">
+          <param name="destination" value="$destination"/>
+          <param name="endintargetzone" value="true"/>
+          <param name="strictblacklist" value="$internalorder"/>
+          <param name="debugchance" value="$debugchance"/>
+        </run_script>
+        <do_if value="not $movesuccess">
+          <do_if value="@this.assignedcontrolled.order.isrunning">
+            <set_order_failed order="this.assignedcontrolled.order" text="{1045, 101}" comment="Unable to reach destination."/>
+          </do_if>
+          <debug_text text="'Unable to move to destination %s %s possibly due to blacklist. Returning.'.[$destination.class, @$destination.knownname]" chance="$debugchance"/>
+          <resume label="finish"/>
+        </do_if>
+      </do_if>
+
+      <!-- highest level commander that has repair orders sends orders to everyone in the squadron rather than each subcommander relaying orders to each subordinate layer. -->
+      <do_all exact="$subordinaterepairorders.keys.count" counter="$i" reverse="true">
+        <set_value name="$locsubordinate" exact="$subordinaterepairorders.keys.{$i}"/>
+        <do_if value="$locsubordinate.isoperational">
+          <create_order id="'Repair'" object="$locsubordinate" immediate="true">
+            <param name="destination" value="$subordinaterepairorders.{$locsubordinate}.{1}"/>
+            <param name="hullpercent" value="$subordinaterepairorders.{$locsubordinate}.{2}"/>
+            <param name="damagedcomponents" value="$subordinaterepairorders.{$locsubordinate}.{3}"/>
+            <param name="repairall" value="$subordinaterepairorders.{$locsubordinate}.{4}"/>
+            <param name="acceptedcost" value="$subordinaterepairorders.{$locsubordinate}.{5}"/>
+            <param name="urgent" value="$urgent"/>
+            <param name="internalorder" value="$internalorder"/>
+            <!--<param name="subordinaterepairorders" value="$subordinaterepairorders"/>-->
+            <param name="debugchance" value="$debugchance"/>
+          </create_order>
+          <debug_text text="'activating repair order of %s %s'.[$locsubordinate.knownname, $locsubordinate]" chance="$debugchance"/>
+          <remove_value name="$subordinaterepairorders.{$locsubordinate}"/>
+          <remove_value name="$locsubordinate"/>
+        </do_if>
+      </do_all>
+
+      <!-- order is set to critical right before docking, in order.dock. -->
+      <!--<do_if value="this.ship.order != this.ship.defaultorder">
+        <set_order_state order="this.ship.order" state="orderstate.critical"/>
+      </do_if>-->
+
+      <!--<assert value="this.ship.order.id == 'Repair'" text="'Ship getting repairs with order other than Repair. Order: %s'.[this.ship.order.id]" break="always"/>-->
+      <do_if value="not $cannotdock">
+        <create_order object="this.ship" id="'DockAndWait'" immediate="true">
+          <param name="destination" value="$destination"/>
+          <param name="building" value="true"/>
+          <param name="dockfollowers" value="$destination.isclass.station"/>
+          <param name="undockhandler" value="this.ship.order"/>
+          <param name="callerid" value="this.ship.order"/>
+          <param name="internalorder" value="true"/>
+          <param name="debugchance" value="$debugchance"/>
+        </create_order>
+        <wait exact="1ms"/>
+      </do_if>
+      <do_else>
+        <debug_text text="'cannot dock. aborting.'" chance="$debugchance"/>
+        <resume label="finish"/>
+      </do_else>
+
+      <label name="repair"/>
+
+      <do_if value="this.ship.isplayerowned">
+        <do_if value="this.ship.repairprice gt $acceptedcost" chance="0">
+          <!--TODO @Owen Feedback that the cost has increased. remember that cost can also decrease. handle? -->
+          <debug_text text="'repair price %s Cr higher than accepted cost %s Cr. returning'.[this.ship.repairprice, $acceptedcost]" chance="$debugchance"/>
+          <resume label="finish"/>
+        </do_if>
+
+        <do_if value="player.money ge $acceptedcost">
+          <!--<transfer_money from="player.entity" to="$destination" amount=""/>-->
+        </do_if>
+      </do_if>
+      <do_elseif value="$destination.isplayerowned">
+        <set_value name="$repairprice" exact="this.ship.repairprice"/>
+        <debug_text text="'repairing ' + this.ship + ' ' + this.ship.knownname + ' at player shipyard for ' + $repairprice" chance="$debugchance"/>
+        <transfer_money from="this.owner" to="$destination" amount="$repairprice"/>
+        <do_if value="$destination.isclass.station">
+          <!--%1(ship name) \(%2\)(ship ID code) finished repairing at station: %3(station name) \(%4\)(station ID code). They have paid the station %5(price) Cr.-->
+          <set_value name="$logbooktext" exact="{1016,98}.[this.assignedcontrolled.knownname, this.assignedcontrolled.idcode, $destination.knownname, $destination.idcode, $repairprice.formatted.default]"/>
+          <write_to_logbook category="upkeep" title="{1016,152}" text="$logbooktext" interaction="showonmap" faction="this.assignedcontrolled.owner" object="this.object" money="$repairprice"/>
+          <remove_value name="$logbooktext"/>
+        </do_if>
+      </do_elseif>
+
+      <debug_text text="'signalling %s %s %s. repair to: %s. present hull percent: %s'.[$destination.idcode, $destination.knownname, $destination, $hullpercent, this.ship.hullpercentage]" chance="$debugchance"/>
+      <!-- signal received in build.shiptrader -->
+      <!-- param = "'repairs_initiate'", param2 = $shiptoberepaired, param3 = [hullpercent(int), damagedcomponents(list)] -->
+      <signal_objects object="$destination" param="'repairs_initiate'" param2="this.assignedcontrolled" param3="[$hullpercent, $damagedcomponents]"/>
+      <wait exact="10min">
+        <interrupt>
+          <conditions>
+            <event_object_signalled object="this.assignedcontrolled" param="'repairs_done'"/>
+          </conditions>
+          <actions>
+            <debug_text text="'%s %s %s repaired. hullpercentage: %s, should be: %s'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, this.assignedcontrolled.hullpercentage, $hullpercent]" chance="$debugchance"/>
+          </actions>
+        </interrupt>
+      </wait>
+
+      <label name="finish"/>
+      <!-- insert cleanup in case of order failure here. -->
+
+      <wait min="2s" max="3s"/>
+
+      <!-- order subordinates to undock. -->
+      <debug_text text="player.age + ': num subordinate orders: %s'.[$subordinateorders.count]" chance="($subordinateorders.count gt 0) * $debugchance"/>
+      <do_all exact="$subordinateorders.count" counter="$i">
+        <do_if value="$subordinateorders.{$i}.exists">
+          <debug_text text="'ordering subordinate %s %s %s to undock. order %s'.[@$subordinateorders.{$i}.object.idcode, @$subordinateorders.{$i}.object.knownname, $subordinateorders.{$i}.object, $subordinateorders.{$i}]" chance="$debugchance"/>
+          <cancel_order order="$subordinateorders.{$i}"/>
+        </do_if>
+      </do_all>
+
+    </actions>
+  </attention>
+  <on_abort>
+    <do_for_each name="$locorder" in="$subordinateorders" reverse="true">
+      <do_if value="$locorder.exists">
+        <debug_text text="'on_abort: ordering subordinate %s %s %s to undock.'.[@$locorder.object.idcode, @$locorder.object.knownname, $locorder.object]" chance="$debugchance"/>
+        <cancel_order order="$locorder"/>
+      </do_if>
+    </do_for_each>
+  </on_abort>
+</aiscript>

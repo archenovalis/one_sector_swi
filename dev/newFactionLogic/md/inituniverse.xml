@@ -1,0 +1,559 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="InitUniverse" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <cue name="Start" version="2">
+      <conditions>
+        <event_cue_signalled cue="md.Setup.Start" />
+        <check_value value="player.module != 'x4ep1_gamestart_mapeditor'"/>
+      </conditions>
+      <patch sinceversion="2">
+        <find_station name="$patch_stations" space="player.galaxy" multiple="true">
+          <match owner="faction.player" negate="true"/>
+          <match_content controlpost="controlpost.manager" negate="true"/>
+        </find_station>
+        <do_all exact="$patch_stations.count" counter="$i">
+          <set_value name="$controllable" exact="$patch_stations.{$i}" />
+          <debug_text text="'patching ' + $patch_stations.{$i} + ' ' + $patch_stations.{$i}.knownname + ' which is missing its trade manager'" filter="savegame"/>
+          <include_actions ref="CreateTradeManagerEntity" />
+        </do_all>
+        <remove_value name="$controllable"/>
+        <remove_value name="$patch_stations"/>
+      </patch>
+      <cues>
+
+        <!--TODO @Owen should this section be disabled for timelines scenarios-->
+        <cue name="InitUniverseMain" onfail="cancel">
+          <conditions>
+            <check_value value="not @$DisableAutoInitialisation"/>
+          </conditions>
+          <actions>
+
+            <!-- Sectors -->
+            <find_sector name="$sectors" multiple="true" />
+            <do_all exact="$sectors.count" counter="$i">
+
+              <!-- Zones -->
+              <find_zone name="$zones" multiple="true" space="$sectors.{$i}" />
+              <do_all exact="$zones.count" counter="$j">
+
+                <!-- Controllables -->
+                <find_object name="$controllables" space="$zones.{$j}" multiple="true" class="class.controllable" />
+                <do_all exact="$controllables.count" counter="$k">
+                  <set_value name="$controllable" exact="$controllables.{$k}" />
+                  <do_if value="$controllable.owner == faction.player">
+                    <continue />
+                  </do_if>
+
+                  <!-- Init Map Stations -->
+                  <do_if value="$controllable.isclass.station and not $controllable.isgodobject">
+                    <do_if value="$controllable.canhavebuildstorage and not $controllable.buildstorage">
+                      <create_build_storage station="$controllable"/>
+                    </do_if>
+                    <do_if value="$controllable.modules.all.count">
+                      <include_actions ref="InitStationActions" />
+                    </do_if>
+                    <do_else>
+                      <debug_text text="'Skipping initialisation of station ' + $controllable + ' ' + $controllable.knownname + ' which has no modules. If this occurs in any situation other than a scenario, inform Owen'"/>
+                    </do_else>
+                  </do_if>
+
+                  <!-- Init Ships -->
+                  <do_if value="$controllable.isclass.ship and not $controllable.isjobship and not $controllable.isgodshipentry and $controllable != player.occupiedship">
+                    <!-- add npcs -->
+                    <do_if value="$controllable.owner and $controllable.owner != faction.ownerless">
+                      <do_if value="player.allmodules.{player.module}.exists and not player.allmodules.{player.module}.isscenario">
+                        <debug_text text="'Found ship in universe, which is not ownerless and was not spawned by jobs. Ship %1 [%2] in %3 [%4] [Owen]'.[$controllable.macro.id, $controllable, $controllable.zone.knownname, $controllable.zone]" />
+                      </do_if>
+                      <!-- control entities -->
+                      <include_actions ref="CreatePilotEntity" />
+                      <do_if value="$controllable.isclass.[class.ship_xl, class.ship_l, class.ship_m]">
+                        <include_actions ref="CreateDefenceControlEntity" />
+                        <include_actions ref="CreateEngineerEntity" />
+                      </do_if>
+                      <!-- ammo -->
+                      <include_actions ref="InitAmmo" />
+                    </do_if>
+                    <create_ai_unit object="$controllable" />
+
+                  </do_if>
+                </do_all>
+              </do_all>
+            </do_all>
+
+            <!-- cleanup -->
+            <remove_value name="$controllables" />
+            <remove_value name="$controllable" />
+            <remove_value name="$unitcapacity" />
+            <remove_value name="$zones" />
+            <remove_value name="$sectors" />
+          </actions>
+        </cue>
+
+      </cues>
+    </cue>
+
+    <cue name="ReplaceStationControlEntities" instantiate="true">
+      <conditions>
+        <event_object_signalled object="player.galaxy" param="'replace station controlentities'" />
+      </conditions>
+      <actions>
+        <set_value name="$controllable" exact="event.param2" />
+        <include_actions ref="CreateDefenceControlEntity" />
+        <include_actions ref="CreateTradeManagerEntity" />
+        <include_actions ref="CreateEngineerEntity" />
+      </actions>
+    </cue>
+
+    <cue name="Patch_NonNPC_Pilot" instantiate="true" namespace="this">
+      <conditions>
+        <event_object_signalled object="player.galaxy" param="'patch_non-npc_pilot'" />
+        <check_value value="event.param2.isoperational and event.param2.assignedaipilot"/>
+      </conditions>
+      <actions>
+        <set_value name="$Ship" exact="event.param2"/>
+        <set_value name="$Pilot" exact="$Ship.assignedaipilot"/>
+      </actions>
+      <cues>
+        <cue name="Patch_NonNPC_Pilot_Cancel">
+          <conditions>
+            <check_any>
+              <event_object_destroyed object="$Ship"/>
+              <event_object_destroyed object="$Pilot"/>
+              <event_control_entity_removed entity="$Pilot" object="$Ship"/>
+            </check_any>
+          </conditions>
+          <actions>
+            <cancel_cue cue="namespace"/>
+          </actions>
+        </cue>
+
+        <cue name="Patch_NonNPC_Pilot_Changeover" checkinterval="5s">
+          <conditions>
+            <check_value value="@$Ship.order.state != orderstate.critical and player.controlled != $Ship"/>
+          </conditions>
+          <actions>
+            <set_value name="$Owner" exact="$Ship.trueowner"/>
+            <create_cue_actor name="$NewPilot" cue="this">
+              <select faction="$Owner" tags="tag.pilot"/>
+              <owner exact="$Owner"/>
+              <skills>
+                <skill type="boarding" exact="$Pilot.skill.{skilltype.boarding}"/>
+                <skill type="engineering" exact="$Pilot.skill.{skilltype.engineering}"/>
+                <skill type="management" exact="$Pilot.skill.{skilltype.management}"/>
+                <skill type="morale" exact="$Pilot.skill.{skilltype.morale}"/>
+                <skill type="piloting" exact="$Pilot.skill.{skilltype.piloting}"/>
+              </skills>
+            </create_cue_actor>
+            <debug_text text="'Dismissing non-npc pilot ' + $Pilot + ' ' + $Pilot.macro.id + ' from ship ' + $Ship + ' ' + $Ship.knownname + ' and replacing with ' + $NewPilot + ' ' + $NewPilot.knownname" filter="savegame"/>
+            <dismiss_control_entity actor="$Pilot" object="$Ship"/>
+            <destroy_object object="$Pilot"/>
+          </actions>
+          <delay exact="1ms"/>
+          <actions>
+            <assign_control_entity actor="$NewPilot" post="controlpost.aipilot" object="$Ship" transfer="true" init="true"/>
+          </actions>
+        </cue>
+      </cues>
+    </cue>
+
+    <cue name="InitGodCreatedStation" instantiate="true">
+      <conditions>
+        <event_god_created_station space="player.galaxy"/>
+      </conditions>
+      <actions>
+        <do_if value="event.param.isoperational">
+          <signal_objects object="player.galaxy" param="'init station'" param2="event.param" param3="true"/>
+        </do_if>
+      </actions>
+    </cue>
+
+    <cue name="InitStation" instantiate="true">
+      <conditions>
+        <!--
+        event.param = 'init station'
+        event.param2 = the station
+        event.param3 = bool, is this station a gamestart station (defaults to false)
+        -->
+        <event_object_signalled object="player.galaxy" param="'init station'" />
+      </conditions>
+      <actions>
+        <set_value name="$controllable" exact="event.param2" />
+        <set_value name="$gamestartstation" exact="@event.param3" />
+        <do_if value="$controllable.owner != faction.player">
+          <include_actions ref="InitStationActions" />
+        </do_if>
+      </actions>
+    </cue>
+
+    <cue name="StationExpanded" instantiate="true">
+      <conditions>
+        <!--
+        event.param = 'station expanded'
+        event.param2 = the station
+        -->
+        <event_object_signalled object="player.galaxy" param="'station expanded'" />
+      </conditions>
+      <actions>
+        <include_actions ref="StationExpandedActions" />
+      </actions>
+    </cue>
+
+    <cue name="PlayerStationBuilt" instantiate="true">
+      <conditions>
+        <event_player_built_station/>
+      </conditions>
+      <actions>
+        <set_value name="$controllable" exact="event.param"/>
+        <include_actions ref="CreateDefenceControlEntity" />
+        <include_actions ref="CreateEngineerEntity" />
+        <create_ai_unit object="$controllable" />
+      </actions>
+    </cue>
+
+    <!--Used variables:
+    $controllable
+    $underconstruction = was the station newly constructed as opposed to being fully created at gamestart (optional, defaults to false)
+    $gamestartstation = was the station created at gamestart? (optional, defaults to false)-->
+    <library name="InitStationActions">
+      <actions>
+        <do_if value="$controllable? and $controllable.isoperational and not $controllable.isscheduledfordeconstruction">
+          <do_if value="@$gamestartstation">
+            <!-- add workforce to stations at initialisation -->
+            <set_value name="$workforce" exact="$controllable.workforce.capacities"/>
+            <set_value name="$workforceraces" exact="$workforce.keys.list"/>
+            <do_if value="$workforceraces.count gt 0">
+              <set_value name="$workforcecapacity" exact="0" />
+              <do_all exact="$workforceraces.count" counter="$i">
+                <set_value name="$workforcecapacity" operation="add" exact="$workforce.{$workforceraces.{$i}}"/>
+              </do_all>
+              <do_if value="$workforcecapacity gt 0">
+                <set_value name="$minworkforce" exact="$controllable.workforce.min"/>
+                <set_value name="$raceminworkforce" exact="$minworkforce / $workforceraces.count"/>
+                <set_value name="$raceminworkforceextra" exact="$minworkforce % $workforceraces.count"/>
+                <set_value name="$workforcefactor" exact="if ($controllable.productions.count gt 0) then (($controllable.workforce.optimal)f / $workforcecapacity) else 1.0f"/>
+                <do_all exact="$workforceraces.count" counter="$i">
+                  <!-- add between 50% and 100% of the workforce for that race, with higher values being more likely -->
+                  <add_workforce object="$controllable" race="$workforceraces.{$i}" min="[$raceminworkforce + $raceminworkforceextra, $workforce.{$workforceraces.{$i}} * 0.5f].max * $workforcefactor" max="$workforce.{$workforceraces.{$i}} * $workforcefactor" />
+                  <debug_text text="'station %1(%2) in %3 is adding workforce of race %4: min=%5, max=%6, factor=%7, actual=%8'.[$controllable.knownname, $controllable, $controllable.sector.knownname, $workforceraces.{$i}, [$raceminworkforce + $raceminworkforceextra, $workforce.{$workforceraces.{$i}} * 0.1f].max, $workforce.{$workforceraces.{$i}}, $workforcefactor, $controllable.workforce.{$workforceraces.{$i}}.amount]" chance="0"/>
+                  <do_if value="$raceminworkforceextra gt 0">
+                    <set_value name="$raceminworkforceextra" operation="subtract"/>
+                  </do_if>
+                </do_all>
+              </do_if>
+            </do_if>
+          </do_if>
+
+          <do_if value="$controllable.canbuildships">
+            <!--<signal_cue_instantly cue="md.FactionLogic.FactionSignalled" param="[$controllable.owner, 'add_shipyard', $controllable]"/>-->
+          </do_if>
+
+          <!-- Set up trade wares for trading stations -->
+          <set_value name="$modulesets" exact="$controllable.modulesets"/>
+          <!-- TODO string comparison isn't ideal here, change to use proper set type and race information -->
+          <do_if value="$modulesets.indexof.{'tradestation_argon'}">
+            <do_if value="false">
+              <!-- Always false, only used as reference for patching -->
+            </do_if>
+            <do_else>
+              <set_value name="$tradestation" exact="true"/>
+              <!-- food wares -->
+              <add_tradeware object="$controllable" ware="ware.foodrations" allowbuy="true" allowsell="true" lockavgprice="true" />
+              <!-- imported wares -->
+              <add_tradeware object="$controllable" ware="ware.spaceweed" allowbuy="true" allowsell="true" lockavgprice="true" />
+              <add_tradeware object="$controllable" ware="ware.majadust" allowbuy="true" allowsell="true" lockavgprice="true" />
+              <!-- buy nividium -->
+              <add_tradeware object="$controllable" ware="ware.nividium" allowbuy="true" allowsell="false" lockavgprice="false" />
+            </do_else>
+          </do_if>
+          <do_elseif value="$modulesets.indexof.{'tradestation_paranid'}">
+            <!-- do not set $tradestation to true so no redundant tradewares are not added -->
+            <do_if value="$controllable.godentry == 'par_palace_cluster_709_sector001'" comment="Second Duchy Palace in Cardinal's Domain">
+              <!-- common wares -->
+              <add_tradeware object="$controllable" ware="ware.medicalsupplies" allowbuy="true" allowsell="true" lockavgprice="true" />
+              <add_tradeware object="$controllable" ware="ware.sojahusk" allowbuy="true" allowsell="true" lockavgprice="true" />
+              <!-- import wares -->
+              <add_tradeware object="$controllable" ware="ware.nostropoil" allowbuy="true" allowsell="true" lockavgprice="true" />
+              <!-- hightech wares -->
+              <add_tradeware object="$controllable" ware="ware.advancedcomposites" allowbuy="true" allowsell="true" lockavgprice="true" />
+              <add_tradeware object="$controllable" ware="ware.hullparts" allowbuy="true" allowsell="true" lockavgprice="true" />
+              <add_tradeware object="$controllable" ware="ware.scanningarrays" allowbuy="true" allowsell="true" lockavgprice="true" />
+              <!-- shiptech wares -->
+              <add_tradeware object="$controllable" ware="ware.advancedelectronics" allowbuy="true" allowsell="true" lockavgprice="true" />
+              <add_tradeware object="$controllable" ware="ware.antimatterconverters" allowbuy="true" allowsell="true" lockavgprice="true" />
+              <add_tradeware object="$controllable" ware="ware.claytronics" allowbuy="true" allowsell="true" lockavgprice="true" />
+              <add_tradeware object="$controllable" ware="ware.dronecomponents" allowbuy="true" allowsell="true" lockavgprice="true" />
+              <add_tradeware object="$controllable" ware="ware.fieldcoils" allowbuy="true" allowsell="true" lockavgprice="true" />
+              <add_tradeware object="$controllable" ware="ware.missilecomponents" allowbuy="true" allowsell="true" lockavgprice="true" />
+              <add_tradeware object="$controllable" ware="ware.shieldcomponents" allowbuy="true" allowsell="true" lockavgprice="true" />
+              <add_tradeware object="$controllable" ware="ware.smartchips" allowbuy="true" allowsell="true" lockavgprice="true" />
+              <add_tradeware object="$controllable" ware="ware.turretcomponents" allowbuy="true" allowsell="true" lockavgprice="true" />
+              <add_tradeware object="$controllable" ware="ware.weaponcomponents" allowbuy="true" allowsell="true" lockavgprice="true" />
+              <!-- special wares -->
+              <add_tradeware object="$controllable" ware="ware.helium" allowbuy="true" allowsell="true" lockavgprice="true" />
+              <add_tradeware object="$controllable" ware="ware.nividium" allowbuy="true" allowsell="false" lockavgprice="false" />
+            </do_if>
+            <do_else>
+              <set_value name="$tradestation" exact="true"/>
+              <!-- food wares -->
+              <add_tradeware object="$controllable" ware="ware.sojahusk" allowbuy="true" allowsell="true" lockavgprice="true" />
+              <!-- imported wares -->
+              <add_tradeware object="$controllable" ware="ware.spaceweed" allowbuy="true" allowsell="true" lockavgprice="true" />
+              <add_tradeware object="$controllable" ware="ware.spacefuel" allowbuy="true" allowsell="true" lockavgprice="true" />
+            </do_else>
+          </do_elseif>
+          <do_elseif value="$modulesets.indexof.{'tradestation_teladi'}">
+            <set_value name="$tradestation" exact="true"/>
+            <!-- food wares -->
+            <add_tradeware object="$controllable" ware="ware.nostropoil" allowbuy="true" allowsell="true" lockavgprice="true" />
+            <!-- imported wares -->
+            <add_tradeware object="$controllable" ware="ware.majadust" allowbuy="true" allowsell="true" lockavgprice="true" />
+            <add_tradeware object="$controllable" ware="ware.spacefuel" allowbuy="true" allowsell="true" lockavgprice="true" />
+            <!-- buy nividium -->
+            <add_tradeware object="$controllable" ware="ware.nividium" allowbuy="true" allowsell="false" lockavgprice="false" />
+          </do_elseif>
+          <do_if value="$tradestation?">
+            <!-- common wares -->
+            <add_tradeware object="$controllable" ware="ware.medicalsupplies" allowbuy="true" allowsell="true" lockavgprice="true" />
+            <add_tradeware object="$controllable" ware="ware.water" allowbuy="true" allowsell="true" lockavgprice="true" />
+            <!-- high end wares -->
+            <add_tradeware object="$controllable" ware="ware.advancedcomposites" allowbuy="true" allowsell="true" lockavgprice="true" />
+            <add_tradeware object="$controllable" ware="ware.advancedelectronics" allowbuy="true" allowsell="true" lockavgprice="true" />
+            <add_tradeware object="$controllable" ware="ware.antimatterconverters" allowbuy="true" allowsell="true" lockavgprice="true" />
+            <add_tradeware object="$controllable" ware="ware.claytronics" allowbuy="true" allowsell="true" lockavgprice="true" />
+            <add_tradeware object="$controllable" ware="ware.dronecomponents" allowbuy="true" allowsell="true" lockavgprice="true" />
+            <add_tradeware object="$controllable" ware="ware.engineparts" allowbuy="true" allowsell="true" lockavgprice="true" />
+            <add_tradeware object="$controllable" ware="ware.fieldcoils" allowbuy="true" allowsell="true" lockavgprice="true" />
+            <add_tradeware object="$controllable" ware="ware.hullparts" allowbuy="true" allowsell="true" lockavgprice="true" />
+            <add_tradeware object="$controllable" ware="ware.missilecomponents" allowbuy="true" allowsell="true" lockavgprice="true" />
+            <add_tradeware object="$controllable" ware="ware.scanningarrays" allowbuy="true" allowsell="true" lockavgprice="true" />
+            <add_tradeware object="$controllable" ware="ware.shieldcomponents" allowbuy="true" allowsell="true" lockavgprice="true" />
+            <add_tradeware object="$controllable" ware="ware.smartchips" allowbuy="true" allowsell="true" lockavgprice="true" />
+            <add_tradeware object="$controllable" ware="ware.turretcomponents" allowbuy="true" allowsell="true" lockavgprice="true" />
+            <add_tradeware object="$controllable" ware="ware.weaponcomponents" allowbuy="true" allowsell="true" lockavgprice="true" />
+            <remove_value name="$tradestation"/>
+          </do_if>
+
+          <!-- set up trade wares for pirate bases and free ports -->
+          <do_if value="$modulesets.indexof.{'piratebase'}">
+            <do_if value="$controllable.godentry == 'anarchy_port_cluster_712'" comment="Anarchy Port in Loomanckstrat's Legacy">
+              <!-- common wares -->
+              <add_tradeware object="$controllable" ware="ware.medicalsupplies" allowbuy="true" allowsell="true" lockavgprice="true" />
+              <!-- import wares -->
+              <add_tradeware object="$controllable" ware="ware.sojahusk" allowbuy="true" allowsell="true" lockavgprice="true" />
+              <add_tradeware object="$controllable" ware="ware.foodrations" allowbuy="true" allowsell="true" lockavgprice="true" />
+              <add_tradeware object="$controllable" ware="ware.nostropoil" allowbuy="true" allowsell="true" lockavgprice="true" />
+              <!-- hightech wares -->
+              <add_tradeware object="$controllable" ware="ware.scanningarrays" allowbuy="true" allowsell="true" lockavgprice="true" />
+              <!-- shiptech wares -->
+
+              <!-- special wares -->
+              <add_tradeware object="$controllable" ware="ware.spacefuel" allowbuy="true" allowsell="true" lockavgprice="true" />
+              <add_tradeware object="$controllable" ware="ware.spaceweed" allowbuy="true" allowsell="true" lockavgprice="true" />
+              <add_tradeware object="$controllable" ware="ware.majadust" allowbuy="true" allowsell="true" lockavgprice="true" />
+              <add_tradeware object="$controllable" ware="ware.nividium" allowbuy="true" allowsell="false" lockavgprice="false" />
+            </do_if>
+            <do_else>
+              <add_tradeware object="$controllable" ware="ware.spacefuel" allowbuy="true" allowsell="true" lockavgprice="true" />
+              <add_tradeware object="$controllable" ware="ware.spaceweed" allowbuy="true" allowsell="true" lockavgprice="true" />
+              <add_tradeware object="$controllable" ware="ware.majadust" allowbuy="true" allowsell="true" lockavgprice="true" />
+            </do_else>
+          </do_if>
+
+          <!-- add default wares (IMPORTANT: do this AFTER workforce and tradewares have been added since that will affect the amounts of resources we need!) -->
+          <do_if value="@$gamestartstation">
+            <do_if value="$controllable.canequipships">
+              <add_default_production_wares object="$controllable" lowerlimit="60" upperlimit="90" extremechance="0" />
+            </do_if>
+            <do_else>
+              <add_default_production_wares object="$controllable" lowerlimit="33" upperlimit="66" extremechance="15" />
+            </do_else>
+            <do_if value="$controllable.cargo.hastag.condensate">
+              <get_ware_definition result="$condensates" tags="tag.condensate"/>
+              <do_if value="$condensates.count">
+                <set_value name="$condensate" exact="$condensates.{1}"/>
+                <do_if value="$controllable.cargo.{$condensate}.count == 0">
+                  <add_wares object="$controllable" ware="$condensate" min="$controllable.cargo.{$condensate}.free / 2" max="$controllable.cargo.{$condensate}.free"/>
+                </do_if>
+              </do_if>
+            </do_if>
+          </do_if>
+
+          <add_watchdog_units_to_masstraffic object="$controllable" />
+          <!-- add npcs -->
+          <include_actions ref="CreateDefenceControlEntity" />
+          <include_actions ref="CreateEngineerEntity" />
+          <do_if value="$controllable.owner and $controllable.owner != faction.ownerless">
+            <do_if value="$controllable.owner != faction.player">
+              <!-- control entities -->
+              <include_actions ref="CreateShipDealerEntity" />
+              <include_actions ref="CreateTradeManagerEntity" />
+            </do_if>
+            <!-- ammo -->
+            <do_if value="@$gamestartstation">
+              <include_actions ref="InitAmmo" />
+            </do_if>
+          </do_if>
+          <create_ai_unit object="$controllable" />
+        </do_if>
+      </actions>
+    </library>
+
+    <!--Used variables:
+    $controllable-->
+    <library name="StationExpandedActions">
+      <actions>
+        <do_if value="$controllable?">
+          <do_if value="$controllable.canbuildships">
+            <!--Signalled cue checks if the shipyard is already registered-->
+            <!--<signal_cue_instantly cue="md.FactionLogic.FactionSignalled" param="[$controllable.owner, 'add_shipyard', $controllable]"/>-->
+          </do_if>
+
+          <!-- add npcs -->
+          <include_actions ref="CreateShipDealerEntity" />
+        </do_if>
+      </actions>
+    </library>
+
+    <library name="CreateDefenceControlEntity">
+      <actions>
+        <do_if value="$controllable? and $controllable.isoperational and not ($controllable.isclass.station and $controllable.isscheduledfordeconstruction)">
+          <do_if value="not $controllable.defencenpc.exists">
+            <create_cue_actor name="$defencemanager" cue="this">
+              <select tags="tag.defence"/>
+              <owner exact="$controllable.owner" />
+            </create_cue_actor>
+            <do_if value="$defencemanager">
+              <assign_control_entity object="$controllable" actor="$defencemanager" post="controlpost.defence" transfer="true"/>
+
+              <remove_cue_actor actor="$defencemanager" cue="this" />
+              <remove_value name="$defencemanager" />
+            </do_if>
+          </do_if>
+        </do_if>
+      </actions>
+    </library>
+
+    <library name="CreateTradeManagerEntity">
+      <actions>
+        <do_if value="$controllable? and $controllable.isoperational and not ($controllable.isclass.station and $controllable.isscheduledfordeconstruction)">
+          <do_if value="not $controllable.tradenpc.exists">
+            <do_if value="$room? and $controllable.owner != faction.xenon">
+              <create_platform_actor room="$room" post="controlpost.manager">
+                <select faction="$controllable.owner" tags="controlpost.manager.tag"/>
+                <owner exact="$controllable.owner" />
+              </create_platform_actor>
+            </do_if>
+            <do_else>
+              <create_cue_actor name="$trademanager" cue="this">
+                <select faction="$controllable.owner" tags="controlpost.manager.tag"/>
+                <owner exact="$controllable.owner" />
+              </create_cue_actor>
+              <do_if value="$trademanager">
+                <assign_control_entity object="$controllable" actor="$trademanager" post="controlpost.manager" transfer="true" />
+                <remove_cue_actor actor="$trademanager" cue="this" />
+                <remove_value name="$trademanager" />
+              </do_if>
+            </do_else>
+          </do_if>
+        </do_if>
+      </actions>
+    </library>
+
+    <library name="CreateEngineerEntity">
+      <actions>
+        <do_if value="$controllable? and $controllable.isoperational and not ($controllable.isclass.station and $controllable.isscheduledfordeconstruction)">
+          <do_if value="not $controllable.engineer.exists">
+            <create_cue_actor name="$engineer" cue="this">
+              <select tags="controlpost.engineer.tag"/>
+              <owner exact="$controllable.owner" />
+            </create_cue_actor>
+            <do_if value="$engineer">
+              <assign_control_entity object="$controllable" actor="$engineer" post="controlpost.engineer" transfer="true" />
+
+              <remove_cue_actor actor="$engineer" cue="this" />
+              <remove_value name="$engineer" />
+            </do_if>
+          </do_if>
+        </do_if>
+      </actions>
+    </library>
+
+    <library name="CreatePilotEntity">
+      <actions>
+        <do_if value="$controllable?">
+          <do_if value="not $controllable.pilot.exists">
+            <!--<do_if value="$controllable.isclass.ship_l or $controllable.isclass.ship_xl">
+              <set_value name="$entitytype" exact="entitytype.commander" />
+            </do_if>
+            <do_else>
+              <set_value name="$entitytype" exact="entitytype.pilot" />
+            </do_else>-->
+
+            <create_cue_actor name="$pilot" cue="this">
+              <select faction="$controllable.owner" tags="controlpost.aipilot.tag"/>
+              <owner exact="$controllable.owner" />
+            </create_cue_actor>
+            <do_if value="$pilot">
+              <assign_control_entity actor="$pilot" object="$controllable" post="controlpost.aipilot" transfer="true"/>
+              <remove_cue_actor actor="$pilot" cue="this"/>
+              <remove_value name="$pilot"/>
+            </do_if>
+          </do_if>
+        </do_if>
+      </actions>
+    </library>
+
+    <library name="InitAmmo">
+      <actions>
+        <do_if value="$controllable?">
+          <evaluate_ammo_storage object="$controllable" type="missile" capacity="$launchercapacity" macros="$macrolist" amounts="$amountlist" />
+          <do_if value="$launchercapacity gt 0">
+            <!-- now figure out how to distribute the amounts -->
+            <do_all exact="$macrolist.count" counter="$i">
+              <set_value name="$macro" exact="$macrolist.{$i}" />
+              <set_value name="$capacityfactor" exact="($amountlist.{$i})f / $launchercapacity" />
+              <set_value name="$wantamount" exact="$capacityfactor * ($controllable.ammostorage.missile.basecapacity + $launchercapacity)" />
+              <do_if value="$wantamount gt 0">
+                <set_value name="$haveamount" exact="$controllable.ammostorage.{$macro}.count" />
+                <set_value name="$needamount" exact="$wantamount - $haveamount" />
+                <set_value name="$addamount" min="($needamount * 0.5f)i" max="$needamount" />
+                <add_ammo object="$controllable" macro="$macro" amount="$addamount" />
+              </do_if>
+            </do_all>
+            <remove_value name="$wantamount" />
+            <remove_value name="$haveamount" />
+            <remove_value name="$needamount" />
+            <remove_value name="$addamount" />
+            <remove_value name="$macro" />
+            <remove_value name="$capacityfactor" />
+          </do_if>
+
+          <remove_value name="$launchercapacity" />
+          <remove_value name="$macrolist" />
+          <remove_value name="$amountlist" />
+        </do_if>
+
+        <!-- <debug_text text="'%1(%2) in %2 can store %3 missiles, it now has %4'.[$controllable.knownname, $controllable, $controllable.ammostorage.missile.capacity, $controllable.ammostorage.missile.count]" /> -->
+      </actions>
+    </library>
+
+    <library name="CreateShipDealerEntity">
+      <actions>
+        <do_if value="$controllable.isclass.station and $controllable.canequipships and not $controllable.controlentity.{controlpost.shiptrader}.exists">
+          <debug_text text="'No shiptrader for shipyard/equipment dock \'' + $controllable.knownname + '\' in \'' + $controllable.zone.knownname" chance="0" />
+          <create_cue_actor name="$shiptrader" cue="this">
+            <select faction="$controllable.owner" tags="tag.shiptrader"/>
+            <owner exact="$controllable.owner" />
+          </create_cue_actor>
+          <assign_control_entity actor="$shiptrader" object="$controllable" post="controlpost.shiptrader" transfer="true"/>
+          <do_if value="$shiptrader.exists">
+            <signal_cue_instantly cue="md.NPC_Shiptrader.Base" param="$shiptrader"/>
+          </do_if>
+          <remove_value name="$shiptrader"/>
+        </do_if>
+      </actions>
+    </library>
+
+  </cues>
+</mdscript>

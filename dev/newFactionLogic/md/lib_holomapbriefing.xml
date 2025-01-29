@@ -1,0 +1,216 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="LIB_HolomapBriefing" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+    <!--
+    $errorvalue:
+    -101: No Target exists
+    -102: No MissionCue exists
+    -103: No ForceCleanupCue exists-->
+
+    <library name="Start">
+      <params>
+        <param name="MissionCue"/>
+        <param name="ForceCleanupCue" comment="signal this cue to clean up the holomap when needed."/>
+        <param name="EndSignalCue" default="null"/>
+
+        <param name="Target" default="null"/>
+        <param name="PanTime" default="2s"/>
+        <param name="ZoomTime" default="2s"/>
+        <param name="ShowUnknown" default="false"/>
+
+        <param name="DebugChance" default="0"/>
+      </params>
+      <actions>
+        <set_value name="$feedbackvalue" exact="0"/>
+        <create_list name="$ErrorList"/>
+
+        <do_if value="typeof $Target == datatype.component">
+          <do_if value="not $Target.exists">
+            <append_to_list name="$ErrorList" exact="-101"/>
+          </do_if>
+        </do_if>
+        <do_elseif value="typeof $Target == datatype.group or typeof $Target == datatype.list">
+          <do_if value="not $Target.count">
+            <append_to_list name="$ErrorList" exact="-101"/>
+          </do_if>
+        </do_elseif>
+        <do_else>
+          <append_to_list name="$ErrorList" exact="-101"/>
+        </do_else>
+        
+        <do_if value="not $MissionCue">
+          <append_to_list name="$ErrorList" exact="-102"/>
+        </do_if>
+
+        <do_if value="not $ForceCleanupCue">
+          <append_to_list name="$ErrorList" exact="-103"/>
+        </do_if>
+        
+      </actions>
+      <cues>
+
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="1"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup"/>
+          </actions>
+        </cue>
+
+        <cue name="Do_Start" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" exact="0"/>
+          </conditions>
+          <cues>
+            <cue name="ForceCleanup">
+              <conditions>
+                <event_cue_signalled cue="$ForceCleanupCue"/>
+              </conditions>
+              <actions>
+                <debug_text text="'force cleanup'" chance="$DebugChance"/>
+                <signal_cue_instantly cue="Cleanup"/>
+              </actions>
+            </cue>
+            
+            <cue name="BriefingStarted">
+              <conditions>
+                <check_any>
+                  <event_briefing_started cue="$MissionCue"/>
+                  <event_briefing_submission_selected cue="$MissionCue"/>
+                </check_any>
+              </conditions>
+              <actions>
+                <set_value name="$RenderTarget" exact="event.param.{1}"/>
+
+                <do_if value="typeof $Target == datatype.component">
+                  <do_if value="$Target.exists">
+                    <set_value name="$MapTarget" exact="$Target"/>
+                  </do_if>
+                </do_if>
+                <do_elseif value="typeof $Target == datatype.group or typeof $Target == datatype.list">
+                  <do_if value="$Target.count">
+                    <set_value name="$MapTarget" exact="$Target.{1}"/>
+                  </do_if>
+                </do_elseif>
+                
+                <do_if value="not $MapTarget.exists">
+                  <set_value name="$MapTarget" exact="player.zone"/>
+                </do_if>
+
+                <do_if value="not $HoloMap?">
+                  <add_holomap name="$HoloMap" rendertarget="$RenderTarget"/>
+                </do_if>
+                
+                <debug_text text="'Briefing started'" chance="$DebugChance"/>
+              </actions>
+              <cues>
+                <cue name="DisplayHolomap">
+                  <cues>
+                    <cue name="HolomapRef" ref="md.LIB_HolomapTarget.Start">
+                      <param name="EndSignalCue" value="HolomapEnd"/>
+
+                      <param name="HoloMap" value="$HoloMap" />
+                      <param name="Components" value="[if player.occupiedship then player.occupiedship else player.entity, $MapTarget]"/>
+                      <param name="ShowUnknown" value="$ShowUnknown"/>
+
+                      <param name="verbosedebugchance" value="$DebugChance"/>
+                    </cue>
+                    <cue name="HolomapEnd">
+                      <conditions>
+                        <event_cue_signalled/>
+                      </conditions>
+                      <actions>
+                        <debug_text text="'Holomap animation end'" chance="$DebugChance"/>
+                      </actions>
+                      <cues>
+                        <cue name="ReplayHoloMap">
+                          <delay exact="5s"/>
+                          <actions>
+                            <reset_cue cue="DisplayHolomap"/>
+                          </actions>
+                        </cue>
+                      </cues>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="BriefingStopped">
+                  <conditions>
+                    <check_any>
+                      <event_briefing_cancelled cue="$MissionCue"/>
+                      <event_briefing_submission_unselected cue="$MissionCue"/>
+                    </check_any>
+                  </conditions>
+                  <actions>
+
+                    <do_if value="$HoloMap?">
+                      <remove_holomap />
+                      <remove_value name="$HoloMap"/>
+                    </do_if>
+
+                    <do_if value="$BriefingCutsceneStarted?">
+                      <!--Temp value. This is used to identify if a cutscene for this mission is still playing.-->
+                      <remove_value name="$BriefingCutsceneStarted"/>
+
+                      <stop_cutscene key="$CutsceneKey"/>
+
+                      <do_if value="$CutsceneCluster.exists">
+                        <destroy_object object="$CutsceneCluster"/>
+                      </do_if>
+                      <do_if value="$CutsceneShip.exists">
+                        <destroy_object object="$CutsceneShip"/>
+                      </do_if>
+                    </do_if>
+
+                    <debug_text text="'Briefing canceled'" chance="$DebugChance"/>
+                    <reset_cue cue="BriefingStarted"/>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <do_if value="$HoloMap?">
+              <debug_text text="'Removing holomap'" chance="$DebugChance"/>
+              <remove_holomap />
+              <remove_value name="$HoloMap"/>
+            </do_if>
+            
+            <do_if value="md.$RML_Debugging">
+              <do_all exact="$ErrorList.count" counter="$Counter">
+                <do_if value="$ErrorList.{$Counter}" exact="-101">
+                  <set_value name="$FeedbackText" exact="'No Target exists'"/>
+                </do_if>
+                <do_elseif value="$ErrorList.{$Counter}" exact="-102">
+                  <set_value name="$FeedbackText" exact="'No MissionCue exists'"/>
+                </do_elseif>
+                <do_elseif value="$ErrorList.{$Counter}" exact="-103">
+                  <set_value name="$FeedbackText" exact="'No ForceCleanupCue exists'"/>
+                </do_elseif>
+                <do_else>
+                  <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                </do_else>
+
+                <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+              </do_all>
+            </do_if>
+
+            <do_if value="$EndSignalCue">
+              <signal_cue cue="$EndSignalCue"/>
+            </do_if>
+            <debug_text text="'end'" chance="$DebugChance"/>
+            <cancel_cue cue="Start"/>
+          </actions>
+
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

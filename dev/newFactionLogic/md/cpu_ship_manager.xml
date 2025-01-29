@@ -1,0 +1,1040 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="CPU_Ship_Manager" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <cue name="Setup">
+      <actions>
+        <set_value name="md.$Enable_CPU_Ship_Boso_Encounter_Comment" exact="true" comment="Have Boso react in surprise when first discovered."/>
+      </actions>
+    </cue>
+
+    <!--CPU ship states:
+          sleeping: No activity with light off. Shifts to escaping on approach/attack with short jump charge time. (DEFAULT)
+            valid transitions: awake, escaping, safemode
+          awake: Active state with lights on. Will defend itself. Shifts to escape on approach/attack with long jump charge time.
+            valid transitions: escaping, safemode
+          escaping: Active state where it is preparing to jump. If $MinVulnerableHull gt 0 then escape can be interupted by heavy damage leading to the safemode state. Otherwise it will jump and become hidden.
+            valid transitions: hidden, safemode
+          hidden: No activity and hidden in a presentation cluster indefinitely. Signal state change to sleeping/awake for it to rejoin universe.
+            valid transitions: sleeping, awake
+          safemode: No activity with low lights and remains in place, indestructible.
+            valid transitions: sleeping, awake, escaping, hidden-->
+
+    <library name="Manager" namespace="this" version="3">
+      <params>
+        <param name="CPU_Macro"/>
+        <param name="Macro_Name_Table"      default="null"/>
+        <param name="PotentialSectorMacros"/>
+        <param name="NextSector"            default="null" comment="Directly set if signalling to become awake/sleeping from hidden to control the destination. Otherwise, sector selected from $PotentialSectorMacros."/>
+        <param name="SignalCue"             default="null"/>
+        <param name="RequestStateSignalCue" default="null" comment="Cue to signal cue with ID of requested state. Directly modify any params beforehand to change behaviour."/>
+        <param name="IdealSubordinateCount" default="40"/>
+
+        <!--CPU Ship behaviour-->
+        <param name="InitialState"        default="'sleeping'"/>
+        <param name="MinVulnerableHull"   default="-1"    comment="Hull percentage to be reached to trigger the vulnerable CPU ship to go into the safemode state.
+                                                                   Negative to always have the ship escape or be destroyed if $MinInvulnerableHull is le 0.
+                                                                   Update from outside to have the ship change behavour to allow/disallow the safemode state."/>
+        <param name="MinInvulnerableHull" default="20"    comment="Minimum damagable hull percentage of the CPU ship. Zero means the ship is destructible."/>
+
+        <!--Escape params-->
+        <param name="MaxSleepingJumpTime"   default="30s" comment="Maximum escape time from when the CPU ship transitions from 'sleeping' to 'escaping' state. May jump earlier if heavily damaged."/>
+        <param name="MaxActiveJumpTime"     default="7min" comment="Maximum escape time from when the CPU ship transitions from 'awake' to 'escaping' state. May jump earlier if heavily damaged."/>
+        <param name="MaxSafemodeJumpTime"   default="30s" comment="Maximum escape time from when the CPU ship transitions from 'safemode' to 'escaping' state. May jump earlier if heavily damaged."/>
+
+        <!--Hidden params-->
+        <param name="MinHiddenDuration"     default="-1s" comment="Minimum time to be in the presentation cluster. Negative to be indefinite."/>
+        <param name="MaxHiddenDuration"     default="-1s" comment="Maximum time to be in the presentation cluster. Negative to be indefinite."/>
+        <param name="HiddenHullRepairRate"  default="0.2" comment="Percentage points to repair the hull at per minute in the presentation cluster."/>
+        <param name="HiddenEndState"        default="'sleeping'"  comment="State to transition to after repairing."/>
+
+        <!--Safemode params-->
+        <param name="SafemodeRepairRate"    default="0.2" comment="Percentage points to repair the hull at per minute. lt 1 percentage will apply hull at by chance. Negative to be indefinite."/>
+        <param name="RepairEndState"        default="'hidden'" comment="State to transition to after repairing."/>
+
+        <param name="DebugChance"           default="0"/>
+        <param name="QuickMode"             default="false"/>
+      </params>
+      <actions>
+        <set_value name="$CPUShip" exact="null"/>
+        <set_value name="$CPUState" exact="null"/>
+        <set_value name="$LastState" exact="null"/>
+        <set_value name="$PresentationCluster" exact="null"/>
+        <create_group groupname="$PastDefenderGroup"/>
+        <create_group groupname="$CurrentDefenderGroup"/>
+        <create_group groupname="$SpaceDefenderGroup"/>
+        <create_group groupname="$DockedDefenderGroup"/>
+        <set_value name="$MissionActors" exact="table[]"/>
+        <set_value name="$PreviousPlacementSectors" exact="[]"/>
+        <set_value name="$NextJumpTime" exact="0s"/>
+        <set_value name="$LastCPUShipAttackedTime" exact="-1s"/>
+        <set_value name="$LastDefenderAttackedTime" exact="-1s"/>
+      </actions>
+      <patch sinceversion="2">
+        <do_if value="@$CPUShip.cluster.isnormalcluster">
+          <debug_text text="'Adding sector ' + $CPUShip.sector + ' ' + $CPUShip.sector.knownname + ' to list of ignored sectors for encounters'" filter="savegame"/>
+          <append_to_list name="md.Encounters.Manager.$IgnoredSectors" exact="$CPUShip.sector"/>
+        </do_if>
+      </patch>
+      <patch sinceversion="3">
+        <set_value name="$IdealSubordinateCount" exact="40"/>
+        <set_value name="$Patch_Do_Respawn_Docked_Subordinates" exact="true"/>
+
+        <do_if value="$CPUState == 'awake' or $CPUState == 'escaping' or $CPUState == 'hidden'">
+          <do_for_each name="$NameMacro" valuename="$NameIDs" in="$Macro_Name_Table">
+            <do_if value="$CPUShip.macro.ismacro.{$NameMacro}">
+              <set_object_name object="$CPUShip" page="$NameIDs.{1}" line="$NameIDs.{2}"/>
+              <debug_text text="'Setting CPU ship name to ' + $CPUShip.knownname" filter="savegame"/>
+              <break/>
+            </do_if>
+          </do_for_each>
+        </do_if>
+
+        <do_if value="$CPUShip.defaultorder.id == 'Wait'">
+          <debug_text text="'Setting CPU ship ' + $CPUShip.debugname + ' to not flee'" filter="savegame"/>
+          <set_value name="$CPUShip.pilot.$noattackresponse" exact="true"/>
+        </do_if>
+      </patch>
+      <cues>
+        <!--@Owen @Matthias #Hack we have to patch outside of the patch node as create_ship within a patch node results in the ships not having active weapons-->
+        <cue name="Patch_Respawn_Docked_Subordinates" onfail="cancel">
+          <conditions>
+            <check_value value="@$Patch_Do_Respawn_Docked_Subordinates"/>
+          </conditions>
+          <actions>
+            <remove_value name="$Patch_Do_Respawn_Docked_Subordinates"/>
+            <do_if value="$CPUState == 'awake' and $CPUShip.subordinates.count lt $IdealSubordinateCount">
+              <run_actions ref="Create_CPU_Defenders" result="$CreatedDefenders">
+                <param name="CPUShip" value="$CPUShip"/>
+                <param name="NameTable" value="$Macro_Name_Table"/>
+                <param name="NumSpaceDefenders" value="0"/>
+                <param name="NumDockedDefenders" value="$IdealSubordinateCount - $CPUShip.subordinates.count"/>
+                <param name="CreateInert" value="false"/>
+              </run_actions>
+              <debug_text text="'Created ' + $CreatedDefenders.{2}.count + ' docked defenders for ' + $CPUShip.debugname" filter="savegame"/>
+              <add_to_group groupname="$CurrentDefenderGroup" list="$CreatedDefenders.{2}"/>
+              <add_to_group groupname="$DockedDefenderGroup" list="$CreatedDefenders.{2}"/>
+            </do_if>
+          </actions>
+        </cue>
+        
+        <library name="Get_CPU_Placement_Pos" purpose="include_actions">
+          <actions>
+            <set_value name="$SpawnSector" exact="null"/>
+            <set_value name="$SecSpawnPos" exact="null"/>
+            <do_if value="$NextSector.exists">
+              <set_value name="$SpawnSector" exact="$NextSector"/>
+            </do_if>
+            <do_else>
+              <find_sector name="$SpawnSector" macro="$PotentialSectorMacros" excluded="$PreviousPlacementSectors" multiple="false"/>
+            </do_else>
+            <do_if value="$SpawnSector">
+              <append_to_list name="$PreviousPlacementSectors" exact="$SpawnSector"/>
+              <do_if value="$PreviousPlacementSectors.count gt $PotentialSectorMacros.count - 2">
+                <!--If approaching the last of the sectors to select from forget the first spawn sector-->
+                <remove_value name="$PreviousPlacementSectors.{1}"/>
+              </do_if>
+
+              <!--Spawn on the outskirts-->
+              <set_value name="$SectorCentre" exact="$SpawnSector.coreposition"/>
+              <set_value name="$SectorCoreSize" exact="$SpawnSector.coresize * 0.5"/>
+              <set_value name="$SectorSpawnDist" min="$SectorCoreSize * 1.1f" max="$SectorCoreSize * 1.2f"/>
+              <set_value name="$Yaw" min="0deg" max="360deg"/>
+              <create_position name="$SecSpawnPos" x="$SectorCentre.x + sin($Yaw) * $SectorSpawnDist" y="$SectorCentre.y" z="$SectorCentre.z + cos($Yaw) * $SectorSpawnDist"/>
+              <set_value name="$SecSpawnYaw" min="$Yaw + 160deg" max="$Yaw + 200deg"/>
+              <debug_text text="'CPU placement pos of ' + $SecSpawnPos + ' in sector ' + $SpawnSector + ' ' + $SpawnSector.knownname" chance="$DebugChance"/>
+              <remove_value name="$SectorCentre"/>
+              <remove_value name="$SectorCoreSize"/>
+              <remove_value name="$SectorSpawnDist"/>
+              <remove_value name="$Yaw"/>
+            </do_if>
+            <do_else>
+              <debug_text text="'Unable to select sector from ' + $PotentialSectorMacros" filter="error"/>
+            </do_else>
+          </actions>
+        </library>
+
+        <library name="Leave_Presentation_Cluster">
+          <actions>
+            <include_actions ref="Get_CPU_Placement_Pos"/>
+            <do_if value="$SpawnSector">
+              <do_if value="$SpawnSector == $NextSector">
+                <set_value name="$NextSector" exact="null"/>
+              </do_if>
+              <!--No effects needed-->
+              <warp object="$CPUShip" sector="$SpawnSector">
+                <safepos value="$SecSpawnPos"/>
+                <rotation yaw="$SecSpawnYaw"/>
+              </warp>
+              <do_if value="$SpawnSector.cluster.isnormalcluster">
+                <append_to_list name="md.Encounters.Manager.$IgnoredSectors" exact="$SpawnSector.sector"/>
+              </do_if>
+              <do_if value="$CPUShip.subordinates.count lt $IdealSubordinateCount">
+                <run_actions ref="Create_CPU_Defenders" result="$CreatedDefenders">
+                  <param name="CPUShip" value="$CPUShip"/>
+                  <param name="NameTable" value="$Macro_Name_Table"/>
+                  <param name="NumSpaceDefenders" value="0"/>
+                  <param name="NumDockedDefenders" value="$IdealSubordinateCount - $CPUShip.subordinates.count"/>
+                </run_actions>
+                <add_to_group groupname="$CurrentDefenderGroup" list="$CreatedDefenders.{2}"/>
+                <add_to_group groupname="$DockedDefenderGroup" list="$CreatedDefenders.{2}"/>
+              </do_if>
+            </do_if>
+          </actions>
+        </library>
+
+        <!--return value: list [$SpaceDefenders, $DockedDefenders]-->
+        <library name="Create_CPU_Defenders" purpose="run_actions">
+          <params>
+            <param name="CPUShip"/>
+            <param name="NumSpaceDefenders"/>
+            <param name="NumDockedDefenders"/>
+            <param name="NameTable" default="null"/>
+            <param name="CheckDocked" default="true"/>
+            <param name="CreateInert" default="true"/>
+            <param name="DebugChance" default="0"/>
+          </params>
+          <actions>
+            <set_value name="$Sector" exact="$CPUShip.sector"/>
+            <set_value name="$CreatedShips" exact="[]"/>
+            <set_value name="$SpaceDefenders" exact="[]"/>
+            <set_value name="$DockedDefenders" exact="[]"/>
+            <set_value name="$HeavyDefenderMacros" exact="[macro.ship_xen_m_corvette_01_a_macro]"/>
+            <set_value name="$LightDefenderMacros" exact="[macro.ship_xen_s_heavyfighter_01_a_macro]"/>
+            <do_if value="$CheckDocked">
+              <find_object_component name="$DockedShips" class="class.ship_s" owner="faction.xenon" object="$CPUShip" includeobjects="true" multiple="true"/>
+              <do_if value="$DockedShips.count">
+                <debug_text text="'Reducing number of requested docked ships from ' + $NumDockedDefenders + ' to ' + ($NumDockedDefenders - $DockedShips.count) + ' due to existing docked ships'" chance="$DebugChance"/>
+                <set_value name="$NumDockedDefenders" operation="subtract" exact="$DockedShips.count"/>
+              </do_if>
+            </do_if>
+            <do_if value="$NumDockedDefenders gt 0">
+              <set_value name="$DockSpace" exact="0"/>
+              <find_dockingbay name="$Docks" object="$CPUShip" multiple="true">
+                <match_dock size="tag.dock_s" storage="true"/>
+              </find_dockingbay>
+              <do_for_each name="$Dock" in="$Docks">
+                <debug_text text="$Dock.debugname + ' has ' + $Dock.shipstorage.free + ' free space'" chance="$DebugChance"/>
+                <set_value name="$DockSpace" operation="add" exact="$Dock.shipstorage.free"/>
+              </do_for_each>
+              <set_value name="$NumDockedDefenders" exact="[$NumDockedDefenders, $DockSpace].min"/>
+            </do_if>
+
+            <do_if value="$NumDockedDefenders gt 0">
+              <do_all exact="$NumDockedDefenders">
+                <!--TODO @Owen @Matthias #HACK create_ship 'dock' does not put spawned ships into the storage but instead into the launch tubes
+                We have previously found the storage $Docks (currently only 1 with this asset) so we can iterate over them until they're full-->
+                <do_for_each name="$Dock" in="$Docks">
+                  <do_if value="$Dock.shipstorage.free">
+                    <create_ship name="$Defender" dock="$Dock" macro="macro.ship_xen_s_heavyfighter_01_a_macro">
+                      <owner exact="faction.xenon"/>
+                    </create_ship>
+                    <do_if value="$Defender">
+                      <append_to_list name="$DockedDefenders" exact="$Defender"/>
+                      <append_to_list name="$CreatedShips" exact="$Defender"/>
+                    </do_if>
+                    <break/>
+                  </do_if>
+                </do_for_each>
+              </do_all>
+            </do_if>
+
+            <do_if value="$NumSpaceDefenders gt 0">
+              <do_all exact="$NumSpaceDefenders">
+                <do_any>
+                  <set_value name="$SelectedMacro" exact="macro.ship_xen_s_heavyfighter_01_a_macro" weight="100"/>
+                  <set_value name="$SelectedMacro" exact="macro.ship_xen_m_corvette_01_a_macro" weight="10"/>
+                </do_any>
+                <!--TODO @Owen a less random placement pattern-->
+                <get_safe_pos result="$SafePos" radius="2km" object="$CPUShip" sector="$Sector"/>
+                <create_ship name="$Defender" sector="$Sector" macro="$SelectedMacro">
+                  <owner exact="faction.xenon"/>
+                  <position value="$SafePos"/>
+                  <rotation value="$CPUShip.rotation"/>
+                </create_ship>
+                <append_to_list name="$SpaceDefenders" exact="$Defender"/>
+                <append_to_list name="$CreatedShips" exact="$Defender"/>
+              </do_all>
+            </do_if>
+            <do_for_each name="$CreatedShip" in="$CreatedShips">
+              <do_if value="not $CreateInert">
+                <create_cue_actor name="$Pilot" cue="this">
+                  <select tags="tag.fighterpilot" race="race.xenon"/>
+                </create_cue_actor>
+                <assign_control_entity object="$CreatedShip" actor="$Pilot" post="controlpost.aipilot" init="true" transfer="true"/>
+                <set_object_commander object="$CreatedShip" commander="$CPUShip" assignment="assignment.defence"/>
+                <create_order object="$CreatedShip" id="'Escort'" default="true">
+                  <param name="target" value="$CPUShip"/>
+                </create_order>
+              </do_if>
+            </do_for_each>
+            <return value="[$SpaceDefenders, $DockedDefenders]"/>
+          </actions>
+        </library>
+
+        <library name="Set_Defender_Lights">
+          <actions>
+            <do_for_each name="$SpaceDefender" in="$SpaceDefenderGroup">
+              <do_if value="$SpaceDefender.pilot">
+                <!--TODO @Owen clear_object_lights_flicker-->
+                <flicker_object_lights object="$SpaceDefender" base="1.0" duration="1s"/>
+              </do_if>
+              <do_else>
+                <flicker_object_lights object="$SpaceDefender" range="0.0" base="0.0" interval="999h" duration="999h"/>
+              </do_else>
+            </do_for_each>
+          </actions>
+        </library>
+
+        <library name="Set_Defender_Names">
+          <actions>
+            <do_if value="$Macro_Name_Table">
+              <do_for_each name="$Defender" in="$CurrentDefenderGroup">
+                <do_for_each name="$NameMacro" valuename="$NameIDs" in="$Macro_Name_Table">
+                  <do_if value="$Defender.macro.ismacro.{$NameMacro}">
+                    <set_object_name object="$Defender" page="$NameIDs.{1}" line="$NameIDs.{2}"/>
+                    <break/>
+                  </do_if>
+                </do_for_each>
+              </do_for_each>
+            </do_if>
+          </actions>
+        </library>
+
+        <cue name="Trigger_Defences" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <shuffle_group group="$CurrentDefenderGroup"/>
+            <set_value name="$ActivationDelay" min="1s" max="3s"/>
+            <do_for_each name="$Defender" in="$CurrentDefenderGroup">
+              <do_if value="not $Defender.aipilot">
+                <signal_cue_instantly cue="Activate_Defender" param="[$Defender, $ActivationDelay]"/>
+                <set_value name="$ActivationDelay" operation="add" min="1s" max="3s"/>
+              </do_if>
+            </do_for_each>
+          </actions>
+          <delay exact="$ActivationDelay"/>
+          <actions>
+            <reset_cue cue="Trigger_Defences"/>
+          </actions>
+        </cue>
+
+        <!--event.param [$ship, $activationdelay]-->
+        <cue name="Activate_Defender" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <set_value name="this.$Ship" exact="event.param.{1}"/>
+            <set_value name="this.$ActivationDelay" exact="event.param.{2}"/>
+            <flicker_object_lights object="this.$Ship" range="0.1" base="0.1" duration="this.$ActivationDelay" fadein="this.$ActivationDelay * 0.5" fadeduring="true"/>
+          </actions>
+          <delay exact="this.$ActivationDelay"/>
+          <actions>
+            <do_if value="this.$Ship.isoperational and not this.$Ship.aipilot">
+              <create_cue_actor name="this.$Pilot" cue="this">
+                <select tags="tag.fighterpilot" race="race.xenon"/>
+              </create_cue_actor>
+              <assign_control_entity object="this.$Ship" actor="this.$Pilot" post="controlpost.aipilot" init="true" transfer="true"/>
+              <set_object_commander object="this.$Ship" commander="$CPUShip"/>
+            </do_if>
+          </actions>
+        </cue>
+
+        <cue name="Defender_Attacked" instantiate="true">
+          <conditions>
+            <event_object_attacked group="$CurrentDefenderGroup"/>
+          </conditions>
+          <actions>
+            <set_value name="$LastDefenderAttackedTime" exact="player.age"/>
+          </actions>
+        </cue>
+
+        <cue name="Initial_CPU_Ship_Spawn">
+          <delay min="20s" max="30s"/>
+          <actions>
+            <include_actions ref="Get_CPU_Placement_Pos"/>
+            <do_if value="$SpawnSector">
+              <create_ship name="$CPUShip" sector="$SpawnSector" macro="macro.ship_tfm_xl_carrier_02_a_macro">
+                <pilot>
+                  <select tags="tag.pilot" race="race.xenon"/>
+                </pilot>
+                <owner exact="faction.xenon"/>
+                <safepos value="$SecSpawnPos"/>
+                <rotation yaw="$SecSpawnYaw"/>
+              </create_ship>
+            </do_if>
+            <do_if value="not $CPUShip.exists">
+              <assert value="$CPUShip.exists" text="'Unable to create the CPU ship. Crisis will not function.'"/>
+              <cancel_cue cue="this"/>
+            </do_if>
+            <do_else>
+              <debug_text text="'CPU ship ' + $CPUShip + ' ' + $CPUShip.knownname + ' spawned in ' + $CPUShip.sector.knownname" chance="$DebugChance"/>
+
+              <do_if value="$MinInvulnerableHull gt 0">
+                <run_actions ref="md.LIB_Generic.RequestObjectInvincibility">
+                  <param name="Object" value="$CPUShip"/>
+                  <param name="MinHull" value="$MinInvulnerableHull"/>
+                  <param name="RequesterCue" value="namespace"/>
+                  <param name="DebugChance" value="$DebugChance"/>
+                </run_actions>
+              </do_if>
+
+              <create_order object="$CPUShip" id="'Wait'" default="true"/>
+              <set_value name="$CPUShip.pilot.$noattackresponse" exact="true"/>
+
+              <run_actions ref="Create_CPU_Defenders" result="$CreatedDefenders">
+                <param name="CPUShip" value="$CPUShip"/>
+                <param name="NameTable" value="$Macro_Name_Table"/>
+                <param name="NumSpaceDefenders" value="$IdealSubordinateCount / 2"/>
+                <param name="NumDockedDefenders" value="$IdealSubordinateCount / 2"/>
+              </run_actions>
+              <add_to_group groupname="$CurrentDefenderGroup" list="$CreatedDefenders.{1}"/>
+              <add_to_group groupname="$CurrentDefenderGroup" list="$CreatedDefenders.{2}"/>
+              <add_to_group groupname="$SpaceDefenderGroup" list="$CreatedDefenders.{1}"/>
+              <add_to_group groupname="$DockedDefenderGroup" list="$CreatedDefenders.{2}"/>
+              <remove_value name="$CreatedDefenders"/>
+
+              <do_if value="$SpawnSector.cluster.isnormalcluster">
+                <append_to_list name="md.Encounters.Manager.$IgnoredSectors" exact="$SpawnSector"/>
+              </do_if>
+
+              <signal_cue_instantly cue="Change_State" param="$InitialState"/>
+            </do_else>
+          </actions>
+          <cues>
+            <cue name="CPU_Ship_Created">
+              <conditions>
+                <event_cue_completed cue="Initial_CPU_Ship_Spawn"/>
+                <check_value value="$CPUShip.exists"/>
+              </conditions>
+              <cues>
+                <cue name="CPU_Ship_Attacked" instantiate="true">
+                  <conditions>
+                    <event_object_attacked object="$CPUShip"/>
+                  </conditions>
+                  <actions>
+                    <set_value name="$LastCPUShipAttackedTime" exact="player.age"/>
+                  </actions>
+                </cue>
+
+                <cue name="CPU_Ship_Damaged_To_Safemode" checkinterval="2s" instantiate="true">
+                  <conditions>
+                    <check_value value="$CPUState != 'safemode'"/>
+                    <check_value value="$MinVulnerableHull gt 0 and $CPUShip.hullpercentage le $MinVulnerableHull"/>
+                  </conditions>
+                  <actions>
+                    <signal_cue_instantly cue="Change_State" param="'safemode'"/>
+                  </actions>
+                </cue>
+
+                <cue name="Approach_Handlers">
+                  <cues>
+                    <cue name="Player_Approaches_CPU_Ship_Range_1" checkinterval="1s">
+                      <conditions>
+                        <check_value value="player.ship and player.sector == $CPUShip.sector"/>
+                        <check_value value="player.ship.bboxdistanceto.{$CPUShip} lt 25km"/>
+                      </conditions>
+                      <actions>
+                        <set_value name="$EncounterLocation" exact="[$CPUShip.sector, $CPUShip.relativeposition.{$CPUShip.sector}]"/>
+                        <do_if value="$SignalCue">
+                          <signal_cue_instantly cue="$SignalCue" param="['approach_range_1']"/>
+                        </do_if>
+                      </actions>
+                      <cues>
+                        <cue name="Player_Approaches_CPU_Ship_Range_1_Boso_Comment_1" onfail="cancel">
+                          <conditions>
+                            <check_value value="md.$Enable_CPU_Ship_Boso_Encounter_Comment"/>
+                            <check_value value="@md.$PersistentCharacters.$BosoTa.hascontext.{player.headquarters}"/>
+                          </conditions>
+                          <actions>
+                            <set_value name="md.$Enable_CPU_Ship_Boso_Encounter_Comment" exact="false"/>
+                            <set_value name="$MissionActors.$BosoTa" exact="table[
+                                  $entity = md.$PersistentCharacters.$BosoTa,
+                                  $monitor = table[
+                                    $cutscenekey = 'ShowCharacterBoron',
+                                    $caption = true
+                                  ]
+                                ]"/>
+                            <signal_cue_instantly cue="md.NPC_UseCases.UseCase" param="table[
+                              $caller = this, $preset = '$plot', $actors = $MissionActors, $debugchance = $DebugChance,
+                              $script = [
+                                        table[ $actor = '$BosoTa', $speak = 302360401, $recipient = 'player', $monitor = true, $comment = ''],
+                                        2s,
+                                        table[ $actor = '$BosoTa', $speak = 302360402, $recipient = 'player', $monitor = true, $comment = '' ],
+                                        ],
+                              $callbackcue = Player_Approaches_CPU_Ship_Range_1_Boso_Comment_1_Done,
+                              $abortcallbackcue = Player_Approaches_CPU_Ship_Range_1_Boso_Comment_1_Done
+                             ]" />
+                          </actions>
+                        </cue>
+
+                        <cue name="Player_Approaches_CPU_Ship_Range_1_Boso_Comment_1_Done">
+                          <conditions>
+                            <event_cue_signalled/>
+                          </conditions>
+                          <cues>
+                            <cue name="Player_Approaches_CPU_Ship_Range_1_Boso_Comment_2">
+                              <conditions>
+                                <event_object_changed_sector object="$CPUShip"/>
+                              </conditions>
+                              <actions>
+                                <do_if value="player.sector != $EncounterLocation.{1} or player.entity.distanceto.{$EncounterLocation} gt 50km">
+                                  <cancel_cue cue="this"/>
+                                </do_if>
+                              </actions>
+                              <delay exact="5s"/>
+                              <actions>
+                                <signal_cue_instantly cue="md.NPC_UseCases.UseCase" param="table[
+                                    $caller = this, $preset = '$plot', $actors = $MissionActors, $debugchance = $DebugChance,
+                                    $script = [
+                                              table[ $actor = '$BosoTa', $speak = 302360403, $recipient = 'player', $monitor = true, $comment = ''],
+                                              0.5s,
+                                              table[ $actor = '$BosoTa', $speak = 302360404, $recipient = 'player', $monitor = true, $comment = '' ],
+                                              0.5s,
+                                              table[ $actor = '$BosoTa', $speak = 302360405, $recipient = 'player', $monitor = true, $comment = '' ],
+                                              ],
+                                    $callbackcue = Player_Approaches_CPU_Ship_Range_1_Boso_Comment_2_Done,
+                                    $abortcallbackcue = Player_Approaches_CPU_Ship_Range_1_Boso_Comment_2_Done
+                                   ]" />
+                              </actions>
+                            </cue>
+                          </cues>
+                        </cue>
+                        <cue name="Player_Approaches_CPU_Ship_Range_1_Boso_Comment_2_Done">
+                          <conditions>
+                            <event_cue_signalled/>
+                          </conditions>
+                          <cues>
+                            <cue name="Player_Approaches_CPU_Ship_Range_1_Boso_Comment_3">
+                              <delay exact="4s"/>
+                              <actions>
+                                <set_value name="this.$DoComment" exact="false"/>
+                                <do_for_each name="$PastDefender" in="$PastDefenderGroup">
+                                  <do_if value="player.sector == $PastDefender.sector and player.entity.distanceto.{$PastDefender} lt 10km">
+                                    <set_value name="this.$DoComment" exact="true"/>
+                                    <break/>
+                                  </do_if>
+                                </do_for_each>
+
+                                <do_if value="this.$DoComment">
+                                  <signal_cue_instantly cue="md.NPC_UseCases.UseCase" param="table[
+                                    $caller = this, $preset = '$plot', $actors = $MissionActors, $debugchance = $DebugChance,
+                                    $script = [
+                                              table[ $actor = '$BosoTa', $speak = 302360406, $recipient = 'player', $monitor = true, $comment = ''],
+                                              ],
+                                   ]" />
+                                </do_if>
+                              </actions>
+                            </cue>
+                          </cues>
+                        </cue>
+                      </cues>
+                    </cue>
+
+                  </cues>
+                </cue>
+
+              </cues>
+            </cue>
+          </cues>
+        </cue>
+
+        <!--##############
+        STATE MANAGEMENT
+        ##################-->
+
+        <cue name="Outside_State_Request" onfail="cancel">
+          <conditions>
+            <check_value value="$RequestStateSignalCue"/>
+          </conditions>
+          <cues>
+            <cue name="Outside_State_Request_Signalled" instantiate="true">
+              <conditions>
+                <event_cue_signalled cue="$RequestStateSignalCue"/>
+              </conditions>
+              <actions>
+                <signal_cue_instantly cue="Change_State" param="event.param"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Change_State" instantiate="true">
+          <conditions>
+            <check_any>
+              <event_cue_signalled comment="event.param == new state string"/>
+              <check_all>
+                <event_cue_signalled cue="Manager" comment="event.param ['change_state', new state string]"/>
+                <check_value value="@event.param.{1} == 'change_state'"/>
+              </check_all>
+            </check_any>
+          </conditions>
+          <actions>
+            <do_if value="event.object == Manager">
+              <set_value name="this.$RequestedState" exact="event.param.{2}"/>
+            </do_if>
+            <do_else>
+              <set_value name="this.$RequestedState" exact="event.param"/>
+            </do_else>
+            <do_if value="this.$RequestedState">
+              <do_if value="this.$RequestedState != $CPUState">
+                <set_value name="this.$IsValidTransition" exact="false"/>
+                <do_if value="this.$RequestedState == 'sleeping'">
+                  <set_value name="this.$IsValidTransition" exact="not $CPUState or $CPUState == 'hidden' or $CPUState == 'safemode'"/>
+                </do_if>
+                <do_elseif value="this.$RequestedState == 'awake'">
+                  <set_value name="this.$IsValidTransition" exact="not $CPUState or $CPUState == 'sleeping' or $CPUState == 'hidden' or $CPUState == 'safemode'"/>
+                </do_elseif>
+                <do_elseif value="this.$RequestedState == 'escaping'">
+                  <set_value name="this.$IsValidTransition" exact="not $CPUState or $CPUState == 'sleeping' or $CPUState == 'awake' or $CPUState == 'safemode'"/>
+                </do_elseif>
+                <do_elseif value="this.$RequestedState == 'hidden'">
+                  <set_value name="this.$IsValidTransition" exact="not $CPUState or $CPUState == 'escaping' or $CPUState == 'safemode'"/>
+                </do_elseif>
+                <do_elseif value="this.$RequestedState == 'safemode'">
+                  <set_value name="this.$IsValidTransition" exact="not $CPUState or $CPUState == 'sleeping' or $CPUState == 'awake' or $CPUState == 'escaping' or $CPUState == 'hidden'"/>
+                </do_elseif>
+                <do_else>
+                  <debug_text text="'Unknown state was requested: ' + this.$RequestedState" filter="error"/>
+                </do_else>
+
+                <do_if value="this.$IsValidTransition">
+                  <set_value name="$LastState" exact="$CPUState"/>
+                  <set_value name="$CPUState" exact="event.param"/>
+                  <signal_cue_instantly cue="Leave_State" param="$LastState"/>
+                  <signal_cue_instantly cue="Enter_State" param="$CPUState"/>
+                  <do_if value="$SignalCue">
+                    <signal_cue_instantly cue="$SignalCue" param="['cpu_changed_state', $CPUState, $LastState]"/>
+                  </do_if>
+                </do_if>
+                <do_else>
+                  <debug_text text="'Invalid state transition from ' + $CPUState + ' to ' + this.$RequestedState + ' was requested'" filter="error"/>
+                </do_else>
+              </do_if>
+            </do_if>
+            <do_else>
+              <debug_text text="'null state was requested'" filter="error"/>
+            </do_else>
+          </actions>
+        </cue>
+
+        <!--event.param == current state-->
+        <cue name="Leave_State" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <debug_text text="player.age + ' Signalling to leave state ' + event.param" chance="$DebugChance"/>
+          </actions>
+        </cue>
+
+        <!--event.param == new state-->
+        <cue name="Enter_State" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <debug_text text="player.age + ' Signalling to enter state ' + event.param" chance="$DebugChance"/>
+          </actions>
+        </cue>
+
+        <cue name="State_Sleeping">
+          <conditions>
+            <event_cue_signalled cue="Enter_State"/>
+            <check_value value="event.param == 'sleeping'"/>
+          </conditions>
+          <actions>
+            <do_if value="$CPUShip.sector == player.sector">
+              <flicker_object_lights object="$CPUShip" range="0.0" base="0.0" interval="999h" duration="999h"/>
+              <include_actions ref="Set_Defender_Lights"/>
+            </do_if>
+            <do_elseif value="$CPUShip.cluster.ispresentation">
+              <include_actions ref="Leave_Presentation_Cluster"/>
+            </do_elseif>
+          </actions>
+          <cues>
+            <cue name="State_Sleeping_End">
+              <conditions>
+                <event_cue_signalled cue="Leave_State"/>
+                <check_value value="event.param == 'sleeping'"/>
+              </conditions>
+              <actions>
+                <reset_cue cue="State_Sleeping"/>
+              </actions>
+            </cue>
+
+            <cue name="State_Sleeping_Entered_CPU_Sector" instantiate="true">
+              <conditions>
+                <event_object_changed_attention object="$CPUShip"/>
+                <check_value value="event.param ge attention.insector"/>
+              </conditions>
+              <actions>
+                <flicker_object_lights object="$CPUShip" range="0.0" base="0.0" interval="999h" duration="999h"/>
+                <include_actions ref="Set_Defender_Lights"/>
+              </actions>
+            </cue>
+
+            <cue name="State_Sleeping_Left_CPU_Sector" instantiate="true">
+              <conditions>
+                <event_object_changed_attention object="$CPUShip"/>
+                <check_value value="event.param lt attention.insector"/>
+              </conditions>
+              <actions>
+                <!--Just making sure that the lights are reset-->
+                <flicker_object_lights object="$CPUShip" base="1.0" duration="1s"/>
+              </actions>
+            </cue>
+
+            <cue name="State_Sleeping_Start_Escape" checkinterval="1s">
+              <conditions>
+                <check_any>
+                  <check_all>
+                    <cue_is_complete cue="Player_Approaches_CPU_Ship_Range_1"/>
+                    <check_value value="player.ship and player.sector == $CPUShip.sector"/>
+                    <check_value value="player.ship.bboxdistanceto.{$CPUShip} lt 5km"/>
+                  </check_all>
+                  <check_value value="$LastDefenderAttackedTime gt 0 and $LastDefenderAttackedTime gt player.age - 5s"/>
+                  <check_value value="$LastCPUShipAttackedTime gt 0 and $LastCPUShipAttackedTime gt player.age - 5s"/>
+                </check_any>
+              </conditions>
+              <actions>
+                <signal_cue_instantly cue="Change_State" param="'escaping'"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="State_Awake">
+          <conditions>
+            <event_cue_signalled cue="Enter_State"/>
+            <check_value value="event.param == 'awake'"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="Trigger_Defences" check="false"/>
+            <do_if value="$CPUShip.sector == player.sector">
+              <include_actions ref="Set_Defender_Lights"/>
+              <do_if value="$LastState == 'sleeping'">
+                <flicker_object_lights object="$CPUShip" range="0.2" strength="0.4" base="0.0" interval="0.5s" duration="4s" fadein="6s" fadeduring="true"/>
+              </do_if>
+              <do_else>
+                <flicker_object_lights object="$CPUShip" base="1.0" duration="1s"/>
+              </do_else>
+            </do_if>
+            <do_elseif value="$CPUShip.cluster.ispresentation">
+              <include_actions ref="Leave_Presentation_Cluster"/>
+            </do_elseif>
+
+            <do_if value="$Macro_Name_Table">
+              <do_for_each name="$NameMacro" valuename="$NameIDs" in="$Macro_Name_Table">
+                <do_if value="$CPUShip.macro.ismacro.{$NameMacro}">
+                  <set_object_name object="$CPUShip" page="$NameIDs.{1}" line="$NameIDs.{2}"/>
+                  <break/>
+                </do_if>
+              </do_for_each>
+              <include_actions ref="Set_Defender_Names"/>
+            </do_if>
+          </actions>
+          <cues>
+            <cue name="State_Awake_End">
+              <conditions>
+                <event_cue_signalled cue="Leave_State"/>
+                <check_value value="event.param == 'awake'"/>
+              </conditions>
+              <actions>
+                <reset_cue cue="State_Awake"/>
+              </actions>
+            </cue>
+
+            <cue name="State_Awake_Entered_CPU_Sector" instantiate="true">
+              <conditions>
+                <event_object_changed_attention object="$CPUShip"/>
+                <check_value value="event.param ge attention.insector"/>
+              </conditions>
+              <actions>
+                <flicker_object_lights object="$CPUShip" base="1.0" duration="1s"/>
+                <include_actions ref="Set_Defender_Lights"/>
+              </actions>
+            </cue>
+
+            <cue name="State_Awake_Start_Escape" checkinterval="1s">
+              <conditions>
+                <check_any>
+                  <check_all>
+                    <cue_is_complete cue="Player_Approaches_CPU_Ship_Range_1"/>
+                    <check_value value="player.ship and player.sector == $CPUShip.sector"/>
+                    <check_value value="player.ship.bboxdistanceto.{$CPUShip} lt 5km"/>
+                  </check_all>
+                  <check_value value="$LastDefenderAttackedTime gt 0 and $LastDefenderAttackedTime gt player.age - 5s"/>
+                  <check_value value="$LastCPUShipAttackedTime gt 0 and $LastCPUShipAttackedTime gt player.age - 5s"/>
+                </check_any>
+              </conditions>
+              <actions>
+                <signal_cue_instantly cue="Change_State" param="'escaping'"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="State_Escaping">
+          <conditions>
+            <event_cue_signalled cue="Enter_State"/>
+            <check_value value="event.param == 'escaping'"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="Trigger_Defences" check="false"/>
+            <do_if value="$CPUShip.sector == player.sector">
+              <include_actions ref="Set_Defender_Lights"/>
+              <do_if value="$LastState == 'sleeping'">
+                <flicker_object_lights object="$CPUShip" range="0.2" strength="0.4" base="0.0" interval="0.5s" duration="4s" fadein="6s" fadeduring="true"/>
+              </do_if>
+              <do_else>
+                <flicker_object_lights object="$CPUShip" base="1.0" duration="1s"/>
+              </do_else>
+            </do_if>
+
+            <do_if value="$Macro_Name_Table">
+              <do_for_each name="$NameMacro" valuename="$NameIDs" in="$Macro_Name_Table">
+                <do_if value="$CPUShip.macro.ismacro.{$NameMacro}">
+                  <set_object_name object="$CPUShip" page="$NameIDs.{1}" line="$NameIDs.{2}"/>
+                  <break/>
+                </do_if>
+              </do_for_each>
+              <include_actions ref="Set_Defender_Names"/>
+            </do_if>
+
+            <do_if value="$LastState == 'sleeping'">
+              <set_value name="$ChargingJumpTime" exact="player.age + $MaxSleepingJumpTime / 2"/>
+              <set_value name="$NextMaxJumpTime" exact="player.age + $MaxSleepingJumpTime"/>
+            </do_if>
+            <do_elseif value="$LastState == 'awake'">
+              <set_value name="$ChargingJumpTime" exact="player.age + $MaxActiveJumpTime / 2"/>
+              <set_value name="$NextMaxJumpTime" exact="player.age + $MaxActiveJumpTime"/>
+            </do_elseif>
+            <do_elseif value="$LastState == 'safemode'">
+              <set_value name="$ChargingJumpTime" exact="player.age + $MaxSafemodeJumpTime / 2"/>
+              <set_value name="$NextMaxJumpTime" exact="player.age + $MaxSafemodeJumpTime"/>
+            </do_elseif>
+          </actions>
+          <cues>
+            <cue name="State_Escaping_End">
+              <conditions>
+                <event_cue_signalled cue="Leave_State"/>
+                <check_value value="event.param == 'escaping'"/>
+              </conditions>
+              <actions>
+                <reset_cue cue="State_Escaping"/>
+              </actions>
+            </cue>
+
+            <cue name="State_Escaping_Entered_CPU_Sector" instantiate="true">
+              <conditions>
+                <event_object_changed_attention object="$CPUShip"/>
+                <check_value value="event.param ge attention.insector"/>
+              </conditions>
+              <actions>
+                <flicker_object_lights object="$CPUShip" base="1.0" duration="1s"/>
+                <include_actions ref="Set_Defender_Lights"/>
+              </actions>
+            </cue>
+
+            <cue name="State_Escaping_Charging_Jumpdrive" checkinterval="1s">
+              <conditions>
+                <check_value value="$ChargingJumpTime? and player.age gt $ChargingJumpTime"/>
+              </conditions>
+              <actions>
+                <signal_objects object="$CPUShip" param="'cpu_charging_jumpdrive'"/>
+              </actions>
+            </cue>
+
+            <cue name="State_Escaping_Do_Escape" checkinterval="1s">
+              <conditions>
+                <check_value value="player.age gt $NextMaxJumpTime"/>
+              </conditions>
+              <actions>
+                <signal_cue_instantly cue="Change_State" param="'hidden'"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="State_Hidden">
+          <conditions>
+            <event_cue_signalled cue="Enter_State"/>
+            <check_value value="event.param == 'hidden'"/>
+          </conditions>
+          <actions>
+            <flicker_object_lights object="$CPUShip" base="1.0" duration="1s"/>
+            <add_effect object="$CPUShip.zone" effect="'jump_jumpin_capship'">
+              <position value="$CPUShip.position"/>
+              <rotation value="$CPUShip.rotation"/>
+            </add_effect>
+            <add_effect object="$CPUShip" effect="'warpteleport'"/>
+            <set_value name="this.$HiddenDuration" exact="0"/>
+          </actions>
+          <delay exact="2s"/>
+          <actions>
+            <do_for_each name="$Defender" in="$CurrentDefenderGroup">
+              <do_if value="$Defender.hascontext.{$CPUShip}">
+                <destroy_object object="$Defender" explosion="false"/>
+              </do_if>
+              <do_elseif value="$Defender.aipilot">
+                <debug_text text="'Freeing defender ' + $Defender + ' ' + $Defender.knownname" chance="$DebugChance"/>
+                <remove_object_commander object="$Defender"/>
+                <create_order id="'Patrol'" object="$Defender" default="true">
+                  <param name="space" value="$Defender.sector"/>
+                </create_order>
+                <add_to_group groupname="$PastDefenderGroup" object="$Defender"/>
+              </do_elseif>
+              <do_else>
+                <destroy_object object="$Defender" explosion="true"/>
+              </do_else>
+            </do_for_each>
+            <clear_group group="$CurrentDefenderGroup"/>
+
+            <do_if value="not $PresentationCluster">
+              <create_presentation_cluster name="$PresentationCluster" persistent="true"/>
+            </do_if>
+            <find_sector name="this.$DestSector" space="$PresentationCluster"/>
+            <do_if value="$CPUShip.cluster.isnormalcluster">
+              <remove_from_list name="md.Encounters.Manager.$IgnoredSectors" exact="$CPUShip.sector" multiple="false"/>
+            </do_if>
+            <warp object="$CPUShip" sector="this.$DestSector"/>
+            <set_value name="this.$HullPercentage" exact="$CPUShip.hullpercentage"/>
+            <do_if value="$SignalCue">
+              <signal_cue_instantly cue="$SignalCue" param="['cpu_ship_warped_away']"/>
+            </do_if>
+            <do_if value="$MinHiddenDuration gt 0 and $MaxHiddenDuration gt 0">
+              <do_if value="$MinHiddenDuration lt $MaxHiddenDuration">
+                <set_value name="this.$HiddenDuration" min="$MinHiddenDuration" max="$MaxHiddenDuration"/>
+              </do_if>
+              <do_else>
+                <set_value name="this.$HiddenDuration" exact="$MinHiddenDuration"/>
+              </do_else>
+            </do_if>
+          </actions>
+          <cues>
+
+            <cue name="State_Hidden_Return_To_Universe">
+              <conditions>
+                <event_cue_completed cue="State_Hidden"/>
+                <check_value value="parent.$HiddenDuration"/>
+              </conditions>
+              <delay exact="parent.$HiddenDuration"/>
+              <actions>
+                <do_if value="$HiddenEndState">
+                  <include_actions ref="Leave_Presentation_Cluster"/>
+                  <do_if value="$SpawnSector">
+                    <signal_cue_instantly cue="Change_State" param="$HiddenEndState"/>
+                  </do_if>
+                </do_if>
+              </actions>
+            </cue>
+
+            <cue name="State_Hidden_End">
+              <conditions>
+                <event_cue_signalled cue="Leave_State"/>
+                <check_value value="event.param == 'hidden'"/>
+              </conditions>
+              <actions>
+                <do_if value="$HiddenHullRepairRate gt 0">
+                  <set_object_hull object="$CPUShip" exact="[parent.$HullPercentage + (((player.age - State_Hidden.time) / 60s) * $HiddenHullRepairRate)i, 100].min"/>
+                </do_if>
+                <reset_cue cue="State_Hidden"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="State_Safemode">
+          <conditions>
+            <event_cue_signalled cue="Enter_State"/>
+            <check_value value="event.param == 'safemode'"/>
+          </conditions>
+          <actions>
+            <destroy_object object="$CPUShip.defencenpc"/>
+            <destroy_object object="$CPUShip.engineer"/>
+            <create_order object="$CPUShip" id="'Wait'">
+              <param name="holdfire" value="true"/>
+              <param name="noattackresponse" value="true"/>
+              <param name="skipalignment" value="true"/>
+            </create_order>
+            <do_if value="$CPUShip.sector == player.sector">
+              <flicker_object_lights object="$CPUShip" range="0.01" base="0.2" interval="0.08s" duration="999h"/>
+              <include_actions ref="Set_Defender_Lights"/>
+            </do_if>
+            <do_elseif value="$CPUShip.cluster.ispresentation">
+              <include_actions ref="Leave_Presentation_Cluster"/>
+            </do_elseif>
+          </actions>
+          <cues>
+            <cue name="State_Safemode_End">
+              <conditions>
+                <event_cue_signalled cue="Leave_State"/>
+                <check_value value="event.param == 'safemode'"/>
+              </conditions>
+              <actions>
+                <!--Restore computers-->
+                <create_control_entity object="$CPUShip" post="controlpost.defence">
+                  <select race="race.drone" tags="tag.defence"/>
+                </create_control_entity>
+                <create_control_entity object="$CPUShip" post="controlpost.engineer">
+                  <select race="race.drone" tags="tag.engineer"/>
+                </create_control_entity>
+                <reset_cue cue="State_Safemode"/>
+              </actions>
+            </cue>
+
+            <cue name="State_Safemode_Entered_CPU_Sector" instantiate="true">
+              <conditions>
+                <event_object_changed_attention object="$CPUShip"/>
+                <check_value value="event.param ge attention.insector"/>
+              </conditions>
+              <actions>
+                <flicker_object_lights object="$CPUShip" range="0.01" base="0.2" interval="0.08s" duration="999h"/>
+                <include_actions ref="Set_Defender_Lights"/>
+              </actions>
+            </cue>
+
+            <cue name="State_Safemode_Left_CPU_Sector" instantiate="true">
+              <conditions>
+                <event_object_changed_attention object="$CPUShip"/>
+                <check_value value="event.param lt attention.insector"/>
+              </conditions>
+              <actions>
+                <!--Just making sure that the lights are reset-->
+                <flicker_object_lights object="$CPUShip" base="1.0" duration="1s"/>
+              </actions>
+            </cue>
+
+            <cue name="State_Safemode_Repair_Tick" checkinterval="1min" instantiate="true">
+              <actions>
+                <set_value name="this.$HullPct" exact="$CPUShip.hullpercentage"/>
+                <do_if value="$CPUShip.hullpercentage == 100">
+                  <do_if value="$RepairEndState">
+                    <signal_cue_instantly cue="Change_State" param="$RepairEndState"/>
+                  </do_if>
+                </do_if>
+                <do_else>
+                  <do_if value="$SafemodeRepairRate gt 0.0 and $SafemodeRepairRate lt 1.0">
+                    <do_all chance="100 * $SafemodeRepairRate">
+                      <set_object_hull object="$CPUShip" exact="this.$HullPct + 1"/>
+                      <debug_text text="'Applied 1% of hull to CPU ship for ' + $CPUShip.hullpercentage" chance="$DebugChance"/>
+                    </do_all>
+                  </do_if>
+                  <do_else>
+                    <set_object_hull object="$CPUShip" exact="this.$HullPct + $SafemodeRepairRate"/>
+                    <debug_text text="'Applied ' + $SafemodeRepairRate + ' percentage of hull to CPU ship for ' + $CPUShip.hullpercentage" chance="$DebugChance"/>
+                  </do_else>
+                </do_else>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+      </cues>
+    </library>
+  </cues>
+</mdscript>

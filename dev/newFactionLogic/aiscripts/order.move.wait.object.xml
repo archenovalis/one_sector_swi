@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="iso-8859-1" ?>
+<aiscript name="order.move.wait.object" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" version="1">
+  <order id="MoveToObject" name="{1041, 261}" description="{1041, 262}" category="navigation">
+    <params>
+      <param name="destination" type="object" text="{1041, 10027}" comment="Destination. Target Object">
+        <input_param name="class" value="[class.object]"/>
+      </param>
+      <param name="timeout" type="time" default="0s" infinitevalue="0s" text="{1041, 10034}" advanced="true" comment="Duration">
+        <input_param name="min" value="0s" />
+        <input_param name="max" value="10h" />
+        <input_param name="step" value="30s" />
+      </param>
+      <param name="noattackresponse" type="internal" default="this.ship.isplayerowned and this.ship.nextorder and (this.ship.nextorder.id == 'Attack' or this.ship.nextorder.id == 'Flee' or @this.ship.nextorder.$noattackresponse) and not this.ship.order.isinloop" comment="Will not respond to attacks. Read in interrupt.attacked"/>
+      <param name="fidget" type="internal" default="false" comment="Idles rather than waits in place. Ignored if docked.">
+        <patch value="false" sinceversion="1"/>
+      </param>
+      <param name="debugchance" type="bool" default="0" advanced="true" text="{1041, 10086}" comment="Print debug output">
+        <input_param name="truevalue" value="100"/>
+      </param>
+    </params>
+    <requires>
+      <match shiptype="shiptype.lasertower" negate="true"/>
+      <match class="class.spacesuit" negate="true"/>
+    </requires>
+    <location object="$destination" condition="$destination.exists" />
+  </order>
+  <interrupts>
+    <handler ref="SectorChangeHandler"/>
+    <handler ref="TargetInvalidHandler"/>
+    <handler ref="AttackHandler"/>
+    <handler ref="MissileLockHandler" />
+    <handler ref="ScannedHandler"/>
+    <handler ref="InspectedHandler"/>
+    <handler ref="FoundAbandonedHandler"/>
+    <handler ref="FoundLockboxHandler"/>
+    <handler ref="ResupplyHandler"/>
+    <handler ref="TideHandler"/>
+  </interrupts>
+  <init>
+    <do_if value="not $destination">
+      <debug_text text="'Error: No input destination.'" filter="error"/>
+      <return/>
+    </do_if>
+  </init>
+  <attention min="unknown">
+    <actions>
+
+      <do_if value="not $noattackresponse and this.isplayerowned and this.assignedcontrolled.nextorder and (this.assignedcontrolled.nextorder.id == 'Attack' or this.assignedcontrolled.nextorder.id == 'Flee' or @this.assignedcontrolled.nextorder.$noattackresponse) and this.assignedcontrolled.order.id == 'MoveToObject' and not this.assignedcontrolled.order.isinloop">
+        <set_value name="$noattackresponse" exact="true"/>
+        <edit_order_param order="this.assignedcontrolled.order" param="'noattackresponse'" value="$noattackresponse"/>
+      </do_if>
+
+      <!-- Initial checks -->
+      <label name="start"/>
+
+      <debug_text text="'command move to %s %s %s and wait'.[$destination.class, $destination.knownname, $destination]" chance="$debugchance"/>
+
+      <!-- If no destination is provided, just a wait -->
+      <do_if value="$destination">
+        <!-- Command Info -->
+        <set_command command="command.move" param="$destination"/>
+
+        <!-- Move there -->
+        <run_script name="'move.generic'" result="$movesuccess">
+          <param name="destination" value="$destination"/>
+          <param name="debugchance" value="$debugchance"/>
+        </run_script>
+        <do_if value="not $movesuccess">
+          <do_if value="@this.assignedcontrolled.order.isrunning">
+            <set_order_failed order="this.assignedcontrolled.order" text="{1045, 101}" comment="Unable to reach destination."/>
+          </do_if>
+          <debug_text text="'Unable to reach destination. Aborting.'" chance="$debugchance"/>
+          <resume label="finish"/>
+        </do_if>
+      </do_if>
+
+      <!-- Wait for orders -->
+      <set_command command="command.wait" />
+      <set_command_action commandaction="commandaction.standingby" />
+
+      <stop_moving object="this.ship" />
+      <stop_boost object="this.ship" />
+
+      <label name="wait"/>
+
+      <do_if value="this.isplayerowned and not this.isclass.computer and not this.assignedcontrolled.nextorder and (not this.assignedcontrolled.commander or (this.assignedcontrolled.commander == player.occupiedship)) and notification.npc_await_orders.active">
+        <!-- Player notification -->
+        <set_value name="$speakline" exact="10304" comment="Awaiting orders."/>
+        <run_script name="'player.interaction'">
+          <param name="Line" value="$speakline"/>
+          <param name="MaxQueueDelay" value="10s"/>
+          <param name="caption" value="{1016,6}.[this.assignedcontrolled.knownname, this.assignedcontrolled.idcode]"/>
+          <param name="interactive" value="false"/>
+          <param name="debugchance" value="$debugchance"/>
+        </run_script>
+      </do_if>
+
+      <!-- Implement the waiting part by calling the Wait order script, including sync point handling. "this.ship.order" will still be the MoveToObject order. -->
+      <run_script name="'order.wait'">
+        <param name="timeout" value="$timeout" />
+        <param name="fidget" value="@$fidget"/>
+      </run_script>
+
+      <label name="finish" />
+
+    </actions>
+  </attention>
+
+  <on_abort>
+    <do_if value="not this.ship.isoperational or @this.ship.nextorder.id != 'Flee'">
+      <stop_moving object="this.ship"/>
+    </do_if>
+    <stop_boost object="this.ship" />
+  </on_abort>
+</aiscript>

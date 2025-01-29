@@ -1,0 +1,444 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_Destroy_Entities" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--
+    $feedbackvalue:
+    Mission Errors <=-100
+    -104: No Targets were operational
+    -103: Provided group Targets_Param was empty
+    -102: EndSignalCue or MissionCue not defined
+    -101: $Targets is not of type group
+    -100: Undefined failure. Defaulted to -100
+    
+    Player Fails
+    -1: Player did not kill any objects
+    
+    Player Success
+    1: Player killed at least 1 entity
+    2: Player partially damaged at least 1 entities object (>30%)
+    3: Player partially damaged at least 1 entities object (>5% <30%)-->
+
+    <library name="PopulateTargetGroups">
+      <actions>
+        <create_group groupname="$Targets"/>
+        <create_group groupname="$ContainerTargets"/>
+        <create_list name="$EntityContainerMap"/>
+        <do_all exact="$Targets_Param.count" counter="$Counter">
+          <do_if value="$Targets_Param.{$Counter}.container.exists">
+            <set_value name="$Container" exact="$Targets_Param.{$Counter}.container"/>
+            <add_to_group groupname="$Targets" object="$Targets_Param.{$Counter}"/>
+            <add_to_group groupname="$ContainerTargets" object="$Container"/>
+            <append_to_list name="$EntityContainerMap" exact="[$Targets_Param.{$Counter}, $Container]"/>
+            
+            <!--Add it to $AttackedMap if it's not there already-->
+            <!--AttackedMap
+              - Target
+              - Player owned attack damage
+              - Other attack damage
+              - Last health amount (hull + sheilds)
+              - Last attacker-->
+            <set_value name="$Found" exact="false"/>
+            <do_all exact="$AttackedMap.count" counter="$AttackedMapCounter">
+              <do_if value="$AttackedMap.{$AttackedMapCounter}.{$AttackedMap_TargetIndex}" exact="$Container">
+                <set_value name="$Found" exact="true"/>
+              </do_if>
+            </do_all>
+            <do_if value="not $Found">
+              <debug_text text="'adding $Container to AttackedMap: ' + $Container.knownname" chance="$DebugChance"/>
+              <append_to_list name="$AttackedMap" exact="[$Container, 0, 0, $Container.shield + $Container.hull, null]"/>
+              <debug_text text="$AttackedMap" chance="$DebugChance"/>
+            </do_if>
+            <!--No need to add the NPCs to this list as they can't be attacked (right?)-->
+          </do_if>
+        </do_all>
+
+      </actions>
+    </library>
+
+    <library name="DestroyEntities" version="2">
+      <documentation>
+        <history>
+          <change date="08/06/2013" author="Owen Lake" description="Created RML_Destroy_Entities instead of modifying RML_Destroy_Components to handle special NPC cases"/>
+        </history>
+      </documentation>
+      <params>
+        <param name="EndSignalCue"/>
+        <param name="MissionCue"/>
+        <param name="StartStep" default="1" comment="Briefing step to start the mission on"/>
+        <param name="UpdateBriefing" default="true" comment="Update the briefing objective step when the objective is updated"/>
+        
+        <param name="Targets_Param" comment="Target entities to kill. This group will be copied to '$Targets'"/>
+        <param name="Objective" default="objective.kill"/>
+        <param name="CustomObjective" default="null"/>
+
+        <param name="DebugChance" default="0"/>
+      </params>
+      <actions>
+        <set_value name="$feedbackvalue" exact="0"/>
+        <create_list name="$ErrorList"/>
+
+        <do_if value="not $EndSignalCue or not $MissionCue">
+          <append_to_list name="$ErrorList" exact="-102"/>
+        </do_if>
+        
+        <do_if value="typeof $Targets_Param != datatype.group">
+          <append_to_list name="$ErrorList" exact="-101"/>
+        </do_if>
+        <do_elseif value="$Targets_Param.count" exact="0">
+          <append_to_list name="$ErrorList" exact="-103"/>
+        </do_elseif>
+        <do_else>
+          <create_list name="$AttackedMap"/>
+          <set_value name="$AttackedMap_TargetIndex" exact="1"/>
+          <set_value name="$AttackedMap_PlayerAttackIndex" exact="2"/>
+          <set_value name="$AttackedMap_OtherAttackIndex" exact="3"/>
+          <set_value name="$AttackedMap_LastHealthIndex" exact="4"/>
+          <set_value name="$AttackedMap_LastAttackerIndex" exact="5"/>
+          
+          <create_group groupname="$Targets"/>
+          <create_group groupname="$ContainerTargets"/>
+          <do_all exact="$Targets_Param.count" counter="$Counter" reverse="true">
+            <set_value name="$Valid" exact="false"/>
+            <do_if value="$Targets_Param.{$Counter}.isoperational">
+              <do_if value="$Targets_Param.{$Counter}.isclass.entity">
+                <set_value name="$Valid" exact="true"/>
+              </do_if>
+            </do_if>
+            <do_if value="not $Valid">
+              <debug_text text="'Removing ' + $Targets_Param.{$Counter} + ' from $Targets_Param'" chance="$DebugChance"/>
+              <remove_from_group group="$Targets_Param" object="$Targets_Param.{$Counter}"/>
+            </do_if>
+          </do_all>
+          <include_actions ref="PopulateTargetGroups"/>
+          <do_if value="$Targets.count" exact="0">
+            <append_to_list name="$ErrorList" exact="-104"/>
+          </do_if>
+        </do_else>
+      </actions>
+      <cues>        
+
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="1"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup"/>
+          </actions>
+        </cue>
+
+        <cue name="StartMission" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" exact="0"/>
+          </conditions>
+          <actions>
+            <set_value name="$PlayerKillCount" exact="0" comment="outright kill or greater than 50% damage"/>
+            <set_value name="$PlayerPartialKillCount" exact="0" comment="greater than 30% damage"/>
+            <set_value name="$PlayerPartialKillCount2" exact="0" comment="greater than 5%, less than 30% damage"/>
+            <set_value name="$PlayerBoarded" exact="0" comment="player boarded object"/>
+          </actions>
+          <cues>
+            <!--We add this delay cue here so we don't signal a child cue-->
+            <cue name="StartMission_Delay">
+              <delay exact="1ms"/>
+              <actions>
+                <signal_cue cue="ChooseTarget"/>
+              </actions>
+            </cue>
+            <cue name="ChooseTarget" instantiate="true">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <debug_text text="$Targets.count + ' targets remain.'" chance="$DebugChance"/>
+                <do_if value="$Targets.count" min="1">
+                  <set_value name="$Target" exact="$Targets.{1}"/>
+                  <debug_text text="'Target is now ' + $Target.knownname" chance="$DebugChance"/>
+                  <do_if value="@$CustomObjective">
+                    <do_if value="$UpdateBriefing">
+                      <update_mission cue="$MissionCue">
+                        <briefing>
+                          <objective step="$StartStep" action="objective.custom" customaction="$CustomObjective" object="$Target" encyclopedia="if $ContainerTargets.count == 1 then $ContainerTargets.{1} else null"/>
+                        </briefing>
+                      </update_mission>
+                    </do_if>
+                    <set_objective cue="$MissionCue" step="$StartStep" action="objective.custom" customaction="$CustomObjective" object="$Target" encyclopedia="if $ContainerTargets.count == 1 then $ContainerTargets.{1} else null"/>
+                  </do_if>
+                  <do_else>
+                    <do_if value="$UpdateBriefing">
+                      <update_mission cue="$MissionCue">
+                        <briefing>
+                          <objective step="$StartStep" action="$Objective" object="$Target" encyclopedia="if $ContainerTargets.count == 1 then $ContainerTargets.{1} else null"/>
+                        </briefing>
+                      </update_mission>
+                    </do_if>
+                    <set_objective cue="$MissionCue" step="$StartStep" action="$Objective" object="$Target" encyclopedia="if $ContainerTargets.count == 1 then $ContainerTargets.{1} else null"/>
+                  </do_else>
+                </do_if>
+                <do_else>
+                  <do_if value="$PlayerKillCount + $PlayerBoarded" min="1">
+                    <set_value name="$feedbackvalue" exact="1"/>
+                  </do_if>
+                  <do_elseif value="$PlayerPartialKillCount" min="1">
+                    <set_value name="$feedbackvalue" exact="2"/>
+                  </do_elseif>
+                  <do_elseif value="$PlayerPartialKillCount2" min="1">
+                    <set_value name="$feedbackvalue" exact="3"/>
+                  </do_elseif>
+                  <do_else>
+                    <set_value name="$feedbackvalue" exact="-1"/>
+                  </do_else>
+                  <signal_cue cue="Cleanup"/>
+                </do_else>
+              </actions>
+            </cue>
+
+            <cue name="TargetDestroyed" instantiate="true">
+              <conditions>
+                <check_any>
+                  <event_object_destroyed group="$Targets"/>
+                  <event_masstraffic_ship_removed group="$Targets"/>
+                </check_any>
+              </conditions>
+              <actions>
+                <debug_text text="'event was ' + event.name" chance="$DebugChance"/>
+                <do_if value="event.name" exact="'event_object_destroyed'">
+                  <set_value name="this.$Killed" exact="true"/>
+                  <do_if value="this.$Killed">
+                    <set_value name="this.$PlayerKilled" exact="false"/>
+                    <!--TODO: Increment different counters and pass them back as feedback-->
+                    <do_if value="event.param.exists">
+                      <do_if value="event.param.owner" exact="faction.player">
+                        <debug_text text="'Target was destroyed by player'" chance="$DebugChance"/>
+                        <set_value name="$PlayerKillCount" operation="add"/>
+                        <set_value name="this.$PlayerKilled" exact="true"/>
+                      </do_if>
+                    </do_if>
+                    <do_if value="not this.$PlayerKilled">
+                      <!--List components we want check were attacked. For entities, themselves and their objects-->
+                      <create_list name="this.$AttackedComponents"/>
+                      <append_to_list name="this.$AttackedComponents" exact="event.object"/>
+                      <do_all exact="$EntityContainerMap.count" counter="$Counter">
+                        <do_if value="$EntityContainerMap.{$Counter}.{1}" exact="event.object">
+                          <append_to_list name="this.$AttackedComponents" exact="$EntityContainerMap.{$Counter}.{2}"/>
+                          <break/>
+                        </do_if>
+                      </do_all>
+                      <set_value name="this.$PlayerPercentage" exact="0"/>
+                      <debug_text text="'this.$AttackedComponents ' + this.$AttackedComponents" chance="$DebugChance"/>
+                      <do_all exact="$AttackedMap.count" counter="$Counter">
+                        <do_all exact="this.$AttackedComponents.count" counter="$AttackedComponents_Counter">
+                          <do_if value="$AttackedMap.{$Counter}.{$AttackedMap_TargetIndex}" exact="this.$AttackedComponents.{$AttackedComponents_Counter}">
+                            <set_value name="this.$PlayerAttacked" exact="$AttackedMap.{$Counter}.{$AttackedMap_PlayerAttackIndex}"/>
+                            <set_value name="this.$OtherAttacked" exact="$AttackedMap.{$Counter}.{$AttackedMap_OtherAttackIndex}"/>
+                            <debug_text text="'this.$PlayerAttacked ' + this.$PlayerAttacked" chance="$DebugChance"/>
+                            <debug_text text="'this.$OtherAttacked ' + this.$OtherAttacked" chance="$DebugChance"/>
+                            <do_if value="this.$PlayerAttacked + this.$OtherAttacked" min="1">
+                              <set_value name="this.$PlayerPercentage" exact="(100f / (this.$PlayerAttacked + this.$OtherAttacked) * this.$PlayerAttacked)"/>
+                            </do_if>
+                            <break/>
+                          </do_if>
+                        </do_all>
+                        <do_if value="this.$PlayerKilled">
+                          <break/>
+                        </do_if>
+                      </do_all>
+                      <debug_text text="'Player percentage was ' + this.$PlayerPercentage" chance="$DebugChance"/>
+                      <do_if value="this.$PlayerPercentage" min="50">
+                        <debug_text text="'Target was at least 50% damaged by player - full credit'" chance="$DebugChance"/>
+                        <set_value name="$PlayerKillCount" operation="add"/>
+                      </do_if>
+                      <do_if value="this.$PlayerPercentage" min="30">
+                        <debug_text text="'Target was at least 30% damaged by player - partial credit'" chance="$DebugChance"/>
+                        <set_value name="$PlayerPartialKillCount" operation="add"/>
+                      </do_if>
+                      <do_elseif value="this.$PlayerPercentage" min="5">
+                        <debug_text text="'Target was at least 5% damaged by player - partial credit'" chance="$DebugChance"/>
+                        <set_value name="$PlayerPartialKillCount2" operation="add"/>
+                      </do_elseif>
+                    </do_if>
+                  </do_if>
+                </do_if>
+                <signal_cue cue="ChooseTarget"/>
+
+                <!--Force CheckGroupIntegrity to cancel as we know there are 0 targets left-->
+                <!--At this point, $Targets.count still takes the killed object into account-->
+                <do_if value="$Targets.count" max="1">
+                  <cancel_cue cue="CheckGroupIntegrity"/>
+                </do_if>
+              </actions>
+            </cue>
+
+            <cue name="EntityAttacked" instantiate="true">
+              <conditions>
+                <event_object_attacked group="$Targets"/>
+              </conditions>
+              <actions>
+                <assert value="false" text="'An entity fired an attacked event. This mission does not expect that. [Owen]'"/>
+              </actions>
+            </cue>
+
+            <cue name="ContainerAttacked" instantiate="true">
+              <conditions>
+                <event_object_attacked group="$ContainerTargets"/>
+              </conditions>
+              <actions>
+                <!--<debug_text text="event.object + ' ' + event.object.knownname + ' ' + event.param + ' ' + event.param.knownname + ' ' + event.param2" chance="$DebugChance"/>-->
+
+                <set_value name="this.$Success" exact="false"/>
+                <do_all exact="$AttackedMap.count" counter="$i">
+                  <do_if value="$AttackedMap.{$i}.{$AttackedMap_TargetIndex}" exact="event.object">
+                    <set_value name="$CurHealth" exact="event.object.shield + event.object.hull"/>
+                    <do_if value="$AttackedMap.{$i}.{$AttackedMap_LastAttackerIndex}">
+                      <do_if value="$CurHealth lt $AttackedMap.{$i}.{$AttackedMap_LastHealthIndex}">
+                        <set_value name="$Damage" exact="$AttackedMap.{$i}.{$AttackedMap_LastHealthIndex} - $CurHealth"/>
+                      </do_if>
+                      <do_else>
+                        <set_value name="$Damage" exact="1"/>
+                      </do_else>
+                      
+                      <do_if value="$AttackedMap.{$i}.{$AttackedMap_LastAttackerIndex}.owner" exact="faction.player">
+                        <set_value name="$AttackedMap.{$i}.{$AttackedMap_PlayerAttackIndex}" operation="add" exact="$Damage"/>
+                        <debug_text text="'Player dealt ' + $Damage + '. Total is now: ' + $AttackedMap.{$i}.{$AttackedMap_PlayerAttackIndex}" chance="$DebugChance"/>
+                      </do_if>
+                      <do_else>
+                        <set_value name="$AttackedMap.{$i}.{$AttackedMap_OtherAttackIndex}" operation="add" exact="$Damage"/>
+                        <debug_text text="'Other (' + $AttackedMap.{$i}.{$AttackedMap_LastAttackerIndex}.knownname + ') dealt ' + $Damage + '. Total is now: ' + $AttackedMap.{$i}.{$AttackedMap_OtherAttackIndex}" chance="$DebugChance"/>
+                      </do_else>
+                    </do_if>
+                    <set_value name="$AttackedMap.{$i}.{$AttackedMap_LastHealthIndex}" exact="$CurHealth"/>
+                    <set_value name="$AttackedMap.{$i}.{$AttackedMap_LastAttackerIndex}" exact="event.param"/>
+                    <set_value name="this.$Success" exact="true"/>
+                    <!--<debug_text text="$AttackedMap" chance="$DebugChance"/>-->
+                    <break/>
+                  </do_if>
+                </do_all>
+                <assert value="this.$Success" text="'An attacked object is not in the $AttackedMap'"/>
+              </actions>
+            </cue>
+
+            <cue name="ContainerAbandoned">
+              <conditions>
+                <event_object_abandoned group="$ContainerTargets"/>
+              </conditions>
+              <delay exact="1ms"/>
+              <actions>
+                <debug_text text="'ContainerAbandoned'" chance="$DebugChance"/>
+                <cancel_cue cue="TargetDestroyed"/>
+                <cancel_cue cue="EntityAttacked"/>
+                <cancel_cue cue="ContainerAttacked"/>
+                <!--Rebuild target groups-->
+                <include_actions ref="PopulateTargetGroups"/>
+                <reset_cue cue="TargetDestroyed"/>
+                <reset_cue cue="EntityAttacked"/>
+                <reset_cue cue="ContainerAttacked"/>
+
+                <!--Set objectives again-->
+                <signal_cue cue="ChooseTarget"/>
+                
+                <!--Reset this-->
+                <reset_cue cue="ContainerAbandoned"/>
+              </actions>
+            </cue>
+
+            <cue name="ContainerChangedOwner" instantiate="true">
+              <conditions>
+                <event_object_signalled group="$ContainerTargets" param="'boarded'" param2="faction.player"/>
+              </conditions>
+              <actions>
+                <set_value name="$PlayerBoarded" operation="add"/>
+              </actions>
+            </cue>
+
+            <cue name="CheckGroupIntegrity" checkinterval="5s">
+              <conditions>
+                <cue_is_complete cue="DestroyEntities"/>
+                <check_value value="$Targets.{1}.exists" negate="1"/>
+              </conditions>
+              <actions>
+                <assert break="1" value="false" text="'Target group is empty or objects dead. Mission should have ended but not through this cue. Contact Owen'"/>
+                <signal_cue cue="Cleanup"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <!--TODO remove_objective-->
+
+            <do_if value="$feedbackvalue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'ERROR: Feedback value is 0 and no error values were set. Defaulting to -100'"/>
+                <set_value name="$feedbackvalue" exact="-100"/>
+              </do_if>
+              <do_else>
+                <set_value name="$feedbackvalue" exact="$ErrorList.{1}"/>
+                
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+                    <do_if value="$ErrorList.{$Counter}" exact="-104">
+                      <set_value name="$FeedbackText" exact="'No Targets were operational'"/>
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-103">
+                      <set_value name="$FeedbackText" exact="'Provided group Targets_Param was empty'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-102">
+                      <set_value name="$FeedbackText" exact="'EndSignalCue or MissionCue not defined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'$Targets is not of type group'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-100">
+                      <set_value name="$FeedbackText" exact="'Undefined failure. Defaulted to -100'"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                    </do_else>
+
+                    <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+
+              <do_if value="$feedbackvalue" exact="-1">
+                <set_value name="$FeedbackText" exact="{30004,6021}" comment="'Player did not kill any objects'"/>
+              </do_if>
+              <do_elseif value="$feedbackvalue" exact="1">
+                <set_value name="$FeedbackText" exact="'Player destroyed at least 1 object or damaged greater than 50%'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="2">
+                <set_value name="$FeedbackText" exact="'Player partially damaged at least 1 object (greater than 30%)'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="3">
+                <set_value name="$FeedbackText" exact="'Player partially damaged at least 1 entities object (greater than 5% less than 30%)'"/>
+              </do_elseif>
+
+              <do_if value="$feedbackvalue" min="1">
+                <debug_text text="'Mission Successful. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_if>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission Failed. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+            <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$feedbackvalue"/>
+            <signal_cue cue="$EndSignalCue"/>
+            <cancel_cue cue="DestroyEntities"/>
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

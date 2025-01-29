@@ -1,0 +1,231 @@
+<?xml version="1.0" encoding="iso-8859-1" ?>
+<aiscript name="move.hack.station.storage" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" version="2">
+  <!--
+
+  Move and hack a station to collect cargo
+  by Owen
+  
+  NB: normally, this script is now called from order.plunder.
+        currently, collection is done via an interrupt handler in order.plunder.
+        if collection has to be done from here independent of the plunder script, let me know. -nick
+  -->
+  <params>
+    <param name="target" comment="The object to steal from"/>
+    <param name="basket" default="[]" comment="List of wares to find (empty means fill with what you can)"/>
+    <param name="module" default="null" comment="Storage module to steal from"/>
+    <param name="movetomodule" default="true" comment="Attempt to move to the best position for collection. Bool incase caller already has moved to desired position"/>
+    <param name="subordinateorders" default="[]" comment="Orders to cancel when we start fleeing."/>
+    <param name="debugchance" default="0"/>
+  </params>
+  <interrupts>
+    <handler>
+      <conditions>
+        <check_any>
+          <event_object_destroyed object="$target"/>
+          <event_object_destroyed object="$module" check="false"/>
+          <event_object_changed_owner object="this.assignedcontrolled"/>
+        </check_any>
+      </conditions>
+      <actions>
+        <debug_text text="'Target has been destroyed or our cover has been blown. Run!'" chance="$debugchance"/>
+        <set_value name="$fleeing"/>
+        <abort_called_scripts resume="flee"/>
+      </actions>
+    </handler>
+    <handler>
+      <conditions>
+        <event_object_attacked object="this.ship"/>
+        <check_value value="event.param.isoperational"/>
+        <check_value value="@event.param.owner == $target.owner"/>
+        <check_value value="not $fleeing?"/>
+      </conditions>
+      <actions>
+        <do_if value="this.ship.shieldpercentage lt 75">
+          <set_value name="$fleeing"/>
+          <abort_called_scripts resume="flee"/>
+        </do_if>
+        <do_if value="not $lastattack?">
+          <set_value name="$lastattack" exact="player.age"/>
+          <set_value name="$shieldvalue" exact="this.ship.shieldpercentage"/>
+        </do_if>
+        <do_elseif value="player.age gt $lastattack + 10s">
+          <do_if value="($shieldvalue - this.ship.shieldpercentage gt 0) and this.ship.shieldpercentage - ($shieldvalue - this.ship.shieldpercentage) lt 70">
+            <set_value name="$fleeing"/>
+            <abort_called_scripts resume="flee"/>
+          </do_if>
+          <do_else>
+            <set_value name="$lastattack" exact="player.age"/>
+            <set_value name="$shieldvalue" exact="this.ship.shieldpercentage"/>
+          </do_else>
+        </do_elseif>
+      </actions>
+    </handler>
+    <handler ref="TargetInvalidHandler"/>
+  </interrupts>
+  <patch sinceversion="1">
+    <set_value name="$subordinateorders" exact="[]"/>
+  </patch>
+  <attention min="unknown">
+    <actions>
+      <label name="start"/>
+
+      <set_value name="$matchingwares" exact="[]"/>
+      <do_if value="$module">
+        <set_value name="$targetcargo" exact="$module.cargo.list"/>
+      </do_if>
+      <do_else>
+        <set_value name="$targetcargo" exact="$target.cargo.list"/>
+      </do_else>
+
+      <do_all exact="$targetcargo.count" counter="$i">
+        <do_if value="$basket.count">
+          <do_if value="$basket.indexof.{$targetcargo.{$i}} and this.ship.cargo.{$targetcargo.{$i}}.free">
+            <append_to_list name="$matchingwares" exact="$targetcargo.{$i}"/>
+          </do_if>
+        </do_if>
+        <do_elseif value="this.ship.cargo.{$targetcargo.{$i}}.free">
+          <append_to_list name="$matchingwares" exact="$targetcargo.{$i}"/>
+        </do_elseif>
+      </do_all>
+
+      <debug_text text="this.ship.knownname + ': attacking '+ $target.knownname +'! (' + $target + ') It contains: ' + $matchingwares" chance="$debugchance"/>
+
+      <do_if value="not $module">
+        <!--Find a storage module to steal from-->
+        <find_object_component name="$module" object="$target" class="class.storage" required="true">
+          <match_any_cargo wares="$matchingwares"/>
+        </find_object_component>
+
+        <do_if value="not $module">
+          <debug_text text="'No module found which contains ' + $matchingwares"/>
+          <wait min="1s" max="3s"/>
+          <return value="false"/>
+        </do_if>
+      </do_if>
+
+      <set_value name="$targetpos" exact="$target.position"/>
+      <create_position name="$modulepos" object="$module" space="$target.zone"/>
+      <do_if value="$movetomodule">
+        <!-- fleezones should no longer be relevant if going with move.flee, but it might be a good idea to park sideways relative to the module anyway to make getaway quicker.
+              relevant in this case is a direction where there are the least obstructions. -->
+        <create_orientation name="$orientation" refposition="$modulepos" orientation="look_at">
+          <position value="$targetpos"/>
+        </create_orientation>
+        <transform_position name="$parkposition" refposition="$targetpos" refrotation="$orientation">
+          <position z="($target.size / 2) + (this.ship.size * 2.5)"/>
+        </transform_position>
+
+        <create_orientation name="$orientation" refposition="$modulepos" orientation="align_right">
+          <position value="$parkposition"/>
+        </create_orientation>
+        <transform_position name="$refpos_left" refposition="$parkposition" refrotation="$orientation">
+          <position z="100km"/>
+        </transform_position>
+        <transform_position name="$refpos_right" refposition="$parkposition" refrotation="$orientation">
+          <position z="-100km"/>
+        </transform_position>
+
+        <do_if value="this.sector">
+          <find_gravidar_contact groupname="$obstacles" object="this.ship" class="[class.ship_l, class.ship_xl, class.station]" multiple="true">
+            <match_context macro="this.sector.macro"/>
+            <match_distance max="this.assignedcontrolled.currentradarrange" object="this.assignedcontrolled"/>
+          </find_gravidar_contact>
+          <do_for_each name="$locobstacle" in="$obstacles" reverse="true">
+            <do_if value="$locobstacle.sector != this.sector">
+              <remove_from_group group="$obstacles" object="$locobstacle"/>
+            </do_if>
+          </do_for_each>
+        </do_if>
+        <set_value name="$x" exact="0"/>
+        <set_value name="$y" exact="0"/>
+        <set_value name="$z" exact="0"/>
+        <do_all exact="@$obstacles.count" counter="$i">
+          <create_position name="$obspos" space="this.ship" object="$obstacles.{$i}"/>
+          <set_value name="$x" exact="$obspos.x" operation="add"/>
+          <set_value name="$y" exact="$obspos.y" operation="add"/>
+          <set_value name="$z" exact="$obspos.z" operation="add"/>
+        </do_all>
+        <create_position name="$refpos_obs" x="$x / [@$obstacles.count, 1].max" y="$y / [@$obstacles.count, 1].max" z="$z / [@$obstacles.count, 1].max"/>
+        <set_value name="$dist_diffright" exact="$refpos_obs.x - $refpos_right.x + $refpos_obs.y - $refpos_right.y + $refpos_obs.z - $refpos_right.z"/>
+        <set_value name="$dist_diffleft" exact="$refpos_obs.x - $refpos_left.x + $refpos_obs.y - $refpos_left.y + $refpos_obs.z - $refpos_left.z"/>
+        <do_if value="$dist_diffright lt 0">
+          <set_value name="$dist_diffright" exact="-$dist_diffright"/>
+        </do_if>
+        <do_if value="$dist_diffleft lt 0">
+          <set_value name="$dist_diffleft" exact="-$dist_diffleft"/>
+        </do_if>
+
+        <do_if value="$dist_diffright lt $dist_diffleft">
+          <debug_text text="'\n facing left. \n obstruction distance to reference right: %1 \n obstruction distance to reference left: %2 \n target pos: %3 \n module pos: %4 \n refpos_obs: %5 \n parkpos: %6'.[$dist_diffright, $dist_diffleft, $targetpos, $modulepos, $refpos_obs, $parkposition]" chance="$debugchance"/>
+          <create_orientation name="$parkorientation" refposition="$modulepos" orientation="align_right">
+            <position value="$parkposition"/>
+          </create_orientation>
+        </do_if>
+        <do_else>
+          <debug_text text="'\n facing right. \n obstruction distance to reference right: %1 \n obstruction distance to reference left: %2 \n target pos: %3 \n module pos: %4 \n refpos_obs: %5 \n parkpos: %6'.[$dist_diffright, $dist_diffleft, $targetpos, $modulepos, $refpos_obs, $parkposition]" chance="$debugchance"/>
+          <create_orientation name="$parkorientation" refposition="$modulepos" orientation="align_left">
+            <position value="$parkposition"/>
+          </create_orientation>
+        </do_else>
+
+      </do_if>
+      <do_else>
+        <!--Ship already in position-->
+        <set_value name="$parkposition" exact="this.ship.position"/>
+        <set_value name="$parkorientation" exact="this.ship.rotation"/>
+      </do_else>
+
+      <do_if value="$movetomodule">
+        <move_to object="this.ship" uselocalhighways="false" destination="$target.zone">
+          <position value="$parkposition"/>
+          <rotation value="$parkorientation"/>
+        </move_to>
+      </do_if>
+
+      <label name="collect"/>
+
+      <debug_text text="'%s %s %s in sector %s hacking %s %s %s'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, this.sector.knownname, $target.idcode, $target.knownname, $target]" chance="$debugchance"/>
+      <set_command_action commandaction="commandaction.scanningto" param="$module"/>
+      <wait min="30s" max="1min" sinceversion="2"/>
+
+      <!-- at this point, this should be interrupted at order.plunder. collection and flee should then be added to the order queue. -->
+      <set_object_hacked object="$module" duration="3min" hacker="this.ship"/>
+      <signal_objects object="$target" param="'cargotracking_hacked'"/>
+      <debug_text text="'Target was hacked. Checking for crates. wares: %1'.[$matchingwares]" chance="$debugchance"/>
+
+      <wait min="5s" max="10s"/>
+
+      <label name="flee"/>
+
+      <do_if value="$subordinateorders.count">
+        <do_for_each name="$locorder" in="$subordinateorders" reverse="true">
+          <do_if value="$locorder.exists">
+            <cancel_order order="$locorder"/>
+          </do_if>
+        </do_for_each>
+      </do_if>
+
+      <debug_text text="'Nothing interesting found. %1 (%2) fleeing'.[this.ship.knownname, this.ship]" chance="$debugchance"/>
+      <!-- should only get here if we have to flee at some point before the hack is done or if we didn't find anything worth picking up after hacking. 
+        normally, this will return to order.plunder after fleeing. -->
+      <create_order id="'Flee'" object="this.ship" immediate="true">
+        <param name="method" value="'boost'"/>
+        <param name="attacker" value="$target"/>
+        <param name="maxboostdistance" value="this.zone.size + this.ship.size"/>
+        <param name="maxboostduration" value="10min"/>
+        <param name="debugchance" value="$debugchance"/>
+      </create_order>
+
+      <!--<wait min="7ms" max="19ms"/>-->
+    </actions>
+  </attention>
+  <on_abort>
+    <do_if value="$subordinateorders.count">
+      <do_for_each name="$locorder" in="$subordinateorders" reverse="true">
+        <do_if value="$locorder.exists">
+          <cancel_order order="$locorder"/>
+        </do_if>
+      </do_for_each>
+    </do_if>
+  </on_abort>
+</aiscript>

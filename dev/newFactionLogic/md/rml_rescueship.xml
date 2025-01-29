@@ -1,0 +1,414 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_RescueShip" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--
+    This RML is intended for use in Master-Missions. 
+    It handles checking if the player rescued a manned ship which is stuck in a minefield by luring away the mines
+    - Ship has a pilot and mines are seeking - player needs to lure the mines away, win-condition: all mines destroyed (or hacked)
+    
+    $feedbackvalue:
+    -104 $SalvageShip not provided defined.
+    -103 $Hostiles did not contain any valid targets
+    -102 $Hostiles not provided defined.
+    -101 Cue parameters not defined
+    -100: Undefined failure. Defaulted to -100
+    -3: Player stole SalvageShip 
+    -2: SalvageShip changed ownership (irrelevant to whom, mission is lost)
+    -1: SalvageShip was destroyed 
+    1: Hostiles destroyed
+    2: SalvageShip returned -->
+
+    <library name="GenerateVoiceTable">
+      <actions>
+        <set_value name="$VoiceTable.$MissionSuccess" exact="2111" comment="(successful mission)" chance="if $VoiceTable.$MissionSuccess? then 0 else 100"/>
+      </actions>
+    </library>
+
+    <library name="RescueShip" version="2">
+      <params>
+        <param name="EndSignalCue"/>
+        <param name="MissionCue"/>
+        <param name="StartStep"       default="1"     comment="Briefing step to start the mission on"/>
+        <param name="UpdateBriefing"  default="true"  comment="Update the briefing objective step when the objective is updated"/>
+        <param name="DebugChance"     default="0" />
+        <param name="Text_HazardName"                 comment="The text for the mission objective."/>
+        <param name="VoiceTable"    default="table[]" comment="Table, usually populated by the mission, keys can have a value of 0 (=stay silent)"/>
+        
+        <param name="Client"                          comment="client asking for his ship"/>
+        <param name="Faction"                         comment="Faction for whom we are doing this"/>
+        <param name="Hostiles"                        comment="Mines in minefield"/>
+        <param name="SalvageShip"                     comment="Ship to rescue"/>
+        <param name="Distance"        default="2km"   comment="If SalvageShip is further away than this distance from ALL of the Mines, mission is won"/>
+      </params>
+      <actions>
+        <set_value name="$feedbackvalue" exact="0"/>
+        <create_list name="$ErrorList"/>
+
+        <do_if value="not $EndSignalCue or not $MissionCue">
+          <append_to_list name="$ErrorList" exact="-101"/>
+        </do_if>
+        <do_if value="not $Hostiles">
+          <append_to_list name="$ErrorList" exact="-102"/>
+        </do_if>
+        <do_elseif value="$Hostiles.count == 0">
+          <append_to_list name="$ErrorList" exact="-103"/>
+        </do_elseif>
+        <do_elseif value="not $SalvageShip">
+          <append_to_list name="$ErrorList" exact="-104"/>
+        </do_elseif>
+        <do_else>
+          <create_group groupname="$ObjectiveTargets"/>
+          <set_value name="$HasTargetObject" exact="false"/>
+          <do_all exact="$Hostiles.count" counter="$i">
+            <do_if value="$Hostiles.{$i}.isrealclass.object or $Hostiles.{$i}.object.exists">
+              <set_value name="$HasTargetObject" exact="true"/>
+              <break/>
+            </do_if>
+          </do_all>
+          <do_if value="not $HasTargetObject">
+            <append_to_list name="$ErrorList" exact="-103"/>
+          </do_if>
+        </do_else>
+        <include_actions ref="GenerateVoiceTable"/>
+      </actions>
+      <patch sinceversion="2">
+        <set_value name="$VoiceTable" exact="table[]"/>
+        <set_value name="$VoiceTable.$MissionSuccess" exact="2111" comment="(successful mission)"/>
+      </patch>
+      <cues>
+
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="1"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup"/>
+          </actions>
+        </cue>
+
+        <cue name="StartMission" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="0"/>
+          </conditions>
+          <actions>
+            <set_value name="$maxprogress" exact="$Hostiles.count"/>
+            <set_value name="$SilentUpdate" exact="false"/>
+            <set_value name="$HostileMacro" exact="[]" comment="static mine" />
+            <set_value name="$SafeDistance" exact="false"/>
+            <signal_cue cue="UpdateBriefing"/>
+          </actions>
+          <cues>
+
+            <cue name="CheckMissionStatus_Mines" instantiate="true" comment="mine destroyed">
+              <conditions>
+                <event_object_destroyed group="$Hostiles"/>
+              </conditions>
+              <actions>
+                <debug_text text="'Mine exploded, remaining ' + $Hostiles.count" chance="$DebugChance"/>
+                <do_if value="$Hostiles.count==1">
+                  <signal_cue cue="CheckMissionStatus_NoMoreMines"/>
+                </do_if>
+              </actions>
+            </cue>
+
+            <cue name="CheckMissionStatus_MinesHacked" instantiate="true" comment="mine hacked (also acceptable)">
+              <conditions>
+                <event_object_changed_true_owner group="$Hostiles"/>
+              </conditions>
+              <actions>
+                <remove_from_group group="$Hostiles" object="event.object"/>
+                <debug_text text="'Mine hacked, remaining ' + $Hostiles.count" chance="$DebugChance"/>
+
+                <do_if value="$Hostiles.count==1">
+                  <signal_cue cue="CheckMissionStatus_NoMoreMines"/>
+                </do_if>
+              </actions>
+            </cue>
+
+            <cue name="CheckMissionStatus_NoMoreMines" instantiate="true">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <cues>
+
+                <cue name="CheckMissionStatus_Mines_WinDelayed1" onfail="cancel">
+                  <delay exact="3s"/>
+                  <actions>
+                    <do_if value="$SalvageShip and $SalvageShip.pilot" comment="pedantic, pilot could have died in 2 second delay">
+                      <!-- Ship was created specifically for this mission, get rid of it now -->
+                      <create_order id="'MoveDie'" object="$SalvageShip" immediate="true"/>
+                    </do_if>
+                  </actions>
+                </cue>
+
+                <cue name="CheckMissionStatus_Mines_WinDelayed2" onfail="cancel">
+                  <delay exact="4s"/>
+                  <actions>
+                    <do_if value="$SalvageShip and $SalvageShip.pilot" comment="pedantic, pilot could have died in 2 second delay">
+                      <speak actor="$SalvageShip.pilot" line="$VoiceTable.$MissionSuccess" chance="if $VoiceTable.$MissionSuccess == 0 then 0 else 100" comment="thank you"/>
+                    </do_if>
+                  </actions>
+                </cue>
+
+                <cue name="CheckMissionStatus_Mines_SpeakDone_End">
+                  <conditions>
+                    <event_speak_line_finished actor="$SalvageShip.pilot" line="$VoiceTable.$MissionSuccess"/>
+                  </conditions>
+                  <delay exact="1s"/>
+                  <actions>
+                    <signal_cue cue="CheckMissionStatus_Mines_Complete" check="false"/>
+                  </actions>
+                </cue>
+
+                <cue name="CheckMissionStatus_Mines_Delay_End" comment="fallback, in case of no speak or speak failed">
+                  <delay exact="16s"/>
+                  <actions>
+                    <signal_cue cue="CheckMissionStatus_Mines_Complete" check="false"/>
+                  </actions>
+                </cue>
+
+                <cue name="CheckMissionStatus_Mines_Complete">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <set_value name="$feedbackvalue" exact="1" comment="success (all mines destroyed)"/>
+                    <signal_cue cue="Cleanup"/>
+                  </actions>
+                </cue>
+
+              </cues>
+            </cue>
+
+            <cue name="CheckMissionFailure_destroyed" instantiate="true">
+              <conditions>
+                <event_object_destroyed object="$SalvageShip"/>
+              </conditions>
+              <actions>
+                <set_value name="$feedbackvalue" exact="-1" comment="fail because SalvageShip was destroyed"/>
+                <signal_cue cue="Cleanup"/>
+              </actions>
+            </cue>
+
+            <cue name="CheckMissionFailure_Ownerchange" instantiate="true">
+              <conditions>
+                <event_object_changed_true_owner object="$SalvageShip"/>
+              </conditions>
+              <actions>
+                <set_value name="$feedbackvalue" exact="-2" comment="fail because SalvageShip was boarded by a 3rd party"/>
+                <signal_cue cue="Cleanup"/>
+              </actions>
+            </cue>
+
+          </cues>
+        </cue>
+
+
+        <library name="DetermineObjectiveTargets">
+          <actions>
+            <set_value name="$NearObjects" exact="[]"/>
+            <set_value name="$DistantObjects" exact="[]"/>
+            <clear_group group="$ObjectiveTargets"/>
+
+            <do_all exact="$Hostiles.count" counter="$i">
+              <do_if value="$Hostiles.{$i}.isrealclass.object">
+                <do_if value="$Hostiles.{$i}.sector == player.sector and $Hostiles.{$i}.bboxdistanceto.{player.entity} lt 10km">
+                  <append_to_list name="$NearObjects" exact="$Hostiles.{$i}"/>
+                </do_if>
+                <add_to_group groupname="$ObjectiveTargets" object="$Hostiles.{$i}"/>
+              </do_if>
+              <do_elseif value="$Hostiles.{$i}.object.exists">
+                <do_if value="$NearObjects.indexof.{$Hostiles.{$i}.object}">
+                  <!--The object of $Hostiles.{$i} is nearby. Add $Hostiles.{$i} as an objective target-->
+                  <add_to_group groupname="$ObjectiveTargets" object="$Hostiles.{$i}"/>
+                </do_if>
+                <do_elseif value="$DistantObjects.indexof.{$Hostiles.{$i}.object}">
+                  <!--The object of $Hostiles.{$i} is distant. Add $Hostiles.{$i}.object as an objective target-->
+                  <add_to_group groupname="$ObjectiveTargets" object="$Hostiles.{$i}.object"/>
+                </do_elseif>
+                <do_elseif value="$Hostiles.{$i}.sector == player.sector and $Hostiles.{$i}.object.bboxdistanceto.{player.entity} lt 10km">
+                  <!--A object of $Hostiles.{$i} is nearby. Add it to the $NearObject list so similar components don't have to check the distance. Add $Hostiles.{$i} as an objective target-->
+                  <append_to_list name="$NearObjects" exact="$Hostiles.{$i}.object"/>
+                  <add_to_group groupname="$ObjectiveTargets" object="$Hostiles.{$i}"/>
+                </do_elseif>
+                <do_else>
+                  <!--A object of $Hostiles.{$i} is distant. Add it to the $DistantObjects list so similar components don't have to check the distance. Add $Hostiles.{$i}.object as an objective target-->
+                  <append_to_list name="$DistantObjects" exact="$Hostiles.{$i}.object"/>
+                  <add_to_group groupname="$ObjectiveTargets" object="$Hostiles.{$i}.object"/>
+                </do_else>
+              </do_elseif>
+            </do_all>
+          </actions>
+        </library>
+
+
+        <cue name="ObjectiveTicker" comment="check conditions which need to trigger an UpdateBriefing">
+          <actions>
+            <set_value name="$LastInRange" exact="(player.sector == $SalvageShip.sector) and $SalvageShip.bboxdistanceto.{player.entity} lt 10km"/>
+            <set_value name="$LastInSpaceSuit" exact="@player.controlled.isclass.spacesuit"/>
+          </actions>
+          <cues>
+            <cue name="ObjectiveTickerRefresh" checkinterval="5s" instantiate="true">
+              <actions>
+                <set_value name="$DoUpdateBriefing" exact="false"/>
+                <set_value name="$SilentUpdate" exact="false"/>
+
+                <!-- enter/leave distance check-->
+                <set_value name="$NowInRange" exact="(player.sector == $SalvageShip.sector) and $SalvageShip.bboxdistanceto.{player.entity} lt 10km"/>
+                <do_if value="not $LastInRange and $NowInRange">
+                  <!-- special case for destruction of seeker-mines, first time non-silent update -->
+                  <include_actions ref="DetermineObjectiveTargets"/>
+                  <set_value name="$DoUpdateBriefing" exact="true"/>
+                </do_if>
+                <do_elseif value="$LastInRange and not $NowInRange">
+                  <set_value name="$DoUpdateBriefing" exact="true"/>
+                </do_elseif>
+                <do_elseif value="$NowInRange" comment="was in range and still is in range">
+                  <!-- special case for destruction of seeker-mines, continuous SILENT update -->
+                  <do_if value="$Hostiles.count">
+                    <set_value name="$DoUpdateBriefing" exact="true"/>
+                    <set_value name="$SilentUpdate" exact="true"/>
+                    <include_actions ref="DetermineObjectiveTargets"/>
+                  </do_if>
+                </do_elseif>
+                <set_value name="$LastInRange" exact="$NowInRange"/>
+
+                <!-- enter/leave spacesuit check -->
+                <set_value name="$NowInSpaceSuit" exact="@player.controlled.isclass.spacesuit"/>
+                <do_if value="$NowInSpaceSuit != $LastInSpaceSuit">
+                  <set_value name="$DoUpdateBriefing" exact="true"/>
+                </do_if>
+                <set_value name="$LastInSpaceSuit" exact="$NowInSpaceSuit"/>
+
+                <!-- update briefing, if necessary -->
+                <do_if value="$DoUpdateBriefing">
+                  <signal_cue cue="UpdateBriefing"/>
+                </do_if>
+
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="UpdateBriefing" instantiate="true" comment="Called each time a briefing-update is needed">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+
+            <!-- Seeking-mines case (salvageship has pilot) -->
+            <!--debug_text text="'UpdateBriefing (closeby) seeking-mines'" chance="$DebugChance"/-->
+            <do_if value="$UpdateBriefing">
+              <update_mission cue="$MissionCue">
+                <briefing>
+                  <objective step="$StartStep"      action="objective.flyto"   text="$SalvageShip.knownname"  object="$SalvageShip" comment="Initial Fly-To"/>
+                  <objective step="$StartStep + 1"  action="objective.destroy" text="$Text_HazardName"        group="$Hostiles"     comment="Destroy: $Text_HazardName (e.g. Mines)"/>
+                </briefing>
+              </update_mission>
+            </do_if>
+
+            <do_if value="$SalvageShip.sector != player.sector or $SalvageShip.bboxdistanceto.{player.entity} ge 10km">
+              <!-- Too far away from SalvageShip, FlyTo it -->
+              <set_objective cue="$MissionCue" step="$StartStep" action="objective.flyto" text="$SalvageShip.knownname" object="$SalvageShip" comment="Initial Fly-To"/>
+            </do_if>
+            <do_elseif value="$NearObjects.count and ($SalvageShip.sector == player.sector) and ($SalvageShip.bboxdistanceto.{player.entity} lt 10km)">
+              <!-- Near SalvageShip, start destroying mines -->
+              <do_if value="$maxprogress == 1">
+                <set_objective cue="$MissionCue" step="$StartStep + 1" action="objective.destroy" text="$Text_HazardName" group="$ObjectiveTargets" silent="$SilentUpdate"/>
+              </do_if>
+              <do_else>
+                <set_objective cue="$MissionCue" step="$StartStep + 1" action="objective.destroy" text="$Text_HazardName" group="$ObjectiveTargets" silent="$SilentUpdate">
+                  <progress progress="$maxprogress - $Hostiles.count" max="$maxprogress" text="{30004,1800}"/>
+                </set_objective>
+              </do_else>
+              <set_value name="$SilentUpdate" exact="true"/>
+            </do_elseif>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep + 1"/>
+
+          </actions>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <!--TODO remove_objective-->
+
+            <do_if value="$feedbackvalue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'ERROR: Feedback value is 0 and no error values were set. Defaulting to -100'"/>
+                <set_value name="$feedbackvalue" exact="-100"/>
+              </do_if>
+              <do_else>
+                <set_value name="$feedbackvalue" exact="$ErrorList.{1}"/>
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+                    <do_if value="$ErrorList.{$Counter}" exact="-104">
+                      <set_value name="$FeedbackText" exact="'$SalvageShip left Undefined'"/>
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-103">
+                      <set_value name="$FeedbackText" exact="'$Hostiles did not contain any valid targets'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-102">
+                      <set_value name="$FeedbackText" exact="'$Hostiles parameter left undefined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'Cue parameters not defined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-100">
+                      <set_value name="$FeedbackText" exact="'Undefined failure. Defaulted to -100'"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                    </do_else>
+
+                    <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+
+              <do_if value="$feedbackvalue" exact="-3">
+                <set_value name="$FeedbackText" exact="{30004,6033}" comment="'failed - player stole ship'"/>
+              </do_if>
+              <do_elseif value="$feedbackvalue" exact="-2">
+                <set_value name="$FeedbackText" exact="{30004,6026}" comment="'failed - object changed ownership'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="-1">
+                <set_value name="$FeedbackText" exact="{30004,6020}" comment="'failed - object destroyed'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="1">
+                <set_value name="$FeedbackText" exact="'success - mines destroyed'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="2">
+                <set_value name="$FeedbackText" exact="'success - SalvageShip returned'"/>
+              </do_elseif>
+
+              <do_if value="$feedbackvalue" min="1">
+                <debug_text text="'Mission Successful. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_if>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission Failed. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+            <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$feedbackvalue"/>
+            <signal_cue cue="$EndSignalCue"/>
+            <cancel_cue cue="RescueShip"/>
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

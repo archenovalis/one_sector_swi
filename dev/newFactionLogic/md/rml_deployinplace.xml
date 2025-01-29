@@ -1,0 +1,445 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_DeployInPlace" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--
+    This RML is intended for use in Master-Missions. 
+    It handles checking if the player dropped specified object at specified location
+    
+    ######## IMPORTANT #######
+    If a new deployablecategory is added, the matching event must be added to the conditions of CheckMissionStatus_add
+    ##########################
+    
+    $feedbackvalue:
+    -107 $DeployableCategory left undefined
+    -106 $TargetCount left undefined
+    -105 $TargetSector left undefined
+    -103 $TargetRadius is incorrectly defined.
+    -102 $TargetOffset is incorrectly defined.
+    -101 Cue parameters not defined
+    -100: Undefined failure. Defaulted to -100
+    1: All objects deployed -->
+
+    <library name="DeployInPlace" version="4">
+      <params>
+        <param name="ReachedAreaCue"                  default="null" comment="reached target area"/>
+        <param name="LeftAreaCue"                     default="null" comment="left target area"/>
+        <param name="DeployOutOfRangeCue"             default="null" comment="correct sector, but outside of targetradius"/>
+        <param name="DeployWrongDeployableCue"        default="null" comment="Inside targetradius, but wrong deployable"/>
+        <param name="EndSignalCue"/>
+        <param name="MissionCue"/>
+        <param name="StartStep"                       default="1" comment="Briefing step to start the mission on"/>
+        <param name="UpdateBriefing"                  default="true" comment="Update the briefing objective step when the objective is updated"/>
+        <param name="DebugChance"                     default="0" />
+
+        <param name="ObjectiveText"                   comment="Singular objective, not yet in range e.g. '$NUMBER$Laser Tower in target area'"/>
+        <param name="ObjectiveText_Plural"            comment="Plural objective, not yet in range   e.g. '$NUMBER$Laser Tower'"/>
+        <param name="ObjectiveText_InRange"           comment="Singular objective, in range         e.g. '$NUMBER$Laser Towers in target area'"/>
+        <param name="ObjectiveText_InRange_Plural"    comment="Plural objective, in range           e.g. '$NUMBER$Laser Towers'"/>
+        <param name="TargetSector"                    comment=""/>
+        <!--TODO @Owen allow multiple offset definitions e.g. to place a set paturn of objects-->
+        <param name="TargetOffset"                    comment=""/>
+        <param name="TargetRadius"                    comment="coverage radius"/>
+        <param name="TargetCount"                     comment="How many to deploy"/>
+        <param name="DeployableCategory"              comment="e.g. deployablecategory.lasertower, or deployablecategory.mine"/>
+        <param name="DeployableMacros"                default="[]" comment="additional filter on top of DeployableCategory, e.g. [macro.weapon_gen_mine_01_macro, macro.weapon_gen_mine_02_macro], empty list meaning ignore/irrelevant"/>
+        <param name="Faction" default="null"          comment="The faction which is asking for deployment"/>
+        <param name="ResultObjectListRef"             default="null"/>
+      </params>
+      <actions>
+        <set_value name="$feedbackvalue" exact="0"/>
+        <create_list name="$ErrorList"/>
+
+        <do_if value="not $EndSignalCue or not $MissionCue">
+          <append_to_list name="$ErrorList" exact="-101"/>
+        </do_if>
+        <do_if value="not $TargetOffset">
+          <append_to_list name="$ErrorList" exact="-102"/>
+        </do_if>
+        <do_if value="not $TargetRadius">
+          <append_to_list name="$ErrorList" exact="-103"/>
+        </do_if>
+        <do_if value="not $TargetSector">
+          <append_to_list name="$ErrorList" exact="-105"/>
+        </do_if>
+        <do_if value="not $TargetCount">
+          <append_to_list name="$ErrorList" exact="-106"/>
+        </do_if>
+        <do_if value="not $DeployableCategory">
+          <append_to_list name="$ErrorList" exact="-107"/>
+        </do_if>
+
+      </actions>
+      <patch sinceversion="2">
+        <set_value name="$ReachedAreaCue" exact="null"/>
+        <set_value name="$LeftAreaCue" exact="null"/>
+        <set_value name="$DeployOutOfRangeCue" exact="null"/>
+        <set_value name="$DeployWrongDeployableCue" exact="null"/>
+      </patch>
+      <patch sinceversion="3">
+        <set_value name="$DeployableMacros" exact="[]"/>
+      </patch>
+      <patch sinceversion="4">
+        <set_value name="$ResultObjectListRef" exact="null"/>
+      </patch>
+      <cues>
+
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="1"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup"/>
+          </actions>
+        </cue>
+
+        <cue name="StartMission" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="0"/>
+          </conditions>
+          <actions>
+            <set_value name="$InTargetArea" exact="0"/>
+            <set_value name="$TargetCountDone" exact="0"/>
+            <create_group groupname="$ObjectGroup"/>
+            <signal_cue cue="UpdateBriefing"/>
+          </actions>
+          <cues>
+            
+            <cue name="Debug">
+              <cues>
+                <cue name="Debug_LaunchSatellite" instantiate="true">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <debug_text text="'launching'"/>
+                    <add_ammo object="player.ship" macro="macro.eq_arg_satellite_01_macro" amount="1" />
+                    <launch_satellite object="player.ship" macro="macro.eq_arg_satellite_01_macro"/>
+                  </actions>
+                </cue>
+                <cue name="Debug_LaunchAdvancedSatellite" instantiate="true">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <debug_text text="'launching'"/>
+                    <add_ammo object="player.ship" macro="macro.eq_arg_satellite_02_macro" amount="1" />
+                    <launch_satellite object="player.ship" macro="macro.eq_arg_satellite_02_macro"/>
+                  </actions>
+                </cue>
+                <cue name="Debug_AcquireMine" instantiate="true">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <debug_text text="'adding mines'"/>
+                    <add_ammo object="player.ship" macro="macro.weapon_gen_mine_01_macro" amount="1" comment="Mine"/>
+                    <add_ammo object="player.ship" macro="macro.weapon_gen_mine_02_macro" amount="1" comment="Tracker mine"/>
+                    <add_ammo object="player.ship" macro="macro.weapon_gen_mine_03_macro" amount="1" comment="Old tracker mine"/>
+                    <!--launch_mine object="player.ship" macro="macro.weapon_gen_mine_03_macro"/-->
+                  </actions>
+                </cue>
+                <cue name="Debug_AcquireXsLaserTower" instantiate="true">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <debug_text text="'adding lasertowers'"/>
+                    <add_ammo object="player.ship" macro="macro.ship_gen_xs_lasertower_01_a_macro" amount="3" />
+                    <!--launch_lasertower object="player.ship" macro="macro.ship_gen_xs_lasertower_01_a_macro"/-->
+                  </actions>
+                </cue>
+                <cue name="Debug_AcquireSLaserTower" instantiate="true">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <debug_text text="'adding lasertowers'"/>
+                    <add_ammo object="player.ship" macro="macro.ship_gen_s_lasertower_01_a_macro" amount="3" />
+                    <!--launch_lasertower object="player.ship" macro="macro.ship_gen_s_lasertower_01_a_macro"/-->
+                  </actions>
+                </cue>
+                <cue name="Debug_AcquireNavBeacon" instantiate="true">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <debug_text text="'adding navbeacons'"/>
+                    <add_ammo object="player.ship" macro="macro.env_deco_nav_beacon_t1_macro" amount="3" />
+                    <!--launch_navbeacon object="player.ship" macro="macro.env_deco_nav_beacon_t1_macro"/-->
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <library name="CheckMissionStatusBase">
+              <actions>
+                <!-- count how many objects are deployed in correct location -->
+                <find_object groupname="$ObjectGroup" space="$TargetSector" state="componentstate.operational" deployablecategory="$DeployableCategory" macro="$DeployableMacros" owner="faction.player" multiple="true">
+                  <match_distance space="$TargetSector" value="$TargetOffset" max="$TargetRadius * 1.3" comment="map visualization is inaccurate, so be forgiving"/>
+                </find_object>
+                
+                <set_value name="$TargetCountOld" exact="$TargetCountDone"/>
+                <set_value name="$TargetCountDone" exact="$ObjectGroup.count"/>
+
+                <do_if value="$TargetCountDone ge $TargetCount" comment="check win condition">
+                  <do_if value="$ResultObjectListRef">
+                    <append_list_elements name="$ResultObjectListRef" other="$ObjectGroup.list"/>
+                  </do_if>
+                  <set_value name="$feedbackvalue" exact="1"/>
+                  <signal_cue cue="Cleanup"/>
+                </do_if>
+                <do_elseif value="$TargetCountOld != $TargetCountDone" comment="something changed">
+                  <signal_cue cue="UpdateBriefing"/>
+                </do_elseif>
+              </actions>
+            </library>
+
+            <cue name="CheckMissionStatus_add" instantiate="true">
+              <conditions>
+                <check_any>
+                  <event_lasertower_launched space="$TargetSector"/>
+                  <event_mine_launched space="$TargetSector"/>
+                  <event_navbeacon_launched space="$TargetSector"/>
+                  <event_resourceprobe_launched space="$TargetSector"/>
+                  <event_satellite_launched space="$TargetSector"/>
+                </check_any>
+              </conditions>
+              <actions>
+                <debug_text text="'DeployInPlace.CheckMissionStatus_add'" chance="$DebugChance"/>
+
+                <set_value name="$ObjectEntering" exact="event.param2"/>
+                <do_if value="$ObjectEntering.isplayerowned">
+
+                  <do_if value="($ObjectEntering.deployablecategory == $DeployableCategory) and (($DeployableMacros.count == 0) or ($DeployableMacros.indexof.{event.param2.macro} != 0))" comment="filter on deployablecategory and optionally on deployablemacro">
+
+                    <do_if value="$ObjectEntering.distanceto.[$TargetSector, $TargetOffset] le ($TargetRadius * 1.3)">
+                      <!--Adding to group here as the find_object may not find a deploying object as it may still be a child of tha launching object-->
+                      <add_to_group groupname="$ObjectGroup" object="$ObjectEntering"/>
+
+                      <do_if value="$Faction and $ObjectEntering.isclass.satellite" comment="add it to $FactionSatellites">
+                        <set_owner object="$ObjectEntering" faction="$Faction"/>
+                        <signal_cue_instantly cue="md.FactionLogic.FactionSignalled" param="[$Faction, 'add_satellite', $ObjectEntering]"/>
+                      </do_if>
+                      <do_elseif value="$Faction and $ObjectEntering.deployablecategory == deployablecategory.lasertower">
+                        <set_owner object="$ObjectEntering" faction="$Faction" overridenpc="true"/>
+                        <signal_cue_instantly cue="md.FactionLogic.FactionSignalled" param="[$Faction, 'add_lasertower', $ObjectEntering]"/>
+                      </do_elseif>
+                      <do_elseif value="$Faction and $ObjectEntering.deployablecategory == deployablecategory.mine">
+                        <set_owner object="$ObjectEntering" faction="$Faction"/>
+                      </do_elseif>
+                    </do_if>
+                    <do_else>
+                      <do_if value="$DeployOutOfRangeCue">
+                        <signal_cue cue="$DeployOutOfRangeCue"/>
+                      </do_if>
+                    </do_else>
+                  </do_if>
+                  <do_else>
+                    <do_if value="$DeployWrongDeployableCue">
+                      <signal_cue cue="$DeployWrongDeployableCue"/>
+                    </do_if>
+                  </do_else>
+                </do_if>
+              </actions>
+              <cues>
+                <cue name="CheckMissionStatus_add_refresh">
+                  <delay exact="1ms"/>
+                  <actions>
+                    <include_actions ref="CheckMissionStatusBase"/>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="CheckMissionStatus_remove" instantiate="true">
+              <conditions>
+                <check_any>
+                  <event_object_destroyed group="$ObjectGroup" comment="auto-removed from group / object is also destroyed in 'pickup case'"/>
+                  <event_object_left group="$ObjectGroup"/>
+                </check_any>
+              </conditions>
+              <actions>
+                <debug_text text="'DeployInPlace.CheckMissionStatus_remove'" chance="$DebugChance"/>
+
+                <do_if value="event.name=='event_object_left'" comment="bulletproofing the case bumping away objects or leading tracker mines through a gate">
+                  <remove_from_group group="$ObjectGroup" object="event.param" comment="need to manually remove"/>
+                </do_if>
+              </actions>
+              <cues>
+                <cue name="CheckMissionStatus_remove_refresh">
+                  <delay exact="1ms"/>
+                  <actions>
+                    <include_actions ref="CheckMissionStatusBase"/>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="ReachedArea" checkinterval="5s" instantiate="true">
+              <conditions>
+                <check_all>
+                  <check_value value="player.sector == $TargetSector"/>
+                  <check_value value="$TargetOffset and player.entity.distanceto.[$TargetSector, $TargetOffset] le $TargetRadius"/>
+                </check_all>
+              </conditions>
+              <actions>
+                <do_if value="$InTargetArea == 0">
+                  <set_value name="$InTargetArea" exact="1"/>
+                  <signal_cue cue="UpdateBriefing"/>
+                  <do_if value="$ReachedAreaCue">
+                    <signal_cue cue="$ReachedAreaCue"/>
+                  </do_if>
+                </do_if>
+              </actions>
+            </cue>
+
+            <cue name="LeftArea" checkinterval="5s" instantiate="true">
+              <conditions>
+                <check_any>
+                  <check_value value="player.sector != $TargetSector"/>
+                  <check_value value="$TargetOffset and player.entity.distanceto.[$TargetSector, $TargetOffset] gt $TargetRadius"/>
+                </check_any>
+              </conditions>
+              <actions>
+                <do_if value="$InTargetArea == 1">
+                  <set_value name="$InTargetArea" exact="0"/>
+                  <signal_cue cue="UpdateBriefing"/>
+                  <do_if value="$LeftAreaCue">
+                    <signal_cue cue="$LeftAreaCue"/>
+                  </do_if>
+                </do_if>
+              </actions>
+            </cue>
+
+          </cues>
+        </cue>
+
+        <cue name="UpdateBriefing" instantiate="true" comment="Called each time a briefing-update is needed">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <set_value name="$CurrentObjective" exact="$ObjectiveText"/>
+            <do_if value="$InTargetArea">
+              <!-- player is inside the target area / near target location -->
+              <do_if value="$TargetCount - $TargetCountDone == 1">
+                <set_value name="$CurrentObjective" exact="$ObjectiveText_InRange" comment="(deploy)1 Mine/Satellite/..."/>
+              </do_if>
+              <do_else>
+                <set_value name="$CurrentObjective" exact="$ObjectiveText_InRange_Plural" comment="(deploy)x Mines/Satellites/..."/>
+              </do_else>
+            </do_if>
+            <do_else>
+              <!-- player is 'far away' -->
+              <do_if value="$TargetCount == 1">
+                <set_value name="$CurrentObjective" exact="$ObjectiveText" comment="Deploy 1 Mine/Satellite/... at target location"/>
+              </do_if>
+              <do_elseif value="$TargetCount - $TargetCountDone == 1">
+                <set_value name="$CurrentObjective" exact="$ObjectiveText" comment="Deploy 1 Mine/Satellite/... in target area"/>
+              </do_elseif>
+              <do_else>
+                <set_value name="$CurrentObjective" exact="$ObjectiveText_Plural" comment="Deploy x Mines/Satellites/... in target area"/>
+              </do_else>
+            </do_else>
+            <substitute_text text="$CurrentObjective" source="$CurrentObjective">
+              <replace string="'$NUMBER$'" with="$TargetCount - $TargetCountDone"/>
+            </substitute_text>
+            <do_if value="$UpdateBriefing">
+              <update_mission cue="$MissionCue">
+                <briefing>
+                  <objective step="$StartStep" action="objective.deploy" text="$CurrentObjective"/>
+                </briefing>
+              </update_mission>
+            </do_if>
+
+            <do_if value="$TargetCount == 1" comment="If we asked for 1, then deploy at specific location (still display sphere on map, so the player knows the allowed deployment distance from the target)">
+              <set_objective cue="$MissionCue" step="$StartStep" action="objective.deploy" text="$CurrentObjective" object="$TargetSector" offset="$TargetOffset" radius="$TargetRadius"/>
+            </do_if>
+            <do_else>
+              <set_objective cue="$MissionCue" step="$StartStep" action="objective.deploy" text="$CurrentObjective" object="$TargetSector" offset="$TargetOffset" radius="$TargetRadius">
+                <progress progress="$TargetCountDone" max="$TargetCount" text="{30004,1040}"/>
+              </set_objective>
+            </do_else>
+
+          </actions>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <!--TODO remove_objective-->
+
+            <do_if value="$feedbackvalue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'ERROR: Feedback value is 0 and no error values were set. Defaulting to -100'"/>
+                <set_value name="$feedbackvalue" exact="-100"/>
+              </do_if>
+              <do_else>
+                <set_value name="$feedbackvalue" exact="$ErrorList.{1}"/>
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+                    <do_if value="$ErrorList.{$Counter}" exact="-107">
+                      <set_value name="$FeedbackText" exact="'$DeployableCategory parameter left undefined'"/>
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-106">
+                      <set_value name="$FeedbackText" exact="'$TargetCount parameter left undefined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-105">
+                      <set_value name="$FeedbackText" exact="'$TargetSector parameter left undefined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-103">
+                      <set_value name="$FeedbackText" exact="'$TargetRadius parameter left undefined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-102">
+                      <set_value name="$FeedbackText" exact="'$TargetOffset parameter left undefined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'Cue parameters not defined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-100">
+                      <set_value name="$FeedbackText" exact="'Undefined failure. Defaulted to -100'"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                    </do_else>
+
+                    <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+
+
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+
+              <do_if value="$feedbackvalue" exact="1">
+                <set_value name="$FeedbackText" exact="'DeployInPlace success'"/>
+              </do_if>
+
+              <do_if value="$feedbackvalue" min="1">
+                <debug_text text="'Mission Successful. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_if>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission Failed. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+            <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$feedbackvalue"/>
+            <signal_cue cue="$EndSignalCue"/>
+            <cancel_cue cue="DeployInPlace"/>
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

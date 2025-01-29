@@ -1,0 +1,316 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_Deliver_Wares" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+
+  <!-- DEPRECATED, remaining only for compatibility reasons, use RML_TRADE_WARES instead ! -->
+
+  <!--This mission can be used for buying wares -->
+  <cues>
+    <!--
+    $FeedbackValue:
+    Mission Errors <= -100 
+    -104: $Station was not set or does not exist
+    -103: Wares table was empty
+    -102: Wares value was not a table
+    -101: $MissionCue was not defined
+    -100: Undefined error. Defaulted to -100
+    
+    Player Failures <= -1
+    -3: Container destroyed by non-player-owned object
+    -2: Container destroyed by player-owned object
+    -1: Player failed to complete any trade orders
+    Player Success >= 1
+    1: Player completed all trade orders
+    2: Player completed some trade orders
+    -->
+
+    <library name="DeliverWares">
+      <params>
+        <param name="EndSignalCue" />
+        <param name="MissionCue" />
+        <param name="StartStep" default="1" comment="Briefing step to start the mission on." />
+
+        <param name="Station" comment="The station to which the player should deliver wares" />
+        <param name="Wares" comment="Table of wares to accept. Format: table[[$Ware, $Amount], [$Ware, Amount], ...]" />
+        <param name="Offers" comment="List of offers of the station, belonging to the Wares" />
+        <param name="FailOnContainerDestruction" default="true" comment="Fail when the current trade offer container is destroyed" />
+        <param name="PlayerOnly" default="false" comment="Should the RML only accept trades made by player-owned ships?"/>
+        
+        <param name="DebugChance" default="0" />
+      </params>
+      <actions>
+        <set_value name="$FeedbackValue" exact="0"/>
+        <create_list name="$ErrorList"/>
+        <do_if value="not $MissionCue">
+          <append_to_list name="$ErrorList" exact="-101" />
+        </do_if>
+
+        <do_if value="typeof $Wares != datatype.table">
+          <append_to_list name="$ErrorList" exact="-102" />
+        </do_if>
+        <do_elseif value="$Wares.keys.count" exact="0">
+          <append_to_list name="$ErrorList" exact="-103" />
+        </do_elseif>
+
+        <do_if value="not $Station">
+          <append_to_list name="$ErrorList" exact="-104" />
+        </do_if>
+      </actions>
+      <cues>
+        <cue name="SignalCleanUp" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="1" />
+          </conditions>
+          <actions>
+            <signal_cue cue="CleanUp" />
+          </actions>
+        </cue>
+
+        <cue name="StartMission" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" exact="0" />
+          </conditions>
+          <actions>
+            <!-- Create collections to store completed trades: One for the player, one for everyone else and one to track number of wares remaining -->
+            <set_value name="$PlayerTrades" exact="table[]" />
+            <set_value name="$NPCTrades" exact="table[]" />
+            <set_value name="$RemainingWares" exact="$Wares.clone" />
+            <signal_cue cue="UpdateBriefing" />
+          </actions>
+          <cues>
+            <!--TODO @Owen check if a ware is even possible to be traded at the target station-->
+            
+            <cue name="TradeCompleted" instantiate="true">
+              <conditions>
+                <event_trade_completed buyer="$Station" />
+                <check_value value="if $PlayerOnly then (event.param.seller.exists and (event.param.seller.owner == faction.player)) else true"/>
+              </conditions>
+              <actions>
+                <set_value name="$Trade" exact="event.param" />
+                <set_value name="$Ware" exact="$Trade.ware" />
+
+                <do_if value="$Wares.{$Ware}?" comment="The traded ware is one that's important for this mission">
+                  <debug_text text="'Trade of ' + $Ware + ' has been completed'" chance="$DebugChance" />
+                  <set_value name="$Amount" exact="$Trade.transferredamount" />
+
+                  <do_if value="$Trade.seller.owner" exact="faction.player">
+                    <debug_text text="'Trade was made by player.'" chance="$DebugChance" />
+                    <set_value name="$PlayerTrades.{$Ware}" exact="$Amount" />
+                  </do_if>
+                  <do_else>
+                    <debug_text text="'Trade was made by NPC'" chance="$DebugChance" />
+                    <set_value name="$NPCTrades.{$Ware}" exact="$Amount" />
+                  </do_else>
+                  
+                  <set_value name="$RemainingWares.{$Ware}" operation="subtract" exact="$Amount" />
+                  <debug_text text="'Amount traded: ' + $Amount" chance="$DebugChance" />
+                  <debug_text text="$Ware + ' remaining: ' + $RemainingWares.{$Ware}" chance="$DebugChance" />
+                  <do_if value="$RemainingWares.{$Ware}" max="0">
+                    <remove_value name="$RemainingWares.{$Ware}" />
+                  </do_if>
+
+                  <signal_cue cue="UpdateBriefing" />
+                </do_if>
+              </actions>
+            </cue>
+
+            <cue name="Failsafe_PeriodicCheck" instantiate="true" checkinterval="5s" comment="see P1DEV-1664">
+              <conditions>
+                <check_value value="@$Offers.count and $RemainingWares.keys.count"/>
+              </conditions>
+              <actions>
+                <do_for_each name="$FailsafeWare" valuename="$RemainingAmount" in="$RemainingWares" reverse="true" comment="Keep remainingwares and offers in sync, AllTradesMade will pick up on any changes">
+                  <set_value name="$ValidWare" exact="false"/>
+                  <do_for_each name="$CurrentOffer" in="$Offers" >
+                    <do_if value="@$CurrentOffer.available and $CurrentOffer.ware == $FailsafeWare and $CurrentOffer.offeramount gt 0">
+                      <set_value name="$ValidWare" exact="true"/>
+                      <break/>
+                    </do_if>
+                  </do_for_each>
+                  <do_if value="not $ValidWare">
+                    <debug_text text="'.ware=%s .remainingamount=%s no valid trade offer for ware. Assume tradeoffer completed and remove from $RemainingWares'.[$FailsafeWare, $RemainingAmount]" filter="error"/>
+                    <remove_value name="$RemainingWares.{$FailsafeWare}" comment="remove ware from the RemainingWares"/>
+                  </do_if>
+                </do_for_each>
+              </actions>
+            </cue>
+
+            <cue name="AllTradesMade" checkinterval="1s">
+              <conditions>
+                <check_value value="$RemainingWares.keys.count" exact="0" />
+              </conditions>
+              <actions>
+                <debug_text text="'All trades have been made'" chance="$DebugChance" />
+                
+                <!-- If every ware in $PlayerTrades has an amount of 0, the player has failed to make any trades -->
+                <set_value name="$NoPlayerTrades" exact="true" />
+                <do_if value="$PlayerTrades.keys.count">
+                  <set_value name="$NoPlayerTrades" exact="false" />
+                </do_if>
+                
+                <!-- If every ware in $NPCTrades has an amount of 0, the player successfully delivered all wares -->
+                <set_value name="$AllPlayerTrades" exact="true" />
+                <do_if value="$NPCTrades.keys.count">
+                  <set_value name="$AllPlayerTrades" exact="false" />
+                </do_if>
+                
+                <!-- Else, both player and NPCs helped complete mission -->
+
+                <do_if value="$AllPlayerTrades">
+                  <set_value name="$FeedbackValue" exact="1" />  
+                </do_if>
+                <do_elseif value="$NoPlayerTrades">
+                  <set_value name="$FeedbackValue" exact="-1" />
+                </do_elseif>
+                <do_else>
+                  <set_value name="$FeedbackValue" exact="2" />
+                </do_else>
+                
+                <signal_cue cue="CleanUp" />
+              </actions>
+            </cue>
+
+            <cue name="StationDestroyed">
+              <conditions>
+                <event_object_destroyed object="$Station" />
+              </conditions>
+              <actions>
+                <debug_text text="'$Station has been destroyed'" chance="$DebugChance" />
+                <do_if value="$FailOnContainerDestruction">
+                  <do_if value="event.param.owner" exact="faction.player">
+                    <set_value name="$FeedbackValue" exact="-2" />
+                  </do_if>
+                  <do_else>
+                    <set_value name="$FeedbackValue" exact="-3" />
+                  </do_else>
+                  <signal_cue cue="CleanUp" />
+                </do_if>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="UpdateBriefing" instantiate="true">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <actions>
+            <set_value name="$WareStep" exact="$StartStep"/>
+            <do_all exact="$Wares.keys.count" counter="$i">
+              <set_value name="$Ware" exact="$Wares.keys.{$i}" />
+              <do_if value="not $RemainingWares.{$Ware}?">
+                <substitute_text text="$ObjectiveText" source="readtext.{1004}.{1007}">
+                  <replace string="'$AMOUNT$'" with="$Wares.{$Ware}" />
+                  <replace string="'$WARE$'" with="$Ware" />
+                </substitute_text>
+                <update_mission cue="$MissionCue">
+                  <briefing>
+                    <objective step="$WareStep" action="objective.deliver" object="$Station" text="$ObjectiveText" />
+                  </briefing>
+                </update_mission>
+                <set_value name="$WareStep" operation="add"/>
+              </do_if>
+            </do_all>
+            
+            <do_all exact="$RemainingWares.keys.count" counter="$i">
+              <set_value name="$Ware" exact="$RemainingWares.keys.{$i}" />
+              <set_value name="$Amount" exact="$RemainingWares.{$Ware}" />
+              <substitute_text text="$ObjectiveText" source="readtext.{1004}.{1007}">
+                <replace string="'$AMOUNT$'" with="$RemainingWares.{$Ware}" />
+                <replace string="'$WARE$'" with="$Ware" />
+              </substitute_text>
+              <update_mission cue="$MissionCue">
+                <briefing>
+                  <objective step="$WareStep" action="objective.deliver" object="$Station" text="$ObjectiveText" />
+                </briefing>
+              </update_mission>
+              <do_if value="$i == 1">
+                <substitute_text text="$ObjectiveTextShort" source="readtext.{1004}.{1007}">
+                  <replace string="'$AMOUNT$'" with="$RemainingWares.{$Ware}" />
+                  <replace string="'$WARE$'" with="$Ware" />
+                </substitute_text>
+                <set_objective cue="$MissionCue" step="$WareStep" action="objective.deliver" object="$Station" text="$ObjectiveTextShort"/>
+              </do_if>
+              <set_value name="$WareStep" operation="add"/>
+            </do_all>
+
+            <do_if value="$WareStep gt 0">
+              <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep + $Wares.keys.count"/>
+            </do_if>
+
+          </actions>
+        </cue>
+
+        <cue name="CleanUp">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <actions>
+            <do_if value="$FeedbackValue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'Error: RML_Deliver_Wares.CleanUp - $FeedbackValue is 0 and there are no reported errors: Defaulting to $FeedbackValue -100...'" chance="$DebugChance" />
+                <set_value name="$FeedbackValue" exact="-100" />
+              </do_if>
+              <do_else>
+                <set_value name="$FeedbackValue" exact="$ErrorList.{1}" />
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+                    <do_if value="$ErrorList.{$Counter}" exact="-104">
+                      <set_value name="$FeedbackText" exact="'$Station was not set or does not exist'" />
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-103">
+                      <set_value name="$FeedbackText" exact="'Wares table was empty'" />
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-102">
+                      <set_value name="$FeedbackText" exact="'Wares value was not a table'" />
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'$MissionCue was not defined'" />
+                    </do_elseif>
+
+                    <debug_text text="'Mission Error. $FeedbackValue ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" chance="$DebugChance" />
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+              
+              <do_if value="$FeedbackValue" exact="-3">
+                <set_value name="$FeedbackText" exact="{30004,6083}" comment="'Container was destroyed by non-player-owned object.'" />
+              </do_if>
+              <do_elseif value="$FeedbackValue" exact="-2">
+                <set_value name="$FeedbackText" exact="{30004,6081}" comment="'Container was destroyed by player-owned object'" />
+              </do_elseif>
+              <do_elseif value="$FeedbackValue" exact="-1">
+                <set_value name="$FeedbackText" exact="{30004,6100}" comment="'Player failed to deliver any wares'" />
+              </do_elseif>
+              <do_elseif value="$FeedbackValue" exact="1">
+                <set_value name="$FeedbackText" exact="'Player successfully delivered all necessary wares'" />
+              </do_elseif>
+              <do_elseif value="$FeedbackValue" exact="2">
+                <set_value name="$FeedbackText" exact="'Player successfully delivered some of the necessary wares'" />
+              </do_elseif>
+
+              <do_if value="$FeedbackValue" min="1">
+                <debug_text text="'RML Success. Feedback ID: ' + $FeedbackValue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_if>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'RML Failure. Feedback ID: ' + $FeedbackValue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+            <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$FeedbackValue" />
+            <signal_cue cue="$EndSignalCue" />
+            <cancel_cue cue="DeliverWares" />
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

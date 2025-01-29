@@ -1,0 +1,735 @@
+<?xml version="1.0" encoding="iso-8859-1" ?>
+<mdscript name="NPC_Missions" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+
+  <cues>
+    <!--HELPER CUES-->
+
+    <!--Cue to be signalled when a mission NPC is instanced and in a position to be handed mission items
+    Multiple missions relating to deliveries to NPCs can listen to this cue and then insert their data for building the conversation options-->
+    <cue name="DeliveryNPCConversation_CollectChoices" instantiate="true">
+      <conditions>
+        <!-- Note: Signal is on static cue, so all active mission instances listening for it are signalled at the same time! -->
+        <event_cue_signalled/>
+        <!-- event.param == [ $DeliveryNPC, $PlayerChoices (list) ] -->
+        <!--Example condition for filtering signals for the mission NPC-->
+        <!--<check_value value="event.param.{1} == $DeliveryNPC" />-->
+      </conditions>
+      <actions>
+        <!--Example of a listening cue adding its own data table to the '$PlayerChoices' list
+        The table added must have the following keys:
+        $cue = The mission cue
+        $text = The conversation option for this mission's entry (usually with ware and amount)
+        $amount = The amount to take from the player if the option is selected (to handle if the player inventory count changed in the mean time)
+        $selectable = Is the conversation option currently selectable
+        $tooltip = Tooltip text to display if option is not selectable-->
+
+        <!--***EXAMPLE***
+        <set_value name="$AmountInInventory" exact="player.entity.inventory.{$DeliveryItem}.count" />
+        <set_value name="$DeliveryStepCount" exact="[$AmountInInventory, $AmountToBeDelivered].min" />
+        <set_value name="$Selectable" exact="$AmountInInventory != 0" />
+        <substitute_text text="$ConversationOption" source="$TextTable.$conversationoption">
+          <replace string="'$AMOUNT$'" with="$DeliveryStepCount" />
+          <replace string="'$WARE$'" with="$DeliveryItem.name" />
+        </substitute_text>
+        <append_to_list name="event.param.{2}" exact="table[ $cue = $MissionCue, $text = $ConversationOption, $amount = $DeliveryStepCount, $selectable = $Selectable, $tooltip = if $Selectable then '' else $TextTable.$tooltip ]" />-->
+      </actions>
+    </cue>
+
+    <cue name="DeliveryNPCConversation_Start" instantiate="true" namespace="this">
+      <conditions>
+        <check_any>
+          <event_conversation_started conversation="default" />
+          <event_conversation_returned_to_section section="default" />
+          <event_conversation_next_section section="default"/>
+        </check_any>
+      </conditions>
+      <actions>
+        <set_value name="$PlayerChoices" exact="[]" />
+        <signal_cue_instantly cue="DeliveryNPCConversation_CollectChoices" param="[event.object, $PlayerChoices]" />
+        <do_if value="$PlayerChoices.count">
+          <do_if value="$PlayerChoices.count" exact="1">
+            <add_player_choice text="$PlayerChoices.{1}.$text" section="c_giveItems" choiceparam="$PlayerChoices.{1}" position="bottom_left" selectable="$PlayerChoices.{1}.$selectable" highlighted="true" tooltip="$PlayerChoices.{1}.$tooltip" />
+          </do_if>
+          <do_else>
+            <!-- Note: Using fixed text reference because here we are responsible for multiple GM_BringItems missions, not just the current one -->
+            <add_player_choice_sub text="readtext.{30135}.{120}" comment="Deliver..." section="c_giveItems_list" position="bottom_left" highlighted="true" choiceparam="$PlayerChoices" baseparam="event.param2" />
+          </do_else>
+        </do_if>
+      </actions>
+    </cue>
+
+    <cue name="DeliveryNPCConversation_NextList" instantiate="true" namespace="this">
+      <conditions>
+        <check_any>
+          <event_conversation_next_section section="c_giveItems_list" />
+          <event_conversation_returned_to_section section="c_giveItems_list" />
+        </check_any>
+      </conditions>
+      <actions>
+        <add_player_choice_return text="{1002,20}" position="bottom_right" comment="Back" />
+        <set_value name="$PlayerChoices" exact="event.param2.clone" />
+        <set_value name="$slotsleft" exact="5" />
+        <do_all exact="$PlayerChoices.count">
+          <do_if value="$slotsleft == 1 and $PlayerChoices.count gt 1">
+            <add_player_choice_sub text="{1002,12025}" comment="More" section="c_giveItems_list" choiceparam="$PlayerChoices" baseparam="event.param2" />
+            <break />
+          </do_if>
+          <add_player_choice text="$PlayerChoices.{1}.$text" section="c_giveItems" choiceparam="$PlayerChoices.{1}" selectable="$PlayerChoices.{1}.$selectable" highlighted="$PlayerChoices.{1}.$cue.hasguidance" tooltip="$PlayerChoices.{1}.$tooltip" />
+          <remove_value name="$PlayerChoices.{1}" />
+          <set_value name="$slotsleft" operation="subtract" />
+        </do_all>
+      </actions>
+    </cue>
+
+    <!--Passenger Transport Helpers-->
+
+    <!--event.param = table[
+    $passenger = the passenger NPC
+    $object = the object the passenger is expected to be aboard (optional)
+    $debugchance = (optional)-->
+    <cue name="Disembark_Passenger" instantiate="true" namespace="this">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <set_value name="$Passenger" exact="event.param.$passenger"/>
+        <set_value name="$Object" exact="@event.param.$object"/>
+        <set_value name="$DebugChance" exact="@event.param.$debugchance"/>
+        <assert value="$Passenger.exists and $Passenger.isclass.npc" text="'Invalid passenger parameter. $Passenger: ' + $Passenger + ' [Owen]'"/>
+        <assert value="not $Object.exists or $Object.isclass.controllable" text="'Invalid object parameter. $Object: ' + $Object + ' [Owen]'"/>
+        <do_if value="$Passenger.exists and $Passenger.isclass.npc">
+          <debug_text text="'Starting passenger disembark helper for ' + $Passenger + ' ' + $Passenger.knownname + ' expected on object ' + $Object + ' ' + @$Object.knownname" chance="$DebugChance"/>
+          <assert value="not $Object or $Object.people.{$Passenger.npctemplate}.exists" text="'Object does not have the npctemplate of the passenger [Owen]'"/>
+        </do_if>
+        <do_else>
+          <cancel_cue cue="Disembark_Passenger"/>
+        </do_else>
+      </actions>
+      <cues>
+        <cue name="Disembark_Passenger_Check" checkinterval="5s" instantiate="true">
+          <actions>
+            <set_value name="$DespawnObject" exact="null"/>
+            <do_if value="$Object.exists and $Passenger.hascontext.{$Object}">
+              <do_if value="$Object.object">
+                <set_value name="$DespawnObject" exact="$Object.object"/>
+                <debug_text text="'Object is on other object ' + $DespawnObject + ' ' + $DespawnObject.knownname" chance="$DebugChance"/>
+              </do_if>
+            </do_if>
+            <do_else>
+              <do_if value="$Passenger.container">
+                <set_value name="$DespawnObject" exact="$Passenger.container"/>
+                <debug_text text="'Passenger is not currently in the object. Remove the from the people list and get them to despawn.'" chance="$DebugChance"/>
+              </do_if>
+              <do_else>
+                <debug_text text="'Passenger is not on any containing object. Passenger will be killed.'" chance="$DebugChance"/>
+                <do_if value="$Object.exists">
+                  <remove_npc_template object="$Object" template="$Passenger.npctemplate"/>
+                </do_if>
+                <destroy_object object="$Passenger"/>
+                <cancel_cue cue="Disembark_Passenger"/>
+              </do_else>
+            </do_else>
+
+            <do_if value="$DespawnObject">
+              <debug_text text="'Attempting to find despawn slot on ' + $DespawnObject + ' ' + $DespawnObject.knownname" chance="$DebugChance"/>
+              <do_if value="$Object.exists">
+                <remove_npc_template object="$Object" template="$Passenger.npctemplate"/>
+              </do_if>
+              <find_npc_waypoint name="$DespawnSlot" object="$DespawnObject" tags="tag.npctransport"/>
+              <do_if value="$DespawnSlot">
+                <set_value name="$DespawnTable" exact="table[$slot = $DespawnSlot]"/>
+                <signal_objects object="$Passenger" param="'npc_despawn'" param2="$DespawnTable.clone"/>
+              </do_if>
+              <do_else>
+                <debug_text text="'Unable to find a despawn slot for passenger on ' + $DespawnObject + ' ' + $DespawnObject.knownname + ' - killing instantly [Owen]'" filter="error"/>
+                <destroy_object object="$Passenger"/>
+              </do_else>
+              <cancel_cue cue="Disembark_Passenger"/>
+            </do_if>
+          </actions>
+        </cue>
+
+        <cue name="Disembark_Passenger_NPC_Killed">
+          <conditions>
+            <event_object_destroyed object="$Passenger"/>
+          </conditions>
+          <actions>
+            <debug_text text="'Passenger was destroyed'" chance="$DebugChance"/>
+            <cancel_cue cue="Disembark_Passenger"/>
+          </actions>
+        </cue>
+      </cues>
+    </cue>
+
+    <!--NPC based mission manager-->
+    <cue name="Manager" namespace="this" version="3">
+      <conditions>
+        <event_cue_signalled cue="md.Setup.Start" />
+      </conditions>
+      <actions>
+        <set_value name="$MissionCues" exact="[]"/>
+        <set_value name="$SignalledMissions" exact="[]" comment="GMs signalled in this instance"/>
+        <!--TODO @Owen base location limit on class or number of slots?-->
+        <set_value name="$LocationLimit" exact="3" comment="Limit of missions per location object"/>
+        <set_value name="$SpawnAttempts" exact="2" comment="Number of missions to attempt to spawn per instance event"/>
+        <set_value name="$ExcludedFactions" exact="[faction.civilian, faction.khaak, faction.xenon]"/>
+        <set_value name="$DebugChance" exact="0" />
+      </actions>
+      <patch sinceversion="2">
+        <do_for_each name="$Patch_MissionCue" in="$MissionCues">
+          <set_value name="$Patch_MissionCue.$ClientMissionObject" exact="$Patch_MissionCue.$OfferObject"/>
+        </do_for_each>
+      </patch>
+      <patch sinceversion="3">
+        <set_value name="$ExcludedFactions" exact="[faction.civilian, faction.khaak, faction.xenon]"/>
+      </patch>
+      <cues>
+        <!--To be signalled from md.NPC_Instantiation.InstantiateNPCs
+        event.param.{1} = placement object (ship, station)-->
+        <cue name="EvaluateLocationMissions" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <clear_list list="$SignalledMissions"/>
+            <set_value name="$Location" exact="event.param.{1}"/>
+            <debug_text text="'Attempting to select generic missions for NPC location ' + $Location + ' ' + $Location.knownname" chance="$DebugChance"/>
+
+            <!--Check how many GMs are currently based in this sector (either offers or active)-->
+            <set_value name="$LocationGMCount" exact="0"/>
+            <do_all exact="$MissionCues.count" counter="$i" reverse="true">
+              <do_if value="$MissionCues.{$i}.exists">
+                <do_if value="$MissionCues.{$i}.$ClientMissionObject.exists and $MissionCues.{$i}.$ClientMissionObject.hascontext.{$Location}">
+                  <set_value name="$LocationGMCount" operation="add"/>
+                  <do_if value="$LocationGMCount ge $LocationLimit">
+                    <break/>
+                  </do_if>
+                </do_if>
+              </do_if>
+              <do_else>
+                <assert value="$MissionCues.{$i}.exists" text="'Generic Mission cue no longer exists. Should have been removed from $MissionCues list earlier. [Owen]'"/>
+                <remove_value name="$MissionCues.{$i}"/>
+              </do_else>
+            </do_all>
+
+            <!--Simple hard limit for GMs in a sector-->
+            <do_if value="$LocationGMCount lt $LocationLimit">
+              <!--Decide how many missions this location should currently have-->
+
+              <!--Take into account whether the player has an active mission. If not, spawn a few more than usual-->
+              <set_value name="$MissionCount" min="0" max="[$LocationLimit - $LocationGMCount, $SpawnAttempts].min"/>
+
+              <do_if value="$MissionCount gt 0">
+                <do_all exact="$MissionCount" counter="$i">
+                  <signal_cue_instantly cue="SelectMission" param="[$Location]"/>
+                </do_all>
+              </do_if>
+            </do_if>
+          </actions>
+        </cue>
+
+        <!--This cue is signalled to generate one GM randomly, add it to $MissionCues and wait for it to end.-->
+        <cue name="SelectMission" instantiate="true" namespace="this">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <set_value name="$Location" exact="event.param.{1}"/>
+            <set_value name="$DebugChance" exact="Manager.$DebugChance"/>
+          </actions>
+          <cues>
+            <cue name="SelectMission_Signal_GM">
+              <delay min="0ms" max="500ms" comment="Random delay to stagger the offer generation and reduce two conflicting GMs racing against each other (but not too much as we don't want NPCs popping in too late)"/>
+              <actions>
+                <set_value name="$Cue" exact="null"/>
+                <!--Default weight of a do_any action is 1.
+                Usage of chance is to further reduce the likelyhood of any selected mission-->
+                <do_any>
+                  <set_value name="$Cue" exact="md.GM_Assassinate.GenerateNPCMission"/>
+                  <set_value name="$Cue" exact="md.GM_RepairObject.GenerateNPCMission"/>
+                  <set_value name="$Cue" exact="md.GM_RepairSignalLeaks.GenerateNPCMission"/>
+                  <set_value name="$Cue" exact="md.GM_DeployInPlace.GenerateNPCMission"/>
+                  <set_value name="$Cue" exact="md.GM_Destroy_Objects.GenerateNPCMission"/>
+                  <set_value name="$Cue" exact="md.GM_Scan.GenerateNPCMission"/>
+                  <set_value name="$Cue" exact="md.GM_RetrieveItem.GenerateNPCMission"/>
+                  <!--<set_value name="$Cue" exact="md.GM_Transport_Passengers.GenerateNPCMission"/>-->
+                  <set_value name="$Cue" exact="md.GM_Patrol.GenerateNPCMission"/>
+                  <!--set_value name="$Cue" exact="md.GM_BringItems.GenerateGenericMission"/-->
+                </do_any>
+
+                <do_if value="$Cue">
+                  <append_to_list name="Manager.$SignalledMissions" exact="$Cue"/>
+                  <signal_cue_instantly cue="$Cue" param="table[
+                                    $Location = $Location,
+                                    $ReportSignalCue = SelectMission_GM_Signal_Cue,
+                                    $RemoveOnDespawn = false,
+                                    $DebugChance = Manager.$DebugChance]"/>
+                </do_if>
+                <do_else>
+                  <cancel_cue cue="SelectMission"/>
+                </do_else>
+
+                <set_value name="$MissionCue" exact="null"/>
+              </actions>
+            </cue>
+
+            <cue name="SelectMission_GM_Signal_Cue" instantiate="true">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <set_value name="$Cleanup" exact="false"/>
+                <do_if value="@static.$EndFeedbackValue" comment="Evaluate return-value of GM (success/failure)">
+                  <debug_text text="'Mission ended. feedback' + static.$EndFeedbackValue" chance="$DebugChance"/>
+                  <set_value name="$Cleanup" exact="true"/>
+                </do_if>
+                <do_elseif value="@static.$FeedbackValue">
+                  <debug_text text="'Mission signalled with feedback' + static.$FeedbackValue" chance="$DebugChance"/>
+                  <do_if value="static.$FeedbackValue.$ID == '$MISSION_GENERATED'">
+                    <set_value name="$MissionCue" exact="event.param.$Cue"/>
+                    <debug_text text="'Generic Mission ' + $MissionCue + ' successfully generated. Tracking.'" chance="$DebugChance"/>
+                    <append_to_list name="Manager.$MissionCues" exact="$MissionCue"/>
+                    <set_value name="$MissionCue.$ClientMissionObject" exact="$MissionCue.$Client.object"/>
+                  </do_if>
+                  <do_elseif value="static.$FeedbackValue.$ID == '$MISSION_NO_VARIANT'">
+                    <debug_text text="[$Cue] + ' was unable to generate a variant. Aborting'" chance="$DebugChance"/>
+                    <set_value name="$Cleanup" exact="true"/>
+                  </do_elseif>
+                  <do_elseif value="static.$FeedbackValue.$ID == '$OFFER_REMOVED'">
+                    <debug_text text="[$Cue] + ' - Mission offer was removed. Aborting'" chance="$DebugChance"/>
+                    <set_value name="$Cleanup" exact="true"/>
+                  </do_elseif>
+                  <do_elseif value="static.$FeedbackValue.$ID == '$MISSION_NO_NPC_SCENE'">
+                    <debug_text text="[$Cue] + ' was unable to generate a NPC scene. Aborting'" chance="$DebugChance"/>
+                    <set_value name="$Cleanup" exact="true"/>
+                  </do_elseif>
+                </do_elseif>
+
+                <do_if value="$Cleanup">
+                  <cancel_cue cue="static.$GM_Wrapper"/>
+                  <do_if value="$MissionCue">
+                    <remove_from_list name="Manager.$MissionCues" exact="$MissionCue" multiple="false" />
+                  </do_if>
+                  <cancel_cue cue="namespace"/>
+                </do_if>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+      </cues>
+    </cue>
+
+    <!--Enemy Tants Client Via Comm 1
+    Client: Any race, any gender
+    Enemy: Any race, any gender
+    
+    * EXAMPLE *
+    Client: (Greeting - enemy)            "What do you want"
+    Client: (ANIMATION)                   facepalm
+    Enemy:  (taunt line, backgroundcomm)  "Your death will come soon."
+    Enemy:  (laughter, backgroundcomm)    "*** Cackling ***"
+    Client: (Goodbye - enemy)             "Get lost!"-->
+
+    <!--event.param = table[
+    $CallerCue        (cue which when cancelled will cause the scene to end)
+    $Location,        (object where the scene is based. characters may be created here)
+    $CallerEventCue,  (optional, cue which is signalled with feedback table values from a GM)
+    $Client,          (optional, preexisting client NPC)
+    $ClientOwner,     (optional, required if $Client not provided)
+    $Enemy,           (optional, preexisting client NPC)
+    $EnemyOwner,      (optional, required if $Enemy not provided)]-->
+    <cue name="Scene__Enemy_Taunts_Client_Via_Comm_1" instantiate="true" namespace="this">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <set_value name="$CallerCue" exact="event.param.$CallerCue"/>
+        <set_value name="$Location" exact="event.param.$Location"/>
+        <set_value name="$CallerEventCue" exact="@event.param.$CallerEventCue"/>
+        <set_value name="$Client" exact="@event.param.$Client"/>
+        <set_value name="$ClientOwner" exact="@event.param.$ClientOwner"/>
+        <set_value name="$Enemy" exact="@event.param.$Enemy"/>
+        <set_value name="$EnemyOwner" exact="@event.param.$EnemyOwner"/>
+        <set_value name="$DebugChance" exact="@$CallerCue.$DebugChance"/>
+
+        <set_value name="$Valid" exact="false"/>
+        <set_value name="$CreatedNPCs" exact="[]"/>
+
+        <!--do_all exact="1" to allow breaking out-->
+        <do_all exact="1">
+          <!--
+          Check the parameters provided definition table
+          Note: perform $NPC.isclass.{class.npc} checks instead of $NPC.exists for any disconnected NPCs-->
+          <do_if value="not $Location.exists">
+            <debug_text text="'Invalid location param'" chance="$DebugChance"/>
+            <break/>
+          </do_if>
+
+          <!--Client must be connected-->
+          <do_if value="not ($Client and $Client.isclass.npc and $Definition.$Client.exists)">
+            <do_if value="not $ClientOwner">
+              <debug_text text="'Invalid client params'" chance="$DebugChance"/>
+              <break/>
+            </do_if>
+          </do_if>
+
+          <do_if value="not ($Enemy and $Enemy.isclass.npc)">
+            <do_if value="not $EnemyOwner">
+              <debug_text text="'Invalid enemy params'" chance="$DebugChance"/>
+              <break/>
+            </do_if>
+          </do_if>
+
+          <!--Attempt to create any characters which do not exist yet-->
+          <do_if value="not $Client">
+            <get_character_definition reference="$CasualDefinition" faction="$ClientOwner" tags="tag.casual"/>
+            <do_any>
+              <set_value name="$ClientTag" exact="tag.crew" weight="10"/>
+              <set_value name="$ClientTag" exact="tag.casual" weight="if $CasualDefinition then 1 else 0"/>
+            </do_any>
+            <create_cue_actor name="$Client" cue="$CallerCue">
+              <select faction="$ClientOwner" tags="$ClientTag"/>
+              <owner exact="$ClientOwner"/>
+            </create_cue_actor>
+            <do_if value="$Client">
+              <debug_text text="'created Client ' + $Client" chance="$DebugChance"/>
+              <set_entity_traits entity="$Client" missionactor="true" temporary="true"/>
+              <signal_cue_instantly cue="md.NPC_Instantiation.NPC_Placement_Manager" param="['add_definition', $Client, 
+                  table[
+                    $requestercue = $CallerCue,
+                    $location = $Location,
+                    $priority = 100,
+                    $slottags = [tag.npc_generic],
+                    $debugchance = $DebugChance,
+                    $debugcaller = if $DebugChance == 100 then this else null]
+                    ]"/>
+              <do_if value="$Client.exists">
+                <append_to_list name="$CreatedNPCs" exact="$Client"/>
+              </do_if>
+              <do_else>
+                <destroy_object object="$Client"/>
+                <set_value name="$Client" exact="null"/>
+              </do_else>
+            </do_if>
+          </do_if>
+          <do_if value="not $Client">
+            <debug_text text="'Unable to create client'" chance="$DebugChance"/>
+            <break/>
+          </do_if>
+
+          <do_if value="not $Enemy">
+            <create_cue_actor name="$Enemy" cue="$CallerCue">
+              <select faction="$EnemyOwner" tags="tag.crew"/>
+              <owner exact="$EnemyOwner"/>
+            </create_cue_actor>
+            <do_if value="$Enemy">
+              <debug_text text="'created Enemy ' + $Enemy" chance="$DebugChance"/>
+              <set_entity_traits entity="$Enemy" missionactor="true" customhandler="true"/>
+              <append_to_list name="$CreatedNPCs" exact="$Enemy"/>
+            </do_if>
+          </do_if>
+          <do_if value="not $Enemy">
+            <debug_text text="'Unable to create enemy'" chance="$DebugChance"/>
+            <break/>
+          </do_if>
+
+          <set_value name="$Valid" exact="true"/>
+        </do_all>
+
+        <do_if value="$Valid">
+          <set_value name="event.param.$Result" exact="'SUCCESS'"/>
+          <set_value name="event.param.$SceneInstance" exact="this"/>
+          <set_value name="event.param.$Client" exact="$Client"/>
+          <set_value name="event.param.$Enemy" exact="$Enemy"/>
+
+          <!--TODO @Owen this is currently needed to stop the character wandering around if they are set as a service crew-->
+          <set_value name="$Client.$Stay" exact="true"/>
+          <signal_objects object="$Client" param="'npc_state_reinit'"/>
+
+          <debug_text text="'Successfully set up NPC scene'" chance="$DebugChance"/>
+        </do_if>
+        <do_else>
+          <set_value name="event.param.$Result" exact="'FAILED'"/>
+          <debug_text text="'Failed to set up NPC scene'" chance="$DebugChance"/>
+          <do_all exact="$CreatedNPCs.count" counter="$i">
+            <destroy_object object="$CreatedNPCs.{$i}"/>
+          </do_all>
+          <cancel_cue cue="this"/>
+        </do_else>
+      </actions>
+      <cues>
+        <cue name="Scene__Enemy_Taunts_Client_Via_Comm_1__End">
+          <conditions>
+            <check_any>
+              <event_cue_cancelled cue="$CallerCue"/>
+              <event_object_destroyed object="$Client"/>
+              <event_object_destroyed object="$Enemy"/>
+            </check_any>
+          </conditions>
+          <actions>
+            <debug_text text="'Ended'" chance="$DebugChance"/>
+            <cancel_cue cue="namespace"/>
+          </actions>
+        </cue>
+
+        <cue name="Scene__Enemy_Taunts_Client_Via_Comm_1__Caller_Event" onfail="cancel">
+          <conditions>
+            <check_value value="$CallerEventCue.exists"/>
+          </conditions>
+          <cues>
+            <cue name="Scene__Enemy_Taunts_Client_Via_Comm_1__Caller_Event_Trigger" instantiate="true">
+              <conditions>
+                <event_cue_signalled cue="$CallerEventCue"/>
+              </conditions>
+              <actions>
+                <do_if value="@$CallerEventCue.$EndFeedbackValue" comment="Evaluate return-value of GM (success/failure)">
+                  <debug_text text="'Caller signalled with an EndFeedbackValue of ' + $CallerEventCue.$EndFeedbackValue + '. Ending scene.'" chance="$DebugChance"/>
+                  <cancel_cue cue="namespace"/>
+                </do_if>
+                <do_elseif value="@$CallerEventCue.$FeedbackValue">
+                  <do_if value="$CallerEventCue.$FeedbackValue.$ID == '$MISSION_ACCEPTED'">
+                    <debug_text text="'Caller signalled that the mission was accepted. Ending scene.'" chance="$DebugChance"/>
+                    <cancel_cue cue="namespace"/>
+                  </do_if>
+                </do_elseif>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Scene__Enemy_Taunts_Client_Via_Comm_1__Check">
+          <delay min="20s" max="35s"/>
+          <cues>
+            <cue name="Scene__Enemy_Taunts_Client_Via_Comm_1__Check_Wait">
+              <conditions>
+                <event_cue_completed cue="Scene__Enemy_Taunts_Client_Via_Comm_1__Check"/>
+              </conditions>
+              <actions>
+                <do_if value="Scene__Enemy_Taunts_Client_Via_Comm_1__Act_1.state == cuestate.waiting and [$Client, $Enemy].indexof.{player.conversationactor} == 0 and player.sector and player.sector == $Client.sector and player.entity.distanceto.{$Client} lt 40m">
+                  <signal_cue cue="Scene__Enemy_Taunts_Client_Via_Comm_1__Act_1"/>
+                </do_if>
+                <reset_cue cue="Scene__Enemy_Taunts_Client_Via_Comm_1__Check"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Scene__Enemy_Taunts_Client_Via_Comm_1__Act_1">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <speak actor="$Client" line="2003" recipient="$Enemy"/>
+            <!--transition="true" immediate="false" means the animation is queued which could make it appear mistimed-->
+            <start_actor_sequence actor="$Client" type="'facepalm01'" behavior="'stand'" transition="true" immediate="false"/>
+          </actions>
+          <cues>
+            <cue name="Scene__Enemy_Taunts_Client_Via_Comm_1__Interrupted">
+              <conditions>
+                <event_conversation_started/>
+                <check_value value="event.object == $Client or event.object == $Enemy"/>
+              </conditions>
+              <actions>
+                <reset_cue cue="Scene__Enemy_Taunts_Client_Via_Comm_1__Act_1"/>
+              </actions>
+            </cue>
+            <cue name="Scene__Enemy_Taunts_Client_Via_Comm_1__Act_2">
+              <conditions>
+                <event_speak_finished actor="$Client" line="2003"/>
+              </conditions>
+              <actions>
+                <do_any>
+                  <set_value name="$SelectedLine" exact="10020"/>
+                  <set_value name="$SelectedLine" exact="10021"/>
+                </do_any>
+                <do_any>
+                  <set_value name="$SelectedLine2" exact="1008"/>
+                  <set_value name="$SelectedLine2" exact="1009"/>
+                </do_any>
+                <speak actor="$Enemy" line="[$SelectedLine, $SelectedLine2]" backgroundcomm="true" recipient="$Client" />
+              </actions>
+              <cues>
+                <cue name="Scene__Enemy_Taunts_Client_Via_Comm_1__Act_3">
+                  <conditions>
+                    <event_speak_finished actor="$Enemy" line="$SelectedLine"/>
+                  </conditions>
+                  <actions>
+                    <speak actor="$Client" line="2009" backgroundcomm="false" recipient="$Enemy"/>
+                  </actions>
+                  <cues>
+                    <cue name="Scene__Enemy_Taunts_Client_Via_Comm_1__Act_4">
+                      <conditions>
+                        <event_speak_finished actor="$Client" line="2009"/>
+                      </conditions>
+                      <actions>
+                        <reset_cue cue="Scene__Enemy_Taunts_Client_Via_Comm_1__Act_1"/>
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+              </cues>
+            </cue>
+          </cues>
+        </cue>
+      </cues>
+    </cue>
+
+    <!--Friendly Client Via Comm 1
+    Client: Any race, any gender
+    Enemy: Any race, any gender
+    
+    * EXAMPLE *
+    Client: (Greeting - enemy)            "What do you want"
+    Client: (ANIMATION)                   facepalm
+    Enemy:  (taunt line, backgroundcomm)  "Your death will come soon."
+    Enemy:  (laughter, backgroundcomm)    "*** Cackling ***"
+    Client: (Goodbye - enemy)             "Get lost!"-->
+
+    <!--event.param = table[
+    $CallerCue        (cue which when cancelled will cause the scene to end)
+    $Location,        (object where the scene is based. characters may be created here)
+    $CallerEventCue,  (optional, cue which is signalled with feedback table values from a GM)
+    $Client,          (optional, preexisting client NPC)
+    $ClientOwner,     (optional, required if $Client not provided)
+    $Enemy,           (optional, preexisting client NPC)
+    $EnemyOwner,      (optional, required if $Enemy not provided)]-->
+    <cue name="Scene__Friendly_Client_Via_Comm_1" instantiate="true" namespace="this">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <set_value name="$CallerCue" exact="event.param.$CallerCue"/>
+        <set_value name="$Location" exact="event.param.$Location"/>
+        <set_value name="$CallerEventCue" exact="@event.param.$CallerEventCue"/>
+        <set_value name="$Client" exact="@event.param.$Client"/>
+        <set_value name="$ClientOwner" exact="@event.param.$ClientOwner"/>
+        <set_value name="$Enemy" exact="@event.param.$Enemy"/>
+        <set_value name="$EnemyOwner" exact="@event.param.$EnemyOwner"/>
+        <set_value name="$DebugChance" exact="@$CallerCue.$DebugChance"/>
+
+        <set_value name="$Valid" exact="false"/>
+        <set_value name="$CreatedNPCs" exact="[]"/>
+
+        <!--do_all exact="1" to allow breaking out-->
+        <do_all exact="1">
+          <!--
+          Check the parameters provided definition table
+          Note: perform $NPC.isclass.{class.npc} checks instead of $NPC.exists for any disconnected NPCs-->
+          <do_if value="not $Location.exists">
+            <debug_text text="'Invalid location param'" chance="$DebugChance"/>
+            <break/>
+          </do_if>
+
+          <!--Client must be connected-->
+          <do_if value="not ($Client and $Client.isclass.npc and $Definition.$Client.exists)">
+            <do_if value="not $ClientOwner">
+              <debug_text text="'Invalid client params'" chance="$DebugChance"/>
+              <break/>
+            </do_if>
+          </do_if>
+
+          <!--Attempt to create any characters which do not exist yet-->
+          <do_if value="not $Client">
+            <get_character_definition reference="$CasualDefinition" faction="$ClientOwner" tags="tag.casual"/>
+            <do_any>
+              <set_value name="$ClientTag" exact="tag.crew" weight="10"/>
+              <set_value name="$ClientTag" exact="tag.casual" weight="if $CasualDefinition then 1 else 0"/>
+            </do_any>
+            <create_cue_actor name="$Client" cue="$CallerCue">
+              <select faction="$ClientOwner" tags="$ClientTag"/>
+              <owner exact="$ClientOwner"/>
+            </create_cue_actor>
+            <do_if value="$Client">
+              <debug_text text="'created Client ' + $Client" chance="$DebugChance"/>
+              <set_entity_traits entity="$Client" missionactor="true" temporary="true"/>
+              <signal_cue_instantly cue="md.NPC_Instantiation.NPC_Placement_Manager" param="['add_definition', $Client, 
+                table[
+                  $requestercue = $CallerCue,
+                  $location = $Location,
+                  $priority = 100,
+                  $slottags = [tag.npc_generic],
+                  $debugchance = $DebugChance,
+                  $debugcaller = if $DebugChance == 100 then this else null]
+                  ]"/>
+              <do_if value="$Client.exists">
+                <append_to_list name="$CreatedNPCs" exact="$Client"/>
+              </do_if>
+              <do_else>
+                <destroy_object object="$Client"/>
+                <set_value name="$Client" exact="null"/>
+              </do_else>
+            </do_if>
+          </do_if>
+          <do_if value="not $Client">
+            <debug_text text="'Unable to create client for ' + $CallerCue" chance="$DebugChance"/>
+            <break/>
+          </do_if>
+
+          <set_value name="$Valid" exact="true"/>
+        </do_all>
+
+        <do_if value="$Valid">
+          <set_value name="event.param.$Result" exact="'SUCCESS'"/>
+          <set_value name="event.param.$SceneInstance" exact="this"/>
+          <set_value name="event.param.$Client" exact="$Client"/>
+          <set_value name="event.param.$Enemy" exact="$Enemy"/>
+
+          <!--TODO @Owen this is currently needed to stop the character wandering around if they are set as a service crew-->
+          <set_value name="$Client.$Stay" exact="true"/>
+          <signal_objects object="$Client" param="'npc_state_reinit'"/>
+
+          <debug_text text="'Successfully set up NPC scene'" chance="$DebugChance"/>
+        </do_if>
+        <do_else>
+          <set_value name="event.param.$Result" exact="'FAILED'"/>
+          <debug_text text="'Failed to set up NPC scene'" chance="$DebugChance"/>
+          <do_all exact="$CreatedNPCs.count" counter="$i">
+            <destroy_object object="$CreatedNPCs.{$i}"/>
+          </do_all>
+          <cancel_cue cue="this"/>
+        </do_else>
+      </actions>
+      <cues>
+        <cue name="Scene__Friendly_Client_Via_Comm_1__End">
+          <conditions>
+            <check_any>
+              <event_cue_cancelled cue="$CallerCue"/>
+              <event_object_destroyed object="$Client"/>
+            </check_any>
+          </conditions>
+          <actions>
+            <debug_text text="'Ended'" chance="$DebugChance"/>
+            <cancel_cue cue="namespace"/>
+          </actions>
+        </cue>
+            
+        <cue name="Scene__Friendly_Client_Via_Comm_1__Caller_Event" onfail="cancel">
+          <conditions>
+            <check_value value="$CallerEventCue.exists"/>
+          </conditions>
+          <cues>
+            <cue name="Scene__Friendly_Client_Via_Comm_1__Caller_Event_Trigger" instantiate="true">
+              <conditions>
+                <event_cue_signalled cue="$CallerEventCue"/>
+              </conditions>
+              <actions>
+                <do_if value="@$CallerEventCue.$EndFeedbackValue" comment="Evaluate return-value of GM (success/failure)">
+                  <debug_text text="'Caller signalled with an EndFeedbackValue of ' + $CallerEventCue.$EndFeedbackValue + '. Ending scene.'" chance="$DebugChance"/>
+                  <cancel_cue cue="namespace"/>
+                </do_if>
+                <do_elseif value="@$CallerEventCue.$FeedbackValue">
+                  <do_if value="$CallerEventCue.$FeedbackValue.$ID == '$MISSION_ACCEPTED'">
+                    <debug_text text="'Caller signalled that the mission was accepted. Ending scene.'" chance="$DebugChance"/>
+                    <cancel_cue cue="namespace"/>
+                  </do_if>
+                </do_elseif>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+      </cues>
+    </cue>
+  </cues>
+
+</mdscript>

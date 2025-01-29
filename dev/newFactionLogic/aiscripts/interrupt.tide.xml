@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<aiscript name="interrupt.tide" priority="99" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd">
+  <interrupts>
+    <library>
+      <handler name="TideHandler">
+        <conditions>
+          <!-- sent from md.Setup_DLC_Pirate.Update_PhaseRequest. param2=[phase, celestialbody] -->
+          <event_object_signalled object="this.assignedcontrolled" param="'tide_phasechange'"/>
+          <check_value value="(event.object.owner != faction.xenon) and (event.object.owner != faction.khaak)"/>
+          <check_value value="event.object.takesregiondamage"/>
+          <debug_text text="'%s %s %s missed tide warning.'.[@event.object.idcode, @event.object.knownname, event.object]" debugchance="(@event.object.order.state == orderstate.critical and @event.object.order.id != 'SalvageCrush' and not event.object.dock and not event.object.assigneddock and event.object.hascontext.{event.param2.{2}.cluster}) * 100" filter="error"/>
+          <!-- read in orders.base in case we are unable to respond to the signal when it is sent. -->
+          <set_value name="this.$fleetide" exact="[event.param, event.param2]"/>
+          <check_any>
+            <check_value value="@event.object.order.state != orderstate.critical"/>
+            <check_value value="this.hascontext.{event.param2.{2}.cluster} and (@event.object.dock or @event.object.assigneddock)"/>
+            <!-- SalvageCrush has handling for being interrupted while critical -->
+            <check_value value="@event.object.order.id == 'SalvageCrush'"/>
+          </check_any>
+        </conditions>
+        <actions>
+          <remove_value name="this.$fleetide"/>
+          <debug_text text="'tide phase changed.\nphase: %s'.[event.param2.{1}]" chance="@$debugchance"/>
+          <do_if value="(event.param2.{1} == 'warning') or (event.param2.{1} == 'wave')">
+            <do_if value="not this.$fledtide?">
+              <do_if value="(@event.object.dock or not this.hascontext.{event.param2.{2}.cluster})">
+                <debug_text text="'already safe. waiting for the tide to blow over.'" chance="@$debugchance"/>
+                <!-- wait until all clear -->
+                <create_order id="'WaitForSignal'" object="event.object" immediate="true">
+                  <param name="releasesignal" value="['tide_phasechange', ['calm', event.param2.{2}]]"/>
+                  <param name="timeout" value="0s"/>
+                  <param name="allowdocked" value="true"/>
+                  <param name="debugchance" value="@$debugchance"/>
+                </create_order>
+              </do_if>
+              <do_else>
+                <debug_text text="'fleeing tide'" chance="@$debugchance"/>
+                <create_order id="'Flee'" object="event.object" immediate="true">
+                  <param name="method" value="if event.object.iscapitalship then 3 else 2"/>
+                  <param name="donotdrop" value="true"/>
+                  <param name="deploydistraction" value="false"/>
+                  <param name="holdfire" value="false"/>
+                  <param name="attacker" value="event.param2.{2}"/>
+                  <param name="debugchance" value="@$debugchance"/>
+                </create_order>
+              </do_else>
+              <set_value name="this.$fledtide"/>
+              <do_if value="(@event.object.order.state == orderstate.critical) and @event.object.order.id == 'SalvageCrush'">
+                <cancel_order order="event.object.order"/>
+              </do_if>
+            </do_if>
+          </do_if>
+          <do_else>
+            <remove_value name="this.$fledtide"/>
+            <!-- release -->
+            <debug_text text="'storm blew over. resuming %s'.[if event.object.nextorder then event.object.nextorder.id else @event.object.defaultorder.id]" chance="@$debugchance"/>
+            <do_if value="@event.object.order.id == 'Flee' and (event.object.order.$attacker == event.param2.{2})">
+              <cancel_order order="event.object.order"/>
+            </do_if>
+          </do_else>
+        </actions>
+      </handler>
+    </library>
+  </interrupts>
+</aiscript>

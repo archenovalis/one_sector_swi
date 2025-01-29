@@ -1,0 +1,294 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="LIB_HolomapTarget" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+    <!--
+    $errorvalue:
+    -103: $Components has no existing components
+    -102: $Components has only 1 existing components
+    -101: $Components is neither a list or group-->
+
+    <library name="Start">
+      <params>
+        <param name="EndSignalCue" default="null"/>
+
+        <param name="HoloMap" />
+        <param name="Components" comment="list/group of components going from start to finish"/>
+        <param name="PanTime" default="2s"/>
+        <param name="ZoomTime" default="2s"/>
+        <param name="ShowUnknown" default="false"/>
+        <param name="IsReplay" default="false"/>
+        <param name="SkipComponentPath" default="false" comment="Skips containers, zones, and sectors between consecutive members of $Components"/>
+
+        <param name="verbosedebugchance" default="0"/>
+      </params>
+      <actions>
+        <set_value name="$feedbackvalue" exact="0"/>
+        <create_list name="$ErrorList"/>
+
+        <do_if value="typeof $Components == datatype.list or typeof $Components == datatype.group">
+          <do_all exact="$Components.count" counter="$i" reverse="true">
+            <do_if value="not $Components.{$i}.exists">
+              <remove_value name="$Components.{$i}"/>
+            </do_if>
+          </do_all>
+          <do_if value="$Components.count">
+            <set_value name="$First" exact="true"/>
+            <do_if value="$ZoomTime" min="$PanTime">
+              <set_value name="$Base_Delay" exact="$ZoomTime"/>
+            </do_if>
+            <do_else>
+              <set_value name="$Base_Delay" exact="$PanTime"/>
+            </do_else>
+
+            <do_if value="$verbosedebugchance">
+              <do_all exact="$Components.count" counter="$i">
+                <debug_text text="'***Component ' + $Components.{$i}.knownname + '\'s hierarchy***'"/>
+                <set_value name="$DebugParent" exact="$Components.{$i}.parent"/>
+                <do_while value="$DebugParent.exists and not $DebugParent.isclass.galaxy">
+                  <debug_text text="$DebugParent.knownname"/>
+                  <set_value name="$DebugParent" exact="$DebugParent.parent"/>
+                </do_while>
+              </do_all>
+            </do_if>
+          </do_if>
+          <do_else>
+            <append_to_list name="$ErrorList" exact="-103"/>
+          </do_else>
+        </do_if>
+        <do_else>
+          <append_to_list name="$ErrorList" exact="-101"/>
+        </do_else>
+      </actions>
+      <cues>
+
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="1"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup"/>
+          </actions>
+        </cue>
+
+        <cue name="Do_Start" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" exact="0"/>
+          </conditions>
+          <actions>
+            <create_group groupname="$Objects"/>
+
+            <do_if value="$Components.count == 1">
+              <add_to_group groupname="$Objects" object="$Components.{1}"/>
+            </do_if>
+            <do_else>
+              <set_value name="$NextObject" exact="null"/>
+              <set_value name="$PreviousObject" exact="null"/>
+              <do_all exact="$Components.count" counter="$i">
+                <do_if value="$i == 1">
+                  <!--Skip first iteration-->
+                  <continue/>
+                </do_if>
+                <set_value name="$PreviousObject" exact="$Components.{$i - 1}"/>
+                <set_value name="$NextObject" exact="$Components.{$i}"/>
+                <set_value name="$Reverse" exact="false"/>
+
+                <do_if value="$PreviousObject == $NextObject">
+                  <debug_text text="'$PreviousObject is $NextObject'" chance="$verbosedebugchance"/>
+                  <set_value name="$Reverse" exact="true"/>
+                  <include_actions ref="AddComponentPath"/>
+                </do_if>
+                <do_else>
+                  <set_value name="$CommonContext" exact="$PreviousObject.commoncontext.{$NextObject}"/>
+                  <debug_text text="'Common context is: ' + $CommonContext.knownname" chance="$verbosedebugchance"/>
+
+                  <do_if value="$CommonContext.exists">
+                    <!--These libraries will create the path between them, but not the common context-->
+                    <do_if value="$i lt $Components.count">
+                      <include_actions ref="AddComponentPath"/>
+                    </do_if>
+                    <do_else>
+                      <include_actions ref="AddComponentPath"/>
+                      <!--Add the final object-->
+                      <set_value name="$PreviousObject" exact="$NextObject"/>
+                      <set_value name="$Reverse" exact="true"/>
+                      <include_actions ref="AddComponentPath"/>
+                    </do_else>
+                  </do_if>
+                  <do_else>
+                    <set_value name="$Reverse" exact="true"/>
+                    <include_actions ref="AddComponentPath"/>
+                  </do_else>
+                </do_else>
+              </do_all>
+            </do_else>
+
+            <do_all exact="$Objects.count" counter="$Counter" chance="$verbosedebugchance">
+              <debug_text text="'Path point ' + $Counter + ' : ' + $Objects.{$Counter} + ' ' + $Objects.{$Counter}.knownname"/>
+            </do_all>
+            <set_value name="$Index" exact="1"/>
+          </actions>
+          <cues>
+            <cue name="SetMapTargets">
+              <actions>
+                <set_value name="$Delay" exact="0s"/>
+                <do_if value="$Index" max="$Objects.count">
+                  <set_value name="$CurrentObject" exact="$Objects.{$Index}"/>
+                  <set_value name="$InstantPan" exact="not $IsReplay and $First"/>
+                  <set_value name="$First" exact="false"/>
+                  <do_if value="$Index" min="2">
+                    <set_value name="$Delay" exact="$Base_Delay"/>
+                  </do_if>
+
+                  <do_if value="$CurrentObject.isclass.cluster">
+                    <set_value name="$MapDistance" exact="1800000"/>
+                  </do_if>
+                  <do_elseif value="$CurrentObject.isclass.sector">
+                    <set_value name="$MapDistance" exact="500000"/>
+                  </do_elseif>
+                  <do_elseif value="$CurrentObject.isclass.zone">
+                    <set_value name="$MapDistance" exact="200000"/>
+                  </do_elseif>
+                  <do_elseif value="$CurrentObject.isclass.station">
+                    <set_value name="$MapDistance" exact="11000"/>
+                  </do_elseif>
+                  <do_elseif value="$CurrentObject.isclass.ship">
+                    <set_value name="$MapDistance" exact="5000"/>
+                  </do_elseif>
+                  <do_else>
+                    <set_value name="$MapDistance" exact="10000"/>
+                  </do_else>
+                </do_if>
+                <do_else>
+                  <signal_cue cue="DelayedCleanup"/>
+                  <cancel_cue cue="SetMapTargets"/>
+                </do_else>
+              </actions>
+              <cues>
+                <cue name="SetMapTargets_Delay">
+                  <delay exact="$Delay"/>
+                  <actions>
+                    <debug_text text="'Displaying ' + $CurrentObject.knownname + ' after delay of: ' + $Delay" chance="$verbosedebugchance"/>
+                    <set_holomap_target holomap="$HoloMap" object="$CurrentObject" instant="$InstantPan" distance="$MapDistance" showunknown="$ShowUnknown" disablemapfilters="true"/>
+                    <set_value name="$Index" operation="add"/>
+                    <reset_cue cue="SetMapTargets"/>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="ObjectLost">
+              <conditions>
+                <event_object_destroyed group="$Objects"/>
+              </conditions>
+              <actions>
+                <reset_cue cue="Do_Start"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <!--The CommonContext variable must already be set outside-->
+        <library name="AddComponentPath">
+          <actions>
+            <do_if value="$Reverse">
+              <debug_text text="'Finding path down to ' + $PreviousObject.knownname" chance="$verbosedebugchance"/>
+            </do_if>
+            <do_else>
+              <debug_text text="'Finding path up from ' + $PreviousObject.knownname" chance="$verbosedebugchance"/>
+            </do_else>
+            <do_if value="$PreviousObject.exists">
+
+              <set_value name="$Hierarchy" exact="[]"/>
+              <set_value name="$DoDisplayObject" exact="true"/>
+              <do_if value="$PreviousObject.isclass.ship">
+                <do_if value="$PreviousObject.dock">
+                  <do_if value="not $PreviousObject.dock.external or $PreviousObject.dock.docksize.indexof.{tag.dock_p}">
+                    <set_value name="$DoDisplayObject" exact="false"/>
+                  </do_if>
+                </do_if>
+              </do_if>
+
+              <do_if value="$DoDisplayObject">
+                <append_to_list name="$Hierarchy" exact="$PreviousObject"/>
+              </do_if>
+
+              <do_if value="not $SkipComponentPath and $PreviousObject != $CommonContext">
+                <set_value name="$TempObject" exact="$PreviousObject"/>
+
+                <do_while value="$TempObject.parent.exists">
+                  <do_if value="$TempObject.parent" exact="$CommonContext">
+                    <break/>
+                  </do_if>
+                  <do_elseif value="$TempObject.parent.isclass.galaxy">
+                    <break/>
+                  </do_elseif>
+
+                  <set_value name="$TempObject" exact="$TempObject.parent"/>
+                  <do_if value="$TempObject.isclass.dockingbay">
+                    <!--Skip from dockingbay to container-->
+                    <set_value name="$TempObject" exact="$TempObject.container"/>
+                  </do_if>
+
+                  <append_to_list name="$Hierarchy" exact="$TempObject"/>
+                </do_while>
+              </do_if>
+
+              <do_if value="$Reverse">
+                <do_all exact="$Hierarchy.count" counter="$HierarchyCounter" reverse="true">
+                  <add_to_group groupname="$Objects" object="$Hierarchy.{$HierarchyCounter}"/>
+                </do_all>
+              </do_if>
+              <do_else>
+                <do_all exact="$Hierarchy.count" counter="$HierarchyCounter" reverse="false">
+                  <add_to_group groupname="$Objects" object="$Hierarchy.{$HierarchyCounter}"/>
+                </do_all>
+              </do_else>
+            </do_if>
+            <do_else>
+              <debug_text text="'PreviousObject does not exist. This library should not have been called.'"/>
+            </do_else>
+          </actions>
+        </library>
+
+        <cue name="DelayedCleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <delay exact="$Base_Delay"/>
+          <actions>
+            <signal_cue cue="Cleanup"/>
+          </actions>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <do_if value="md.$RML_Debugging">
+              <do_all exact="$ErrorList.count" counter="$Counter">
+                <do_if value="$ErrorList.{$Counter}" exact="-101">
+                  <set_value name="$FeedbackText" exact="'$Components is neither a list or group'"/>
+                </do_if>
+                <do_elseif value="$ErrorList.{$Counter}" exact="-103">
+                  <set_value name="$FeedbackText" exact="'$Components has no existing components'"/>
+                </do_elseif>
+                <do_else>
+                  <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                </do_else>
+
+                <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+              </do_all>
+            </do_if>
+
+            <do_if value="$EndSignalCue">
+              <signal_cue cue="$EndSignalCue"/>
+            </do_if>
+            <cancel_cue cue="Start"/>
+          </actions>
+
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

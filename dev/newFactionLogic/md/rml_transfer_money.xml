@@ -1,0 +1,266 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_Transfer_Money" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--
+    $feedbackvalue:
+    
+    -102: $NPC did not exist
+    -101: EndSignalCue or MissionCue not defined
+    -100: Undefined failure. Defaulted to -100
+    -4: Trading restricted to in-faction so money not needed
+    -3: $NPC is no longer a control entity of $Object
+    -2: Object was provided and destroyed
+    -1: NPC destroyed
+    1: Money transferred
+    2: Wanted amount dropped below held amount-->
+
+    <!--TODO @Owen Convert from using NPC to Object for most things as the account was moved to the object. Remove dependencies on control entity-->
+    <library name="TransferMoney" namespace="this" version="2">
+      <params>
+        <param name="EndSignalCue"/>
+        <param name="MissionCue"/>
+        <param name="StartStep" default="1" comment="Briefing step to start the mission"/>
+        <param name="UpdateBriefing" default="true" comment="Update the briefing objective step when the objective is updated"/>
+
+        <param name="NPC"/>
+        <param name="MinMoney"/>
+        <param name="Object" default="null" comment="Object the NPC must be a control entity of"/>
+        <param name="CheckTradeRestrictions" default="true"/>
+
+        <param name="DebugChance" default="0"/>
+      </params>
+      <actions>
+
+        <set_value name="$feedbackvalue" exact="0"/>
+        <create_list name="$ErrorList"/>
+
+        <do_if value="not $EndSignalCue or not $MissionCue">
+          <append_to_list name="$ErrorList" exact="-101"/>
+        </do_if>
+        <do_if value="not $NPC.exists">
+          <append_to_list name="$ErrorList" exact="-102"/>
+        </do_if>
+      </actions>
+      <cues>
+
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count != 0" />
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup" />
+          </actions>
+        </cue>
+
+        <cue name="StartMission" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count == 0" />
+          </conditions>
+          <actions>
+            <set_value name="$LastMoney" exact="$NPC.container.money"/>
+          </actions>
+          <cues>
+            <cue name="InitialUpdateGuidance">
+              <actions>
+                <signal_cue cue="UpdateGuidance"/>
+              </actions>
+            </cue>
+
+            <!--Simply point to the targets.-->
+            <cue name="UpdateGuidance" instantiate="true" version="2">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <substitute_text text="$BriefingObjectiveText" source="{1004,1071}" comment="Transfer $MONEY$ credits to $NPC$">
+                  <replace string="'$MONEY$'" with="($MinMoney - $NPC.container.money).formatted.default"/>
+                  <replace string="'$NPC$'" with="$NPC.knownname"/>
+                </substitute_text>
+                <do_if value="$UpdateBriefing">
+                  <update_mission cue="$MissionCue">
+                    <briefing>
+                      <objective step="$StartStep" action="objective.custom" customaction="$BriefingObjectiveText"/>
+                    </briefing>
+                  </update_mission>
+                </do_if>
+                <do_if value="not $ObjectiveSet?">
+                  <substitute_text text="$ObjectiveText" source="{1004,1071}" comment="Transfer credits to $NPC$">
+                    <replace string="'$MONEY$'" with="($MinMoney - $NPC.container.money).formatted.default"/>
+                    <replace string="'$NPC$'" with="$NPC.knownname"/>
+                  </substitute_text>
+                  <set_objective cue="$MissionCue" step="$StartStep" action="objective.custom" customaction="$ObjectiveText"/>
+                  <set_value name="$ObjectiveSet"/>
+                </do_if>
+              </actions>
+            </cue>
+
+            <cue name="CheckAmount" instantiate="true" checkinterval="5s">
+              <conditions>
+                <check_value value="$NPC.container.money != $LastMoney"/>
+                <check_any>
+                  <check_value value="not $Object.exists"/>
+                  <check_value value="$Object.controlentity.{$NPC.controlpost} == $NPC"/>
+                </check_any>
+              </conditions>
+              <actions>
+                <set_value name="$LastMoney" exact="$NPC.container.money"/>
+                <do_if value="$NPC.container.money" min="$MinMoney">
+                  <set_value name="$feedbackvalue" exact="1"/>
+                  <signal_cue cue="Cleanup"/>
+                </do_if>
+                <do_else>
+                  <signal_cue cue="UpdateGuidance"/>
+                </do_else>
+              </actions>
+            </cue>
+
+            <cue name="UpdateAmount" instantiate="true">
+              <conditions>
+                <event_object_signalled object="$NPC" param="'RML_Transfer_Money'"/>
+                <check_value value="typeof event.param2 == datatype.money"/>
+                <check_value value="event.param2 != $MinMoney"/>
+              </conditions>
+              <actions>
+                <set_value name="$MinMoney" exact="event.param2"/>
+                <do_if value="$NPC.container.money ge $MinMoney">
+                  <set_value name="$feedbackvalue" exact="2"/>
+                  <signal_cue cue="Cleanup"/>
+                </do_if>
+                <do_else>
+                  <signal_cue cue="UpdateGuidance"/>
+                </do_else>
+              </actions>
+            </cue>
+
+            <cue name="CheckObject" onfail="cancel">
+              <conditions>
+                <check_value value="$Object.exists"/>
+              </conditions>
+              <cues>
+                <cue name="ObjectDestroyed">
+                  <conditions>
+                    <event_object_destroyed object="$Object"/>
+                  </conditions>
+                  <actions>
+                    <set_value name="$feedbackvalue" exact="-2"/>
+                    <signal_cue cue="Cleanup"/>
+                  </actions>
+                </cue>
+                
+                <!--TODO: Event?-->
+                <cue name="EntityLostControl" checkinterval="5s">
+                  <conditions>
+                    <check_value value="$Object.controlentity.{$NPC.controlpost} != $NPC"/>
+                  </conditions>
+                  <actions>
+                    <set_value name="$feedbackvalue" exact="-3"/>
+                    <signal_cue cue="Cleanup"/>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="TradeRestricted_Check" onfail="cancel">
+              <conditions>
+                <check_value value="$CheckTradeRestrictions"/>
+              </conditions>
+              <cues>
+                <cue name="TradeRestricted" checkinterval="2s">
+                  <conditions>
+                    <check_value value="$Object.istraderestricted"/>
+                  </conditions>
+                  <actions>
+                    <!--Trade is restricted to in-faction trading, so no money needed-->
+                    <set_value name="$feedbackvalue" exact="-4"/>
+                    <signal_cue cue="Cleanup"/>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="NPCDestroyed">
+              <conditions>
+                <event_object_destroyed object="$NPC"/>
+              </conditions>
+              <actions>
+                <set_value name="$feedbackvalue" exact="-1"/>
+                <signal_cue cue="Cleanup"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <do_if value="$feedbackvalue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'ERROR: Feedback value is 0 and no error values were set. Defaulting to -100'"/>
+                <set_value name="$feedbackvalue" exact="-100"/>
+              </do_if>
+              <do_else>
+                <set_value name="$feedbackvalue" exact="$ErrorList.{1}"/>
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+                    <do_if value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'$NPC did not exist'"/>
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-102">
+                      <set_value name="$FeedbackText" exact="'EndSignalCue or MissionCue not defined'"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                    </do_else>
+
+                    <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+
+              <do_if value="$feedbackvalue" exact="-4">
+                <set_value name="$FeedbackText" exact="{30004,6034}" comment="'Trading restricted to in-faction (so money not needed)'"/>
+              </do_if>
+              <do_elseif value="$feedbackvalue" exact="-3">
+                <set_value name="$FeedbackText" exact="{30004,6035}" comment="'$NPC is no longer a control entity of $Object'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="-2">
+                <set_value name="$FeedbackText" exact="{30004,6073}" comment="'Object was destroyed'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="-1">
+                <set_value name="$FeedbackText" exact="{30004,6044}" comment="'NPC was killed'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="1">
+                <set_value name="$FeedbackText" exact="'Money Transferred'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="2">
+                <set_value name="$FeedbackText" exact="'Wanted amount dropped below held amount'"/>
+              </do_elseif>
+
+              <do_if value="$feedbackvalue" min="1">
+                <debug_text text="'Mission Successful. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_if>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission Failed. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+            <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$feedbackvalue"/>
+            <signal_cue cue="$EndSignalCue"/>
+            <cancel_cue cue="TransferMoney"/>
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

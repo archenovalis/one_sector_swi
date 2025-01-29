@@ -1,0 +1,403 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_TrackShip" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--
+    $feedbackvalue:
+    -103 $TargetShip is mass traffic
+    -102 $TargetShip not defined or is not operational
+    -101 Cue parameters not defined
+    -100: Undefined failure. Defaulted to -100
+    -2: $TargetShip was destroyed
+    -1: Timeout, $TargetShip was not found
+    1: Success, $TargetShip was found
+    -->
+    <library name="TrackShip" version="2">
+      <params>
+        <param name="EndSignalCue"/>
+        <param name="MissionCue"/>
+        <param name="StartStep" default="1" comment="Briefing step to start the mission on"/>
+        <param name="UpdateBriefing" default="true" comment="Update the briefing objective step when the objective is updated"/>
+        <param name="DebugChance" default="0" />
+
+        <param name="ObjectiveText"                         comment="The text for the mission objective"/>
+        <param name="TargetShip"                            comment="Track specified ship"/>
+        <param name="MoveTargetShip" default="true"         comment="Give orders to TargetShip automatically to make sure it's moving around" />
+        <param name="DeviationDistance" default="20km"      comment="Initial distance of tracker position from actual ship (tracker will get more accurate over time)" />
+        <param name="DetectionDistance" default="10km"      comment="Distance at which guidance switches from tracker locations to the target ship (mostly for nicer presentation, may be 0m to skip the post-detection phase of the mission)" />
+        <param name="TimeLimitAfterDetection" default="60s" comment="Minimal time limit for finishing mission on reaching DetectionDistance, if SuccessDistance is lower (0s = no time limit in post-detection phase)" />
+        <param name="SuccessDistance" default="8km"         comment="Distance from target ship that triggers mission success" />
+      </params>
+      <actions>
+        <set_value name="$feedbackvalue" exact="0"/>
+        <create_list name="$ErrorList"/>
+
+        <do_if value="not $EndSignalCue or not $MissionCue">
+          <append_to_list name="$ErrorList" exact="-101"/>
+        </do_if>
+        <do_if value="not $TargetShip.exists">
+          <append_to_list name="$ErrorList" exact="-104"/>
+        </do_if>
+        <do_elseif value="not $TargetShip.isoperational">
+          <append_to_list name="$ErrorList" exact="-102"/>
+        </do_elseif>
+        <do_if value="@$TargetShip.ismasstraffic">
+          <append_to_list name="$ErrorList" exact="-103"/>
+        </do_if>
+        <!-- TODO: More RML-specific parameter checks -->
+
+      </actions>
+      <patch sinceversion="2">
+        <do_if value="not $TargetShip.isoperational">
+          <append_to_list name="$ErrorList" exact="-102"/>
+        </do_if>
+        <do_elseif value="$TargetShip.ismasstraffic">
+          <append_to_list name="$ErrorList" exact="-103"/>
+        </do_elseif>
+        <do_if value="$ErrorList.count">
+          <debug_text text="'Target is now invalid. Aborting mission.'" filter="savegame"/>
+          <signal_cue cue="Cleanup"/>
+        </do_if>
+      </patch>
+      <cues>
+
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="1"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup"/>
+          </actions>
+        </cue>
+
+        <cue name="StartMission" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="0"/>
+          </conditions>
+          <actions>
+            <do_if value="$UpdateBriefing">
+              <update_mission cue="$MissionCue">
+                <briefing>
+                  <objective step="$StartStep" action="objective.find" text="$ObjectiveText"/>
+                </briefing>
+              </update_mission>
+            </do_if>
+            <!-- Find station the $TargetShip currently closest to $TargetShip -->
+            <set_value name="$refobject" exact="if $TargetShip.zone.isclass.highway then $TargetShip.zone.exit else $TargetShip" />
+            <find_station groupname="$DestinationObjects" multiple="true" space="$refobject.sector" />
+            <do_if value="$DestinationObjects.count" max="3">
+              <!-- We'd like to have more than 3 potential stations -->
+              <find_station groupname="$DestinationObjects" multiple="true" space="$refobject.cluster" />
+            </do_if>
+            <do_if value="$DestinationObjects.count" max="3">
+              <find_object groupname="$DestinationObjects" multiple="true" space="$refobject.cluster">
+                <match class="[class.ship_xs, class.explosive]" negate="true" />
+              </find_object>
+            </do_if>
+            <do_if value="$DestinationObjects.count" min="3">
+              <do_all exact="$DestinationObjects.count" counter="$i">
+                <set_value name="$distance" exact="$DestinationObjects.{$i}.distanceto.{$refobject}" />
+                <do_if value="not $closestdistance? or $closestdistance lt $distance">
+                  <set_value name="$closestdistance" exact="$distance" />
+                  <set_value name="$closeststation" exact="$DestinationObjects.{$i}" />
+                </do_if>
+              </do_all>
+              <remove_value name="$distance" />
+              <remove_value name="$closestdistance" />
+              <!-- Remove $closeststation from $DestinationObjects for now -->
+              <remove_from_group group="$DestinationObjects" object="$closeststation" />
+              <!-- Find initial objective target and also remove it from $DestinationObjects for now -->
+              <set_value name="$objectivestation" exact="$DestinationObjects.random" />
+              <remove_from_group group="$DestinationObjects" object="$objectivestation" />
+              <!-- Find initial ship destination (using a station that's neither $closeststation nor $objectivestation) -->
+              <set_value name="$TargetShipDestination" exact="$DestinationObjects.random" />
+              <!-- Add removed stations again -->
+              <add_to_group groupname="$DestinationObjects" object="$objectivestation" />
+              <add_to_group groupname="$DestinationObjects" object="$closeststation" />
+              <!-- Set up objective target data: First fly to $objectivestation (random station in the list), then to $closeststation -->
+              <!-- (When reaching the current objective target, the next target will become the current target, and $TargetShip's current sector position will be stored as the next target) -->
+              <set_value name="$ObjectiveTargetSector" exact="$objectivestation.sector" />
+              <create_position name="$ObjectiveTargetOffset" space="$ObjectiveTargetSector" object="$objectivestation" min="2km" max="6km" />
+              <set_value name="$ObjectiveTargetReachedDistance" exact="5km" />
+              <set_value name="$NextObjectiveTargetSector" exact="$closeststation.sector" />
+              <create_position name="$NextObjectiveTargetOffset" space="$NextObjectiveTargetSector" object="$closeststation" min="2km" max="6km" />
+              <set_value name="$NextObjectiveTargetReachedDistance" exact="5km" />
+
+              <remove_value name="$objectivestation" />
+              <remove_value name="$closeststation" />
+            </do_if>
+            <do_else>
+              <!-- Really primitive fallback objective handling in case there are not enough stations in a cluster! -->
+              <set_value name="$ObjectiveTargetSector" exact="$refobject.sector" />
+              <create_position name="$ObjectiveTargetOffset" space="$ObjectiveTargetSector" object="$refobject" min="50km" max="75km" />
+              <set_value name="$ObjectiveTargetReachedDistance" exact="10km" />
+              <set_value name="$NextObjectiveTargetSector" exact="$refobject.sector" />
+              <create_position name="$NextObjectiveTargetOffset" space="$NextObjectiveTargetSector" object="$refobject" min="15km" max="25km" />
+              <set_value name="$NextObjectiveTargetReachedDistance" exact="5km" />
+            </do_else>
+            <do_if value="not player.ship">
+              <find_ship_by_true_owner name="$ClosestPlayerShip" faction="faction.player" space="player.sector" sortbydistanceto="player.entity"/>
+            </do_if>
+            <debug_text text="'$ObjectiveTargetSector: ' + $ObjectiveTargetSector.knownname + ' $NextObjectiveTargetSector: ' + $NextObjectiveTargetSector.knownname + '\n ObjectiveTargetOffset: ' + $ObjectiveTargetOffset + ' $NextObjectiveTargetOffset: ' + $NextObjectiveTargetOffset" chance="$DebugChance"/>
+            <estimate_travel_time result="$EstimatedTravelTime" start="player.entity" ship="if player.ship then player.ship else $ClosestPlayerShip" target="$ObjectiveTargetSector">
+              <targetposition value="$ObjectiveTargetOffset"/>
+            </estimate_travel_time>
+            <set_value name="$EstimatedTravelTime" exact="$EstimatedTravelTime*2"/>
+            <do_if value="$EstimatedTravelTime lt 60s">
+              <set_value name="$EstimatedTravelTime" exact="60s" comment="minimum threshhold if first Objectiveis close by"/>
+            </do_if>
+            <estimate_travel_time result="$NextObjectiveEstimatedTravelTime" start="$ObjectiveTargetSector" ship="if player.ship then player.ship else $ClosestPlayerShip" target="$NextObjectiveTargetSector">
+              <startposition value="$ObjectiveTargetOffset"/>
+              <targetposition value="$NextObjectiveTargetOffset"/>
+            </estimate_travel_time>
+            <set_value name="$NextObjectiveEstimatedTravelTime" exact="$NextObjectiveEstimatedTravelTime*4"/>
+            <remove_value name="$refobject" />
+            <!-- NOTE: On first three objectives, player starts from a position where $TargetShip has not been before. The third objective ends at a position where $TargetShip has been before. -->
+            <!-- So only on the fourth objective we can start using a time limit based on the $TargetShip's actual flight path. -->
+            <set_value name="$NumLocationsReached" exact="0" />
+            <!-- Set time limit for reaching first ObjectiveTarget -->
+            <set_value name="$ObjectiveTimeLimit" exact="$EstimatedTravelTime" comment="Set generous time limit for the first stage" />
+            <set_value name="$ObjectiveEndTime" exact="0s" comment="No timeout at beginning" />
+            <!-- Set time limit for flying from ObjectiveTarget to NextObjectiveTarget -->
+            <set_value name="$NextObjectiveTimeLimit" exact="$NextObjectiveEstimatedTravelTime"/>
+            <!-- NOTE: Variable initially not needed, but might become useful later for added calculations -->
+            <set_value name="$TargetShipLastLocationStartTime" exact="player.age" />
+          </actions>
+          <cues>
+
+            <cue name="OnShipDestroyed">
+              <conditions>
+                <event_object_destroyed object="$TargetShip" />
+              </conditions>
+              <actions>
+                <set_value name="$feedbackvalue" exact="-2" comment="$TargetShip was destroyed" />
+                <signal_cue cue="Cleanup" />
+              </actions>
+            </cue>
+
+            <cue name="HandleShipBehaviour" onfail="cancel">
+              <!-- Move $TargetShip around if requested -->
+              <conditions>
+                <check_value value="$MoveTargetShip" />
+                <check_value value="$TargetShipDestination" />
+              </conditions>
+              <actions>
+                <create_position name="$sectorpos" space="$TargetShipDestination.sector" object="$TargetShipDestination" min="2km" max="10km" />
+                <cancel_all_orders object="$TargetShip" />
+                <create_order object="$TargetShip" id="'MoveWait'" immediate="true">
+                  <param name="destination" value="[$TargetShipDestination.sector, $sectorpos]" />
+                </create_order>
+                <remove_value name="$sectorpos" />
+              </actions>
+              <cues>
+                <cue name="TargetShipDestinationReached" checkinterval="1s">
+                  <conditions>
+                    <check_any>
+                      <check_value value="not $TargetShipDestination.exists" />
+                      <check_value value="$TargetShipDestination.cluster == $TargetShip.cluster and $TargetShip.distanceto.{$TargetShipDestination} le 10km" />
+                      <check_value value="$TargetShip.orders.count == 0" />
+                    </check_any>
+                  </conditions>
+                  <delay exact="1s" />
+                  <actions>
+                    <do_if value="$DestinationObjects.count" max="3">
+                      <find_object groupname="$DestinationObjects" multiple="true" space="$TargetShip.cluster">
+                        <match class="[class.ship_xs, class.explosive]" negate="true" />
+                      </find_object>
+                    </do_if>
+                    <do_if value="$DestinationObjects.count">
+                      <set_value name="$TargetShipDestination" exact="$DestinationObjects.random" />
+                      <reset_cue cue="HandleShipBehaviour" />
+                    </do_if>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="HandleObjective">
+              <actions>
+                <!-- Update objective -->
+                <do_if value="$ObjectiveTimeLimit gt 0s">
+                  <!-- Once a time limit is set, it cannot be unset, and the remaining time can only be increased, not decreased. -->
+                  <set_value name="$ObjectiveEndTime" exact="[$ObjectiveEndTime, player.age + $ObjectiveTimeLimit].max" />
+                </do_if>
+                <set_objective cue="$MissionCue" step="$StartStep" action="objective.find" text="$ObjectiveText" object="$ObjectiveTargetSector" offset="$ObjectiveTargetOffset" endtime="$ObjectiveEndTime" />
+              </actions>
+              <cues>
+                <cue name="ObjectiveLocationReached" checkinterval="1s">
+                  <conditions>
+                    <check_value value="$ObjectiveTargetSector and player.sector == $ObjectiveTargetSector and player.entity.distanceto.[$ObjectiveTargetSector, $ObjectiveTargetOffset] le $ObjectiveTargetReachedDistance" />
+                  </conditions>
+                  <actions>
+                    <set_value name="$NumLocationsReached" operation="add" />
+                    <set_value name="$ObjectiveTargetSector" exact="$NextObjectiveTargetSector" />
+                    <set_value name="$ObjectiveTargetOffset" exact="$NextObjectiveTargetOffset" />
+                    <set_value name="$ObjectiveTargetReachedDistance" exact="$NextObjectiveTargetReachedDistance" />
+                    <set_value name="$ObjectiveTimeLimit" exact="$NextObjectiveTimeLimit" />
+                    <set_value name="$refobject" exact="if $TargetShip.zone.isclass.highway then $TargetShip.zone.exit else $TargetShip" />
+                    <set_value name="$NextObjectiveTargetSector" exact="$refobject.sector" />
+                    <create_position name="$NextObjectiveTargetOffset" space="$NextObjectiveTargetSector" object="$refobject" exact="$DeviationDistance / $NumLocationsReached" />
+                    <set_value name="$NextObjectiveTargetReachedDistance" exact="2km" />
+
+                    <!-- When the Nth objective location is reached, the next objective is to fly to the (N+1)th location, but we already calculate a reference time limit for flying from (N+1)th to (N+2)th location. -->
+                    <do_if value="$NumLocationsReached" exact="1">
+                      <!-- NOTE: $TargetShipLastPosition isn't useful yet, because the player's next objective location (2nd location and start point for 3rd objective) is still not on $TargetShip's flight path -->
+                      <estimate_travel_time result="$NextObjectiveEstimatedTravelTime" start="$ObjectiveTargetSector" ship="if player.ship then player.ship else $ClosestPlayerShip" target="$NextObjectiveTargetSector">
+                        <startposition value="$ObjectiveTargetOffset"/>
+                        <targetposition value="$NextObjectiveTargetOffset"/>
+                      </estimate_travel_time>
+                      <set_value name="$NextObjectiveEstimatedTravelTime" exact="$NextObjectiveEstimatedTravelTime*4"/>
+                      <!--<set_value name="$NextObjectiveTimeLimit" exact="0s" comment="No time limit" />-->
+                    </do_if>
+                    <do_else>
+                      <!-- Both (N+1)th and (N+2)th location were on $TargetShip's flight path, so we can use the time it took $TargetShip to get there. -->
+                      <set_value name="$timelimit" exact="player.age - $TargetShipLastLocationStartTime" comment="time it took $TargetShip to fly from its previous location to the current one" />
+                      <!-- $NumLocationsReached == 2: on 4th objective allow 2x    reference time limit (factor = 1 + 2/2) -->
+                      <!-- $NumLocationsReached == 4: on 6th objective allow 1.5x  reference time limit (factor = 1 + 2/4) -->
+                      <!-- $NumLocationsReached == 6: on 8th objective allow 1.33x reference time limit (factor = 1 + 2/6), etc. -->
+                      <set_value name="$timelimit" exact="$timelimit * (1.0 + 2.0 / $NumLocationsReached)" />
+                      <set_value name="$timelimit" exact="$NumLocationsReached" operation="subtract" comment="Reduce limit by one second per location to put some extra pressure on the player" />
+                      <set_value name="$NextObjectiveTimeLimit" exact="[$timelimit, 10s].max" comment="Minimum 10 seconds" />
+                      <remove_value name="$timelimit" />
+                      <!-- Don't allow mission success too early, it would just be luck if the player ran into the target ship before reaching a few tracker locations first. -->
+                      <do_if value="$NumLocationsReached" exact="3">
+                        <signal_cue cue="EnableCheckSuccess" />
+                      </do_if>
+                    </do_else>
+                    <!-- Prepare for next time limit calculation -->
+                    <set_value name="$TargetShipLastLocationStartTime" exact="player.age" />
+
+                    <reset_cue cue="HandleObjective" />
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="CheckFailure" checkinterval="1s">
+              <conditions>
+                <check_value value="$ObjectiveEndTime" />
+                <check_age min="$ObjectiveEndTime" />
+              </conditions>
+              <actions>
+                <set_value name="$feedbackvalue" exact="-1" comment="Timeout, $TargetShip was not found" />
+                <signal_cue cue="Cleanup" />
+              </actions>
+            </cue>
+
+            <cue name="EnableCheckSuccess">
+              <conditions>
+                <event_cue_signalled />
+              </conditions>
+              <cues>
+                <cue name="CheckDetection" checkinterval="1s">
+                  <conditions>
+                    <check_value value="not player.zone.isclass.highway" />
+                    <check_value value="player.entity.distanceto.{$TargetShip}" max="$DetectionDistance" />
+                  </conditions>
+                  <actions>
+                    <cancel_cue cue="HandleObjective" />
+                    <!-- Set or disable time limit -->
+                    <do_if value="$TimeLimitAfterDetection gt 0s">
+                      <set_value name="$ObjectiveEndTime" exact="[$ObjectiveEndTime, player.age + $TimeLimitAfterDetection].max" comment="Set new time limit unless previous time limit was more generous" />
+                    </do_if>
+                    <do_else>
+                      <set_value name="$ObjectiveEndTime" exact="0s" comment="Disable any previous time limit" />
+                    </do_else>
+                    <!-- Update objective -->
+                    <set_objective cue="$MissionCue" step="$StartStep+1" action="objective.flyto" text="$ObjectiveText" object="$TargetShip" endtime="$ObjectiveEndTime" />
+                    <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep + 1"/>
+                  </actions>
+                </cue>
+                <cue name="CheckSuccess" checkinterval="1s">
+                  <conditions>
+                    <check_value value="not player.zone.isclass.highway" />
+                    <check_value value="player.entity.distanceto.{$TargetShip}" max="$SuccessDistance" />
+                  </conditions>
+                  <actions>
+                    <set_value name="$feedbackvalue" exact="1" comment="success"/>
+                    <signal_cue cue="Cleanup"/>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+          </cues>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <!--TODO remove_objective-->
+
+            <do_if value="$feedbackvalue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'ERROR: Feedback value is 0 and no error values were set. Defaulting to -100'"/>
+                <set_value name="$feedbackvalue" exact="-100"/>
+              </do_if>
+              <do_else>
+                <set_value name="$feedbackvalue" exact="$ErrorList.{1}"/>
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+
+                    <do_if value="$ErrorList.{$Counter}" exact="-104">
+                      <set_value name="$FeedbackText" exact="'$TargetShip is not defined'"/>
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-103">
+                      <set_value name="$FeedbackText" exact="'$TargetShip is a mass traffic object which is not allowed'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-102">
+                      <set_value name="$FeedbackText" exact="'$TargetShip is not operational'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'Cue parameters not defined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-100">
+                      <set_value name="$FeedbackText" exact="'Undefined failure. Defaulted to -100'"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                    </do_else>
+
+                    <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+
+              <do_if value="$feedbackvalue" exact="1">
+                <set_value name="$FeedbackText" exact="'Success, $TargetShip was found'"/>
+              </do_if>
+              <do_elseif value="$feedbackvalue" exact="-1">
+                <set_value name="$FeedbackText" exact="{30004,6025}" comment="'Timeout, $TargetShip was not found'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="-2">
+                <set_value name="$FeedbackText" exact="{30004,6020}" comment="'$TargetShip was destroyed'"/>
+              </do_elseif>
+
+              <do_if value="$feedbackvalue" min="1">
+                <debug_text text="'Mission Successful. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_if>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission Failed. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+            <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$feedbackvalue"/>
+            <signal_cue cue="$EndSignalCue"/>
+            <cancel_cue cue="namespace"/>
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

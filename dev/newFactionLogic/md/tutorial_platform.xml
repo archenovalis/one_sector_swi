@@ -1,0 +1,766 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="Tutorial_platform" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+    <cue name="Start" namespace="this">
+      <conditions>
+        <event_cue_signalled cue="md.Setup.Start"/>
+      </conditions>
+      <actions>
+        <do_if value="not md.$TutorialRegister?">
+          <set_value name="md.$TutorialRegister" exact="[]" />
+        </do_if>
+        <append_to_list name="md.$TutorialRegister" exact="Start" />
+      </actions>
+      <cues>
+        <cue name="PlayerDied">
+          <conditions>
+            <event_object_destroyed object="player.entity" />
+          </conditions>
+          <actions>
+            <cancel_cue cue="Start" />
+          </actions>
+        </cue>
+
+        <cue name="Trigger" checkinterval="5s" version="2">
+          <conditions>
+            <check_value value="not md.$SurpressTutorials?" />
+            <check_value value="player.computer" />
+          </conditions>
+          <actions>
+            <set_value name="$DebugChance" exact="0"/>
+            <set_value name="$MissionName" exact="' 6) ' + readtext.{30197}.{1}" />
+            <set_value name="$Guide" exact="player.computer" />
+            <create_offer cue="Start" actor="$Guide" name="$MissionName" description="readtext.{30197}.{2}" difficulty="level.trivial" faction="faction.player" type="missiontype.tutorial">
+              <briefing>
+                <objective step="1" action="objective.custom" customaction="{30197,12}" comment="Approach and Dock"/>
+                <objective step="2" action="objective.custom" customaction="{30197,13}" comment="Ship management"/>
+                <objective step="3" action="objective.custom" customaction="{30197,14}" comment="Platform controls"/>
+                <objective step="4" action="objective.custom" customaction="{30197,15}" comment="Traders"/>
+                <objective step="5" action="objective.custom" customaction="{30197,16}" comment="Crafting"/>
+                <objective step="6" action="objective.custom" customaction="{30197,17}" comment="Encyclopedia"/>
+              </briefing>
+            </create_offer>
+          </actions>
+          <patch sinceversion="2">
+            <do_if value="Start.hasmissionoffer">
+              <set_value name="$MissionName" exact="' 6) ' + readtext.{30197}.{1}" />
+              <update_offer cue="Start" name="$MissionName"/>
+            </do_if>
+          </patch>
+          <cues>
+            <cue name="Offer">
+              <cues>
+                <cue name="ConversationStarted" instantiate="true">
+                  <conditions>
+                    <event_conversation_started actor="$Guide" conversation="mission" convparam="Start" />
+                  </conditions>
+                  <actions>
+                    <remove_help all="true" />
+                    <open_conversation_menu menu="MissionBriefingMenu" param="[0, 0, Start, true]" />
+                  </actions>
+                  <cues>
+                    <cue name="ConversationNextSection" instantiate="true">
+                      <conditions>
+                        <event_conversation_next_section actor="$Guide" choiceparam="Start" />
+                      </conditions>
+                      <actions>
+                        <!-- Accept case -->
+                        <do_if value="event.param == 'c_mission_accept'">
+                          <signal_cue cue="Tutorial" />
+                        </do_if>
+                      </actions>
+                    </cue>
+
+                    <cue name="ConversationFinished">
+                      <conditions>
+                        <event_conversation_finished actor="$Guide" />
+                      </conditions>
+                      <actions>
+                        <cancel_cue cue="ConversationStarted" />
+                      </actions>
+                    </cue>
+
+                    <cue name="AcceptMission">
+                      <conditions>
+                        <event_object_signalled object="$Guide" param="'accept'" />
+                      </conditions>
+                      <actions>
+                        <signal_cue cue="Tutorial" />
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="Tutorial" version="2">
+              <conditions>
+                <check_any>
+                  <event_cue_signalled />
+                  <event_object_signalled object="player.entity" param="'start'" param2="Start" />
+                </check_any>
+              </conditions>
+              <actions>
+                <debug_text text="'Tutorial can begin'" chance="$DebugChance" />
+                <cancel_cue cue="Offer" />
+                <signal_cue_instantly cue="md.Tutorials.NewTutorialTriggered" param="Start" />
+                <set_value name="$TutorialStartTime" exact="player.age" />
+                <create_mission cue="Start" offercue="Start" />
+                <cancel_conversation actor="$Guide" />
+                <remove_offer cue="Start" />
+                <remove_help all="true" />
+
+                <!-- setup for this tutorial -->
+                <find_station name="$FriendlyStations" space="player.sector" multiple="true">
+                  <match owner="[faction.player, faction.xenon, faction.ownerless]" negate="true"/>
+                  <match_relation_to faction="faction.player" comparison="ge" relation="neutral" />
+                </find_station>
+
+                <do_if value="$FriendlyStations.count">
+                  <set_value name="$SelectedStation" exact="$FriendlyStations.{1}"/>
+
+                  <do_all exact="$FriendlyStations.count" counter="$i">
+                    <do_if value="player.entity.distanceto.{$FriendlyStations.{$i}} lt player.entity.distanceto.{$SelectedStation}">
+                      <set_value name="$SelectedStation" exact="$FriendlyStations.{$i}"/>
+                    </do_if>
+                  </do_all>
+                  <debug_text text="'Selected ' + $SelectedStation.knownname + ' distance: ' + player.entity.distanceto.{$SelectedStation}" chance="$DebugChance"/>
+
+                  <create_list name="$Transporters"/>
+                  <show_help line="1001" duration="7s" position="1" force="true" width="140" comment="You can abort this tutorial in the Active Missions menu " />
+                  <set_value name="$StartDelay" exact="2s"/>
+
+                </do_if>
+                <do_else>
+                  <show_help line="1020" duration="7s" position="1" force="true" comment="For this tutorial you should be in space near a station."/>
+                  <show_notification text="{1015,403}" sound="notification_warning" />
+                  <remove_mission cue="Start" type="aborted" />
+                  <signal_cue cue="Cleanup" />
+                </do_else>
+
+              </actions>
+              <patch sinceversion="2">
+                <create_list name="$Transporters"/>
+              </patch>
+              <cues>
+
+                <cue name="Abort">
+                  <conditions>
+                    <event_mission_aborted cue="Start" />
+                  </conditions>
+                  <actions>
+                    <remove_help all="true"/>
+                    <remove_mission cue="Start" type="aborted" />
+                    <signal_cue cue="Cleanup" />
+                  </actions>
+                </cue>
+
+                <cue name="Abort_OtherTutorialStarted">
+                  <conditions>
+                    <event_cue_signalled cue="md.Tutorials.NewTutorialTriggered" />
+                    <check_value value="event.param != Start" />
+                  </conditions>
+                  <actions>
+                    <remove_help all="true"/>
+                    <show_notification text="{1015,400}" sound="notification_warning" comment="Tutorial aborted" />
+                    <remove_mission cue="Start" type="aborted"/>
+                    <signal_cue cue="Cleanup" />
+                  </actions>
+                </cue>
+
+                <cue name="Tutorial_Init">
+                  <delay exact="$StartDelay"/>
+                  <actions>
+                    <!--Create a list of tutorial cues to trigger in what order, and what briefing step they point to-->
+                    <set_value name="$SignalList" exact="[
+                                [Tutorial_FlyToStation, 1],
+                                [Tutorial_Docking, 1],
+                                [Tutorial_StationMenu, 2],
+                                [Tutorial_DockedStanding, 3],
+                                [Tutorial_OnPlatform, 3],
+                                [Tutorial_Trader, 4],
+                                [Tutorial_Crafting, 5],
+                    ]"/>
+
+                    <set_value name="$Index" exact="0"/>
+                    <signal_cue cue="Tutorial_TriggerNext"/>
+                  </actions>
+                </cue>
+
+                <cue name="Tutorial_TriggerNext" instantiate="true">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <set_value name="$Index" operation="add"/>
+                    <do_if value="$Index gt $SignalList.count">
+                      <remove_help all="true"/>
+                      <debug_text text="'Platform tutorial has been completed'" chance="$DebugChance" />
+                      <show_help line="1002" position="1" force="true" comment="Tutorial Completed!" />
+                      <show_help line="1003" position="1" force="true" comment="Press $INPUT_ACTION_HELP$ to try other tutorials."/>
+                      <remove_mission cue="Start" type="tutorialcompleted" />
+                      <signal_cue cue="Cleanup" />
+                    </do_if>
+                    <do_else>
+                      <signal_cue cue="$SignalList.{$Index}.{1}"/>
+                      <set_value name="$CurrentStep" exact="$SignalList.{$Index}.{2}"/>
+                      <set_objective_from_briefing cue="Start" step="$CurrentStep"/>
+                    </do_else>
+                  </actions>
+                </cue>
+
+                <cue name="Tutorial_FlyToStation">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <do_if value="player.entity.hascontext.{$SelectedStation}" comment="already on station? skip this part of the tutorial">
+                      <signal_cue cue="Tutorial_TriggerNext"/>
+                      <cancel_cue cue="Tutorial_FlyToStation"/>
+                    </do_if>
+                    <do_elseif value="$SelectedStation.attention" min="attention.nearby">
+                      <signal_cue cue="Tutorial_TriggerNext"/>
+                      <cancel_cue cue="Tutorial_FlyToStation"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_objective cue="Start" action="objective.flyto" object="$SelectedStation"/>
+                    </do_else>
+                  </actions>
+                  <cues>
+                    <cue name="Tutorial_FlyToStation_Wait" checkinterval="2s" instantiate="true">
+                      <conditions>
+                      </conditions>
+                      <actions>
+                        <do_if value="player.entity.distanceto.{$SelectedStation} lt 6km">
+                          <signal_cue cue="Tutorial_TriggerNext"/>
+                          <cancel_cue cue="Tutorial_FlyToStation"/>
+                        </do_if>
+                        <do_else>
+                          <remove_help all="true"/>
+                          <show_help line="3010" duration="7s" position="1" force="true" comment="fly to nearby station"/>
+                        </do_else>
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="Tutorial_Docking">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <do_if value="player.entity.hascontext.{$SelectedStation}" comment="already on station? skip this part of the tutorial">
+                      <signal_cue cue="Tutorial_TriggerNext"/>
+                      <cancel_cue cue="Tutorial_Docking"/>
+                    </do_if>
+                    <set_value name="$PlayerDocking" exact="false"/>
+                    <show_help_multi log="false" position="18" force="true" allowclose="false" >
+                      <text line="992" comment="These yellow-framed boxes are tips. Click the arrow after you have read them to proceed to the next one."/>
+                      <text line="3015" comment="Select the station as a target"/>
+                    </show_help_multi>
+                    <show_help line="3020" position="18" force="true" comment="Request docking permission" allowclose="false" timeout="false"/>
+                  </actions>
+                  <cues>
+
+                    <cue name="Tutorial_DockAssigned">
+                      <conditions>
+                        <event_object_dock_assigned object="player.entity"/>
+                      </conditions>
+                      <actions>
+                        <set_value name="$PlayerDocking" exact="true"/>
+                        <remove_help all="true"/>
+                        <set_value name="$SelectedDock" exact="player.ship.assigneddock"/>
+                        <show_help line="3021" position="1" force="true" comment="Fly towards the DOCKING MODULE" allowclose="false" timeout="false"/>
+                      </actions>
+                      <cues>
+                        <cue name="Tutorial_ApproachDockingBay" checkinterval="10s" instantiate="true">
+                          <conditions>
+                            <check_value value="not player.entity.hascontext.{$SelectedStation}" comment="Not on station"/>
+                          </conditions>
+                          <actions>
+                            <do_if value="player.entity.distanceto.{$SelectedDock} lt 200m">
+                              <remove_help all="true" />
+                              <show_help line="3024" duration="5s" position="1" force="true" comment="Align your ship with all axis until all three indicators are green"/>
+                              <show_help line="3029" duration="5s" position="1" force="true" comment="Once all indicators are green lower the ship to complete the process"/>
+                            </do_if>
+                            <do_elseif value="player.entity.distanceto.{$SelectedDock} lt 500m">
+                              <remove_help all="true" />
+                              <show_help line="3022" duration="10s" position="1" force="true" comment="Fly close to the marked docking location."/>
+                            </do_elseif>
+                          </actions>
+                        </cue>
+
+                        <cue name="Tutorial_DockingStarted" instantiate="true">
+                          <conditions>
+                            <event_object_docking_started object="player.entity"/>
+                            <!--check_value value="event.param.hascontext.{$SelectedStation}"/-->
+                          </conditions>
+                          <actions>
+                            <remove_help all="true" />
+                            <show_help line="3028" log="true" duration="4s" position="4" force="true" comment="Docking can be made easier with a docking computer upgrade"/>
+                          </actions>
+                        </cue>
+
+                        <cue name="Tutorial_Docked" instantiate="true">
+                          <conditions>
+                            <event_object_docked object="player.entity"/>
+                            <!--check_value value="event.param == $SelectedStation"/-->
+                          </conditions>
+                          <actions>
+                          </actions>
+                          <cues>
+                            <cue name="Tutorial_Docking_Done">
+                              <actions>
+                                <signal_cue cue="Tutorial_TriggerNext"/>
+                                <cancel_cue cue="Tutorial_Docking"/>
+                              </actions>
+                            </cue>
+                          </cues>
+                        </cue>
+                      </cues>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="Tutorial_StationMenu" comment="docked and sitting in chair">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <find_npc_waypoint name="$Transporters" object="$SelectedStation" tags="tag.npctransport" multiple="true"/>
+                    <debug_text text="'No of Transporters found: ' + $Transporters.count" chance="$DebugChance"/>
+                    <do_if value="not player.occupiedship" comment="player is not sitting on a cockpit-chair, skip this part of the tutorial">
+                      <signal_cue cue="Tutorial_TriggerNext"/>
+                      <cancel_cue cue="Tutorial_StationMenu"/>
+                    </do_if>
+                    <do_else>
+                      <remove_help all="true" />
+                      <show_help_multi log="false" position="4" force="true" allowclose="false">
+                        <text line="3050" comment="The station menu opens automatically when docking."/>
+                        <text line="3051" comment="From this menu you can trade or get up."/>
+                        <text line="3052" comment="When docked at an EQUIPMENT DOCK or WHARF you can also improve your ship from this menu."/>
+                      </show_help_multi>
+                      <show_help line="3053" position="4" force="true" comment="Get up from your chair with the menu button or $INPUT_ACTION_GET_UP$." allowclose="false" timeout="false"/>
+                    </do_else>
+                  </actions>
+                  <cues>
+                    <cue name="Tutorial_StationMenu_HintClosed">
+                      <conditions>
+                        <event_ui_triggered screen="'hintclosed'" control="'3050'"/>
+                      </conditions>
+                      <actions>
+                        <show_help_overlay id="'docked_getup'" highlightonly="true"/>
+                      </actions>
+                    </cue>
+
+                    <cue name="Tutorial_StationMenu_Wait" checkinterval="1s">
+                      <conditions>
+                        <check_value value="not player.occupiedship"/>
+                      </conditions>
+                      <actions>
+                        <remove_help all="true"/>
+                        <remove_help_overlay id="'docked_getup'"/>
+                        <signal_cue cue="Tutorial_TriggerNext"/>
+                        <cancel_cue cue="Tutorial_StationMenu"/>
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="Tutorial_DockedStanding" comment="docked and standing in ship">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <do_if value="not player.ship" comment="player is in ship on platform">
+                      <signal_cue cue="Tutorial_TriggerNext"/>
+                      <cancel_cue cue="Tutorial_DockedStanding"/>
+                    </do_if>
+                    <do_else>
+                      <remove_help all="true" />
+                      <show_help_multi  position="4" force="true" allowclose="false">
+                        <text line="if player.input.controller then 3101 else 3100"/>
+                        <text line="3102" log="false" comment="If you have assigned a captain to your ship"/>
+                        <text line="3103" log="false" comment="."/>
+                        <text line="3104" log="true"  comment="You can give commands from afar, or..."/>
+                        <text line="3150" log="true"  comment="Your pilot will wait unless..."/>
+                        <text line="3105" log="false" comment="."/>
+                        <text line="if player.input.controller then 3108 else 3106" log="false" comment="."/>
+                        <text line="3107" log="false" comment="Try walking around and leave the ship."/>
+                      </show_help_multi>
+                    </do_else>
+                  </actions>
+                  <cues>
+                    <cue name="Tutorial_Docked_Wait" checkinterval="1s">
+                      <conditions>
+                        <check_value value="not player.ship" comment="left the ship"/>
+                      </conditions>
+                      <actions>
+                        <signal_cue cue="Tutorial_TriggerNext"/>
+                        <cancel_cue cue="Tutorial_DockedStanding"/>
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="Tutorial_OnPlatform" comment="docked and on the platform">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <remove_help all="true" />
+                    <show_help_multi log="true" position="4" force="true" allowclose="false">
+                      <text line="if player.input.controller then 3202 else 3201" comment="You can run faster by..."/>
+                      <text line="3203" comment="Traders can be found on all stations and trade inventory items."/>
+                      <text line="3204" comment="Large cargo can be traded directly from the ship menu \($INPUT_ACTION_OPEN_COCKPIT_MENU$\)."/>
+                    </show_help_multi>
+                  </actions>
+                  <cues>
+                    <cue name="Tutorial_OnPlatform_FindTrader">
+                      <actions>
+                        <signal_cue cue="Tutorial_TriggerNext"/>
+                        <cancel_cue cue="Tutorial_OnPlatform"/>
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="Tutorial_Trader">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <find_object_component name="$TradeNPCs" object="$SelectedStation" entitytype="entitytype.trader">
+                      <match controlpost="controlpost.shiptrader" negate="true"/>
+                    </find_object_component>
+                    <do_if value="not $TradeNPCs" comment="skip trader-tutorial, if no traders found">
+                      <signal_cue cue="Tutorial_TriggerNext"/>
+                      <cancel_cue cue="Tutorial_Trader"/>
+                    </do_if>
+                    <set_objective cue="Start" action="objective.goto" object="$TradeNPCs"/>
+
+                  </actions>
+                  <cues>
+
+                    <cue name="Tutorial_Trader_Rehint" checkinterval="25s" instantiate="true">
+                      <actions>
+                        <do_if value="not player.isinconversation">
+                          <remove_help all="true"/>
+                          <show_help line="3205" duration="25s" position="18" force="true" comment="FIND A TRADER on this platform."/>
+                        </do_if>
+                      </actions>
+                    </cue>
+
+                    <cue name="Tutorial_Trader_Near" checkinterval="3s" instantiate="true">
+                      <conditions>
+                        <count_object_components class="class.npc" object="$SelectedStation" entitytype="entitytype.trader" min="1">
+                          <match_distance object="player.entity" max="10m"/>
+                        </count_object_components>
+                      </conditions>
+                      <actions>
+                        <do_if value="not player.isinconversation">
+                          <remove_help all="true" />
+                          <show_help line="if player.input.controller then 3322 else 3320" duration="7s" position="1" force="true" comment="."/>
+                        </do_if>
+                      </actions>
+                    </cue>
+
+                    <cue name="Tutorial_Trader_ConvStarted" instantiate="true">
+                      <conditions>
+                        <event_conversation_started/>
+                        <check_value value="event.object.type == entitytype.trader"/>
+                      </conditions>
+                      <actions>
+                        <remove_help all="true" />
+                        <show_help line="3321" duration="7s" position="1" force="true" comment="Select 'SHOW ME YOUR WARES' in..."/>
+                      </actions>
+                    </cue>
+
+                    <cue name="Tutorial_Trader_ShipConfigMenuOpen">
+                      <conditions>
+                        <event_ui_triggered screen="'ShipConfigurationMenu'" control="''"/>
+                        <check_value value="@player.conversationactor.type == entitytype.trader" />
+                      </conditions>
+                      <actions>
+                        <remove_help all="true" />
+                        <!-- TODO -->
+                        <show_help line="3344" duration="7s" position="13" force="true" comment="Leave the trade" allowclose="false" timeout="false"/>
+                      </actions>
+                      <cues>
+                        <cue name="Tutorial_Trader_ShipConfigMenuClosed">
+                          <conditions>
+                            <event_ui_triggered screen="'ShipConfigurationMenu'" control="'menu_close'"/>
+                          </conditions>
+                          <actions>
+                            <remove_help all="true" />
+                            <signal_cue cue="Tutorial_TriggerNext"/>
+                            <cancel_cue cue="Tutorial_Trader"/>
+                          </actions>
+                        </cue>
+                      </cues>
+                    </cue>
+
+                    <cue name="Tutorial_Trader_TradeMenuOpen">
+                      <conditions>
+                        <event_ui_triggered screen="'InventoryTraderMenu'" control="''"/>
+                        <check_value value="@player.conversationactor.type == entitytype.trader" />
+                      </conditions>
+                      <actions>
+                        <remove_help all="true" />
+                        <show_help_multi  position="13" force="true" allowclose="false">
+                          <text line="3340" log="false" comment="Here you can buy and sell INVENTORY ITEMS."/>
+                          <text line="3341" log="true" comment="."/>
+                          <text line="3342" log="true" comment="."/>
+                          <text line="3343" log="true" comment="."/>
+                        </show_help_multi>
+                        <show_help line="3344" duration="7s" position="13" force="true" comment="Leave the trade" allowclose="false" timeout="false"/>
+                      </actions>
+                      <cues>
+                        <cue name="Tutorial_Trader_HintClosed">
+                          <conditions>
+                            <event_ui_triggered screen="'hintclosed'" control="'3340'"/>
+                          </conditions>
+                          <actions>
+                            <show_help_overlay id="'tradermenu_cancel'" highlightonly="true"/>
+                          </actions>
+                        </cue>
+
+                        <cue name="Tutorial_Trader_TradeMenuClosed">
+                          <conditions>
+                            <event_ui_triggered screen="'InventoryTraderMenu'" control="'menu_close'"/>
+                          </conditions>
+                          <delay exact="4s"/>
+                          <actions>
+                            <remove_help all="true" />
+                            <remove_help_overlay id="'tradermenu_cancel'"/>
+                            <signal_cue cue="Tutorial_TriggerNext"/>
+                            <cancel_cue cue="Tutorial_Trader"/>
+                          </actions>
+                        </cue>
+                      </cues>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="Tutorial_Crafting">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+
+                    <set_value name="$ClosedEncyclopedia" exact="false"/>
+                    <set_value name="$CraftingItemGiven" exact="false"/>
+                    <set_value name="$OpenedEncyclopedia" exact="false"/>
+                    <set_value name="$IsNear" exact="true"/>
+
+                    <!-- find a trader, their room has a crafting-table -->
+                    <find_object_component name="$traders" object="$SelectedStation" entitytype="entitytype.trader" multiple="true"/>
+
+                    <do_if value="$traders.count">
+                      <set_value name="$SelectedTrader" exact="$traders.{1}"/>
+                      <do_all exact="$traders.count" counter="$i" comment="find closest">
+                        <do_if value="player.entity.distanceto.{$traders.{$i}} lt player.entity.distanceto.{$SelectedTrader}">
+                          <set_value name="$SelectedTrader" exact="$traders.{$i}"/>
+                        </do_if>
+                      </do_all>
+                      <set_value name="$craftingroom" exact="$SelectedTrader.room"/>
+                    </do_if>
+                    <do_else>
+                      <signal_cue cue="Tutorial_TriggerNext"/>
+                      <cancel_cue cue="Tutorial_Crafting"/>
+                    </do_else>
+
+                    <!-- find crafting table -->
+                    <!--find_object_component name="$CraftingBenches" object="$SelectedStation" tag="tag.workbench" multiple="true"/>
+                    <find_object_component name="$CraftingBenches" object="$SelectedStation" tag="tag.inventoryworkbench" multiple="true" append="true"/>
+                    <find_object_component name="$CraftingBenches" object="$SelectedStation" tag="tag.modworkbench" multiple="true" append="true"/-->
+
+                    <set_objective cue="Start" action="objective.custom" customaction="{30197,18}" comment="Interact with Crafting Bench"/>
+                    <show_help line="3345" duration="7s" position="1" force="true" comment="Search for a CRAFTING BENCH." allowclose="false" timeout="false"/>
+                  </actions>
+                  <cues>
+
+                    <cue name="Tutorial_Crafting_RefreshObjective" checkinterval="2s" instantiate="true">
+                      <conditions>
+                        <check_value value="not $CraftingItemGiven"/>
+                      </conditions>
+                      <actions>
+                        <set_value name="$OldValue" exact="$IsNear"/>
+                        <do_if value="player.entity.distanceto.{$craftingroom} le 12m">
+                          <set_value name="$IsNear" exact="true"/>
+                        </do_if>
+                        <do_else>
+                          <set_value name="$IsNear" exact="false"/>
+                        </do_else>
+
+                        <!-- only on state-change (otherwise objective keeps updating and blinking every few seconds) -->
+                        <do_if value="$OldValue != $IsNear">
+                          <do_if value="$IsNear">
+                            <!-- player is close enough, remove guidance -->
+                            <set_objective cue="Start" action="objective.custom" customaction="{30197,16}" comment="Crafting"/>
+                          </do_if>
+                          <do_else>
+                            <!-- guide player to the room with crafting table -->
+                            <set_objective cue="Start" action="objective.custom" customaction="{30197,16}" object="$craftingroom" comment="Crafting"/>
+                          </do_else>
+                        </do_if>
+                      </actions>
+                    </cue>
+
+                    <cue name="Tutorial_Crafting_Open" instantiate="true">
+                      <conditions>
+                        <event_ui_triggered screen="'CraftingMenu'" control="''"/>
+                      </conditions>
+                      <actions>
+
+                        <remove_help all="true"/>
+
+                        <!--
+                        <set_value name="$InventoryKeys" exact="player.entity.inventory.list"/>
+                        <do_all exact="$InventoryKeys.count" counter="$i" >
+                            <do_if value="player.entity.inventory.{$InventoryKeys.{$i}}.exists">
+                            </do_if>
+                        </do_all>
+                        -->
+
+                        <do_if value="not $CraftingItemGiven">
+                          <add_inventory entity="player.entity" ware="ware.inv_salvagedelectronics" exact="1" comment="give the player something to craft" />
+                          <set_value name="$CraftingItemGiven" exact="true"/>
+                        </do_if>
+
+                        <do_if value="$ClosedEncyclopedia == false">
+                          <remove_help all="true" />
+                          <show_help_multi  position="17" force="true" allowclose="false">
+                            <text line="3400" log="true" comment="The crafting bench lets you craft items from special inventory objects."/>
+                            <text line="3401" log="false" comment="The menu shows a group as soon as you find ONE INGREDIENT."/>
+                            <text line="3402" log="false" comment="More information about where to find these items can be found in the ENCYCLOPEDIA"/>
+                          </show_help_multi>
+                          <do_if value="player.input.controller">
+                            <show_help line="3420" duration="7s" position="17" force="true" comment="Press X to open menu on an item and select ENCYCLOPEDIA..." allowclose="false" timeout="false"/>
+                          </do_if>
+                          <do_else>
+                            <show_help line="3410" duration="7s" position="17" force="true" comment="Press RMB to open menu on an item and select ENCYCLOPEDIA..." allowclose="false" timeout="false"/>
+                          </do_else>
+                        </do_if>
+                      </actions>
+                      <cues>
+
+                        <cue name="Tutorial_Encylopedia_Open" instantiate="true">
+                          <conditions>
+                            <event_ui_triggered screen="'EncyclopediaMenu'" control="''"/>
+                          </conditions>
+                          <actions>
+                            <remove_help all="true" />
+                            <set_value name="$OpenedEncyclopedia" exact="true"/>
+                            <show_help_multi  position="4" force="true" allowclose="false">
+                              <text line="3500" log="true"  comment="The encyclopedia will grow while you play"/>
+                              <text line="3501" log="false" comment="."/>
+                            </show_help_multi>
+                            <do_if value="player.input.controller">
+                              <show_help line="3511" duration="7s" position="4" force="true" comment="gamepad"/>
+                            </do_if>
+                            <do_else>
+                              <show_help line="3510" duration="7s" position="4" force="true" comment="mouse/keyboard"/>
+                            </do_else>
+                            <show_help line="3520" duration="7s" position="4" force="true" comment="Now exit the encyclopedia and close the crafting menu." allowclose="false" timeout="false"/>
+                          </actions>
+                          <cues>
+
+                          </cues>
+                        </cue>
+
+                        <cue name="Tutorial_Crafting_Closed" instantiate="true">
+                          <conditions>
+
+                            <check_any>
+                              <event_ui_triggered screen="'CraftingMenu'" control="'menu_close'"/>
+                              <event_ui_triggered screen="'EncyclopediaMenu'" control="'menu_close'"/>
+                            </check_any>
+
+                          </conditions>
+                          <actions>
+                            <remove_help all="true" />
+                            <set_objective action="objective.none" cue="Start" comment="Wipe Objective to signal pause"/>
+                            <show_help line="3620" log="true" duration="7s" position="4" force="true" comment="...press Shift D to quickly get back to your ship."/>
+                          </actions>
+                          <cues>
+                            <cue name="Tutorial_Crafting_Done">
+                              <conditions>
+                                <event_ui_triggered screen="'hintclosed'" control="'3620'"/>
+                              </conditions>
+                              <actions>
+                                <signal_cue cue="Tutorial_TriggerNext"/>
+                                <cancel_cue cue="Tutorial_Crafting"/>
+                              </actions>
+                            </cue>
+                          </cues>
+                        </cue>
+                      </cues>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="Tutorial_Transporter_Find" checkinterval="1s" instantiate="true">
+                  <conditions>
+                    <check_value value="$Transporters.count"/>
+                  </conditions>
+                  <delay exact="1s"/>
+                  <actions>
+                    <set_value name="$TransporterClosest" exact="$Transporters.{1}"/>
+                    <do_all exact="$Transporters.count" counter="$i">
+                      <do_if value="player.entity.distanceto.{$Transporters.{$i}} lt player.entity.distanceto.{$TransporterClosest}">
+                        <set_value name="$TransporterClosest" exact="$Transporters.{$i}"/>
+                      </do_if>
+
+                      <do_if value="player.entity.distanceto.{$Transporters.{$i}} lt 14m">
+                        <signal_cue cue="Tutorial_Transporter_Near"/>
+
+                      </do_if>
+                    </do_all>
+                  </actions>
+                </cue>
+
+                <cue name="Tutorial_Transporter_Near">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <cancel_cue cue="Tutorial_Transporter_Find"/>
+                    <show_help_multi log="false" position="4" force="true" allowclose="false">
+                      <text line="3600" comment="From transporters you can quickly go to all docks."/>
+                      <text line="3602" comment="There are also other ROOMS and PEOPLE on stations."/>
+                      <text line="3603" comment="Some places and people are only REVEALED IN MISSIONS."/>
+                      <text line="3604" comment="There may be CRIMINALS on stations that TRADE in ILLEGAL ITEMS and cargo."/>
+                    </show_help_multi>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="Cleanup">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <delay exact="2s"/>
+              <actions>
+                <remove_help_overlay all="true"/>
+                <debug_text text="'cleanup'" chance="$DebugChance"/>
+                <do_if value="$BriefingCutsceneStarted?">
+                  <stop_cutscene key="$CutsceneKey"/>
+                </do_if>
+                <do_if value="$Beacons?">
+                  <destroy_group group="$Beacons"/>
+                </do_if>
+                <remove_offer cue="Start"/>
+                <remove_mission cue="Start" />
+                <reset_cue cue="Trigger"/>
+              </actions>
+            </cue>
+
+          </cues>
+        </cue>
+
+      </cues>
+    </cue>
+  </cues>
+</mdscript>

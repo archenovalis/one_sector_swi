@@ -1,0 +1,167 @@
+<?xml version="1.0" encoding="utf-8"?>
+<aiscript name="order.restock.getsupplies" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" version="3">
+  <!-- only for use by resupply ships and carriers. go and buy supplies that we need to resupply other ships.
+    by default, without using this script, resupply ships and carriers will have trade offers and will rely on normal traders to bring them supplies.
+  -->
+  <order id="GetSupplies" name="{1041, 621}" description="{1041, 622}" category="trade">
+    <params>
+      <param name="maxsearchrange" default="[if (this.ship.pilot.skill.piloting == 15) then this.ship.pilot.skill.piloting else (this.ship.pilot.skill.piloting / 3), 1].max" type="number" text="{1041, 10054}" comment="Max gate distance to buy. Buy range supported if $minbuy and $maxbuy are provided">
+        <input_param name="startvalue" value="0"/>
+        <input_param name="min" value="0"/>
+        <input_param name="max" value="[if (this.ship.pilot.skill.piloting == 15) then this.ship.pilot.skill.piloting else (this.ship.pilot.skill.piloting / 3), 1].max"/>
+        <input_param name="step" value="1"/>
+      </param>
+      <param name="anchorsector" type="internal" default="if not this.ship.zone.isclass.highway then this.ship.sector else this.ship.zone.destination.sector"/>
+      <param name="internalorder" type="bool" default="false" advanced="true" text="{1041, 10159}" comment="Order results from an automated behavior."/>
+      <param name="debugchance" type="bool" default="0" advanced="true" text="{1041, 10086}" comment="Print debug output">
+        <input_param name="truevalue" value="100"/>
+      </param>
+    </params>
+    <requires>
+      <match_any>
+        <match shiptype="shiptype.resupplier"/>
+        <match shiptype="shiptype.carrier"/>
+      </match_any>
+    </requires>
+  </order>
+  <interrupts>
+    <handler ref="AttackHandler"/>
+    <handler ref="MissileLockHandler" />
+    <handler ref="ScannedHandler"/>
+    <handler ref="InspectedHandler"/>
+    <handler ref="FoundAbandonedHandler"/>
+    <handler ref="FoundLockboxHandler"/>
+    <handler ref="TideHandler"/>
+  </interrupts>
+  <init>
+    <set_command command="command.resupply"/>
+
+    <set_value name="$unavailableresources" exact="[]"/>
+  </init>
+  <patch sinceversion="1">
+    <!-- patched to true since that is safer. if no path is possible, order should be called again with the proper flag set. -->
+    <set_value name="$internalorder" exact="this.isplayerowned"/>
+  </patch>
+  <patch sinceversion="2">
+    <include_interrupt_actions ref="GetBlacklistgroup"/>
+  </patch>
+  <patch sinceversion="3">
+    <set_value name="$projectedfreevolume" exact="this.assignedcontrolled.cargo.capacity.all"/>
+  </patch>
+  <attention min="unknown">
+    <actions>
+
+      <include_interrupt_actions ref="GetBlacklistgroup"/>
+
+      <find_cluster_in_range name="$searchclusters" object="$anchorsector" maxdistance="$maxsearchrange" multiple="true"/>
+      <debug_text text="'allowed to search for supplies within %s gates of %s %s %s. found %s clusters.'.[$maxsearchrange, @$anchorsector.class, @$anchorsector.knownname, $anchorsector, $searchclusters.count]" chance="$debugchance"/>
+
+      <label name="start"/>
+
+      <!-- determine resources needed by looking at target cargo amounts for each ware. -->
+      <set_value name="$resources" exact="table[]"/>
+
+      <debug_text text="'we need:'" chance="$debugchance"/>
+      <do_all exact="this.assignedcontrolled.resources.count" counter="$i">
+        <set_value name="$locware" exact="this.assignedcontrolled.resources.{$i}"/>
+        <set_value name="$loctargetamount" exact="this.assignedcontrolled.cargo.{$locware}.target"/>
+        <do_if value="(($loctargetamount - this.assignedcontrolled.cargo.{$locware}.count) gt 0) and this.assignedcontrolled.cargo.{$locware}.free and not $unavailableresources.indexof.{$locware}">
+          <set_value name="$resources.{$locware}" exact="$loctargetamount"/>
+          <debug_text text="'%s %s'.[$resources.{$locware}, $locware]" chance="$debugchance"/>
+        </do_if>
+        <remove_value name="$loctargetamount"/>
+        <remove_value name="$locware"/>
+      </do_all>
+
+      <do_if value="not $resources.keys.count">
+        <debug_text text="'we do not need resources.'" chance="$debugchance"/>
+        <resume label="finish"/>
+      </do_if>
+      <set_value name="$resourcelist" exact="$resources.keys.sorted"/>
+
+      <label name="buy"/>
+
+      <set_value name="$tradeofferamounts" exact="table[]"/>
+      <set_value name="$tradeofferdistances" exact="table[]"/>
+      <set_value name="$projectedfreevolume" exact="this.assignedcontrolled.cargo.capacity.all"/>
+
+      <do_all exact="$resourcelist.count" counter="$i" reverse="true">
+        <do_if value="$projectedfreevolume le 0">
+          <break/>
+          <debug_text text="'no cargo space left for resources. skipping %s resources.'.[$resourcelist.count]" chance="$debugchance"/>
+        </do_if>
+        <!-- buy resources. -->
+        <set_value name="$currentware" exact="$resourcelist.{$i}"/>
+        <set_value name="$currentamount" exact="[$resources.{$currentware} - this.assignedcontrolled.cargo.{$currentware}.count, ($projectedfreevolume - ($resources.{$currentware} * $currentware.volume)) / [$currentware.volume, 1].max].min"/>
+        <debug_text text="'trying to buy: %s %s. amount needed: %s. amount that can fit: %s.'.[$currentamount, $currentware, $resources.{$currentware} - this.assignedcontrolled.cargo.{$currentware}.count, ($projectedfreevolume - ($resources.{$currentware} * $currentware.volume)) / [$currentware.volume, 1].max]" chance="$debugchance"/>
+
+        <debug_text text="'searching for %s %s.'.[$currentamount, $currentware]" chance="$debugchance"/>
+        <run_script name="'order.trade.single.buy'" result="$tradesuccess">
+          <param name="ware" value="$currentware"/>
+          <param name="locations" value="$searchclusters"/>
+          <param name="maxamount" value="$currentamount"/>
+          <param name="minamount" value="$currentamount"/>
+          <!-- script will still select cheapest known offer in the closest distance with bias towards distance. offers with price above pricethreshold will be disregarded. -->
+          <param name="pricethreshold" value="$currentware.maxprice"/>
+          <param name="internalorder" value="$internalorder"/>
+          <param name="gotrade" value="false"/>
+          <param name="debugchance" value="$debugchance"/>
+        </run_script>
+        <debug_text text="'successfully found %s %s.'.[$currentamount, $currentware]" chance="($tradesuccess != 0) * $debugchance"/>
+
+        <do_if value="@$tradesuccess.available and $tradesuccess.amount">
+          <clamp_trade_amount result="$tradeamount" trade="$tradesuccess" amount="[$currentamount, $tradesuccess.amount].min" buyer="this.assignedcontrolled" seller="$tradesuccess.owner"/>
+          <debug_text text="'amount clamped from %s to %s. adjusting projectedfreevolume from %s to %s.'.[$currentamount, $tradeamount, $projectedfreevolume, $projectedfreevolume - ($tradeamount * $currentware.volume)]" chance="$debugchance"/>
+          <set_value name="$projectedfreevolume" exact="$projectedfreevolume - ($tradeamount * $currentware.volume)"/>
+          <set_value name="$tradeofferamounts.{$tradesuccess}" exact="$tradeamount"/>
+          <set_value name="$tradeofferdistances.{$tradesuccess}" exact="this.assignedcontrolled.gatedistance.{$tradesuccess.seller}.{$blacklistgroup}.{this.assignedcontrolled}"/>
+        </do_if>
+        <do_else>
+          <append_to_list name="$unavailableresources" exact="$currentware"/>
+          <debug_text text="'was unable to buy %s %s. %s resources in list are unavailable.'.[$currentamount, $currentware, $unavailableresources.count]" chance="$debugchance"/>
+        </do_else>
+
+        <!-- if we found a trade, we no longer need the resource. if we did not find a trade, we cannot buy the resource.
+        remove the resource in either case. we will add it again if need be when we exhaust the current resource list. -->
+        <remove_value name="$resourcelist.{$i}"/>
+      </do_all>
+
+      <set_value name="$sortedoffers" exact="$tradeofferdistances.keys.sorted"/>
+
+      <do_if value="$sortedoffers.count">
+        <!-- NB: we're adding immediate orders and have sorted by distance, so we want to queue the farthest trades earlier so that the closest trades will end up on the top of the queue. -->
+        <do_all exact="$sortedoffers.count" counter="$i" reverse="true">
+          <set_value name="$loctrade" exact="$sortedoffers.{$i}"/>
+          <!-- availability and amount could have changed between getting the trade and acting upon it. -->
+          <do_if value="$tradeofferamounts.{$loctrade} and $loctrade.available and $loctrade.amount">
+            <set_value name="$locamount" exact="[$tradeofferamounts.{$loctrade}, $loctrade.amount].min"/>
+            <debug_text text="'queueing trade order to buy %s %s at %s %s %s, %s sectors away.'.[$locamount, $loctrade.ware, @$loctrade.seller.idcode, @$loctrade.seller.knownname, $loctrade.seller, $tradeofferdistances.{$loctrade}]" chance="$debugchance"/>
+            <create_trade_order object="this.assignedcontrolled" tradeoffer="$loctrade" amount="$locamount" unbundle="false" immediate="true" internal="true"/>
+            <remove_value name="$locamount"/>
+          </do_if>
+          <do_else>
+            <remove_value name="$tradeofferamounts.{$loctrade}"/>
+          </do_else>
+          <remove_value name="$loctrade"/>
+        </do_all>
+      </do_if>
+      <remove_value name="$tradeofferdistances"/>
+      <remove_value name="$tradeofferamounts"/>
+      <remove_value name="$sortedoffers"/>
+
+      <!-- short wait to allow trade orders to start. -->
+      <wait exact="1s"/>
+
+      <do_if value="$resourcelist.count">
+        <debug_text text="'now attempting to buy %s %s'.[$resources.{$resourcelist.{$resourcelist.count}}, $resourcelist.{$resourcelist.count}]" chance="$debugchance"/>
+        <resume label="buy"/>
+      </do_if>
+      <do_else>
+        <resume label="start"/>
+      </do_else>
+
+      <label name="finish"/>
+
+    </actions>
+  </attention>
+</aiscript>

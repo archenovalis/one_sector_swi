@@ -1,0 +1,203 @@
+<?xml version="1.0" encoding="iso-8859-1" ?>
+<aiscript name="move.escapepod" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" version="2">
+  <params>
+    <param name="origin" default="null" comment="container this escape pod or distress drone was launched from. passed in from code when escape pod/distress drone is launched. optional."/>
+    <param name="attacker" default="null" comment="attacker that caused escape pod or distress drone to be launched. set in eject_people action or in launch_disressdrone action and passed through code when launched. optional."/>
+    <param name="debugchance" default="0"/>
+  </params>
+  <init>
+    <set_value name="$reportattack" exact="(this.ship.type == shiptype.distressdrone) and @$attacker.isoperational"/>
+  </init>
+  <patch sinceversion="1">
+    <set_value name="$reportattack" exact="(this.ship.type == shiptype.distressdrone) and @$attacker.isoperational"/>
+  </patch>
+  <attention min="visible">
+    <actions>
+
+      <wait min="1s" max="3s" />
+
+      <do_if value="this.ship.dock">
+        <do_if value="this.ship.container == $origin">
+          <run_script name="'move.undock'" sinceversion="1">
+            <param name="debugchance" value="$debugchance"/>
+          </run_script>
+        </do_if>
+        <do_else>
+          <debug_text text="'already docked. proceeding straight to self-destruct.'" chance="$debugchance"/>
+          <resume label="selfdestruct"/>
+        </do_else>
+      </do_if>
+
+      <label name="search" />
+
+      <set_value name="$locsector" exact="this.sector"/>
+      <do_if value="not $locsector.exists and this.zone.isclass.highway">
+        <set_value name="$locsector" exact="this.zone.destination.sector"/>
+      </do_if>
+
+      <!-- Find a station in zone -->
+      <find_station name="$station" functional="true" space="this.zone" sortbydistanceto="this.ship">
+        <match_relation_to object="this" relation="neutral" comparison="ge" />
+      </find_station>
+
+      <!-- now find in sector --> 
+      <do_if value="$locsector.exists and not $station">
+        <wait min="100ms" max="250ms" />
+        <find_station name="$station" functional="true" space="$locsector" sortbydistanceto="this.ship">
+          <match_relation_to object="this" relation="neutral" comparison="ge" />
+        </find_station>
+      </do_if>
+
+      <!-- if still no stations, just use any and move to it -->
+      <do_if value="$locsector.exists and not $station">
+        <wait min="100ms" max="250ms" />
+        <find_station name="$station" functional="true" space="$locsector" sortbydistanceto="this.ship">
+          <match_relation_to object="this" comparison="ge" relation="dock"/>
+        </find_station>
+        <set_value name="$reportattack" exact="false"/>
+      </do_if>
+
+      <remove_value name="$locsector"/>
+
+      <do_if value="not $station">
+        <resume label="flee" />
+      </do_if>
+
+      <debug_text text="'Selecting ' + $station + ' ' + $station.knownname + ' as it is the closest'" chance="$debugchance" />
+
+      <label name="dock" />
+      
+      <debug_text text="'going to fly to %1 (%2)'.[$station.knownname, $station]" chance="$debugchance" />
+      <!-- handling for move.generic failure unnecessary in this case -->
+      <run_script name="'move.generic'">
+        <param name="destination" value="$station" />
+        <param name="endintargetzone" value="true"/>
+      </run_script>
+
+      <!-- report offender -->
+      <debug_text text="'HIGH: report checks. will report: %s.\n reportattack: %s, attacker: %s %s %s, origin: %s %s %s, not isplayerowned: %s, police faction: %s, neutral to station: %s, neutral to policefaction: %s, station not owned by attacker: %s'.[$reportattack and @$attacker.isoperational and @$origin.exists and not this.isplayerowned and $station.zone.policefaction and (this.ship.relationto.{$station} ge 0) and (@this.ship.relationto.{$station.zone.policefaction} ge 0), $reportattack, @$attacker.idcode, @$attacker.knownname, @$attacker, @$origin.idcode, @$origin.knownname, @$origin, not this.isplayerowned, $station.zone.policefaction, (this.ship.relationto.{$station} ge 0), (@this.ship.relationto.{$station.zone.policefaction} ge 0), ($station.owner != @$attacker.owner)]" chance="$debugchance"/>
+      <do_if value="$reportattack and @$attacker.isoperational and @$origin.exists and not this.isplayerowned and $station.zone.policefaction and (this.ship.relationto.{$station} ge 0) and (this.ship.relationto.{$station.zone.policefaction} ge 0) and ($station.owner != @$attacker.owner)">
+        <debug_text text="'reporting attack'" chance="$debugchance"/>
+        <signal_objects object="player.galaxy" param="'report_attack'" param2="[$origin, killmethod.hitbybullet, $origin, $attacker, this.assignedcontrolled, $station]"/>
+      </do_if>
+
+      <debug_text text="'docking at %s %s %s'.[@$station.idcode, @$station.knownname, $station]" chance="$debugchance"/>
+      <!-- ship_xs cannot dock at regular docking bays, for now just have the pod fly to a station -->
+      <run_script name="'order.dock'" result="$dockresult">
+        <param name="destination" value="$station" />
+        <param name="abouttofinish" value="true"/>
+        <param name="debugchance" value="$debugchance"/>
+      </run_script>
+
+      <do_if value="$dockresult">
+        <resume label="selfdestruct" />
+      </do_if>
+
+      <label name="flee"/>
+      <run_script name="'move.flee'" result="$fled" sinceversion="2">
+        <param name="method" value="5"/>
+        <param name="donotdrop" value="true"/>
+        <param name="deploydistraction" value="false"/>
+        <param name="log" value="false"/>
+        <param name="debugchance" value="$debugchance"/>
+      </run_script>
+
+      <label name="waitforrescue" />
+      <!-- TODO: send out distress call, ships that come to pick up etc., activate beacon lights or something -->
+      <!-- <debug_text text="'no station found that would let me dock, hoping someone will come to rescue me...'" chance="$debugchance" /> -->
+      <debug_text text="'waiting for someone to come to rescue me...'" chance="$debugchance" />
+      <do_while value="this.ship.attention ge attention.visible">
+        <!-- wait until this is no longer visible, then self-destruct -->
+        <wait>
+          <interrupt>
+            <conditions>
+              <event_object_changed_attention object="this.ship" />
+            </conditions>
+          </interrupt>
+        </wait>
+      </do_while>
+
+      <label name="selfdestruct" />
+      <debug_text text="'good bye, cruel world!'" chance="$debugchance" />
+      <destroy_object explosion="false" object="this.ship" />
+
+    </actions>
+  </attention>
+  <attention min="unknown">
+    <actions>
+
+      <wait min="1s" max="3s" />
+
+      <do_if value="this.ship.dock">
+        <do_if value="this.ship.container == $origin">
+          <run_script name="'move.undock'" sinceversion="1">
+            <param name="debugchance" value="$debugchance"/>
+          </run_script>
+        </do_if>
+        <do_else>
+          <debug_text text="'already docked. proceeding straight to self-destruct.'" chance="$debugchance"/>
+          <resume label="selfdestruct"/>
+        </do_else>
+      </do_if>
+
+      <label name="search" />
+
+      <set_value name="$locsector" exact="this.sector"/>
+      <do_if value="not $locsector.exists and this.zone.isclass.highway">
+        <set_value name="$locsector" exact="this.zone.destination.sector"/>
+      </do_if>
+
+      <!-- Find a station in zone -->
+      <find_station name="$station" functional="true" space="this.zone" sortbydistanceto="this.ship">
+        <match_relation_to object="this" relation="neutral" comparison="ge" />
+      </find_station>
+
+      <!-- find a sympathetic station in sector -->
+      <do_if value="$locsector.exists and not $station">
+        <wait min="100ms" max="250ms" sinceversion="1"/>
+        <find_station name="$station" functional="true" space="$locsector" sortbydistanceto="this.ship">
+          <match_relation_to object="this" relation="neutral" comparison="ge"/>
+        </find_station>
+      </do_if>
+
+      <!-- if still no stations, just use any and move to it -->
+      <do_if value="$locsector.exists and not $station">
+        <wait min="100ms" max="250ms" sinceversion="1"/>
+        <find_station name="$station" functional="true" space="$locsector" sortbydistanceto="this.ship"/>
+        <set_value name="$reportattack" exact="false"/>
+      </do_if>
+
+      <remove_value name="$locsector"/>
+
+      <do_if value="not $station">
+        <resume label="flee"/>
+      </do_if>
+
+      <debug_text text="'Selecting ' + $station + ' ' + $station.knownname + ' as it is the closest'" chance="$debugchance" />
+
+      <label name="dock"/>
+
+      <debug_text text="'going to fly to %1 (%2)'.[$station.knownname, $station]" chance="$debugchance" />
+      <!-- handling for move.generic failure unnecessary in this case -->
+      <run_script name="'move.generic'" sinceversion="1">
+        <param name="destination" value="$station" />
+        <param name="endintargetzone" value="true"/>
+      </run_script>
+
+      <!-- report offender -->
+      <debug_text text="'LOW: report checks. will report: %s.\n reportattack: %s, attacker: %s %s %s, origin: %s %s %s, not isplayerowned: %s, police faction: %s, neutral to station: %s, neutral to policefaction: %s, station not owned by attacker: %s'.[$reportattack and @$attacker.isoperational and @$origin.exists and not this.isplayerowned and $station.zone.policefaction and (this.ship.relationto.{$station} ge 0) and (this.ship.relationto.{$station.zone.policefaction} ge 0), $reportattack, @$attacker.idcode, @$attacker.knownname, @$attacker, @$origin.idcode, @$origin.knownname, @$origin, not this.isplayerowned, $station.zone.policefaction, (this.ship.relationto.{$station} ge 0), (this.ship.relationto.{$station.zone.policefaction} ge 0), ($station.owner != @$attacker.owner)]" chance="$debugchance"/>
+      <do_if value="$reportattack and @$attacker.isoperational and @$origin.exists and not this.isplayerowned and this.zone.policefaction and (this.ship.relationto.{this.zone.policefaction} ge 0) and ($station.owner != @$attacker.owner)">
+        <debug_text text="'reporting attack'" chance="$debugchance"/>
+        <signal_objects object="player.galaxy" param="'report_attack'" param2="[$origin, killmethod.hitbybullet, $origin, $attacker, this.assignedcontrolled, $station]"/>
+      </do_if>
+
+      <label name="flee"/>
+      <label name="waitforrescue"/>
+      <label name="selfdestruct"/>
+
+      <debug_text text="'good bye, cruel world! (oos)'" chance="$debugchance" />
+      <destroy_object explosion="false" object="this.ship" />
+
+    </actions>
+  </attention>
+</aiscript>

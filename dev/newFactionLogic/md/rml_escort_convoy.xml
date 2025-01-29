@@ -1,0 +1,254 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_Escort_Convoy" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--
+    $feedbackvalue:
+    Mission Errors <=-100
+    -102: Cue parameters are not valid
+    -101: Convoy group parameter is not valid
+    -100: Undefined failure. Defaulted to -100
+    
+    Player Fails
+    -3: Object Destroyed by Player owned Object
+    -2: Object Destroyed by Player
+    -1: No ships made it
+    
+    Player Success
+    1: Object Reached destination
+    2: Some object Reached destination-->
+
+    <!--This library will hold the mission logic and guidance handling-->
+    <library name="RMLEscortConvoy" namespace="this">
+      <params>
+        <param name="EndSignalCue"/>
+        <param name="MissionCue"/>
+        <param name="StartStep" default="1" comment="Briefing step to start the mission on"/>
+        <param name="UpdateBriefing" default="true" comment="Update the briefing objective step when the objective is updated"/>
+        
+        <param name="ConvoyGroup" default="null"/>
+        <param name="EndConvoyGroup" default="null"/>
+        <param name="ObjectiveText" default="null"/>
+
+        <param name="DebugChance" default="0"/>
+      </params>
+      <actions>
+        <set_value name="$SuccessfulShips" exact="0" />
+        <set_value name="$closestship" exact="null"/>
+        <set_value name="$feedbackvalue" exact="0"/>
+        <create_list name="$ErrorList"/>
+        
+        <do_if value="not $MissionCue or not $EndSignalCue">
+          <append_to_list name="$ErrorList" exact="-102"/>
+        </do_if>
+        <do_if value="typeof $ConvoyGroup != datatype.group">
+          <append_to_list name="$ErrorList" exact="-101"/>
+        </do_if>
+        <do_elseif value="$ConvoyGroup.count" exact="0">
+          <append_to_list name="$ErrorList" exact="-101"/>
+        </do_elseif>
+      </actions>
+      <cues>
+
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="1"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup"/>
+          </actions>
+        </cue>
+
+        <cue name="StartMission" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" exact="0"/>
+          </conditions>
+          <actions>
+            <add_to_group groupname="$ConvoyCopy" group="$ConvoyGroup"/>
+            <set_value name="$StartShipCount" exact="$ConvoyCopy.count"/>
+          </actions>
+          <cues>
+            <!--***LIBRARY REFERENCE***-->
+
+            <cue name="Protect_Object_Ref" ref="md.RML_Protect_Object.ProtectObject">
+              <param name="EndSignalCue" value="Protect_Object_Ended"/>
+              <param name="MissionCue" value="$MissionCue"/>
+              <param name="StartStep" value="$StartStep"/>
+              <param name="UpdateBriefing" value="$UpdateBriefing"/>
+
+              <param name="ObjectGroup" value="$ConvoyGroup"/>
+              <param name="GuidanceOnObject" value="true"/>
+              <param name="ObjectObjective" value="objective.escort"/>
+              <param name="ObjectiveText" value="$ObjectiveText"/>
+              <param name="EndPhaseCue" value="EscortEnded" comment="This is to stop the end phase starting"/>
+              <param name="ForceEndCue" value="EscortEnded" comment="If this cue is complete, the end phase will start"/>
+
+              <!--Signalling Removal of Protected Object-->
+              <param name="RemoveObjectCue" value="RemoveObject"/>
+              
+              <param name="DebugChance" value="$DebugChance"/>
+            </cue>
+
+            <cue name="Protect_Object_Ended">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <!--Do not assume that the feedback value from the protect RML maps correctly to the feedback values for the escort RML. Hence, the switchcase-->
+                <do_if value="Protect_Object_Ended.$EndFeedbackValue" exact="-3" comment="Object was killed by a player owned object">
+                  <set_value name="$feedbackvalue" exact="-3"/>
+                </do_if>
+                <do_elseif value="Protect_Object_Ended.$EndFeedbackValue" exact="-2" comment="Object killed by player">
+                  <set_value name="$feedbackvalue" exact="-2"/>
+                </do_elseif>
+                <do_elseif value="Protect_Object_Ended.$EndFeedbackValue" exact="-1" comment="Object killed by non-player object">
+                  <set_value name="$feedbackvalue" exact="-1"/>
+                </do_elseif>
+                <do_elseif value="Protect_Object_Ended.$EndFeedbackValue" exact="1" comment="All Objects safe at end">
+                  <set_value name="$feedbackvalue" exact="1"/>
+                </do_elseif>
+                <do_elseif value="Protect_Object_Ended.$EndFeedbackValue" exact="2" comment="Some Objects safe at end">
+                  <set_value name="$feedbackvalue" exact="2"/>
+                </do_elseif>
+                <signal_cue cue="Cleanup"/>
+              </actions>
+            </cue>
+            
+            <!--TODO: Param cue to be signalled when a ship has reached its destination, so the calling mission can handle it-->
+
+            <!--Cue to be signalled when a object is to be removed from the Protect RML-->
+            <cue name="RemoveObject">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <cues>
+                <cue name="RemoveObject_Reset">
+                  <actions>
+                    <reset_cue cue="RemoveObject"/>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <!--Cue to be signalled when the Escort Ends and the Protect RML should end-->
+            <cue name="EscortEnded">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <cues>
+                <!--Stop the cue EscortEnded from being removed-->
+                <cue name="EscortEnded_KeepAlive">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="ShipFinished" instantiate="true">
+              <conditions>
+                <event_object_signalled group="$ConvoyCopy" param="'RML_Escort_Convoy'"/>
+              </conditions>
+              <actions>
+                <do_if value="event.param2">
+                  <set_value name="$SuccessfulShips" operation="add"/>
+                </do_if>
+
+                <add_to_group object="event.object" groupname="$EndConvoyGroup"/>
+
+                <!--Signal Remove Object-->
+                <set_value name="Protect_Object_Ref.$RemovedObject" exact="event.object"/>
+                <signal_cue cue="RemoveObject"/>
+
+                <remove_from_group object="event.object" group="$ConvoyCopy"/>
+                <do_if value="$ConvoyCopy.count" exact="0">
+                  <signal_cue cue="EscortEnded"/>
+                </do_if>
+              </actions>
+            </cue>
+
+          </cues>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <!--TODO remove_objective-->
+
+            <do_if value="$feedbackvalue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'ERROR: Feedback value is 0 and no error values were set. Defaulting to -100'"/>
+                <set_value name="$feedbackvalue" exact="-100"/>
+              </do_if>
+              <do_else>
+                <set_value name="$feedbackvalue" exact="$ErrorList.{1}"/>
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+                    <do_if value="$ErrorList.{$Counter}" exact="-103">
+                      <set_value name="$FeedbackText" exact="'Destination parameters are not valid'"/>
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-102">
+                      <set_value name="$FeedbackText" exact="'Cue parameters are not valid'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'Convoy group parameter is not valid'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-100">
+                      <set_value name="$FeedbackText" exact="'Undefined failure. Defaulted to -100'"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                    </do_else>
+
+                    <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+
+              <do_if value="$feedbackvalue" exact="-4">
+                <set_value name="$FeedbackText" exact="'Destination Destroyed'"/>
+              </do_if>
+              <do_elseif value="$feedbackvalue" exact="-3">
+                <set_value name="$FeedbackText" exact="{30004,6070}" comment="'Object Destroyed by Player owned Object'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="-2">
+                <set_value name="$FeedbackText" exact="{30004,6071}" comment="'Object Destroyed by Player'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="-1">
+                <set_value name="$FeedbackText" exact="{30004,6041}" comment="'No ships made it'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="1">
+                <set_value name="$FeedbackText" exact="'All objects Reached destination'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="2">
+                <set_value name="$FeedbackText" exact="'Some object Reached destination'"/>
+              </do_elseif>
+
+              <do_if value="$feedbackvalue" min="1">
+                <debug_text text="'Mission Successful. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_if>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission Failed. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+            <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$feedbackvalue"/>
+            <signal_cue cue="$EndSignalCue"/>
+            <cancel_cue cue="RMLEscortConvoy"/>
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

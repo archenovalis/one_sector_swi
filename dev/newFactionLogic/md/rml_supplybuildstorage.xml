@@ -1,0 +1,387 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_SupplyBuildstorage" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--
+    This RML is intended for use in Master-Missions. 
+    It handles checking if the player transported (any) ware to the specified station's build storage
+    
+    $feedbackvalue:
+    -103 $TargetStorage is incorrectly defined.
+    -101 Cue parameters not defined
+    -100: Undefined failure. Defaulted to -100
+    -1: Station was destroyed (can't complete objectives)
+    1: All supplied delivered (supplies partially delivered by player)
+    2: All supplies delivered (high help from player
+    3: All supplies delivered (no help from player)
+    -->
+
+    <library name="SupplyBuildstorage">
+      <params>
+        <param name="EndSignalCue"/>
+        <param name="MissionCue"/>
+        <param name="StartStep"                 default="1"     comment="Briefing step to start the mission on"/>
+        <param name="UpdateBriefing"            default="true"  comment="Update the briefing objective step when the objective is updated"/>
+        <param name="DebugChance"               default="0" />
+
+        <param name="PlayerContributionFactor"  default="3"     comment="Defines how much more the player has to contribute than any other source to achieve a major success"/>
+        <param name="AssistedSupply"            default="false" comment="If true the supply will be supplemented by mission-created wares"/>
+        <param name="TargetStorage"                             comment="BuildStorage which the wares are delivered to"/>
+        <param name="MissionDuration"           default="null"/>
+      </params>
+      <actions>
+        <set_value name="$feedbackvalue" exact="0"/>
+        <create_list name="$ErrorList"/>
+
+        <do_if value="not $EndSignalCue or not $MissionCue">
+          <append_to_list name="$ErrorList" exact="-101"/>
+        </do_if>
+        <do_if value="not $TargetStorage">
+          <append_to_list name="$ErrorList" exact="-103"/>
+        </do_if>
+
+      </actions>
+      <cues>
+
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="1"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup"/>
+          </actions>
+        </cue>
+
+        <cue name="StartMission" onfail="cancel" version="4">
+          <conditions>
+            <check_value value="$ErrorList.count" min="0"/>
+          </conditions>
+          <actions>
+            <set_value name="$BuildProcessor" exact="$TargetStorage.buildprocessor"/>
+            <set_value name="$TotalRequiredWares" exact="$BuildProcessor.neededsequenceresources.list"/>
+            <set_value name="$InitialRequiredWareCounts" exact="table[]"/>
+            <set_value name="$PlayerContributedWares" exact="table[]"/>
+            <set_value name="$OtherContributedWares" exact="table[]"/>
+            <!-- Set up a table to keep track of how much the player contributes -->
+            <do_all exact="$TotalRequiredWares.count" counter="$i">
+              <set_value name="$InitialRequiredWareCounts.{$TotalRequiredWares.{$i}}" exact="$BuildProcessor.neededsequenceresources.{$TotalRequiredWares.{$i}}.count"/>
+              <set_value name="$PlayerContributedWares.{$TotalRequiredWares.{$i}}" exact="0"/>
+              <set_value name="$OtherContributedWares.{$TotalRequiredWares.{$i}}" exact="0"/>
+            </do_all>
+            <signal_cue_instantly cue="UpdateBriefing"/>
+          </actions>
+          <patch sinceversion="2">
+            <set_value name="$OtherContributedWares" exact="table[]"/>
+            <do_all exact="$TotalRequiredWares.count" counter="$i">
+              <set_value name="$OtherContributedWares.{$TotalRequiredWares.{$i}}" exact="0"/>
+            </do_all>
+          </patch>
+          <patch sinceversion="3">
+            <set_value name="$InitialRequiredWareCounts" exact="table[]"/>
+            <do_all exact="$TotalRequiredWares.count" counter="$i">
+              <set_value name="$InitialRequiredWareCounts.{$TotalRequiredWares.{$i}}" exact="$BuildProcessor.neededsequenceresources.{$TotalRequiredWares.{$i}}.count"/>
+            </do_all>
+          </patch>
+          <patch sinceversion="4">
+            <set_value name="$PlayerContributionFactor" exact="3"/>
+            <set_value name="$AssistedSupply" exact="false"/>
+          </patch>
+          <cues>
+
+
+            <cue name="DebugSpawnShip" instantiate="true">
+              <conditions>
+                <event_cue_signalled comment="manually trigger for testing CheckMissionStatus-cue"/>
+              </conditions>
+              <actions>
+                <do_for_each name="this.$SupplyWare" in="$BuildProcessor.neededsequenceresources.list">
+                  <create_ship name="this.$SupplyShip" group="$SupplyGroup" macro="macro.ship_arg_l_trans_container_01_a_macro" sector="$TargetStorage.sector" capturable="false" commandeerable="false">
+                    <owner exact="faction.player" overridenpc="true"/>
+                    <pilot>
+                      <select faction="faction.argon" tags="tag.pilot"/>
+                    </pilot>
+                    <safepos object="$TargetStorage" min="3km" max="5km"/>
+                  </create_ship>
+                  <add_wares object="this.$SupplyShip" ware="this.$SupplyWare" exact="this.$SupplyShip.cargo.{this.$SupplyWare}.free"/>
+                </do_for_each>
+              </actions>
+            </cue>
+
+            <cue name="DebugSupplyFactory" instantiate="true">
+              <conditions>
+                <event_cue_signalled comment="manually trigger for testing CheckMissionStatus-cue"/>
+              </conditions>
+              <actions>
+                <debug_text text="'filling complete storage'" chance="$DebugChance"/>
+                <set_value name="$BuildWares" exact="$BuildProcessor.neededsequenceresources.list"/>
+                <do_all exact="$BuildWares.count" counter="$k">
+                    <debug_text text="'- ' + $BuildWares.{$k}.name + ' amount=' + (($BuildProcessor.neededsequenceresources.{$BuildWares.{$k}}.count)*0.1)i" chance="$DebugChance"/>
+                    <add_cargo object="$TargetStorage" ware="$BuildWares.{$k}" exact="(($BuildProcessor.neededsequenceresources.{$BuildWares.{$k}}.count)*0.1)i"/>
+                </do_all>
+              </actions>
+            </cue>
+
+            <cue name="CheckMissionStatus" instantiate="true">
+              <conditions>
+                <check_any>
+                  <event_trade_completed buyer="$TargetStorage"/>
+                  <event_cue_signalled/>
+                </check_any>
+              </conditions>
+              <actions>
+                <set_value name="$Enough" exact="true" />
+
+                <set_value name="$RequiredWares" exact="$BuildProcessor.neededsequenceresources.list"/>
+
+                <do_if value="$RequiredWares.count gt 0" comment="The BuildStorage still requires wares">
+                  <set_value name="$Enough" exact="false"/>
+                </do_if>
+
+                <do_if value="$Enough">
+                  <!-- we already know the mission is complete, determine in how far the player contributed (compared to the others) -->
+                  <set_value name="this.$playercontributiontotal" exact="0"/>
+                  <do_all exact="$TotalRequiredWares.count" counter="$i">
+                    <set_value name="this.$playercontributiontotal" exact="$PlayerContributedWares.{$TotalRequiredWares.{$i}}" operation="add"/>
+                  </do_all>
+                    
+                  <do_if value="this.$playercontributiontotal == 0">
+                    <set_value name="$feedbackvalue" exact="3" comment="success (no help from player)"/>
+                  </do_if>
+                  <do_else>
+                    <set_value name="$TotalPlayerWin" exact="0"/>
+                    <set_value name="$TotalOtherWin" exact="0"/>
+                    <do_all exact="$TotalRequiredWares.count" counter="$WaresCounter">
+                      <set_value name="$Ware" exact="$TotalRequiredWares.{$WaresCounter}"/>
+                      <do_if value="$PlayerContributedWares.{$Ware} * $PlayerContributionFactor > $OtherContributedWares.{$Ware}">
+                        <set_value name="$TotalPlayerWin" exact="1" operation="add"/>
+                      </do_if>
+                      <do_else>
+                        <set_value name="$TotalOtherWin" exact="1" operation="add"/>
+                      </do_else>
+                    </do_all>
+                    <do_if value="$TotalPlayerWin ge $TotalOtherWin">
+                      <set_value name="$feedbackvalue" exact="2" comment="success (major help from player)"/>
+                    </do_if>
+                    <do_else>
+                      <set_value name="$feedbackvalue" exact="1" comment="success (some help from player)"/>
+                    </do_else>
+                  </do_else>
+
+                  <debug_text text="'SupplyBuildStorage feedback=%s playercontrib=%s othercontrib=%s'.[$feedbackvalue, $PlayerContributedWares, $OtherContributedWares]"  chance="0"/>
+                  <!-- feedback value is set, complete the mission -->
+                  <signal_cue cue="Cleanup"/>
+                </do_if>
+                <do_else>
+                  <!-- Not enough, update ware delivery counts -->
+                  <do_if value="event.name == 'event_trade_completed'" comment="We can also trigger the cue through AssistedSupply_IncrimentalWareIncrease">
+                    <set_value name="$Trade" exact="event.param"/>
+                    <debug_text text="'Ware=%s #%s faction=%s'.[$Trade.ware, $Trade.transferredamount, $Trade.seller.owner]" chance="$DebugChance"/>
+
+                    <do_if value="$TotalRequiredWares.indexof.{$Trade.ware}">
+                      <do_if value="$Trade.seller.owner == faction.player">
+                        <set_value name="$PlayerContributedWares.{$Trade.ware}" operation="add" exact="($Trade.transferredamount)f"/>
+                      </do_if>
+                      <do_else>
+                        <set_value name="$OtherContributedWares.{$Trade.ware}" operation="add" exact="($Trade.transferredamount)f"/>
+                      </do_else>
+                    </do_if>
+                  </do_if>
+                </do_else>
+                <signal_cue_instantly cue="UpdateBriefing"/>
+              </actions>
+            </cue>
+
+            <cue name="CheckMissionStatusFail">
+              <conditions>
+                <event_object_destroyed object="$TargetStorage"/>
+              </conditions>
+              <actions>
+                <debug_text text="'RML_SupplyBuildstorage.CheckMissionStatusFail: Station was destroyed'" chance="$DebugChance"/>
+                <set_value name="$feedbackvalue" exact="-1"/>
+                <signal_cue cue="Cleanup"/>
+              </actions>
+            </cue>
+
+            <cue name="AssistedSupply_Check" onfail="cancel">
+              <conditions>
+                <check_value value="$AssistedSupply"/>
+              </conditions>
+              <cues>
+
+                <cue name="AssistedSupply_IncrementalWareIncrease" instantiate="true" checkinterval="15min">
+                  <actions>
+                    <!-- drip feed buildstorage with needed wares so that even without player intervention the station will eventually finish -->
+                    <debug_text text="'filling storage'" chance="$DebugChance"/>
+                    <set_value name="$BuildWares" exact="$BuildProcessor.neededsequenceresources.list"/>
+                    <do_all exact="$BuildWares.count" counter="$k">
+                      <!-- Trying to divide 1 and then turn it into an integer it would regularly add 0 wares, and the trade would be stuck looking to buy 1 of everything, which no one wanted to fulfill, so take at least 1 -->
+                      <add_cargo object="$TargetStorage" ware="$BuildWares.{$k}" exact="[1, (($BuildProcessor.neededsequenceresources.{$BuildWares.{$k}}.count)*0.1)i].max"/>
+                    </do_all>
+                    <signal_cue cue="CheckMissionStatus"/>
+                  </actions>
+                </cue>
+
+              </cues>
+            </cue>
+
+          </cues>
+        </cue>
+
+        <cue name="UpdateBriefing" instantiate="true" comment="Called each time a briefing-update is needed">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <do_if value="$UpdateBriefing">
+
+              <set_value name="$AllStepsCounter" exact="0"/>
+              <set_value name="$ObjectiveStep" exact="0" />
+              <set_value name="$ObjectiveStepText" exact="''" />
+              <set_value name="$CurrentWares" exact="$BuildProcessor.neededsequenceresources.list" comment="Get wares still required by buildstorage"/>
+
+              <!-- First iteration we take the completed objectives, second iteration we take the remaining objectives
+                At the end of the first iteration, we set the 'set_objective' because up to this point we completed them -->
+
+              <!-- First iteration of TotalWares checks which ones are not in the updated resources list anymore -->
+
+              <do_all exact="2" counter="$TwiceCounter">
+                <do_all exact="$TotalRequiredWares.count" counter="$WaresCounter">
+                  <set_value name="$Ware" exact="$TotalRequiredWares.{$WaresCounter}"/>
+                  <do_if value="($TwiceCounter == 1 and not $CurrentWares.indexof.{$Ware}) or ($TwiceCounter == 2 and $CurrentWares.indexof.{$Ware})">
+
+                    <do_if value="$TwiceCounter == 2">
+                      <set_value name="$WareStorage" exact="$BuildProcessor.neededsequenceresources.{$Ware}.count" comment="wares remaining"/>
+                      <substitute_text text="$ObjectiveText" source="{1004,1018}">
+                        <replace string="'$AMOUNT$'" with="$WareStorage"/>
+                        <replace string="'$WARE$'" with="$Ware.name"/>
+                        <replace string="'$PLAYERAMOUNT$'" with="$PlayerContributedWares.{$Ware}"/>
+                      </substitute_text>
+
+                      <do_if value="not $ObjectiveStep">
+                        <set_value name="$ObjectiveStep" exact="$AllStepsCounter + $StartStep"/>
+                        <set_value name="$ObjectiveStepText" exact="$ObjectiveText" />
+                      </do_if>
+                    </do_if>
+                    <do_else>
+                      <do_if value="$TwiceCounter == 1">
+                        <set_value name="$WareStorage" exact="$InitialRequiredWareCounts.{$Ware}" comment="initial ware count (for the completed wares)"/>
+                      </do_if>
+                      <do_else>
+                        <set_value name="$WareStorage" exact="$BuildProcessor.neededsequenceresources.{$Ware}.count" comment="wares remaining (for the incomplete wares)"/>
+                      </do_else>
+                      <substitute_text text="$ObjectiveText" source="{1004,1018}">
+                        <replace string="'$AMOUNT$'" with="$WareStorage"/>
+                        <replace string="'$WARE$'" with="$Ware.name"/>
+                        <replace string="'$PLAYERAMOUNT$'" with="$PlayerContributedWares.{$Ware}"/>
+                      </substitute_text>
+                    </do_else>
+
+                    <debug_text text="'step=%s text=%s (Briefing) twicecounter=%s cw=%s'.[$AllStepsCounter + $StartStep, $ObjectiveText, $TwiceCounter, $CurrentWares.indexof.{$Ware}]" chance="0"/>
+                    <update_mission cue="$MissionCue">
+                      <briefing>
+                        <objective step="$AllStepsCounter + $StartStep" action="objective.deliver" text="$ObjectiveText" object="$TargetStorage" silent="true"/>
+                      </briefing>
+                    </update_mission>
+
+                    <set_value name="$AllStepsCounter" operation="add" exact="1"/>
+                  </do_if>
+                </do_all>
+              </do_all>
+
+              <do_if value="$AllStepsCounter gt 0">
+                <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep + $AllStepsCounter - 1"/>
+              </do_if>
+
+              <do_if value="$ObjectiveStep">
+                <do_if value="$MissionDuration">
+                  <debug_text text="'Step=%s text=%s (timed)'.[$ObjectiveStep, $ObjectiveStepText]" chance="0"/>
+                  <set_objective cue="$MissionCue" step="$ObjectiveStep" action="objective.deliver" text="$ObjectiveStepText" object="$TargetStorage" silent="true" endtime="StartMission.time + $MissionDuration" showunknownpath="true" updatebriefing="true"/>
+                </do_if>
+                <do_else>
+                  <debug_text text="'step=%s text=%s (non-timed)'.[$ObjectiveStep, $ObjectiveStepText]" chance="0"/>
+                  <set_objective cue="$MissionCue" step="$ObjectiveStep" action="objective.deliver" text="$ObjectiveStepText" object="$TargetStorage" silent="true" showunknownpath="true" updatebriefing="true"/>
+                </do_else>
+              </do_if>
+
+              <remove_value name="$ObjectiveText"/>
+            </do_if>
+
+          </actions>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <!--TODO remove_objective-->
+
+            <do_if value="$feedbackvalue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'ERROR: Feedback value is 0 and no error values were set. Defaulting to -100'"/>
+                <set_value name="$feedbackvalue" exact="-100"/>
+              </do_if>
+              <do_else>
+                <set_value name="$feedbackvalue" exact="$ErrorList.{1}"/>
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+                    <do_if value="$ErrorList.{$Counter}" exact="-103">
+                      <set_value name="$FeedbackText" exact="'$TargetStorage parameter left undefined'"/>
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'Cue parameters not defined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-100">
+                      <set_value name="$FeedbackText" exact="'Undefined failure. Defaulted to -100'"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                    </do_else>
+
+                    <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+
+              <do_if value="$feedbackvalue" exact="-2">
+                <set_value name="$FeedbackText" exact="{30004,6026}" comment="'Destination changed owner'"/>
+              </do_if>
+              <do_elseif value="$feedbackvalue" exact="-1">
+                <set_value name="$FeedbackText" exact="{30004,6028}" comment="'Station was destroyed'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="1">
+                <set_value name="$FeedbackText" exact="'Station supplies high enough - Moderate player help'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="2">
+                <set_value name="$FeedbackText" exact="'Station supplies high enough - High player help'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="3">
+                <set_value name="$FeedbackText" exact="'Station supplies high enough - No Player Help'"/>
+              </do_elseif>
+
+              <do_if value="$feedbackvalue" min="1">
+                <debug_text text="'Mission Successful. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_if>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission Failed. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+            <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$feedbackvalue"/>
+            <signal_cue cue="$EndSignalCue"/>
+            <cancel_cue cue="SupplyBuildstorage"/>
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

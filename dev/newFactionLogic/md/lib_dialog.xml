@@ -1,0 +1,897 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="LIB_Dialog" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+    <!-- Used to suppress with LIB_Generic.SuppressChatter_AddCue-->
+    <!-- Suppression will be lifted when this cue is signalled -->
+    <cue name="SuppressChatter_Speak_Actors" instantiate="true" version="2">
+      <conditions>
+        <event_cue_signalled />
+      </conditions>
+      <actions>
+        <run_actions ref="md.LIB_Generic.SuppressChatter_RemoveCue">
+          <param name="Cue" value="static"/>
+        </run_actions>
+      </actions>
+      <patch sinceversion="2" state="complete">
+        <reset_cue cue="this" />
+      </patch>
+    </cue>
+    <!-- Used to suppress with LIB_Generic.SuppressChatter_AddCue -->
+    <!-- Suppression will be lifted when this cue is signalled -->
+    <cue name="SuppressChatter_Speak_Actor" instantiate="true" version="2">
+      <conditions>
+        <event_cue_signalled />
+      </conditions>
+      <actions>
+        <run_actions ref="md.LIB_Generic.SuppressChatter_RemoveCue">
+          <param name="Cue" value="static"/>
+        </run_actions>
+      </actions>
+      <patch sinceversion="2" state="complete">
+        <reset_cue cue="this" />
+      </patch>
+    </cue>
+    <!-- Saving Last Speak Time to space out story reminders / not play new reminders if there were other recent LIB_Dialog calls -->
+
+    <!-- Helper for deprecated LIB_Dialog libraries. Do not use. The NPC usecase system should be used directly. -->
+    <library name="StartAsCustomUseCase" purpose="run_actions">
+      <params>
+        <param name="Actor" />
+        <param name="Lines" />
+        <param name="Cutscene" />
+        <param name="ForceCutscene" />
+        <param name="CutsceneKey" />
+        <param name="CutsceneCaption" />
+        <param name="SpeechPriority" />
+        <param name="DelayInitial" />
+        <param name="DelayEndCutscene" />
+        <param name="WaitForFullscreen" />
+        <param name="EndSignalCue" />
+        <param name="SuppressChatterCue" />
+        <param name="UsecaseFinishedCue" default="null" />
+      </params>
+      <actions>
+        <!-- Ignored params of Speak_Actor / Speak_Actors:
+          - Room (not used)
+          - CutsceneTimeout (only the default value of 10 minutes was used, same value as in the NPC usecase system)
+          - ActorDiedSignalCue (not used)
+          - DelayStartCutscene (not important, implementation broken anyway)
+          - SignalCuesOnCancellation (not used)
+        -->
+        <!-- Usecase script -->
+        <set_value name="$script" exact="[]" />
+        <!-- List of all callbacks, so that we can ensure that all callbacks get triggered in case a usecase is aborted or a callback was skipped -->
+        <set_value name="$dialogcallbacks" exact="[]" />
+
+        <!-- Construct the usecase trigger -->
+        <set_value name="$Trigger" exact="table[
+                    $name = (if $UsecaseFinishedCue then '$LIB_Dialog__' + $UsecaseFinishedCue.namespace else '$LIB_Dialog'),
+                    $preset = '$plot',
+                    $actors = table[],
+                    $nofullscreenmenu = (if $WaitForFullscreen.count then $WaitForFullscreen.{1} else true),
+                    $speakpriority = (if $SpeechPriority.count then $SpeechPriority.{1} else 100),
+                    $script = $script,
+                    $speakcallbackcue = UsecaseDialogCallbackHandler,
+                    $callbackcue = UsecaseDialogCallbackHandler,
+                    $callbackparam = [ $dialogcallbacks, 'all' ],
+                    $abortcallbackcue = UsecaseDialogCallbackHandler,
+                    $abortcallbackparam = [ $dialogcallbacks, 'all' ],
+          ]" />
+
+        <set_value name="$lastspeak" exact="null" />
+
+        <!-- Assign actors and assemble usecase script -->
+        <do_for_each in="$Actor" counter="$i">
+          <assert value="$Actor.{$i}.isclass.[class.npc, class.computer]" text="'Invalid actor %s %s'.[$Actor.{$i}, @$Actor.{$i}.knownname]" />
+          <!-- Actor -->
+          <set_value name="$actordefname" exact="'$Actor' + $i" />
+          <set_value name="$actortable" exact="table[ $entity = $Actor.{$i} ]" />
+          <do_if value="not $Cutscene.count or $Cutscene.{$i}">
+            <!-- NOTE: Force usage of monitor cutscene even if speech is not directed at the player ($forceonplayer) /but not if NPC is near the player ($ignoredistance). -->
+            <!-- This is done to match the previous LIB_Dialog behaviour as well as possible, even though normally the monitor is not supposed to be used in these cases. -->
+            <set_value name="$actortable.$monitor" exact="table[
+                            $cutscenekey = (if ($CutsceneKey.count and $CutsceneKey.{$i}) then $CutsceneKey.{$i}.$key else (if $Actor.{$i}.$cutscenekey.$key? then $Actor.{$i}.$cutscenekey.$key else if $Actor.{$i}.facecutscene then $Actor.{$i}.facecutscene else 'ShowNPCFace')),
+                            $forceonplayer = true,
+                            $ignoredistance = (if ($ForceCutscene.count and $ForceCutscene.{$i}) then $ForceCutscene.{$i} else false),
+                            $caption = (if $CutsceneCaption.count then $CutsceneCaption.{$i} else true)
+                          ]" />
+          </do_if>
+          <set_value name="$Trigger.$actors.{$actordefname}" exact="$actortable" />
+
+          <!-- DelayInitial -->
+          <do_if value="not $DelayInitial.count">
+            <append_to_list name="$script" exact="1s" comment="DelayInitial default value" />
+          </do_if>
+          <do_elseif value="typeof $DelayInitial.{$i} == datatype.time and $DelayInitial.{$i} gt 0s">
+            <append_to_list name="$script" exact="$DelayInitial.{$i}" />
+          </do_elseif>
+
+          <!-- Lines -->
+          <do_for_each name="$l" in="$Lines.{$i}">
+            <do_if value="$l.{1} == null">
+              <continue />
+            </do_if>
+            <set_value name="$speakline" exact="$l.{1}" />
+            <set_value name="$delay" exact="@$l.{2}" />
+            <set_value name="$signalcue" exact="@$l.{3}" />
+            <!-- Always talk to the player (workaround for compatibility), although not typical in usecases. Defining recipient was not supported in dialog library. -->
+            <!-- NOTE: We always add $speakcallbackparam even if we do not need it. First param is always the list of all callbacks. Below, we will append actual callbacks as required. -->
+            <!-- The speak callback is defined in the trigger table as $speakcallbackcue. -->
+            <set_value name="$lastspeak" exact="table[ $actor = $actordefname, $speak = $speakline, $speakdelay = $delay, $recipient = 'player', $speakcallbackparam = [ $dialogcallbacks ] ]" />
+            <append_to_list name="$script" exact="$lastspeak" />
+            <do_if value="typeof $signalcue == datatype.cue">
+              <!-- Our callback helper gets the $signalcue via the callback param and signals it from there -->
+              <append_to_list name="$dialogcallbacks" exact="$signalcue" />
+              <append_to_list name="$lastspeak.$speakcallbackparam" exact="$signalcue" />
+            </do_if>
+          </do_for_each>
+
+          <!-- EndSignalCue -->
+          <do_if value="typeof @$EndSignalCue.{$i} == datatype.cue">
+            <append_to_list name="$dialogcallbacks" exact="$EndSignalCue.{$i}" />
+            <do_if value="$lastspeak.$speakcallbackparam?">
+              <append_to_list name="$lastspeak.$speakcallbackparam" exact="$EndSignalCue.{$i}" />
+            </do_if>
+          </do_if>
+
+          <!-- DelayEndCutscene, and force closing monitor (normally not needed in usecases) -->
+          <do_if value="@$actortable.$monitor">
+            <do_if value="not $DelayEndCutscene.count">
+              <append_to_list name="$script" exact="1s" comment="DelayEndCutscene default value" />
+            </do_if>
+            <do_elseif value="typeof $DelayEndCutscene.{$i} == datatype.time and $DelayEndCutscene.{$i} gt 0s">
+              <append_to_list name="$script" exact="$DelayEndCutscene.{$i}" />
+            </do_elseif>
+            <append_to_list name="$script" exact="table[ $closemonitor = true ]" />
+          </do_if>
+        </do_for_each>
+
+        <!-- Prepare cleanup -->
+        <do_if value="$lastspeak.$speakcallbackparam?">
+          <append_to_list name="$lastspeak.$speakcallbackparam" exact="$SuppressChatterCue" />
+        </do_if>
+        <append_to_list name="$dialogcallbacks" exact="$SuppressChatterCue" />
+        <!-- Final signal will be sent when UsecaseDialogCallbackHandler is signalled with 'all' -->
+        <append_to_list name="$dialogcallbacks" exact="$UsecaseFinishedCue" />
+
+        <signal_cue_instantly cue="md.NPC_UseCases.UseCase" param="$Trigger" />
+      </actions>
+    </library>
+
+    <!-- **** DEPRECATED **** NPC usecase system should be used for newly added dialogues -->
+    <library name="Speak_Actors">
+      <!-- WARNING: Defaults priority to 100 which is story mission priority, set a lower SpeechPriority (e.g. 0) if used for anything else! -->
+      <!-- uses the "Dialog" Library for multiple actors -->
+      <!-- use by putting every parameter into a list, .{1} for the first actor/lines etc. -->
+      <params>
+        <param name="Actor"/>
+        <param name="Lines"/>
+        <param name="Cutscene"              default="[]"/>
+        <param name="ForceCutscene"         default="[]"/>
+        <param name="Room"                  default="[]"/>
+        <param name="CutsceneKey"           default="[]"/>
+        <param name="CutsceneTimeout"       default="[]"    comment="seconds after which the cutscene would be aborted"/>
+        <param name="CutsceneCaption"       default="[]"/>
+        <param name="EndSignalCue"          default="[]"/>
+        <param name="ActorDiedSignalCue"    default="[]"/>
+        <param name="DelayInitial"          default="[]"    comment="Before the Cutscene Start" />
+        <param name="DelayStartCutscene"    default="[]"    comment="Between Cutscene Start and Speak Start" />
+        <param name="DelayEndCutscene"      default="[]"    comment="After Speak Stop and Before Cutscene Stop" />
+        <param name="WaitForFullscreen"     default="[]"/>
+        <param name="SpeechPriority"        default="[]"/>
+        <param name="SignalCuesOnCancellation" default="true"/>
+      </params>
+      <actions>
+        <!-- Check for the correct amount of optional parameters -->
+        <assert value="$Lines.count == $Actor.count"/>
+        <assert value="typeof $CutsceneKey        == datatype.list and (not $CutsceneKey.count or $CutsceneKey.count == $Actor.count)"/>
+        <assert value="typeof $ForceCutscene      == datatype.list and (not $ForceCutscene.count or $ForceCutscene.count == $Actor.count)"/>
+        <assert value="typeof $Room               == datatype.list and (not $Room.count or $Room.count == $Actor.count)"/>
+        <assert value="typeof $Cutscene           == datatype.list and (not $Cutscene.count or $Cutscene.count == $Actor.count)"/>
+        <assert value="typeof $CutsceneTimeout    == datatype.list and (not $CutsceneTimeout.count or $CutsceneTimeout.count == $Actor.count)"/>
+        <assert value="typeof $CutsceneCaption    == datatype.list and (not $CutsceneCaption.count or $CutsceneCaption.count == $Actor.count)"/>
+        <assert value="typeof $EndSignalCue       == datatype.list and (not $EndSignalCue.count or $EndSignalCue.count == $Actor.count)"/>
+        <assert value="typeof $ActorDiedSignalCue == datatype.list and (not $ActorDiedSignalCue.count or $ActorDiedSignalCue.count == $Actor.count)"/>
+        <assert value="typeof $DelayInitial       == datatype.list and (not $DelayInitial.count or $DelayInitial.count == $Actor.count)"/>
+        <assert value="typeof $DelayStartCutscene == datatype.list and (not $DelayStartCutscene.count or $DelayStartCutscene.count == $Actor.count)"/>
+        <assert value="typeof $DelayEndCutscene   == datatype.list and (not $DelayEndCutscene.count or $DelayEndCutscene.count == $Actor.count)"/>
+        <assert value="typeof $WaitForFullscreen  == datatype.list and (not $WaitForFullscreen.count or $WaitForFullscreen.count == $Actor.count)"/>
+        <assert value="typeof $SpeechPriority     == datatype.list and (not $SpeechPriority.count or $SpeechPriority.count == $Actor.count)"/>
+        <!-- New implementation: Prepare for using NPC usecase -->
+        <set_value name="$UseCaseEnabled" exact="true" />
+      </actions>
+      <cues>
+        <cue name="OnSpeakActorsUsecaseFinished">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <actions>
+            <cancel_cue cue="Speak_Actors" />
+          </actions>
+        </cue>
+
+        <cue name="MultiDialogCore">
+          <actions>
+            <run_actions ref="md.LIB_Generic.SuppressChatter_AddCue">
+              <param name="Cue" value="md.LIB_Dialog.SuppressChatter_Speak_Actors"/>
+            </run_actions>
+            <do_if value="@$UseCaseEnabled">
+              <run_actions ref="md.LIB_Dialog.StartAsCustomUseCase">
+                <param name="Actor"               value="$Actor" />
+                <param name="Lines"               value="$Lines" />
+                <param name="Cutscene"            value="$Cutscene" />
+                <param name="ForceCutscene"       value="$ForceCutscene" />
+                <param name="CutsceneKey"         value="$CutsceneKey" />
+                <param name="CutsceneCaption"     value="$CutsceneCaption" />
+                <param name="SpeechPriority"      value="$SpeechPriority" />
+                <param name="DelayInitial"        value="$DelayInitial" />
+                <param name="DelayEndCutscene"    value="$DelayEndCutscene" />
+                <param name="WaitForFullscreen"   value="$WaitForFullscreen" />
+                <param name="EndSignalCue"        value="$EndSignalCue" />
+                <param name="SuppressChatterCue"  value="md.LIB_Dialog.SuppressChatter_Speak_Actors" />
+                <param name="UsecaseFinishedCue"  value="OnSpeakActorsUsecaseFinished" />
+              </run_actions>
+              <!-- Cancel this cue to prevent sub-cues from activating. However, keep library cue alive until usecase is finished -->
+              <cancel_cue cue="this" />
+            </do_if>
+            <do_else>
+              <!-- BEGIN LEGACY CODE -->
+              <set_value name="$CurrentActor" exact="1"/>
+              <signal_cue cue="Trigger_Next_Actor"/>
+              <!-- END LEGACY CODE -->
+            </do_else>
+          </actions>
+        </cue>
+
+        <cue name="Trigger_Next_Actor">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <cues>
+            <cue name="Speak_Actor_Ref" ref="md.LIB_Dialog.Speak_Actor">
+              <param name="Actor"                value="$Actor.{$CurrentActor}" />
+              <param name="Lines"                value="$Lines.{$CurrentActor}" />
+              <param name="Room"                 value="if $Room.count then $Room.{$CurrentActor} else null" />
+              <param name="Cutscene"             value="if $Cutscene.count then $Cutscene.{$CurrentActor} else true" />
+              <param name="CutsceneKey"          value="$CutsceneKey.{$CurrentActor}" />
+              <param name="CutsceneTimeout"      value="if $CutsceneTimeout.count then $CutsceneTimeout.{$CurrentActor} else 600s" comment="can this timeout a later speaker?"/>
+              <param name="CutsceneCaption"      value="if $CutsceneCaption.count then $CutsceneCaption.{$CurrentActor} else true"/>
+              <param name="EndSignalCue"         value="Trigger_Next_Actor_Done" />
+              <param name="ActorDiedSignalCue"   value="if $ActorDiedSignalCue.count then $ActorDiedSignalCue.{$CurrentActor} else null" />
+              <param name="DelayInitial"         value="if $DelayInitial.count then $DelayInitial.{$CurrentActor} else 1s" />
+              <param name="DelayStartCutscene"   value="if $DelayStartCutscene.count then $DelayStartCutscene.{$CurrentActor} else 0.25s" />
+              <param name="DelayEndCutscene"     value="if $DelayEndCutscene.count then $DelayEndCutscene.{$CurrentActor} else 1s" />
+              <param name="WaitForFullscreen"    value="if $WaitForFullscreen.count then $WaitForFullscreen.{$CurrentActor} else (if ($CurrentActor == 1) then true else false)"/>
+              <param name="SpeechPriority"       value="if $SpeechPriority.count then $SpeechPriority.{$CurrentActor} else 100"/>
+              <param name="Multispeak"           value="true"/>
+            </cue>
+            <cue name="Trigger_Next_Actor_Done">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <do_if value="$EndSignalCue.count and typeof $EndSignalCue.{$CurrentActor} == datatype.cue">
+                  <signal_cue cue="$EndSignalCue.{$CurrentActor}"/>
+                </do_if>
+                <do_if value="$CurrentActor lt $Actor.count">
+                  <reset_cue cue="parent"/>
+                </do_if>
+                <signal_cue cue="Actor_Finished"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Actor_Finished">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <set_value name="$CurrentActor" operation="add" exact="1"/>
+            <do_if value="$CurrentActor le $Actor.count">
+              <signal_cue cue="Trigger_Next_Actor"/>
+              <reset_cue cue="this"/>
+            </do_if>
+            <do_else>
+              <!--No lines left. Signal Speak_Cancel_Helper with the cue to instruct it to clean up a running instance-->
+              <signal_cue_instantly cue="md.LIB_Dialog.Speak_Cancel_Helper" param="Speak_Actors"/>
+              <cancel_cue cue="Speak_Actors"/>
+              <run_actions ref="md.LIB_Generic.SuppressChatter_RemoveCue">
+                <param name="Cue" value="md.LIB_Dialog.SuppressChatter_Speak_Actors"/>
+              </run_actions>
+            </do_else>
+          </actions>
+        </cue>
+
+      </cues>
+
+    </library>
+
+
+    <!-- **** DEPRECATED **** NPC usecase system should be used for newly added dialogues -->
+    <library name="Speak_Actor" namespace="this">
+      <!-- WARNING: Defaults priority to 100 which is story mission priority, set a lower SpeechPriority (e.g. 0) if used for anything else! -->
+      <!-- Lines Parameter:
+      [ [$line, $delay_Before_Line(default 0s), $signalcue_After_Line(default skipped)],
+        [30221263],
+        [30221264,1s,Asdf],
+        [30221265,1s]]      
+      -->
+      <params>
+        <param name="Actor" />
+        <!--TODO @Owen @Heinrich $Room not used-->
+        <param name="Room"                  default="null"  comment="optional persistent room"/>
+        <param name="Lines"                                 comment="all lines in correct order: [[line, delay, SignalCue], [line, delay], [line], [line]]
+                                                                     Using null as line will skip it, ignoring the provided delay and SignalCue"/>
+        <param name="Cutscene"              default="true"/>
+        <param name="ForceCutscene"         default="false"/>
+        <param name="CutsceneKey"           default="null"/>
+        <param name="CutsceneTimeout"       default="600s"  comment="seconds after which the cutscene would be aborted"/>
+        <param name="CutsceneCaption"       default="true"  comment="Optional custom caption. If true, the library will generate a caption instead."/>
+        <param name="EndSignalCue"          default="null"/>
+        <param name="ActorDiedSignalCue"    default="null"/>
+        <param name="DelayInitial"          default="1s"    comment="Before the Cutscene Start" />
+        <param name="DelayStartCutscene"    default="0.25s"  comment="Between Cutscene Start and Speak Start" />
+        <param name="DelayEndCutscene"      default="1s"    comment="After Speak Stop and Before Cutscene Stop" />
+        <param name="WaitForFullscreen"     default="true"/>
+        <param name="SpeechPriority"        default="100"/>
+        <param name="Multispeak"            default="false" comment="Is this library part of speak section with other actors? If not, trigger Speak_Cancel_Helper for this library"/>
+      </params>
+      <actions>
+        <!-- Legacy behaviour is disabled, except when called with Multispeak==true (referenced from legacy "Speak_Actors" library above) for savegame compatibility -->
+        <do_if value="$Multispeak">
+          <!-- BEGIN LEGACY CODE -->
+          <do_if value="$CutsceneCaption == true">
+            <set_value name="$CutsceneCaption" exact="{10002,22} + {1001,120} + ' ' + $Actor.knownname"/>
+          </do_if>
+          <set_value name="$CurrentLine" exact="1"/>
+          <do_if value="not $Multispeak">
+            <!--As a failsafe for this library being cancelled, instance a helper cue to signal all cues which expect to be signalled when the speaks should have ended
+            This has to be for both $EndSignalCue and any cues in $Lines-->
+            <set_value name="$CancelHelperSignalCues" exact="[]"/>
+            <do_if value="$EndSignalCue">
+              <append_to_list name="$CancelHelperSignalCues" exact="$EndSignalCue"/>
+            </do_if>
+            <do_for_each name="$Line" in="$Lines">
+              <do_if value="$Line.{3}?">
+                <append_to_list name="$CancelHelperSignalCues" exact="$Line.{3}"/>
+              </do_if>
+            </do_for_each>
+            <signal_cue_instantly cue="md.LIB_Dialog.Speak_Cancel_Helper" param="table[$cue = Speak_Actor, $signalcues = $CancelHelperSignalCues]"/>
+          </do_if>
+          <!-- END LEGACY CODE -->
+        </do_if>
+        <do_else>
+          <!-- New implementation: Prepare for using NPC usecase -->
+          <set_value name="$UseCaseEnabled" exact="true" />
+        </do_else>
+      </actions>
+      <cues>
+        <cue name="OnSpeakActorUsecaseFinished">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <actions>
+            <cancel_cue cue="Speak_Actor" />
+          </actions>
+        </cue>
+
+        <cue name="Cutscene_Core">
+          <actions>
+            <do_if value="@$UseCaseEnabled">
+              <run_actions ref="md.LIB_Generic.SuppressChatter_AddCue">
+                <param name="Cue" value="md.LIB_Dialog.SuppressChatter_Speak_Actor"/>
+              </run_actions>
+              <run_actions ref="md.LIB_Dialog.StartAsCustomUseCase">
+                <param name="Actor"               value="[ $Actor ]" />
+                <param name="Lines"               value="[ $Lines ]" />
+                <param name="Cutscene"            value="[ $Cutscene ]" />
+                <param name="ForceCutscene"       value="[ $ForceCutscene ]" />
+                <param name="CutsceneKey"         value="[ $CutsceneKey ]" />
+                <param name="CutsceneCaption"     value="[ $CutsceneCaption ]" />
+                <param name="SpeechPriority"      value="[ $SpeechPriority ]" />
+                <param name="DelayInitial"        value="[ $DelayInitial ]" />
+                <param name="DelayEndCutscene"    value="[ $DelayEndCutscene ]" />
+                <param name="WaitForFullscreen"   value="[ $WaitForFullscreen ]" />
+                <param name="EndSignalCue"        value="[ $EndSignalCue ]" />
+                <param name="SuppressChatterCue"  value="md.LIB_Dialog.SuppressChatter_Speak_Actor" />
+                <param name="UsecaseFinishedCue"  value="OnSpeakActorUsecaseFinished" />
+              </run_actions>
+              <!-- Cancel this cue to prevent sub-cues from activating. However, keep library cue alive until usecase is finished -->
+              <cancel_cue cue="this" />
+            </do_if>
+            <do_else>
+              <!-- BEGIN LEGACY CODE -->
+              <set_value name="this.$CutsceneID" exact="null"/>
+              <!-- END LEGACY CODE -->
+            </do_else>
+          </actions>
+          <cues>
+            <cue name="Cutscene_Init">
+              <actions>
+                <do_if value="(player.isinfullscreenmenu and $WaitForFullscreen)
+                              or player.isinconversation
+                              or player.isscreenshotmode">
+                  <signal_cue cue="Wait_For_Fullscreen"/>
+                </do_if>
+                <do_else>
+                  <signal_cue cue="Cutscene_Play"/>
+                  <cancel_cue cue="Wait_For_Fullscreen"/>
+                </do_else>
+              </actions>
+            </cue>
+
+            <cue name="Wait_For_Fullscreen">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <cues>
+                <cue name="Wait_For_Fullscreen_5s" checkinterval="5s">
+                  <conditions>
+                    <check_value value="not player.isinfullscreenmenu"/>
+                    <check_value value="not player.isinconversation"/>
+                    <check_value value="not player.isscreenshotmode"/>
+                  </conditions>
+                  <actions>
+                    <signal_cue cue="Cutscene_Play"/>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="Actor_Died">
+              <conditions>
+                <event_object_destroyed object="$Actor"/>
+              </conditions>
+              <actions>
+
+                <signal_cue cue="Cleanup"/>
+
+                <do_if value="$ActorDiedSignalCue">
+                  <signal_cue cue="$ActorDiedSignalCue"/>
+                  <debug_text chance="$DebugChance" text="$Actor.knownname + ' died before or during a Cutscene.'"/>
+                </do_if>
+              </actions>
+            </cue>
+
+            <cue name="Cutscene_Play">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <delay exact="$DelayInitial"/>
+              <actions>
+                <run_actions ref="md.LIB_Generic.SuppressChatter_AddCue">
+                  <!-- Not run when the library is called as previous LIB_Dialog calls might not be cleaned up when queuing multiple LIB_Dialog instances -->
+                  <param name="Cue" value="md.LIB_Dialog.SuppressChatter_Speak_Actor"/>
+                </run_actions>
+                <do_if value="$Lines.count">
+                  <do_if value="$Cutscene">
+                    <!--TODO @Owen @Klaus timeout after a minute, just in case this library is cancelled or reset?-->
+                    <play_cutscene key="$CutsceneKey.$key" targetmonitor="true" caption="$CutsceneCaption" result="parent.$CutsceneID">
+                      <param name="npcref"  object="$Actor" />
+                    </play_cutscene>
+                    <signal_cue cue="CutsceneTimeout"/>
+                  </do_if>
+                  <do_else>
+                    <signal_cue cue="Cutscene_Started"/>
+                  </do_else>
+                </do_if>
+                <do_else comment="No Lines, signal End Cue">
+                  <set_value name="$Cutscene" exact="false"/>
+                  <signal_cue cue="Cleanup"/>
+                </do_else>
+              </actions>
+            </cue>
+
+            <cue name="Cutscene_Started">
+              <conditions>
+                <!-- NOTE: parent.$CutsceneID is changed by Cutscene_Play while we are already listening for the event - this is fine because it's not an event object, it's evaluated every time a cutscene is started -->
+                <check_any>
+                  <event_cue_signalled/>
+                  <check_all>
+                    <event_cutscene_started cutscene="parent.$CutsceneID"/>
+                    <check_value value="event.param2" comment="So that we're not listening for null before the cutscene starts"/>
+                  </check_all>
+                </check_any>
+              </conditions>
+              <cues>
+                <cue name="Cutscene_Start_Delay_v2">
+                  <delay exact="1s"/>
+                  <actions>
+                    <signal_cue cue="Trigger_Speak_v2"/>
+                  </actions>
+                </cue>
+
+                <cue name="Trigger_Speak_v2">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <!-- Build the Delay list to pass on -->
+                    <set_value name="$Speak_Lines" exact="[]"/>
+                    <set_value name="$LastSpokenIndex" exact="0"/>
+                    <do_for_each in="$Lines" name="$l" counter="$i">
+                      <do_if value="$l.{1} == null">
+                        <continue/>
+                      </do_if>
+                      <!-- Calculate and add Delays -->
+                      <set_value name="$delay" exact="0s"/>
+                      <set_value name="$delay" exact="$l.{2}"               operation="add" chance="if ($l.count ge 2) then 100 else 0"/>
+                      <set_value name="$delay" exact="$DelayStartCutscene"  operation="add" chance="if ($Speak_Lines.indexof.{$l} == 1) then 100 else 0"/>
+                      <append_to_list name="$Speak_Lines" exact="$l.{2}" chance="if ($delay gt 0s) then 100 else 0"/>
+                      <!-- Populate $Speak_Lines-->
+                      <append_to_list name="$Speak_Lines" exact="$l.{1}"/>
+                      <!-- Populate  Line-Signal Cues -->
+                      <do_if value="$l.count ge 3">
+                        <signal_cue_instantly cue="Speak_Line_SignalCue_v2" param="[$l.{3}, $i]"/>
+                      </do_if>
+                    </do_for_each>
+                    <speak actor="$Actor" priority="$SpeechPriority" line="$Speak_Lines"/>
+                  </actions>
+                </cue>
+
+                <cue name="Line_Spoken" instantiate="true">
+                  <conditions>
+                    <event_speak_line_finished actor="$Actor"/>
+                  </conditions>
+                  <actions>
+                    <set_value name="$LastSpokenIndex" operation="add"/>
+                    <signal_cue_instantly cue="this.static" param="$LastSpokenIndex" check="false"/>
+                  </actions>
+                </cue>
+
+                <!--event.param [$speakindex, $signalcue]-->
+                <cue name="Speak_Line_SignalCue_v2" instantiate="true">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <set_value name="this.$SignalCue"   exact="event.param.{1}"/>
+                    <set_value name="this.$SpeakIndex"  exact="event.param.{2}"/>
+                  </actions>
+                  <cues>
+                    <cue name="Speak_Line_Finished_v2">
+                      <conditions>
+                        <check_any>
+                          <check_all>
+                            <event_cue_signalled cue="Line_Spoken"/>
+                            <check_value value="event.param == parent.$SpeakIndex"/>
+                          </check_all>
+                          <check_all>
+                            <event_speak_finished actor="$Actor" line="$Lines.{1}.{1}"/>
+                            <check_value value="event.param3"/>
+                          </check_all>
+                        </check_any>
+                      </conditions>
+                      <actions>
+                        <do_if value="event.name == 'event_speak_finished'">
+                          <debug_text text="'Speak was interrupted. Signalling ' + parent.$SignalCue"/>
+                        </do_if>
+                        <do_elseif value="event.name == 'event_cue_signalled'">
+                          <debug_text text="'Spoken line with index ' + event.param + '. Signalling ' + parent.$SignalCue"/>
+                        </do_elseif>
+                        <do_else>
+                          <debug_text text="'Spoken line with index ' + $LastSpokenIndex + '. Signalling ' + parent.$SignalCue"/>
+                        </do_else>
+                        <signal_cue_instantly cue="parent.$SignalCue"/>
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="Speak_Finished_v2">
+                  <conditions>
+                    <event_speak_finished actor="$Actor" line="$Lines.{1}.{1}"/>
+                  </conditions>
+                  <actions>
+                    <signal_cue cue="Cleanup"/>
+                    <!--<set_value name="$SpeakFeedbackCode" exact="event.param3"/>-->
+                    <!-- 0 fully finished, 1 interrupted, 2 not even started; If handled, also handle Speak_Line_SignalCue -->
+                  </actions>
+                </cue>
+
+              </cues>
+            </cue>
+
+            <cue name="CutsceneTimeout">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <cues>
+                <cue name="End_Cutscene">
+                  <delay exact="$CutsceneTimeout"/>
+                  <actions>
+                    <do_if value="Cleanup.state == cuestate.waiting">
+                      <signal_cue cue="Cleanup"/>
+                    </do_if>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="Cutscene_End" comment="Deprecated">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <signal_cue cue="Cleanup"/>
+              </actions>
+            </cue>
+
+            <cue name="Cleanup">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <delay exact="if ($Cutscene) then $DelayEndCutscene else 0s"/>
+              <actions>
+                <!-- Stop Cutscene -->
+                <do_if value="$Cutscene and (parent.$CutsceneID?) and (parent.$CutsceneID != null)">
+                  <stop_cutscene cutscene="parent.$CutsceneID"/>
+                  <cancel_cue cue="CutsceneTimeout"/>
+                </do_if>
+                <!-- Signal EndSignalCue -->
+                <do_if value="$EndSignalCue">
+                  <signal_cue cue="$EndSignalCue"/>
+                </do_if>
+                <!-- Cancel Library -->
+                <cancel_cue cue="Actor_Died"/>
+                <cancel_cue cue="Speak_Actor"/>
+                <run_actions ref="md.LIB_Generic.SuppressChatter_RemoveCue">
+                  <param name="Cue" value="md.LIB_Dialog.SuppressChatter_Speak_Actor"/>
+                </run_actions>
+                <do_if value="not $Multispeak">
+                  <!--No lines left. Signal Speak_Cancel_Helper with the cue to instruct it to clean up a running instance-->
+                  <signal_cue_instantly cue="md.LIB_Dialog.Speak_Cancel_Helper" param="Speak_Actor"/>
+                </do_if>
+                <!--TODO @Owen @Heinrich should the whole of Speak_Actor be cancelled?-->
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+      </cues>
+    </library>
+
+    <!-- Central callback from NPC usecase system for converted dialogs -->
+    <cue name="UsecaseDialogCallbackHandler" instantiate="true" namespace="this">
+      <conditions>
+        <!-- event.param == [ $dialogcallbacks, $curcallback1, $curcallback2, ... ] -->
+        <!--            or: [ $dialogcallbacks, 'all' ] -->
+        <!-- The requested callback(s) is/are signalled and removed from the list $dialogcallbacks. -->
+        <event_cue_signalled />
+        <check_value value="event.param.count ge 2" />
+      </conditions>
+      <actions>
+        <set_value name="$dialogcallbacks" exact="event.param.{1}" />
+        <set_value name="$curcallbacks" exact="event.param" />
+        <do_if value="event.param.{2} == 'all'">
+          <!-- Replace 'all' with all dialog callbacks (but do not change the actual event.param) -->
+          <set_value name="$curcallbacks" exact="[ $dialogcallbacks ]" />
+          <append_list_elements name="$curcallbacks" other="$dialogcallbacks" />
+        </do_if>
+        <!-- As of the second element, all elements are cues to be signalled -->
+        <do_for_each name="$cue" in="$curcallbacks" counter="$i">
+          <do_if value="$i == 1">
+            <!-- Skip first element, which is $dialogcallbacks -->
+            <continue />
+          </do_if>
+          <do_if value="$cue.exists">
+            <remove_from_list name="$dialogcallbacks" exact="$cue" multiple="false" />
+            <do_if value="$dialogcallbacks.count == 0">
+              <!-- Last callback is OnSpeakActor[s]UsecaseFinished - if the lib ref was cancelled externally, it is not needed any more -->
+              <signal_cue cue="$cue" check="false" />
+            </do_if>
+            <do_else>
+              <signal_cue cue="$cue" />
+            </do_else>
+          </do_if>
+          <do_elseif value="$dialogcallbacks.last.exists" comment="Last element is $UsecaseFinishedCue, can be null">
+            <!-- Trick to retrieve useful caller info: If there is a Speak_Actor[s] library ref cue, it is the namespace of $UsecaseFinishedCue. -->
+            <debug_text text="'Dialog callback for %s does not exist any more'.[@$dialogcallbacks.last.namespace]" filter="error" />
+          </do_elseif>
+        </do_for_each>
+      </actions>
+    </cue>
+
+    <!-- Run Actions Wrapper Speak_Actors -->
+    <library name="Speak_Actors_Run" purpose="run_actions">
+      <params>
+        <param name="Actor" />
+        <param name="Lines"                                 comment="all lines in correct order: [[line, delay, SignalCue], [line, delay], [line], [line]]
+                                                                     Using null as line will skip it, ignoring the provided delay and SignalCue"/>
+        <param name="Cutscene"              default="[]"/>
+        <param name="ForceCutscene"         default="[]"/>
+        <param name="CutsceneKey"           default="[]"/>
+        <param name="CutsceneCaption"       default="[]"  comment="Optional custom caption. If true, the library will generate a caption instead."/>
+        <param name="EndSignalCue"          default="[]"/>
+        <param name="DelayInitial"          default="[]"    comment="Before the Cutscene Start" />
+        <param name="DelayEndCutscene"      default="[]"    comment="After Speak Stop and Before Cutscene Stop" />
+        <param name="WaitForFullscreen"     default="[]"/>
+        <param name="SpeechPriority"        default="[]"/>
+      </params>
+      <actions>
+        <run_actions ref="md.LIB_Generic.SuppressChatter_AddCue">
+          <param name="Cue" value="md.LIB_Dialog.SuppressChatter_Speak_Actors"/>
+        </run_actions>
+
+        <!-- Check for the correct amount of optional parameters -->
+        <assert value="$Lines.count == $Actor.count"/>
+        <assert value="typeof $CutsceneKey        == datatype.list and (not $CutsceneKey.count or $CutsceneKey.count == $Actor.count)"/>
+        <assert value="typeof $ForceCutscene      == datatype.list and (not $ForceCutscene.count or $ForceCutscene.count == $Actor.count)"/>
+        <assert value="typeof $Cutscene           == datatype.list and (not $Cutscene.count or $Cutscene.count == $Actor.count)"/>
+        <assert value="typeof $CutsceneCaption    == datatype.list and (not $CutsceneCaption.count or $CutsceneCaption.count == $Actor.count)"/>
+        <assert value="typeof $EndSignalCue       == datatype.list and (not $EndSignalCue.count or $EndSignalCue.count == $Actor.count)"/>
+        <assert value="typeof $DelayInitial       == datatype.list and (not $DelayInitial.count or $DelayInitial.count == $Actor.count)"/>
+        <assert value="typeof $DelayEndCutscene   == datatype.list and (not $DelayEndCutscene.count or $DelayEndCutscene.count == $Actor.count)"/>
+        <assert value="typeof $WaitForFullscreen  == datatype.list and (not $WaitForFullscreen.count or $WaitForFullscreen.count == $Actor.count)"/>
+        <assert value="typeof $SpeechPriority     == datatype.list and (not $SpeechPriority.count or $SpeechPriority.count == $Actor.count)"/>
+
+        <run_actions ref="md.LIB_Dialog.StartAsCustomUseCase">
+          <param name="Actor"               value="$Actor" />
+          <param name="Lines"               value="$Lines" />
+          <param name="Cutscene"            value="$Cutscene" />
+          <param name="ForceCutscene"       value="$ForceCutscene" />
+          <param name="CutsceneKey"         value="$CutsceneKey" />
+          <param name="CutsceneCaption"     value="$CutsceneCaption" />
+          <param name="SpeechPriority"      value="$SpeechPriority" />
+          <param name="DelayInitial"        value="$DelayInitial" />
+          <param name="DelayEndCutscene"    value="$DelayEndCutscene" />
+          <param name="WaitForFullscreen"   value="$WaitForFullscreen" />
+          <param name="EndSignalCue"        value="$EndSignalCue" />
+          <param name="SuppressChatterCue"  value="md.LIB_Dialog.SuppressChatter_Speak_Actors" />
+        </run_actions>
+      </actions>
+    </library>
+
+    <!-- Run Actions Wrapper Speak_Actor -->
+    <library name="Speak_Actor_Run" purpose="run_actions">
+      <params>
+        <param name="Actor" />
+        <param name="Lines"                                 comment="all lines in correct order: [[line, delay, SignalCue], [line, delay], [line], [line]]
+                                                                     Using null as line will skip it, ignoring the provided delay and SignalCue"/>
+        <param name="Cutscene"              default="true"/>
+        <param name="ForceCutscene"         default="false"/>
+        <param name="CutsceneKey"           default="null"/>
+        <param name="CutsceneCaption"       default="true"  comment="Optional custom caption. If true, the library will generate a caption instead."/>
+        <param name="EndSignalCue"          default="null"/>
+        <param name="DelayInitial"          default="1s"    comment="Before the Cutscene Start" />
+        <param name="DelayEndCutscene"      default="1s"    comment="After Speak Stop and Before Cutscene Stop" />
+        <param name="WaitForFullscreen"     default="true"/>
+        <param name="SpeechPriority"        default="100"/>
+        <param name="Multispeak"            default="false" comment="Is this library part of speak section with other actors? If not, trigger Speak_Cancel_Helper for this library"/>
+      </params>
+      <actions>
+        <run_actions ref="md.LIB_Generic.SuppressChatter_AddCue">
+          <param name="Cue" value="md.LIB_Dialog.SuppressChatter_Speak_Actor"/>
+        </run_actions>
+        <run_actions ref="md.LIB_Dialog.StartAsCustomUseCase">
+          <param name="Actor"               value="[ $Actor ]" />
+          <param name="Lines"               value="[ $Lines ]" />
+          <param name="Cutscene"            value="[ $Cutscene ]" />
+          <param name="ForceCutscene"       value="[ $ForceCutscene ]" />
+          <param name="CutsceneKey"         value="[ $CutsceneKey ]" />
+          <param name="CutsceneCaption"     value="[ $CutsceneCaption ]" />
+          <param name="SpeechPriority"      value="[ $SpeechPriority ]" />
+          <param name="DelayInitial"        value="[ $DelayInitial ]" />
+          <param name="DelayEndCutscene"    value="[ $DelayEndCutscene ]" />
+          <param name="WaitForFullscreen"   value="[ $WaitForFullscreen ]" />
+          <param name="EndSignalCue"        value="[ $EndSignalCue ]" />
+          <param name="SuppressChatterCue"  value="md.LIB_Dialog.SuppressChatter_Speak_Actor" />
+        </run_actions>
+      </actions>
+    </library>
+
+    <!-- DEPRECATED - kept only for savegame compatibility -->
+    <!--TODO @Owen this library doesn't help if there are no signal cues. It could help with ending the cutscene.-->
+
+    <!--Instanced cue to help signal waiting cues if the speak library was cancelled
+    To create a new instance, signal Speak_Cancel_Helper where event.param is a table with keys:
+    - $cue = the Speak_Actors cue which will trigger the failsafe when cancelled
+    - $endsignalcues = list of cues to signal if $cue is cancelled (may contain null entries)
+    To cancel a specific instance of this handler, signal Speak_Cancel_Helper with event.param == $Cue-->
+    <cue name="Speak_Cancel_Helper" instantiate="true" namespace="this">
+      <conditions>
+        <event_cue_signalled/>
+        <check_value value="typeof event.param == datatype.table"/>
+      </conditions>
+      <actions>
+        <set_value name="$Cue" exact="event.param.$cue"/>
+        <set_value name="$SignalCues" exact="event.param.$signalcues"/>
+        <do_if value="not $Cue or not $SignalCues.count">
+          <cancel_cue cue="Speak_Cancel_Helper"/>
+        </do_if>
+      </actions>
+      <cues>
+        <cue name="Speak_Cancel_Helper__Init">
+          <!--In case the speak library successfully signals a cue, we can forget about it here.
+          Note: This makes the assumption that when a relevent cue is signalled, it is done by the speak library.-->
+          <actions>
+            <do_for_each name="$SignalCue" in="$SignalCues">
+              <do_if value="$SignalCue.exists">
+                <signal_cue_instantly cue="Speak_Cancel_Helper__Cue_Signal_Listener" param="[$Cue, $SignalCue]"/>
+              </do_if>
+            </do_for_each>
+          </actions>
+        </cue>
+
+        <!--Instanced for each cue to signal
+        event.param = cue to signal-->
+        <cue name="Speak_Cancel_Helper__Cue_Signal_Listener" instantiate="true" namespace="this">
+          <conditions>
+            <event_cue_signalled/>
+            <check_value value="typeof event.param.{1} == datatype.cue and typeof event.param.{2} == datatype.cue"/>
+          </conditions>
+          <actions>
+            <set_value name="$LibraryCue" exact="event.param.{1}"/>
+            <set_value name="$SignalCue" exact="event.param.{2}"/>
+          </actions>
+          <cues>
+            <cue name="Speak_Cancel_Helper__Cue_Signal_Listener_CANCELLED">
+              <conditions>
+                <event_cue_cancelled cue="$LibraryCue"/>
+              </conditions>
+              <actions>
+                <debug_text text="'Attempt to signal cue ' + $SignalCue + ' - current state: ' + $SignalCue.state"/>
+                <signal_cue cue="$SignalCue" check="false"/>
+                <cancel_cue cue="Speak_Cancel_Helper__Cue_Signal_Listener"/>
+              </actions>
+            </cue>
+
+            <cue name="Speak_Cancel_Helper__Cue_Signal_Listener_SIGNALLED">
+              <conditions>
+                <event_cue_signalled cue="$SignalCue"/>
+              </conditions>
+              <actions>
+                <!--Cue was signalled by something. We can stop listening for the time to signal it here.-->
+                <cancel_cue cue="Speak_Cancel_Helper__Cue_Signal_Listener"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Speak_Cancel_Helper__Cancel_Instance">
+          <conditions>
+            <check_any>
+              <event_cue_cancelled cue="$Cue"/>
+              <check_all>
+                <!--Signalled with the speaker library cue when it is done so we can clean up this instance-->
+                <event_cue_signalled cue="Speak_Cancel_Helper"/>
+                <check_value value="event.param == $Cue"/>
+              </check_all>
+            </check_any>
+          </conditions>
+          <actions>
+            <!--<cancel_cue cue="Speak_Cancel_Helper__Cancel_Instance_2"/>-->
+            <run_actions ref="md.LIB_Generic.SuppressChatter_RemoveCue">
+              <param name="Cue" value="md.LIB_Dialog.SuppressChatter_Speak_Actor"/>
+              <param name="DebugExistence" value="false"/>
+            </run_actions>
+            <run_actions ref="md.LIB_Generic.SuppressChatter_RemoveCue">
+              <param name="Cue" value="md.LIB_Dialog.SuppressChatter_Speak_Actors"/>
+              <param name="DebugExistence" value="false"/>
+            </run_actions>
+
+          </actions>
+          <!--Wait for the cues to be signalled before cancelling the instance-->
+          <delay exact="10s"/>
+          <actions>
+            <cancel_cue cue="Speak_Cancel_Helper"/>
+          </actions>
+        </cue>
+
+        <!--TODO @Owen test this cleanup code below. Also uncomment the cancel_cue above.-->
+
+        <!--Check if the cue is no longer complete. This may happen if it was reset instead of cancelled. Do not signal the waiting cues in this case.-->
+        <!--<cue name="Speak_Cancel_Helper__Cancel_Instance_2" checkinterval="5s">
+          <conditions>
+            <check_value value="@$Cue.state != cuestate.complete"/>
+          </conditions>
+          <actions>
+            <debug_text text="'is of state longer ' + $Cue.state"/>
+            <cancel_cue cue="Speak_Cancel_Helper"/>
+          </actions>
+        </cue>-->
+      </cues>
+    </cue>
+  </cues>
+</mdscript>

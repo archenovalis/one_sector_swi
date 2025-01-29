@@ -1,0 +1,306 @@
+<?xml version="1.0" encoding="utf-8"?>
+<aiscript name="order.fight.board" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" version="2">
+  <!-- to properly function, this order will need information available from the boarding md script. order triggered via creation of a boarding operation. -->
+  <order id="Board" name="{1041, 421}" description="{1041, 422}" category="internal" allowinloop="false">
+    <params>
+      <param name="target" required="true" type="object" text="{1041, 10126}" comment="Target. The object to board"/>
+      <param name="boardingoperation" default="null" type="internal" comment="Boarding operation. Boarding operation this ship is a part of"/>
+      <param name="pursuedistance" default="[this.ship.maxradarrange, 1km].max" type="internal" text="{1041, 10090}" comment="Pursue distance. Distance to pursue/escort (if pursuetargets true or 'escort' provided). Default: max radar range">
+        <input_param name="min" value="1km"/>
+        <input_param name="max" value="[this.ship.maxradarrange, 1km].max"/>
+        <input_param name="step" value="1km"/>
+      </param>
+      <param name="pursuetargets" default="true" type="internal" text="{1041, 10092}" comment="Pursue the target. Pursue the target no matter what. Default: true" />
+      <param name="squad_attack" default="false" type="bool" text="{1041, 10118}" advanced="true" comment="Squad attack. Command the whole squadron to attack, Default: false"/>
+      <param name="debugchance" type="bool" default="0" advanced="true" text="{1041, 10086}" comment="Print debug output">
+        <input_param name="truevalue" value="100"/>
+      </param>
+    </params>
+    <requires>
+      <match shiptype="shiptype.lasertower" negate="true"/>
+      <match class="class.spacesuit" negate="true"/>
+    </requires>
+    <location condition="$target.isoperational" object="$target"/>
+  </order>
+  <interrupts>
+    <handler ref="SectorChangeHandler"/>
+    <handler ref="TargetInvalidHandler"/>
+    <handler ref="MissileLockHandler"/>
+    <handler>
+      <conditions>
+        <event_object_signalled object="$target" param="$boardingoperation" param2="'boarding__movetolaunch_boardingpods'"/>
+        <check_value value="not this.assignedcontrolled.allmarinesdispatched"/>
+        <check_value value="$target.owner != this.owner"/>
+      </conditions>
+      <actions>
+        <debug_text text="'signal received. moving to launch pods.'" chance="$debugchance"/>
+        <!--TODO @Owen @Nick should $boarding_movingtolaunchpods be an order parameter which can change? What if a pilot is exchanged?-->
+        <set_value name="this.$boarding_movingtolaunchpods"/>
+        <set_value name="$marinetiers" exact="entityrole.marine.tiers"/>
+        <set_value name="$marinetieramounts" exact="[]"/>
+        <set_value name="$ismarinecarrier" exact="false"/>
+        <set_value name="$nummarineslaunching" exact="0"/>
+        <do_all exact="$marinetiers.count" counter="$i">
+          <append_to_list name="$marinetieramounts" exact="this.assignedcontrolled.boardingmarines.{$marinetiers.{$i}}.count"/>
+          <set_value name="$nummarineslaunching" operation="add" exact="$marinetieramounts.{$i}"/>
+          <do_if value="$marinetieramounts.{$marinetieramounts.count}">
+            <set_value name="$ismarinecarrier" exact="true"/>
+          </do_if>
+        </do_all>
+
+        <do_if value="$ismarinecarrier">
+          <abort_called_scripts resume="launchpods"/>
+        </do_if>
+        <do_else>
+          <abort_called_scripts resume="start"/>
+        </do_else>
+      </actions>
+    </handler>
+  </interrupts>
+  <init>
+    <!-- normally, we would only want the target of the boarding operation to be disabled. -->
+    <set_value name="$disabletargets" exact="[$target]"/>
+    <set_value name="$currentphase" exact="$boardingoperation.boardingphase"/>
+    <set_value name="$thresholds" exact="[ [[$boardingoperation.boardingapproachthreshold, 20].max, 80].min, [[$boardingoperation.boardinginsertionthreshold, 20].max, 80].min ]"/>
+    <set_value name="$behaviors" exact="[boardingbehaviour.attackescorts, boardingbehaviour.targetengines, boardingbehaviour.targetturrets, boardingbehaviour.disabletarget, boardingbehaviour.maintaindistance]"/>
+    <set_value name="$activebehavior" exact="this.assignedcontrolled.boardingbehaviour"/>
+    <do_if value="not this.assignedcontrolled.dps.lasers.all and (not this.assignedcontrolled.dps.missiles.all or not this.assignedcontrolled.ammostorage.missile.count)">
+      <set_value name="$activebehavior" exact="boardingbehaviour.maintaindistance"/>
+    </do_if>
+
+    <!-- get all of the target's subordinates. only really relevant for 'attackescorts' behavior -->
+    <set_value name="$secondarytargets" exact="null"/>
+    <do_if value="$activebehavior == boardingbehaviour.attackescorts">
+      <set_value name="$secondarytargets" exact="$target.allsubordinates"/>
+    </do_if>
+
+    <!-- define target classes relevant to the active behavior. hull threshold will be ignored if a ship's target is of this behavior.
+      turrets added to all behaviors to prevent the boarding operation stalling due to user error. -->
+    <set_value name="$behaviortargetclasses" exact="[]"/>
+    <do_if value="$activebehavior == boardingbehaviour.targetengines">
+      <append_to_list name="$behaviortargetclasses" exact="class.engine"/>
+    </do_if>
+    <do_if value="$activebehavior == boardingbehaviour.targetturrets">
+      <append_to_list name="$behaviortargetclasses" exact="class.turret"/>
+      <append_to_list name="$behaviortargetclasses" exact="class.missileturret"/>
+      <append_to_list name="$behaviortargetclasses" exact="class.weapon"/>
+    </do_if>
+
+    <debug_text text="'%s %s initializing boarding operation.\n target: %s %s\n boardingtarget: %s %s\n current phase: %s\n approach threshold: %s\n insertion threshold: %s\n assigned behavior: %s'.[this.assignedcontrolled.knownname, this.assignedcontrolled, $target.knownname, $target, $boardingoperation.boardee.knownname, $boardingoperation.boardee, $currentphase, $thresholds.{1}, $thresholds.{2}, $activebehavior]" chance="$debugchance"/>
+  </init>
+  <patch sinceversion="1">
+    <do_if value="this.$boarding_movingtolaunchpods? and $target.isoperational and not this.assignedcontrolled.cansee.{$target} and not this.assignedcontrolled.allmarinesdispatched">
+      <debug_text text="'PATCH: redirecting to label launchpods. restarting approach.'" filter="savegame"/>
+      <signal_objects object="$target" param="$boardingoperation" param2="'boarding__movetolaunch_boardingpods'"/>
+    </do_if>
+  </patch>
+  <patch sinceversion="2">
+    <do_if value="$activebehavior != boardingbehaviour.maintaindistance and (not this.assignedcontrolled.dps.lasers.all and (not this.assignedcontrolled.dps.missiles.all or not this.assignedcontrolled.ammostorage.missile.count))">
+      <set_value name="$activebehavior" exact="boardingbehaviour.maintaindistance"/>
+    </do_if>
+  </patch>
+  <attention min="unknown">
+    <actions>
+
+      <do_if value="this.$boarding_movingtolaunchpods? and not @$boardingoperation.allmarinesdispatched">
+        <set_value name="$marinetiers" exact="entityrole.marine.tiers"/>
+        <set_value name="$marinetieramounts" exact="[]"/>
+        <set_value name="$ismarinecarrier" exact="false"/>
+        <set_value name="$nummarineslaunching" exact="0"/>
+        <do_all exact="$marinetiers.count" counter="$i">
+          <append_to_list name="$marinetieramounts" exact="this.assignedcontrolled.boardingmarines.{$marinetiers.{$i}}.count"/>
+          <set_value name="$nummarineslaunching" operation="add" exact="$marinetieramounts.{$i}"/>
+          <do_if value="this.assignedcontrolled.boardingmarines.{$marinetiers.{$i}}.count">
+            <set_value name="$ismarinecarrier" exact="true"/>
+          </do_if>
+        </do_all>
+
+        <do_if value="$ismarinecarrier">
+          <resume label="launchpods"/>
+        </do_if>
+      </do_if>
+
+      <!-- precautionary wait to prevent infinitely looping if order.fight.attack.object immediately returns -->
+      <wait exact="1s" sinceversion="2"/>
+
+      <label name="start"/>
+
+      <do_if value="$activebehavior != boardingbehaviour.maintaindistance">
+        <run_script name="'order.fight.attack.object'">
+          <param name="primarytarget" value="$target"/>
+          <param name="secondarytargets" value="$secondarytargets"/>
+          <param name="escort" value="null"/>
+          <param name="pursuedistance" value="$pursuedistance"/>
+          <param name="pursuetargets" value="$pursuetargets"/>
+          <!-- allowothertargets doesn't have to be true anymore except for boardingbehaviour.attackescorts. switch to false if we don't want this ship to engage other ships. -->
+          <param name="allowothertargets" value="true"/>
+          <param name="disable" value="true"/>
+          <param name="disablehullpercentagethreshold" value="$thresholds.{2}"/>
+          <param name="disabletargets" value="$disabletargets"/>
+          <param name="squad_attack" value="$squad_attack"/>
+          <param name="boardingbehavior" value="$activebehavior"/>
+          <param name="behaviortargetclasses" value="$behaviortargetclasses"/>
+          <param name="debugchance" value="$debugchance"/>
+        </run_script>
+      </do_if>
+      <do_else>
+        <get_safe_pos result="$standoffpos" object="$target" space="$target.sector" sector="$target.sector" min="this.assignedcontrolled.maxradarrange * 0.7" max="this.assignedcontrolled.maxradarrange * 0.9"/>
+        <!-- wait until we get a signal from MD to signal launching of marines.
+          should we try to plink from standoff range? launch drones? for now, just sit tight until signalled to launch pods.
+          stop waiting to re-evaluate position. 10-1000s depending on combinedskill -->
+        <run_script name="'order.move.wait'">
+          <param name="destination" value="[$target.sector, $standoffpos]"/>
+          <param name="timeout" value="1000s / ([this.assignedcontrolled.combinedskill, 1].max)s"/>
+          <param name="debugchance" value="$debugchance"/>
+        </run_script>
+      </do_else>
+
+      <do_if value="$target.isoperational and $target.owner != this.owner">
+        <resume label="start"/>
+      </do_if>
+      <do_else>
+        <resume label="end"/>
+      </do_else>
+
+      <label name="launchpods"/>
+
+      <do_if value="not this.assignedcontrolled.cansee.{$target}">
+        <run_script name="'move.generic'" result="$movesuccess">
+          <param name="destination" value="$target"/>
+          <param name="stopondetect" value="$target"/>
+          <param name="debugchance" value="$debugchance"/>
+        </run_script>
+        <do_if value="not $movesuccess">
+          <do_if value="@this.assignedcontrolled.order.isrunning">
+            <set_order_failed order="this.assignedcontrolled.order" text="{1045, 101}" comment="Unable to reach destination."/>
+          </do_if>
+          <debug_text text="'Unable to reach destination. Aborting.'" chance="$debugchance"/>
+          <resume label="end"/>
+        </do_if>
+      </do_if>
+
+      <do_if value="this.assignedcontrolled.bboxdistanceto.{$target} ge 2km">
+        <is_in_quadrant result="$q_right" object="$target" target="this.assignedcontrolled" right="true"/>
+        <is_in_quadrant result="$q_left" object="$target" target="this.assignedcontrolled" left="true"/>
+        <do_if value="$q_right or $q_left">
+          <do_any>
+            <set_value name="$quadrant" exact="quadrant.front"/>
+            <set_value name="$quadrant" exact="quadrant.back"/>
+          </do_any>
+        </do_if>
+        <do_else>
+          <do_any>
+            <set_value name="$quadrant" exact="quadrant.right"/>
+            <set_value name="$quadrant" exact="quadrant.left"/>
+          </do_any>
+        </do_else>
+        <remove_value name="$q_left"/>
+        <remove_value name="$q_right"/>
+
+        <get_safe_pos result="$launchpos_pod" object="$target" space="$target.sector" sector="$target.sector" min="500m + $target.size/2 + this.assignedcontrolled.size/2" max="1km + $target.size/2 + this.assignedcontrolled.size/2" direction="$quadrant" directionobject="$target" allowyaxis="false" ignored="this.assignedcontrolled"/>
+        <create_position name="$launchpos_pod" space="$target" value="$launchpos_pod" object="$target.sector"/>
+        <create_position name="$launchpos_pod_zone" space="this.assignedcontrolled.zone" value="$launchpos_pod" object="$target"/>
+        <create_orientation name="$refrot_obj" orientation="look_at" refobject="$target">
+          <position value="this.assignedcontrolled.position"/>
+        </create_orientation>
+        <create_orientation name="$refrot_pos" orientation="look_at" refposition="$launchpos_pod_zone">
+          <position value="this.assignedcontrolled.position"/>
+        </create_orientation>
+        <remove_value name="$launchpos_pod_zone"/>
+        <do_if value="$refrot_pos.yaw lt $refrot_obj.yaw">
+          <create_orientation name="$rot" orientation="align_right_bbox" refobject="$target" maxpitch="60deg">
+            <position value="$launchpos_pod" space="$target"/>
+          </create_orientation>
+        </do_if>
+        <do_else>
+          <create_orientation name="$rot" orientation="align_left_bbox" refobject="$target" maxpitch="60deg">
+            <position value="$launchpos_pod" space="$target"/>
+          </create_orientation>
+        </do_else>
+        <remove_value name="$quadrant"/>
+        <remove_value name="$refrot_pos"/>
+        <remove_value name="$refrot_obj"/>
+
+        <debug_text text="'moving to position for launching pods. distance to position: ' + this.assignedcontrolled.distanceto.[$target, $launchpos_pod]" chance="$debugchance"/>
+        <move_to destination="$target" object="this.assignedcontrolled" abortpath="true" finishonapproach="true" forceposition="false" forcerotation="false" uselocalhighways="false" boost="true" travel="false">
+          <position value="$launchpos_pod" object="$target"/>
+          <rotation value="$rot"/>
+          <interrupt>
+            <conditions>
+              <check_any>
+                <event_object_destroyed object="$target"/>
+                <event_object_changed_true_owner object="$target"/>
+              </check_any>
+            </conditions>
+            <actions>
+              <set_value name="$interrupted"/>
+            </actions>
+          </interrupt>
+        </move_to>
+        <remove_value name="$launchpos_pod"/>
+      </do_if>
+
+      <do_if value="not $interrupted?">
+        <debug_text text="'launching pods'" chance="$debugchance"/>
+        <!--TODO @Owen @Nick - should $nummarineslaunching be updated again here as the config could have changed while en-route-->
+
+        <set_value name="$paramtable" exact="table[
+                       $launcher = this.assignedcontrolled,
+                       $nummarineslaunching = $nummarineslaunching,
+                       $marinetieramounts = $marinetieramounts,
+                       $debugchance = $debugchance]"/>
+
+        <!--listened for in md.Boarding.Launch_Pod_Helper-->
+        <signal_objects object="$target" param="$boardingoperation" param2="'boarding__launch_boardingpods'" param3="$paramtable"/>
+      </do_if>
+      <remove_value name="$interrupted"/>
+      <remove_value name="this.$boarding_movingtolaunchpods"/>
+
+      <debug_text text="'moving away from launch position'" chance="$debugchance"/>
+      <do_if value="this.assignedcontrolled.iscapitalship">
+        <get_safe_pos result="$safepos" z="5km - this.assignedcontrolled.size/2" object="this.assignedcontrolled" sector="this.sector"/>
+        <move_to object="this.assignedcontrolled" destination="this.sector" boost="true">
+          <position value="$safepos" object="this.sector"/>
+        </move_to>
+      </do_if>
+      <do_else>
+        <set_value name="$loctime" min="10s" max="30s"/>
+        <move_to object="this.assignedcontrolled" destination="$target" flightbehaviour="flightbehaviour.gaindistance" forcesteering="true" boost="true">
+          <interrupt_after_time time="$loctime"/>
+          <interrupt>
+            <conditions>
+              <check_any>
+                <event_object_destroyed object="$target"/>
+                <event_object_changed_true_owner object="$target"/>
+              </check_any>
+            </conditions>
+          </interrupt>
+        </move_to>
+        <remove_value name="$loctime"/>
+      </do_else>
+
+      <do_if value="$target.isoperational and $target.owner != this.owner">
+        <resume label="start"/>
+      </do_if>
+
+      <label name="end"/>
+
+      <set_to_default_flight_control_model object="this.assignedcontrolled"/>
+      <do_if value="this.assignedcontrolled.defencenpc.exists">
+        <signal_objects object="this.assignedcontrolled.defencenpc" param="'attack'" comment="param2 is target = null means stop attack"/>
+      </do_if>
+
+      <debug_text text="'%s %s boarding %s %s. boarding operation finished.\n is target operational? %s\n does the target belong to us? %s'.[this.assignedcontrolled.knownname, this.assignedcontrolled, @$target.knownname, $target, $target.isoperational, $target.owner == this.owner]" chance="$debugchance"/>
+
+    </actions>
+  </attention>
+  <on_abort>
+    <do_if value="this.assignedcontrolled.isoperational">
+      <set_to_default_flight_control_model object="this.assignedcontrolled"/>
+    </do_if>
+    <do_if value="@this.assignedcontrolled.defencenpc.exists">
+      <signal_objects object="this.assignedcontrolled.defencenpc" param="'attack'" comment="param2 is target = null means stop attack"/>
+    </do_if>
+    <remove_value name="this.$boarding_movingtolaunchpods"/>
+  </on_abort>
+</aiscript>

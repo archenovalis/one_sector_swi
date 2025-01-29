@@ -1,0 +1,772 @@
+<?xml version="1.0" encoding="utf-8"?>
+<aiscript name="order.assist" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" version="2">
+  <order id="Assist" name="{1041, 711}" description="{1041, 712}" category="internal" infinite="true" allowinloop="false">
+    <params>
+      <param name="baseorder" type="internal" default="null" comment="order added by this script." />
+      <param name="orderobject" type="internal" default="null" comment="object that $baseorder belongs to." />
+      <param name="debugchance" type="bool" default="0" advanced="true" text="{1041, 10086}" comment="Print debug output">
+        <input_param name="truevalue" value="100" />
+      </param>
+    </params>
+  </order>
+  <interrupts>
+    <handler comment="unable to continue. finish.">
+      <conditions>
+        <check_any>
+          <event_object_destroyed object="this.assignedcontrolled.commander" check="false" />
+          <event_object_abandoned object="this.assignedcontrolled.commander" check="false" />
+          <check_all>
+            <event_object_changed_true_owner object="this.assignedcontrolled.commander" check="false" />
+            <check_value value="event.param != this.ship.trueowner" />
+          </check_all>
+        </check_any>
+        <check_value value="not @$orderdef.$id" />
+      </conditions>
+      <actions>
+        <debug_text text="'unable to continue. event: %s. cleaning up.'.[event.name]" chance="$debugchance" />
+        <abort_called_scripts resume="finish" />
+      </actions>
+    </handler>
+    <handler comment="redirect to init.">
+      <conditions>
+        <check_any>
+          <event_object_commander_set object="this.assignedcontrolled" comment="if no new commander is set, will redirect to finish" />
+          <check_all>
+            <event_object_order_ready object="$orderobject" check="false" />
+            <check_value value="event.param == event.object.defaultorder" />
+          </check_all>
+          <event_object_destroyed object="$orderobject" check="false" />
+          <event_object_abandoned object="$orderobject" check="false" />
+          <check_all>
+            <event_object_changed_true_owner object="$orderobject" check="false" />
+            <check_value value="event.param != this.ship.trueowner" />
+          </check_all>
+        </check_any>
+      </conditions>
+      <actions>
+        <debug_text text="'conditions changed. event: %s. restarting.'.[event.name]" chance="$debugchance" />
+        <abort_called_scripts resume="init" />
+      </actions>
+    </handler>
+    <!--<handler>
+      <conditions>
+        <event_object_subordinate_promoted object="$orderobject"/>
+        <check_value value="event.param == this.assignedcontrolled"/>
+      </conditions>
+      <actions>
+        <debug_text text="'%s %s %s promoted in place of %s %s %s.\nassuming default behaviour of commander.\norder: %s'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, @$orderobject.idcode, @$orderobject.knownname, @$orderobject, @$order.id]"/>
+      </actions>
+    </handler>-->
+    <handler ref="TideHandler" />
+  </interrupts>
+  <init>
+
+  </init>
+  <attention min="unknown">
+    <actions>
+
+      <label name="init" />
+
+      <do_if value="@$orderdef.$id and not this.assignedcontrolled.commander.isoperational">
+        <debug_text text="'commander was destroyed and we were promoted to command of fleet. attempting to recreate default order: %s'.[@$orderdef.$id]" chance="$debugchance" />
+        <do_if value="@$orderdef.$id">
+          <set_value name="$createdefaultorder" />
+          <resume label="processorder" />
+        </do_if>
+      </do_if>
+
+      <!-- we must have a commander that uses orders. -->
+      <do_if value="not @this.assignedcontrolled.commander.isclass.ship">
+        <debug_text text="'%s %s %s does not have a commander or is assigned to non-ship: %s %s %s'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, @this.assignedcontrolled.commander.idcode, @this.assignedcontrolled.commander.knownname, @this.assignedcontrolled.commander]" chance="$debugchance" />
+        <do_if value="@this.assignedcontrolled.defaultorder.id == 'Assist'">
+          <cancel_order order="this.assignedcontrolled.defaultorder" />
+          <set_value name="$removeassignment" />
+        </do_if>
+        <resume label="finish" />
+      </do_if>
+
+      <do_if value="not this.assignedcontrolled.commander.defaultorder and not this.assignedcontrolled.commander.orders.count">
+        <debug_text text="'commander: %s %s %s %s does not use orders.'.[this.assignedcontrolled.commander.class, this.assignedcontrolled.commander.idcode, this.assignedcontrolled.commander.knownname, this.assignedcontrolled.commander]" filter="error" />
+        <do_if value="@this.assignedcontrolled.defaultorder.id == 'Assist'">
+          <cancel_order order="this.assignedcontrolled.defaultorder" />
+          <set_value name="$removeassignment" />
+        </do_if>
+        <resume label="finish" />
+      </do_if>
+
+      <do_if value="this.assignedcontrolled.defaultorder.id != 'Assist'">
+        <debug_text text="'current default order: %s is not this order script. aborting.'.[this.assignedcontrolled.defaultorder.id]" filter="error" />
+        <resume label="finish" />
+      </do_if>
+
+      <wait exact="1ms" />
+
+      <label name="start" />
+
+      <set_value name="$waitduration" min="1min" max="3min" />
+      <set_value name="$commander" exact="this.assignedcontrolled.commander" />
+      <!-- $order may be null at this point -->
+      <set_value name="$order" exact="$commander.defaultorder" />
+      <do_if value="(@$order.id == 'Assist')">
+        <do_if value="$order.$baseorder.exists">
+          <set_value name="$order" exact="$order.$baseorder" />
+        </do_if>
+        <do_else>
+          <debug_text text="'Assigned to assist an assistant that does not have an added order yet. Waiting until assistant gets added order.'" chance="$debugchance" />
+          <set_value name="$order" exact="null" />
+          <!-- need relatively short amount of time for commander to get baseorder. may need to cycle more than once if command hierarchy is many levels deep. -->
+          <set_value name="$waitduration" min="2s" max="5s" />
+        </do_else>
+      </do_if>
+      <do_if value="$order.exists and ($baseorder != $order) and (this.assignedcontrolled.defaultorder.id == 'Assist')">
+        <!-- subordinates of this.ship have to be able to retrieve $orderobject and $baseorder even if this script isn't running. -->
+        <edit_order_param order="this.assignedcontrolled.defaultorder" param="'baseorder'" value="$order" />
+        <edit_order_param order="this.assignedcontrolled.defaultorder" param="'orderobject'" value="$order.object" />
+        <wait exact="1s" />
+      </do_if>
+
+      <label name="processorder" />
+
+      <!-- run all of the order scripts via run_script to keep this script in the stack which would allow handling of order changes in this script -->
+      <do_if value="$order.exists or (@$orderdef and $createdefaultorder?)">
+        <do_if value="(@$orderdef and $createdefaultorder?) or not $order.requiredskill or (this.combinedskill ge $order.requiredskill)">
+          <do_if value="not $createdefaultorder?">
+            <set_value name="$scriptname" exact="$order.script" />
+            <set_value name="$orderdef" exact="table[]" />
+            <set_value name="$orderdef.$id" exact="$order.id" />
+            <debug_text text="'executing %s inherited from %s %s %s.\nthis ship: %s %s %s\ncommander: %s %s %s\ncommander default order script: %s\norder object default order script: %s'.[$scriptname, @$orderobject.idcode, @$orderobject.knownname, $orderobject, this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, @$commander.idcode, @$commander.knownname, $commander, $commander.defaultorder.script, $orderobject.defaultorder.script]" chance="$debugchance" />
+          </do_if>
+
+          <!-- check order compatibility:
+              SupplyFleet can only be done by fleet auxiliary ships.
+              AutoMine and variants can only be done by mining ships.
+              if incompatible, will fallback to follow. -->
+          <do_if value="$orderdef.$id == 'SupplyFleet'">
+            <do_if value="this.assignedcontrolled.primarypurpose == purpose.auxiliary">
+              <set_value name="$added" />
+              <do_if value="$createdefaultorder?">
+                <create_order id="$orderdef.$id" object="this.assignedcontrolled" default="true">
+                  <param name="target" value="$orderdef.$target" />
+                  <param name="destination" value="$orderdef.$destination" />
+                  <param name="formation" value="$orderdef.$formation" />
+                  <param name="formationparam" value="$orderdef.$formationparam" />
+                  <param name="rollmembers" value="$orderdef.$rollmembers" />
+                  <param name="rollformation" value="$orderdef.$rollformation" />
+                  <param name="maxshipsperline" value="$orderdef.$maxshipsperline" />
+                  <param name="overrideformationskill" value="$orderdef.$overrideformationskill" />
+                </create_order>
+              </do_if>
+              <do_else>
+                <set_value name="$orderdef.$target" exact="$order.$target" />
+                <set_value name="$orderdef.$destination" exact="$order.$destination" />
+                <set_value name="$orderdef.$formation" exact="$order.$formation" />
+                <set_value name="$orderdef.$formationparam" exact="$order.$formationparam" />
+                <set_value name="$orderdef.$rollmembers" exact="$order.$rollmembers" />
+                <set_value name="$orderdef.$rollformation" exact="$order.$rollformation" />
+                <set_value name="$orderdef.$maxshipsperline" exact="$order.$maxshipsperline" />
+                <set_value name="$orderdef.$overrideformationskill" exact="$order.$overrideformationskill" />
+                <run_script name="$scriptname">
+                  <param name="target" value="$order.$target" />
+                  <param name="destination" value="$order.$destination" />
+                  <param name="formation" value="$order.$formation" />
+                  <param name="formationparam" value="$order.$formationparam" />
+                  <param name="rollmembers" value="$order.$rollmembers" />
+                  <param name="rollformation" value="$order.$rollformation" />
+                  <param name="maxshipsperline" value="$order.$maxshipsperline" />
+                  <param name="overrideformationskill" value="$order.$overrideformationskill" />
+                  <!--<param name="cannotdock" value="$order.$cannotdock"/>-->
+                  <!--<param name="releasesignal" value="$order.$releasesignal"/>-->
+                  <!--<param name="timeout" value="$duration"/>-->
+                  <!--<param name="debugchance" value="$debugchance"/>-->
+                </run_script>
+              </do_else>
+            </do_if>
+          </do_if>
+          <do_elseif value="$orderdef.$id == 'Middleman'">
+            <do_if value="$createdefaultorder? or (this.assignedcontrolled.waretransport == $commander.waretransport)">
+              <set_value name="$added" />
+              <do_if value="$createdefaultorder?">
+                <create_order id="$orderdef.$id" object="this.assignedcontrolled" default="true">
+                  <param name="warebasket" value="$orderdef.$warebasket" />
+                  <param name="anchorspace" value="$orderdef.$anchorspace" />
+                  <param name="range" value="$orderdef.$range" />
+                </create_order>
+              </do_if>
+              <do_else>
+                <set_value name="$orderdef.$warebasket" exact="$order.$warebasket" />
+                <set_value name="$orderdef.$anchorspace" exact="$order.$anchorspace" />
+                <set_value name="$orderdef.$range" exact="$order.$range" />
+                <run_script name="$scriptname">
+                  <param name="warebasket" value="$order.$warebasket" />
+                  <param name="anchorspace" value="$order.$anchorspace" />
+                  <param name="range" value="$order.$range" />
+                  <!--<param name="tradeware" value="$order.$tradeware"/>
+                  <param name="relprice_purchase" value="$order.$relprice_purchase"/>
+                  <param name="supplier" value="$order.$supplier"/>-->
+                  <!--<param name="duration" value="$duration"/>-->
+                  <!--<param name="debugchance" value="$debugchance"/>
+                  <param name="debugchance2" value="$debugchance"/>-->
+                </run_script>
+              </do_else>
+            </do_if>
+          </do_elseif>
+          <do_elseif value="($orderdef.$id == 'TradeRoutine') or ($orderdef.$id == 'TradeRoutine_Basic') or ($orderdef.$id == 'TradeRoutine_Advanced')">
+            <do_if value="$createdefaultorder? or (this.assignedcontrolled.waretransport == $commander.waretransport)">
+              <set_value name="$added" />
+              <do_if value="@$order.$warebasket_override.count or @$orderdef.$warebasket_override.count">
+                <do_if value="$createdefaultorder?">
+                  <create_order id="$orderdef.$id" object="this.assignedcontrolled" default="true">
+                    <param name="warebasket" value="$orderdef.$warebasket" />
+                    <param name="range" value="$orderdef.$range" />
+                    <param name="minbuy" value="$orderdef.$minbuy" />
+                    <param name="maxbuy" value="$orderdef.$maxbuy" />
+                    <param name="minsell" value="$orderdef.$minsell" />
+                    <param name="maxsell" value="$orderdef.$maxsell" />
+                    <param name="tradeforbuildstorage" value="$orderdef.$tradeforbuildstorage" />
+                    <param name="usecover" value="$orderdef.$usecover" />
+                    <param name="warebasket_override" value="$orderdef.$warebasket_override" />
+                  </create_order>
+                </do_if>
+                <do_else>
+                  <set_value name="$orderdef.$warebasket" exact="$order.$warebasket" />
+                  <set_value name="$orderdef.$range" exact="$order.$range" />
+                  <set_value name="$orderdef.$minbuy" exact="$order.$minbuy" />
+                  <set_value name="$orderdef.$maxbuy" exact="$order.$maxbuy" />
+                  <set_value name="$orderdef.$minsell" exact="$order.$minsell" />
+                  <set_value name="$orderdef.$maxsell" exact="$order.$maxsell" />
+                  <set_value name="$orderdef.$tradeforbuildstorage" exact="$order.$tradeforbuildstorage" />
+                  <set_value name="$orderdef.$usecover" exact="$order.$usecover" />
+                  <set_value name="$orderdef.$warebasket_override" exact="$order.$warebasket_override" />
+                  <run_script name="$scriptname" sinceversion="2">
+                    <param name="warebasket" value="$order.$warebasket" />
+                    <param name="range" value="$order.$range" />
+                    <param name="minbuy" value="$order.$minbuy" />
+                    <param name="maxbuy" value="$order.$maxbuy" />
+                    <param name="minsell" value="$order.$minsell" />
+                    <param name="maxsell" value="$order.$maxsell" />
+                    <param name="tradeforbuildstorage" value="$order.$tradeforbuildstorage" />
+                    <param name="usecover" value="$order.$usecover" />
+                    <param name="warebasket_override" value="$order.$warebasket_override" />
+                    <!--<param name="duration" value="$duration"/>-->
+                    <!--<param name="debugchance" value="$debugchance"/>
+                  <param name="debugchance2" value="$debugchance"/>-->
+                  </run_script>
+                </do_else>
+              </do_if>
+              <do_else>
+                <do_if value="$createdefaultorder?">
+                  <create_order id="$orderdef.$id" object="this.assignedcontrolled" default="true">
+                    <param name="warebasket" value="$orderdef.$warebasket" />
+                    <param name="range" value="$orderdef.$range" />
+                    <param name="minbuy" value="$orderdef.$minbuy" />
+                    <param name="maxbuy" value="$orderdef.$maxbuy" />
+                    <param name="minsell" value="$orderdef.$minsell" />
+                    <param name="maxsell" value="$orderdef.$maxsell" />
+                    <param name="tradeforbuildstorage" value="$orderdef.$tradeforbuildstorage" />
+                    <param name="usecover" value="$orderdef.$usecover" />
+                  </create_order>
+                </do_if>
+                <do_else>
+                  <set_value name="$orderdef.$warebasket" exact="$order.$warebasket" />
+                  <set_value name="$orderdef.$range" exact="$order.$range" />
+                  <set_value name="$orderdef.$minbuy" exact="$order.$minbuy" />
+                  <set_value name="$orderdef.$maxbuy" exact="$order.$maxbuy" />
+                  <set_value name="$orderdef.$minsell" exact="$order.$minsell" />
+                  <set_value name="$orderdef.$maxsell" exact="$order.$maxsell" />
+                  <set_value name="$orderdef.$tradeforbuildstorage" exact="$order.$tradeforbuildstorage" />
+                  <set_value name="$orderdef.$usecover" exact="$order.$usecover" />
+                  <run_script name="$scriptname">
+                    <param name="warebasket" value="$order.$warebasket" />
+                    <param name="range" value="$order.$range" />
+                    <param name="minbuy" value="$order.$minbuy" />
+                    <param name="maxbuy" value="$order.$maxbuy" />
+                    <param name="minsell" value="$order.$minsell" />
+                    <param name="maxsell" value="$order.$maxsell" />
+                    <param name="tradeforbuildstorage" value="$order.$tradeforbuildstorage" />
+                    <param name="usecover" value="$order.$usecover" />
+                    <!--<param name="duration" value="$duration"/>-->
+                    <!--<param name="debugchance" value="$debugchance"/>
+                    <param name="debugchance2" value="$debugchance"/>-->
+                  </run_script>
+                </do_else>
+              </do_else>
+            </do_if>
+          </do_elseif>
+          <do_elseif value="($orderdef.$id == 'MiningRoutine') or ($orderdef.$id == 'MiningRoutine_Advanced') or ($orderdef.$id == 'MiningRoutine_Basic') or ($orderdef.$id == 'MiningRoutine_Expert')">
+            <do_if value="(this.assignedcontrolled.primarypurpose == purpose.mine) and ($createdefaultorder? or (this.assignedcontrolled.waretransport == $commander.waretransport))">
+              <set_value name="$added" />
+              <do_if value="@$order.$warebasket_override.count or @$orderdef.$warebasket_override.count">
+                <do_if value="$createdefaultorder?">
+                  <create_order id="$orderdef.$id" object="this.assignedcontrolled" default="true">
+                    <param name="warebasket" value="$orderdef.$warebasket" />
+                    <param name="range" value="$orderdef.$range" />
+                    <param name="minbuy" value="$orderdef.$minbuy" />
+                    <param name="maxbuy" value="$orderdef.$maxbuy" />
+                    <param name="minsell" value="$orderdef.$minsell" />
+                    <param name="maxsell" value="$orderdef.$maxsell" />
+                    <param name="warebasket_override" value="$orderdef.$warebasket_override" />
+                  </create_order>
+                </do_if>
+                <do_else>
+                  <set_value name="$orderdef.$warebasket" exact="$order.$warebasket" />
+                  <set_value name="$orderdef.$range" exact="$order.$range" />
+                  <set_value name="$orderdef.$minbuy" exact="$order.$minbuy" />
+                  <set_value name="$orderdef.$maxbuy" exact="$order.$maxbuy" />
+                  <set_value name="$orderdef.$minsell" exact="$order.$minsell" />
+                  <set_value name="$orderdef.$maxsell" exact="$order.$maxsell" />
+                  <set_value name="$orderdef.$warebasket_override" exact="$order.$warebasket_override" />
+                  <run_script name="$scriptname" sinceversion="2">
+                    <param name="warebasket" value="$order.$warebasket" />
+                    <param name="range" value="$order.$range" />
+                    <param name="minbuy" value="$order.$minbuy" />
+                    <param name="maxbuy" value="$order.$maxbuy" />
+                    <param name="minsell" value="$order.$minsell" />
+                    <param name="maxsell" value="$order.$maxsell" />
+                    <param name="warebasket_override" value="$order.$warebasket_override" />
+                    <!--<param name="duration" value="$duration"/>-->
+                    <!--<param name="debugchance" value="$debugchance"/>
+                    <param name="debugchance2" value="$debugchance"/>-->
+                  </run_script>
+                </do_else>
+              </do_if>
+              <do_else>
+                <do_if value="$createdefaultorder?">
+                  <create_order id="$orderdef.$id" object="this.assignedcontrolled" default="true">
+                    <param name="warebasket" value="$orderdef.$warebasket" />
+                    <param name="range" value="$orderdef.$range" />
+                    <param name="minbuy" value="$orderdef.$minbuy" />
+                    <param name="maxbuy" value="$orderdef.$maxbuy" />
+                    <param name="minsell" value="$orderdef.$minsell" />
+                    <param name="maxsell" value="$orderdef.$maxsell" />
+                  </create_order>
+                </do_if>
+                <do_else>
+                  <set_value name="$orderdef.$warebasket" exact="$order.$warebasket" />
+                  <set_value name="$orderdef.$range" exact="$order.$range" />
+                  <set_value name="$orderdef.$minbuy" exact="$order.$minbuy" />
+                  <set_value name="$orderdef.$maxbuy" exact="$order.$maxbuy" />
+                  <set_value name="$orderdef.$minsell" exact="$order.$minsell" />
+                  <set_value name="$orderdef.$maxsell" exact="$order.$maxsell" />
+                  <run_script name="$scriptname">
+                    <param name="warebasket" value="$order.$warebasket" />
+                    <param name="range" value="$order.$range" />
+                    <param name="minbuy" value="$order.$minbuy" />
+                    <param name="maxbuy" value="$order.$maxbuy" />
+                    <param name="minsell" value="$order.$minsell" />
+                    <param name="maxsell" value="$order.$maxsell" />
+                    <!--<param name="duration" value="$duration"/>-->
+                    <!--<param name="debugchance" value="$debugchance"/>
+                    <param name="debugchance2" value="$debugchance"/>-->
+                  </run_script>
+                </do_else>
+              </do_else>
+            </do_if>
+          </do_elseif>
+          <do_elseif value="$orderdef.$id == 'SalvageRoutine'">
+            <do_if value="$createdefaultorder? or (this.assignedcontrolled.type == @$orderobject.type)">
+              <set_value name="$added" />
+              <do_if value="$createdefaultorder?">
+                <create_order id="$orderdef.$id" object="this.assignedcontrolled" default="true">
+                  <param name="anchorspace" value="$orderdef.$anchorspace" />
+                  <param name="range" value="$orderdef.$range" />
+                </create_order>
+              </do_if>
+              <do_else>
+                <set_value name="$orderdef.$anchorspace" exact="$order.$anchorspace" />
+                <set_value name="$orderdef.$range" exact="$order.$range" />
+                <run_script name="$scriptname" sinceversion="1">
+                  <param name="anchorspace" value="$order.$anchorspace" />
+                  <param name="range" value="$order.$range" />
+                  <!--<param name="duration" value="$duration"/>-->
+                  <!--<param name="debugchance" value="$debugchance"/>-->
+                </run_script>
+              </do_else>
+            </do_if>
+          </do_elseif>
+          <do_elseif value="$orderdef.$id == 'FindBuildTasks'">
+            <do_if value="this.assignedcontrolled.primarypurpose == purpose.build">
+              <set_value name="$added" />
+              <do_if value="$createdefaultorder?">
+                <create_order id="$orderdef.$id" object="this.assignedcontrolled" default="true">
+                  <param name="range" value="$orderdef.$range" />
+                  <param name="maxjumps" value="$orderdef.$maxjumps" />
+                  <param name="playeronly" value="$orderdef.$playeronly" />
+                </create_order>
+              </do_if>
+              <do_else>
+                <set_value name="$orderdef.$range" exact="$order.$range" />
+                <set_value name="$orderdef.$maxjumps" exact="$order.$maxjumps" />
+                <set_value name="$orderdef.$playeronly" exact="$order.$playeronly" />
+                <run_script name="$scriptname">
+                  <param name="range" value="$order.$range" />
+                  <param name="maxjumps" value="$order.$maxjumps" />
+                  <param name="playeronly" value="$order.$playeronly" />
+                  <!--<param name="debugchance" value="$debugchance"/>-->
+                </run_script>
+              </do_else>
+            </do_if>
+          </do_elseif>
+          <do_elseif value="$orderdef.$id == 'DockAndWait'">
+            <set_value name="$added" />
+            <do_if value="$createdefaultorder?">
+              <create_order id="$orderdef.$id" object="this.assignedcontrolled" default="true">
+                <param name="destination" value="$orderdef.$destination" />
+                <param name="building" value="$orderdef.$building" />
+                <param name="trading" value="$orderdef.$trading" />
+                <param name="allowplayeronly" value="$orderdef.$allowplayeronly" />
+                <param name="ventureplatform" value="$orderdef.$ventureplatform" />
+                <param name="waittime" value="$orderdef.$waittime" />
+                <param name="noattackresponse" value="$orderdef.$noattackresponse" />
+              </create_order>
+            </do_if>
+            <do_else>
+              <set_value name="$orderdef.$destination" exact="$order.$destination" />
+              <set_value name="$orderdef.$building" exact="$order.$building" />
+              <set_value name="$orderdef.$trading" exact="$order.$trading" />
+              <set_value name="$orderdef.$allowplayeronly" exact="$order.$allowplayeronly" />
+              <set_value name="$orderdef.$ventureplatform" exact="$order.$ventureplatform" />
+              <set_value name="$orderdef.$waittime" exact="$order.$waittime" />
+              <set_value name="$orderdef.$noattackresponse" exact="$order.$noattackresponse" />
+              <run_script name="$scriptname">
+                <param name="destination" value="$order.$destination" />
+                <param name="building" value="$order.$building" />
+                <param name="trading" value="$order.$trading" />
+                <param name="allowplayeronly" value="$order.$allowplayeronly" />
+                <param name="ventureplatform" value="$order.$ventureplatform" />
+                <param name="waittime" value="$order.$waittime" />
+                <param name="noattackresponse" value="$order.$noattackresponse" />
+                <!--<param name="dockfollowers" value="$order.$dockfollowers"/>-->
+                <!--<param name="releasesignal" value="$order.$releasesignal"/>-->
+                <!--<param name="timeout" value="$duration"/>-->
+                <!--<param name="debugchance" value="$debugchance"/>-->
+              </run_script>
+            </do_else>
+          </do_elseif>
+          <do_elseif value="$orderdef.$id == 'Escort'">
+            <set_value name="$added" />
+            <do_if value="$createdefaultorder?">
+              <create_order id="$orderdef.$id" object="this.assignedcontrolled" default="true">
+                <param name="target" value="$orderdef.$target" />
+                <param name="formation" value="$orderdef.$formation" />
+                <param name="rollmembers" value="$orderdef.$rollmembers" />
+                <param name="rollformation" value="$orderdef.$rollformation" />
+                <param name="maxshipsperline" value="$orderdef.$maxshipsperline" />
+                <param name="pursuedistance" value="$orderdef.$pursuedistance" />
+                <param name="overrideformationskill" value="$orderdef.$overrideformationskill" />
+              </create_order>
+            </do_if>
+            <do_else>
+              <set_value name="$orderdef.$target" exact="$order.$target" />
+              <set_value name="$orderdef.$formation" exact="$order.$formation" />
+              <set_value name="$orderdef.$rollmembers" exact="$order.$rollmembers" />
+              <set_value name="$orderdef.$rollformation" exact="$order.$rollformation" />
+              <set_value name="$orderdef.$maxshipsperline" exact="$order.$maxshipsperline" />
+              <set_value name="$orderdef.$pursuedistance" exact="$order.$pursuedistance" />
+              <set_value name="$orderdef.$overrideformationskill" exact="$order.$overrideformationskill" />
+              <run_script name="$scriptname">
+                <param name="target" value="$order.$target" />
+                <param name="formation" value="$order.$formation" />
+                <param name="rollmembers" value="$order.$rollmembers" />
+                <param name="rollformation" value="$order.$rollformation" />
+                <param name="maxshipsperline" value="$order.$maxshipsperline" />
+                <param name="pursuedistance" value="$order.$pursuedistance" />
+                <param name="overrideformationskill" value="$order.$overrideformationskill" />
+                <!--<param name="cannotdock" value="$order.$cannotdock"/>-->
+                <!--<param name="releasesignal" value="$order.$releasesignal"/>-->
+                <!--<param name="timeout" value="$duration"/>-->
+                <!--<param name="debugchance" value="$debugchance"/>-->
+              </run_script>
+            </do_else>
+          </do_elseif>
+          <do_elseif value="$orderdef.$id == 'Patrol'">
+            <set_value name="$added" />
+            <run_script name="$scriptname">
+              <param name="space" value="$order.$space" />
+              <param name="range" value="$order.$range" />
+              <param name="pursuetargets" value="$order.$pursuetargets" />
+              <param name="pursuedistance" value="$order.$pursuedistance" />
+              <param name="includeroute" value="$order.$includeroute" />
+              <param name="allowothertargets" value="$order.$allowothertargets" />
+              <param name="targetpurposes" value="$order.$targetpurposes" />
+              <!--<param name="timeout" value="$duration"/>-->
+              <!--<param name="debugchance" value="$debugchance"/>-->
+            </run_script>
+          </do_elseif>
+          <do_elseif value="$orderdef.$id == 'ProtectPosition'">
+            <set_value name="$added" />
+            <do_if value="$createdefaultorder?">
+              <create_order id="$orderdef.$id" object="this.assignedcontrolled" default="true">
+                <param name="destination" value="$orderdef.$destination" />
+                <param name="radius" value="$orderdef.$radius" />
+                <param name="pursuetargets" value="$orderdef.$pursuetargets" />
+              </create_order>
+            </do_if>
+            <do_else>
+              <set_value name="$orderdef.$destination" exact="$order.$destination" />
+              <set_value name="$orderdef.$radius" exact="$order.$radius" />
+              <set_value name="$orderdef.$pursuetargets" exact="$order.$pursuetargets" />
+              <run_script name="$scriptname">
+                <param name="destination" value="$order.$destination" />
+                <param name="radius" value="$order.$radius" />
+                <param name="pursuetargets" value="$order.$pursuetargets" />
+                <!--<param name="timeout" value="$duration"/>-->
+                <!--<param name="debugchance" value="$debugchance"/>-->
+              </run_script>
+            </do_else>
+          </do_elseif>
+          <do_elseif value="$orderdef.$id == 'ProtectShip'">
+            <set_value name="$added" />
+            <do_if value="$createdefaultorder?">
+              <create_order id="$orderdef.$id" object="this.assignedcontrolled" default="true">
+                <param name="target" value="$orderdef.$target" />
+                <param name="radius" value="$orderdef.$radius" />
+                <param name="pursuedistance" value="$orderdef.$pursuedistance" />
+                <param name="untilclaimed" value="$orderdef.$untilclaimed" />
+              </create_order>
+            </do_if>
+            <do_else>
+              <set_value name="$orderdef.$target" exact="$order.$target" />
+              <set_value name="$orderdef.$radius" exact="$order.$radius" />
+              <set_value name="$orderdef.$pursuedistance" exact="$order.$pursuedistance" />
+              <set_value name="$orderdef.$untilclaimed" exact="$order.$untilclaimed" />
+              <run_script name="$scriptname">
+                <param name="target" value="$order.$target" />
+                <param name="radius" value="$order.$radius" />
+                <param name="pursuedistance" value="$order.$pursuedistance" />
+                <param name="untilclaimed" value="$order.$untilclaimed" />
+                <!--<param name="timeout" value="$duration"/>-->
+                <!--<param name="debugchance" value="$debugchance"/>-->
+              </run_script>
+            </do_else>
+          </do_elseif>
+          <do_elseif value="$orderdef.$id == 'ProtectStation'">
+            <set_value name="$added" />
+            <do_if value="$createdefaultorder?">
+              <create_order id="$orderdef.$id" object="this.assignedcontrolled" default="true">
+                <param name="station" value="$orderdef.$station" />
+                <param name="radius" value="$orderdef.$radius" />
+              </create_order>
+            </do_if>
+            <do_else>
+              <set_value name="$orderdef.$station" exact="$order.$station" />
+              <set_value name="$orderdef.$radius" exact="$order.$radius" />
+              <run_script name="$scriptname">
+                <param name="station" value="$order.$station" />
+                <param name="radius" value="$order.$radius" />
+                <!--<param name="timeout" value="$duration"/>-->
+                <!--<param name="debugchance" value="$debugchance"/>-->
+              </run_script>
+            </do_else>
+          </do_elseif>
+          <do_elseif value="$orderdef.$id == 'Police'">
+            <set_value name="$added" />
+            <do_if value="$createdefaultorder?">
+              <create_order id="$orderdef.$id" object="this.assignedcontrolled" default="true">
+                <param name="targetspace" value="$orderdef.$targetspace" />
+                <param name="hq" value="$orderdef.$hq" />
+                <param name="targetclasses" value="$orderdef.$targetclasses" />
+                <param name="targetpurposes" value="$orderdef.$targetpurposes" />
+              </create_order>
+            </do_if>
+            <do_else>
+              <set_value name="$orderdef.$targetspace" exact="$order.$targetspace" />
+              <set_value name="$orderdef.$hq" exact="$order.$hq" />
+              <set_value name="$orderdef.$targetclasses" exact="$order.$targetclasses" />
+              <set_value name="$orderdef.$targetpurposes" exact="$order.$targetpurposes" />
+              <run_script name="$scriptname">
+                <param name="targetspace" value="$order.$targetspace" />
+                <param name="hq" value="$order.$hq" />
+                <param name="targetclasses" value="$order.$targetclasses" />
+                <param name="targetpurposes" value="$order.$targetpurposes" />
+                <!--<param name="cannotdock" value="$order.$cannotdock"/>-->
+                <!--<param name="timeout" value="$duration"/>-->
+                <!--<param name="debugchance" value="$debugchance"/>-->
+              </run_script>
+            </do_else>
+          </do_elseif>
+          <do_elseif value="$orderdef.$id == 'ExploreUpdate'">
+            <set_value name="$added" />
+            <do_if value="$createdefaultorder?">
+              <create_order id="$orderdef.$id" object="this.assignedcontrolled" default="true">
+                <param name="targetspace" value="$orderdef.$targetspace" />
+                <param name="destination" value="$orderdef.$destination" />
+                <param name="radius" value="$orderdef.$radius" />
+                <param name="targetclasses" value="$orderdef.$targetclasses" />
+              </create_order>
+            </do_if>
+            <do_else>
+              <set_value name="$orderdef.$targetspace" exact="$order.$targetspace" />
+              <set_value name="$orderdef.$destination" exact="$order.$destination" />
+              <set_value name="$orderdef.$radius" exact="$order.$radius" />
+              <set_value name="$orderdef.$targetclasses" exact="$order.$targetclasses" />
+              <run_script name="$scriptname">
+                <param name="targetspace" value="$order.$targetspace" />
+                <param name="destination" value="$order.$destination" />
+                <param name="radius" value="$order.$radius" />
+                <param name="targetclasses" value="$order.$targetclasses" />
+                <!--<param name="timeout" value="$duration"/>-->
+                <!--<param name="debugchance" value="$debugchance"/>-->
+              </run_script>
+            </do_else>
+          </do_elseif>
+          <do_elseif value="$orderdef.$id == 'MoveWait'">
+            <set_value name="$added" />
+            <do_if value="$createdefaultorder?">
+              <create_order id="$orderdef.$id" object="this.assignedcontrolled" default="true">
+                <param name="destination" value="$orderdef.$destination" />
+                <param name="withdraw" value="$orderdef.$withdraw" />
+                <param name="precise" value="$orderdef.$precise" />
+                <param name="playerprecise" value="$orderdef.$playerprecise" />
+              </create_order>
+            </do_if>
+            <do_else>
+              <set_value name="$orderdef.$destination" exact="$order.$destination" />
+              <set_value name="$orderdef.$withdraw" exact="$order.$withdraw" />
+              <set_value name="$orderdef.$precise" exact="$order.$precise" />
+              <set_value name="$orderdef.$playerprecise" exact="$order.$playerprecise" />
+              <run_script name="$scriptname">
+                <param name="destination" value="$order.$destination" />
+                <param name="withdraw" value="$order.$withdraw" />
+                <param name="precise" value="$order.$precise" />
+                <param name="playerprecise" value="$order.$playerprecise" />
+                <!--<param name="waitforatgate" value="$order.$waitforatgate"/>-->
+                <!--<param name="recallsubordinates" value="$order.$recallsubordinates"/>-->
+                <!--<param name="timeout" value="$duration"/>-->
+                <!--<param name="debugchance" value="$debugchance"/>-->
+              </run_script>
+            </do_else>
+          </do_elseif>
+          <do_elseif value="$orderdef.$id == 'MoveToObject'">
+            <set_value name="$added" />
+            <do_if value="$createdefaultorder?">
+              <create_order id="$orderdef.$id" object="this.assignedcontrolled" default="true">
+                <param name="destination" value="$orderdef.$destination" />
+                <param name="noattackresponse" value="$orderdef.$noattackresponse" />
+              </create_order>
+            </do_if>
+            <do_else>
+              <set_value name="$orderdef.$destination" exact="$order.$destination" />
+              <set_value name="$orderdef.$noattackresponse" exact="$order.$noattackresponse" />
+              <run_script name="$scriptname">
+                <param name="destination" value="$order.$destination" />
+                <param name="noattackresponse" value="$order.$noattackresponse" />
+                <!--<param name="timeout" value="$duration"/>-->
+                <!--<param name="debugchance" value="$debugchance"/>-->
+              </run_script>
+            </do_else>
+          </do_elseif>
+          <do_elseif value="$orderdef.$id == 'Plunder'">
+            <set_value name="$added" />
+            <do_if value="$createdefaultorder?">
+              <create_order id="$orderdef.$id" object="this.assignedcontrolled" default="true">
+                <param name="space" value="$orderdef.$space" />
+                <param name="base" value="$orderdef.$base" />
+                <param name="returntobase" value="$orderdef.$returntobase" />
+                <param name="basebasket" value="$orderdef.$basebasket" />
+                <param name="deepspace" value="$orderdef.$deepspace" />
+                <param name="checkrelation" value="$orderdef.$checkrelation" />
+                <param name="plundermode" value="$orderdef.$plundermode" />
+                <param name="range_internal" value="$orderdef.$range_internal" />
+                <param name="noattackresponse" value="$orderdef.$noattackresponse" />
+              </create_order>
+            </do_if>
+            <do_else>
+              <set_value name="$orderdef.$space" exact="$order.$space" />
+              <set_value name="$orderdef.$base" exact="$order.$base" />
+              <set_value name="$orderdef.$returntobase" exact="$order.$returntobase" />
+              <set_value name="$orderdef.$basebasket" exact="$order.$basebasket" />
+              <set_value name="$orderdef.$deepspace" exact="$order.$deepspace" />
+              <set_value name="$orderdef.$checkrelation" exact="$order.$checkrelation" />
+              <set_value name="$orderdef.$plundermode" exact="$order.$plundermode" />
+              <set_value name="$orderdef.$range_internal" exact="$order.$range_internal" />
+              <set_value name="$orderdef.$noattackresponse" exact="$order.$noattackresponse" />
+              <run_script name="$scriptname">
+                <param name="space" value="$order.$space" />
+                <param name="base" value="$order.$base" />
+                <param name="returntobase" value="$order.$returntobase" />
+                <param name="basebasket" value="$order.$basebasket" />
+                <param name="deepspace" value="$order.$deepspace" />
+                <param name="checkrelation" value="$order.$checkrelation" />
+                <param name="plundermode" value="$order.$plundermode" />
+                <param name="range_internal" value="$order.$range_internal" />
+                <param name="noattackresponse" value="$order.$noattackresponse" />
+                <!--<param name="target" value="$order.$target"/>
+                <param name="module" value="$order.$module"/>
+                <param name="movetomodule" value="$order.$movetomodule"/>-->
+                <!--<param name="debugchance" value="$debugchance"/>-->
+              </run_script>
+            </do_else>
+          </do_elseif>
+          <do_elseif value="$orderdef.$id == 'Wait'">
+            <set_value name="$added" />
+            <do_if value="$createdefaultorder?">
+              <create_order id="$orderdef.$id" object="this.assignedcontrolled" default="true">
+                <param name="allowdocked" value="$orderdef.$allowdocked and not this.assignedcontrolled.iscapitalship" />
+                <param name="holdfire" value="$orderdef.$holdfire" />
+                <param name="noattackresponse" value="$orderdef.$noattackresponse" />
+              </create_order>
+            </do_if>
+            <do_else>
+              <set_value name="$orderdef.$allowdocked" exact="$order.$allowdocked" />
+              <set_value name="$orderdef.$holdfire" exact="$order.$holdfire" />
+              <set_value name="$orderdef.$noattackresponse" exact="$order.$noattackresponse" />
+              <run_script name="$scriptname">
+                <param name="allowdocked" value="$order.$allowdocked and not this.assignedcontrolled.iscapitalship" />
+                <param name="holdfire" value="$order.$holdfire" />
+                <param name="noattackresponse" value="$order.$noattackresponse" />
+                <!--<param name="attacker" value="$order.$attacker"/>-->
+                <!--<param name="timeout" value="$duration"/>-->
+                <!--<param name="debugchance" value="$debugchance"/>-->
+              </run_script>
+            </do_else>
+          </do_elseif>
+          <do_elseif value="$orderdef.$id == 'Follow'">
+            <set_value name="$added" />
+            <do_if value="$createdefaultorder?">
+              <create_order id="$orderdef.$id" object="this.assignedcontrolled" default="true">
+                <param name="target" value="$orderdef.$target" />
+              </create_order>
+            </do_if>
+            <do_else>
+              <set_value name="$orderdef.$target" exact="$order.$target" />
+              <run_script name="$scriptname">
+                <param name="target" value="$order.$target" />
+                <!--<param name="debugchance" value="$debugchance"/>-->
+              </run_script>
+            </do_else>
+          </do_elseif>
+        </do_if>
+
+        <do_if value="not $added?">
+          <!-- fallback. error? -->
+          <debug_text text="'default order not inherited from commander.\nthis ship: %s %s %s\ncommander: %s %s %s\ncomander default order: %s'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, @$commander.idcode, @$commander.knownname, $commander, @$order.id]" filter="error" />
+          <do_if value="$createdefaultorder?">
+            <debug_text text="'promoted to commander but was unable to inherit commander default order. cleaning up.'" chance="$debugchance" />
+            <set_value name="$removeassignment" />
+            <resume label="finish" />
+          </do_if>
+          <run_script name="'order.move.follow'">
+            <param name="target" value="$commander" />
+            <param name="commandaction" value="commandaction.orderfailed" />
+            <!--<param name="debugchance" value="$debugchance"/>-->
+          </run_script>
+        </do_if>
+      </do_if>
+      <remove_value name="$added" />
+
+      <set_order_syncpoint_reached order="this.assignedcontrolled.order" />
+
+      <wait exact="$waitduration" />
+
+      <debug_text text="'waited for %s seconds. commander: %s %s %s did not have an actionable default order. looping back to check again.'.[$waitduration, $commander.idcode, $commander.knownname, $commander]" chance="$debugchance" />
+      <resume label="init" />
+
+      <label name="finish" />
+
+      <do_if value="$removeassignment?">
+        <create_order id="'AssignCommander'" object="this.assignedcontrolled" />
+      </do_if>
+
+    </actions>
+  </attention>
+</aiscript>

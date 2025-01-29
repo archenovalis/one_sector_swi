@@ -1,0 +1,1244 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="Tutorial_flight" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+    <cue name="Start" namespace="this">
+      <conditions>
+        <event_cue_signalled cue="md.Setup.Start" />
+      </conditions>
+      <actions>
+        <do_if value="not md.$TutorialRegister?">
+          <set_value name="md.$TutorialRegister" exact="[]" />
+        </do_if>
+        <append_to_list name="md.$TutorialRegister" exact="Start" />
+      </actions>
+      <cues>
+        <cue name="PlayerDied">
+          <conditions>
+            <event_object_destroyed object="player.entity" />
+          </conditions>
+          <actions>
+            <cancel_cue cue="Start" />
+          </actions>
+        </cue>
+
+        <cue name="Trigger" checkinterval="5s" version="2">
+          <conditions>
+            <check_value value="not md.$SurpressTutorials?" />
+            <check_value value="player.computer" />
+          </conditions>
+          <actions>
+            <set_value name="$DebugChance" exact="0"/>
+            <set_value name="$MissionName" exact="' 2) ' + readtext.{30198}.{4}" />
+            <set_value name="$Guide" exact="player.computer" />
+            <create_offer cue="Start" actor="$Guide" name="$MissionName" description="readtext.{30198}.{2}" difficulty="level.trivial" faction="faction.player" type="missiontype.tutorial">
+              <briefing>
+                <objective step="1" action="objective.custom" customaction="{30198,12}"/>
+                <objective step="2" action="objective.custom" customaction="{30198,13}"/>
+                <objective step="3" action="objective.custom" customaction="{30198,14}"/>
+                <objective step="4" action="objective.custom" customaction="{30198,15}"/>
+                <objective step="5" action="objective.custom" customaction="{30198,16}"/>
+                <objective step="6" action="objective.custom" customaction="{30198,17}"/>
+              </briefing>
+            </create_offer>
+          </actions>
+          <patch sinceversion="2">
+            <do_if value="Start.hasmissionoffer">
+              <set_value name="$MissionName" exact="' 2) ' + readtext.{30198}.{4}" />
+              <update_offer cue="Start" name="$MissionName"/>
+            </do_if>
+          </patch>
+          <cues>
+            <cue name="Offer">
+              <cues>
+                <cue name="ConversationStarted" instantiate="true">
+                  <conditions>
+                    <event_conversation_started actor="$Guide" conversation="mission" convparam="Start" />
+                  </conditions>
+                  <actions>
+                    <remove_help all="true" />
+                    <open_conversation_menu menu="MissionBriefingMenu" param="[0, 0, Start, true]" />
+                  </actions>
+                  <cues>
+                    <cue name="ConversationNextSection" instantiate="true">
+                      <conditions>
+                        <event_conversation_next_section actor="$Guide" choiceparam="Start" />
+                      </conditions>
+                      <actions>
+                        <!-- Accept case -->
+                        <do_if value="event.param == 'c_mission_accept'">
+                          <signal_cue cue="Tutorial" />
+                        </do_if>
+                      </actions>
+                    </cue>
+
+                    <cue name="ConversationFinished">
+                      <conditions>
+                        <event_conversation_finished actor="$Guide" />
+                      </conditions>
+                      <actions>
+                        <cancel_cue cue="ConversationStarted" />
+                      </actions>
+                    </cue>
+
+                    <cue name="AcceptMission">
+                      <conditions>
+                        <event_object_signalled object="$Guide" param="'accept'" />
+                      </conditions>
+                      <actions>
+                        <signal_cue cue="Tutorial" />
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="Tutorial">
+              <conditions>
+                <check_any>
+                  <event_cue_signalled />
+                  <event_object_signalled object="player.entity" param="'start'" param2="Start" />
+                </check_any>
+              </conditions>
+              <actions>
+                <debug_text text="'Tutorial can begin'" chance="$DebugChance" />
+                <cancel_cue cue="Offer" />
+                <signal_cue_instantly cue="md.Tutorials.NewTutorialTriggered" param="Start" />
+                <set_value name="$TutorialStartTime" exact="player.age" />
+                <create_mission cue="Start" offercue="Start" />
+                <cancel_conversation actor="$Guide" />
+                <remove_offer cue="Start" />
+                <remove_help all="true" />
+                <show_help line="993" duration="10s" width="140" position="1" force="true" comment="For a more detailed introduction to flight mechanics, try ..." />
+                <show_help line="1001" duration="7s" width="140" position="1" force="true" comment="You can abort this tutorial in the Active Missions menu " />
+                <create_group groupname="$Beacons"/>
+                <create_group groupname="$Missiles"/>
+                <set_value name="$StartDelay" exact="2s"/>
+              </actions>
+              <cues>
+
+                <cue name="Abort">
+                  <conditions>
+                    <event_mission_aborted cue="Start" />
+                  </conditions>
+                  <actions>
+                    <remove_help all="true"/>
+                    <remove_mission cue="Start" type="aborted" />
+                    <signal_cue cue="Cleanup" />
+                  </actions>
+                </cue>
+
+                <cue name="Abort_NonPlayerShip" checkinterval="5s">
+                  <conditions>
+                    <check_value value="player.ship and (not player.ship.isplayerowned)" />
+                  </conditions>
+                  <actions>
+                    <remove_help all="true"/>
+                    <show_notification text="{1015,411}" sound="notification_warning" comment="Tutorial aborted: not on owned ship." />
+                    <remove_mission cue="Start" type="aborted" />
+                    <signal_cue cue="Cleanup" />
+                  </actions>
+                </cue>
+
+                <!--Player is past the return to ship phase and is now on a station-->
+                <cue name="Abort_OnStation" checkinterval="5s">
+                  <conditions>
+                    <cue_is_cancelled cue="Tutorial_ReturnToShip"/>
+                    <check_value value="not player.ship and player.station" />
+                  </conditions>
+                  <actions>
+                    <show_notification text="{1015,404}" sound="notification_warning" comment="Tutorial aborted: not piloting a ship." />
+                    <remove_help all="true"/>
+                    <remove_mission cue="Start" type="aborted" />
+                    <signal_cue cue="Cleanup" />
+                  </actions>
+                </cue>
+
+                <cue name="Abort_StagingArea" checkinterval="1s">
+                  <conditions>
+                    <check_value value="player.sector"/>
+                  </conditions>
+                  <actions>
+                    <set_value name="$ShowWarning" exact="true"/>
+                    <set_value name="$StartSector" exact="player.sector"/>
+                    <create_position name="$StartPos" object="player.entity" space="$StartSector"/>
+                  </actions>
+                  <cues>
+                    <cue name="StagingAreaOk" checkinterval="3s" instantiate="true" >
+                      <conditions>
+                        <check_value value="not $ShowWarning"/>
+                        <check_value value="player.sector == $StartSector and player.entity.distanceto.[$StartSector, $StartPos] le 30km"/>
+                      </conditions>
+                      <actions>
+                        <set_value name="$ShowWarning" exact="true" comment="re-enable leave-warning"/>
+                      </actions>
+                    </cue>
+                    <cue name="StagingAreaWarning" checkinterval="3s" instantiate="true" >
+                      <conditions>
+                        <check_value value="$ShowWarning"/>
+                        <check_value value="player.sector == $StartSector and player.entity.distanceto.[$StartSector, $StartPos] gt 30km"/>
+                      </conditions>
+                      <actions>
+                        <show_notification text="{1015,500}" sound="notification_warning" />
+                        <set_value name="$ShowWarning" exact="false" comment="don't keep retriggering"/>
+                      </actions>
+                    </cue>
+                    <cue name="StagingAreaAbort" checkinterval="10s" >
+                      <conditions>
+                        <check_value value="player.sector != $StartSector or player.entity.distanceto.[$StartSector, $StartPos] gt 35km"/>
+                      </conditions>
+                      <actions>
+                        <remove_help all="true"/>
+                        <show_notification text="{1015,401}" sound="notification_warning" comment="Tutorial aborted: player left staging area" />
+                        <remove_mission cue="Start" type="aborted" />
+                        <signal_cue cue="Cleanup" />
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="Abort_OtherTutorialStarted">
+                  <conditions>
+                    <event_cue_signalled cue="md.Tutorials.NewTutorialTriggered" />
+                    <check_value value="event.param != Start" />
+                  </conditions>
+                  <actions>
+                    <remove_help all="true"/>
+                    <show_notification text="{1015,400}" sound="notification_warning" comment="Tutorial aborted" />
+                    <remove_mission cue="Start" type="aborted"/>
+                    <signal_cue cue="Cleanup" />
+                  </actions>
+                </cue>
+                <cue name="Tutorial_Init">
+                  <delay exact="$StartDelay"/>
+                  <actions>
+                    <!--Create a list of tutorial cues to trigger in what order, and what briefing step they point to-->
+                    <set_value name="$SignalList" exact="[
+                                [Tutorial_Spacesuit, 1],                               
+                                [Tutorial_ReturnToShip, 1],
+                                [Tutorial_HoldMouseSteering, 1],
+                                [Tutorial_Steering, 1],
+                                [Tutorial_Bars, 1],
+                                [Tutorial_Speedbar, 2],
+                                [Tutorial_Speed, 2],
+                                [Tutorial_Boost, 3],
+                                [Tutorial_Stop_Boost, 3],
+                                [Tutorial_Shields, 4],
+                                [Tutorial_WeaponGroups, 5],
+                                [Tutorial_Mission_Target, 5],
+                                [Tutorial_Fire, 6],
+                                [Tutorial_Collect_Missiles, 6],
+                    ]"/>
+
+                    <set_value name="$Index" exact="0"/>
+                    <signal_cue cue="Tutorial_TriggerNext"/>
+                  </actions>
+                </cue>
+
+                <cue name="Tutorial_Spacesuit" instantiate="true">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <do_if value="player.controlled.isclass.spacesuit">
+                      <show_help_multi log="true" position="1" force="true" allowclose="false" width="180">
+                        <text line="7500" comment="Target your own ship and request docking permission."/>
+                        <text line="7510" comment="Press $INPUT_ACTION_DOCK$ or use the ship menu \($INPUT_ACTION_OPEN_COCKPIT_MENU$\) to request docking permission"/>
+                        <text line="7520" comment="Carefully steer into the XS dock of your ship."/>
+                      </show_help_multi>
+                    </do_if>
+                    <do_else>
+                      <signal_cue cue="Tutorial_TriggerNext"/>
+                      <cancel_cue cue="Tutorial_Spacesuit"/>
+                    </do_else>
+                  </actions>
+                  <cues>
+                    <cue name="Tutorial_EnterShip_Wait" checkinterval="1s">
+                      <conditions>
+                        <check_value value="player.ship"/>
+                        <check_value value="not player.ship.isclass.spacesuit"/>
+                      </conditions>
+                      <actions>
+                        <remove_help all="true" />
+                        <signal_cue cue="Tutorial_TriggerNext"/>
+                        <cancel_cue cue="Tutorial_Spacesuit"/>
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="Tutorial_TriggerNext" instantiate="true">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <set_value name="$Index" operation="add"/>
+                    <do_if value="$Index gt $SignalList.count">
+                      <remove_help all="true"/>
+                      <debug_text text="'Flight tutorial has been completed'" chance="$DebugChance" />
+                      <show_help line="1002" position="1" force="true" comment="Tutorial Completed!"/>
+                      <show_help line="1003" position="1" force="true" comment="Press $INPUT_ACTION_HELP$ to try other tutorials."/>
+                      <remove_mission cue="Start" type="tutorialcompleted" />
+                      <signal_cue cue="Cleanup" />
+                    </do_if>
+                    <do_else>
+                      <signal_cue cue="$SignalList.{$Index}.{1}"/>
+                      <set_value name="$CurrentStep" exact="$SignalList.{$Index}.{2}"/>
+                      <set_objective_from_briefing cue="Start" step="$CurrentStep"/>
+                    </do_else>
+                  </actions>
+                </cue>
+
+                <cue name="Tutorial_ReturnToShip">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <do_if value="player.ship and not player.ship.dock and player.occupiedship" comment="skip this part of the tutorial">
+                      <signal_cue cue="Tutorial_TriggerNext"/>
+                      <cancel_cue cue="Tutorial_ReturnToShip"/>
+                    </do_if>
+                    <do_else>
+                      <set_value name="$NextHint1" exact="player.age"/>
+                      <set_value name="$NextHint2" exact="player.age"/>
+                      <set_value name="$NextHint3" exact="player.age"/>
+                    </do_else>
+                  </actions>
+                  <cues>
+                    <cue name="Tutorial_ReturnToShip_ToShipRehint" checkinterval="1s" instantiate="true">
+                      <conditions>
+                        <check_value value="not player.ship"/>
+                      </conditions>
+                      <actions>
+                        <set_value name="$NextHint2" exact="player.age"/>
+                        <set_value name="$NextHint3" exact="player.age"/>
+                        <do_if value="$NextHint1 lt player.age" comment="don't spam hints">
+                          <remove_help all="true"/>
+                          <show_help line="1030" position="1" force="true" comment="... press $INPUT_ACTION_DOCK_ACTION$ to quickly get back to your ship." allowclose="false" timeout="false"/>
+                          <set_value name="$NextHint1" exact="player.age + 115s"/>
+                        </do_if>
+                      </actions>
+                    </cue>
+
+                    <cue name="Tutorial_ReturnToShip_SitDown" checkinterval="1s" instantiate="true">
+                      <conditions>
+                        <check_value value="(player.ship) and (not player.occupiedship) and (player.ship.isplayerowned)"/>
+                      </conditions>
+                      <actions>
+                        <set_value name="$NextHint1" exact="player.age"/>
+                        <set_value name="$NextHint3" exact="player.age"/>
+                        <do_if value="$NextHint2 lt player.age" comment="don't spam hints">
+                          <remove_help all="true"/>
+                          <show_help line="if player.input.controller or player.input.joystick then 1042 else 1040" position="1" force="true" comment="To sit down in your chair" allowclose="false" timeout="false"/>
+                          <set_value name="$NextHint2" exact="player.age + 115s"/>
+                        </do_if>
+                      </actions>
+                    </cue>
+
+                    <cue name="Tutorial_ReturnToShip_Docked" checkinterval="1s" instantiate="true">
+                      <conditions>
+                        <check_value value="(player.ship) and (player.occupiedship) and (player.ship.dock) and (player.ship.isplayerowned)"/>
+                      </conditions>
+                      <delay exact="0.5s"/>
+                      <actions>
+                        <set_value name="$NextHint1" exact="player.age"/>
+                        <set_value name="$NextHint2" exact="player.age"/>
+                        <do_if value="$NextHint3 lt player.age" comment="don't spam hints">
+                          <remove_help all="true"/>
+                          <remove_help_overlay id="'docked_undock'"/>
+                          <show_help_overlay id="'docked_undock'" highlightonly="true"/>
+                          <show_help line="1031" position="18" force="true" comment="... press $INPUT_ACTION_DOCK_ACTION$ to undock." allowclose="false" timeout="false"/>
+                          <set_value name="$NextHint3" exact="player.age + 115s"/>
+                        </do_if>
+                      </actions>
+                    </cue>
+
+                    <cue name="Tutorial_ReturnToShip_Wait" checkinterval="1s">
+                      <conditions>
+                        <check_value value="player.ship"/>
+                        <check_value value="player.occupiedship"/>
+                        <check_value value="not player.ship.dock"/>
+                        <check_value value="player.ship.isplayerowned" comment="avoid hitchhiking"/>
+                      </conditions>
+                      <actions>
+                        <remove_help_overlay id="'docked_undock'"/>
+                        <remove_help all="true"/>
+                        <signal_cue cue="Tutorial_TriggerNext"/>
+                        <cancel_cue cue="Tutorial_ReturnToShip"/>
+                      </actions>
+                    </cue>
+
+                  </cues>
+                </cue>
+
+                <cue name="Tutorial_HoldMouseSteering">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <do_if value="player.isvrmode or (player.input.controller or player.input.vrcontroller)">
+                      <show_help_multi log="false" position="1" force="true" allowclose="false">
+                        <text line="992" comment="These yellow-framed boxes are tips. Click the arrow after you have read them to proceed to the next one."/>
+                      </show_help_multi>
+                      <do_if value="player.ship.dps.primary == 0">
+                        <show_help_multi log="false" position="1" force="true" allowclose="false">
+                          <text line="2600" comment="To complete the last section of this tutorial you need a ship with offensive weapons. You can still play the tutorial with your current ship but the section about firing weapons will be skipped."/>
+                        </show_help_multi>
+                      </do_if>
+                      <signal_cue cue="Tutorial_TriggerNext"/>
+                      <cancel_cue cue="Tutorial_HoldMouseSteering"/>
+                    </do_if>
+                    <do_else>
+                      <show_help_multi log="true" position="1" force="true" allowclose="false">
+                        <text line="992" log="false" comment="These yellow-framed boxes are hints. Click the arrow after you have read them to proceed to the next one."/>
+                      </show_help_multi>
+                      <do_if value="player.ship.dps.primary == 0">
+                        <show_help_multi log="false" position="18" force="true" allowclose="false">
+                          <text line="2600" comment="To complete the last section of this tutorial you need a ship with offensive weapons. You can still play the tutorial with your current ship but the section about firing weapons will be skipped."/>
+                        </show_help_multi>
+                      </do_if>
+                      <show_help_multi log="true" position="1" force="true" allowclose="false">
+                        <text line="2001" log="true" comment="Hold Left Mouse Button to steer towards your mouse cursor."/>
+                        <text line="2003" log="true" comment="To strafe press W A S D."/>
+                      </show_help_multi>
+                    </do_else>
+                  </actions>
+                  <cues>
+                    <cue name="Tutorial_HoldMouseSteering_Wait">
+                      <conditions>
+                        <event_ui_triggered screen="'hintclosed'" control="'2001'"/>
+                      </conditions>
+                      <actions>
+                        <signal_cue cue="Tutorial_TriggerNext"/>
+                        <cancel_cue cue="Tutorial_HoldMouseSteering"/>
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="Tutorial_Steering">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <delay exact="1s"/>
+                  <actions>
+                    <set_value name="$BeaconCount" exact="3"/>
+                    <do_if value="player.zone.isclass.highway">
+                      <set_value name="$StartZone" exact="player.zone.exit.zone"/>
+                    </do_if>
+                    <do_else>
+                      <set_value name="$StartZone" exact="player.zone"/>
+                    </do_else>
+
+                    <set_value name="$MouseSteering" exact="false" />
+                    <do_if value="not player.isvrmode and not player.input.controller and not player.input.vrcontroller">
+                      <set_value name="$MouseSteering" exact="true" />
+                    </do_if>
+                  </actions>
+                  <cues>
+                    <cue name="Tutorial_Steering_Controller">
+                      <conditions>
+                        <event_cue_completed cue="Tutorial_Steering"/>
+                        <check_value value="not $MouseSteering" />
+                      </conditions>
+                      <actions>
+                        <debug_text text="'Player is either in VR or is using a controller - show non mouse-steering tutorials'" chance="$DebugChance" />
+
+                        <do_if value="player.input.controller or player.input.oculustouch">
+                          <show_help line="2002" log="true" duration="15s" position="1" force="true" comment="Use Right Stick to steer and Left Stick to strafe."/>
+                        </do_if>
+                        <do_elseif value="player.input.vivecontroller">
+                          <show_help_multi log="true" position="1" force="true" allowclose="false" width="180">
+                            <text line="4109" comment="The Vive Controller Trackpads measure the movement of your thumbs across their surface." />
+                            <text line="4101" comment="Use Right Trackpad to steer and Left Trackpad to strafe." />
+                          </show_help_multi>
+                        </do_elseif>
+                        <do_else>
+                          <debug_text text="'Player is playing with keyboard in VR - show keyboard steering controls'" chance="$DebugChance" />
+                          <show_help_multi log="true" position="1" force="true" allowclose="false" width="180">
+                            <text line="4117" comment="Use $INPUT_STATE_STEER_DOWN$, $INPUT_STATE_STEER_UP$, $INPUT_STATE_STEER_LEFT$, $INPUT_STATE_STEER_RIGHT$ to steer." />
+                            <text line="4118" comment="Strafe using '$INPUT_STATE_STRAFE_UP$', '$INPUT_STATE_STRAFE_LEFT$', '$INPUT_STATE_STRAFE_DOWN$', '$INPUT_STATE_STRAFE_RIGHT$' to evade incoming fire." />
+                          </show_help_multi>
+                        </do_else>
+                        <signal_cue cue="Tutorial_Steering_Lookat"/>
+                      </actions>
+                    </cue>
+
+                    <cue name="Tutorial_Steering_Mouse">
+                      <conditions>
+                        <event_cue_completed cue="Tutorial_Steering"/>
+                        <check_value value="$MouseSteering" />
+                      </conditions>
+                      <actions>
+                        <debug_text text="'Player is not in VR and is not using a controller - show mouse steering tutorial'" chance="$DebugChance" />
+                      </actions>
+                      <cues>
+
+                        <cue name="Tutorial_Steering_Mouse_Permanent" onfail="cancel">
+                          <conditions>
+                            <check_value value="player.input.mousesteering.permanent"/>
+                          </conditions>
+                          <actions>
+                            <show_help_multi log="true" position="1" force="true" allowclose="false" width="180">
+                              <text line="2150"  comment="Your current objective is displayed on the MESSAGE TICKER in the left bottom."/>
+                              <text line="10314" comment="The OBJECTIVE is often related to a location or object in space. These are marked with ORANGE indicators in your HUD."/>
+                            </show_help_multi>
+                          </actions>
+                          <cues>
+                            <cue name="Tutorial_Steering_Mouse_Permanent_HintClosed">
+                              <conditions>
+                                <event_ui_triggered screen="'hintclosed'" control="'2150'"/>
+                              </conditions>
+                              <actions>
+                                <signal_cue cue="Tutorial_Steering_Lookat"/>
+                                <cancel_cue cue="Tutorial_Steering_Mouse"/>
+                              </actions>
+                              <cues>
+                              </cues>
+                            </cue>
+                          </cues>
+                        </cue>
+
+                        <cue name="Tutorial_Steering_Mouse_SetMode" onfail="cancel">
+                          <conditions>
+                            <check_value value="not player.input.mousesteering.permanent"/>
+                          </conditions>
+                          <actions>
+                            <set_objective cue="Start" action="objective.custom" customaction="{30198,19}" text="{30198,20}" comment="Enable: Mouse-Steering Mode"/>
+                          </actions>
+                          <cues>
+                            <cue name="Tutorial_Steering_Mouse_ReHint" instantiate="true" checkinterval="20s">
+                              <actions>
+                                <remove_help all="true"/>
+                                <show_help line="2005" log="not staticbase.$HintShown?" position="1" force="true" comment="Press '$INPUT_ACTION_TOGGLEMOUSESTEERING$' to enable/disable cursor steering. You will fly towards your mouse cursor." allowclose="false" timeout="false"/>
+                                <set_value name="staticbase.$HintShown" exact="true"/>
+                              </actions>
+                            </cue>
+
+                            <!-- TODO -->
+                            <!-- show_help line="2005" log="not staticbase.$HintShown?" duration="30s" position="1" force="true" comment="Press '$INPUT_ACTION_TOGGLEMOUSESTEERING$' to enable/disable cursor steering. You will fly towards your mouse cursor."/-->
+
+                            <cue name="Tutorial_Steering_Mouse_ModeSet" checkinterval="1s">
+                              <conditions>
+                                <check_any>
+                                  <check_value value="player.input.mousesteering.permanent"/>
+                                  <check_value value="player.input.controller"/>
+                                </check_any>
+                              </conditions>
+                              <actions>
+                                <remove_help all="true"/>
+                                <cancel_cue cue="Tutorial_Steering_Mouse_ReHint"/>
+                              </actions>
+                              <cues>
+                                <cue name="Tutorial_Steering_Mouse_ModeSet_Wait">
+                                  <!--Delay to allow time to play around-->
+                                  <delay exact="5s"/>
+                                  <actions>
+                                    <show_help_multi log="true" position="1" force="true" allowclose="false" width="180">
+                                      <text line="2150"  comment="Your current objective is displayed on the MESSAGE TICKER in the left bottom."/>
+                                      <text line="10314" comment="The OBJECTIVE is often related to a location or object in space. These are marked with ORANGE indicators in your HUD."/>
+                                    </show_help_multi>
+                                    <signal_cue cue="Tutorial_Steering_Lookat"/>
+                                    <cancel_cue cue="Tutorial_Steering_Mouse"/>
+                                  </actions>
+                                </cue>
+                              </cues>
+                            </cue>
+
+                            <cue name="Tutorial_Steering_Mouse_CheckForBrokenState" checkinterval="1s">
+                              <conditions>
+                                <check_value value="player.isvrmode" />
+                                <check_value value="not player.input.controller" />
+                                <check_value value="not player.input.vrcontroller" />
+                              </conditions>
+                              <actions>
+                                <remove_help all="true" />
+                                <reset_cue cue="Tutorial_Steering" />
+                                <signal_cue cue="Tutorial_Steering" />
+                              </actions>
+                            </cue>
+                          </cues>
+                        </cue>
+                      </cues>
+                    </cue>
+
+                    <cue name="Tutorial_Steering_Lookat" instantiate="true">
+                      <conditions>
+                        <event_cue_signalled/>
+                      </conditions>
+                      <actions>
+                        <do_if value="not $BeaconCount?">
+                          <set_value name="$BeaconCount" exact="3"/>
+                        </do_if>
+                        <do_if value="$BeaconCount gt 0">
+                          <create_object name="$Beacon" macro="macro.env_deco_nav_beacon_t1_macro" zone="$StartZone">
+                            <safepos object="player.ship" z="-3km" max="5km" radius="500m"/>
+                          </create_object>
+                          <set_objective cue="Start" action="objective.custom" customaction="{30198,21}" object="$Beacon" comment="Look at:"/>
+                        </do_if>
+                        <do_else>
+                          <set_objective action="objective.none" cue="Start" comment="Wipe Objective to signal pause"/>
+                          <signal_cue cue="Tutorial_TriggerNext"/>
+                          <cancel_cue cue="Tutorial_Steering"/>
+                        </do_else>
+                      </actions>
+                      <cues>
+                        <cue name="Tutorial_Steering_Lookat_Delay">
+                          <delay exact="5s"/>
+                          <cues>
+
+                            <cue name="Tutorial_Steering_Lookat_DelaySub">
+                              <conditions>
+                                <event_cue_completed cue="Tutorial_Steering_Lookat_Delay"/>
+                              </conditions>
+                              <cues>
+                                <cue name="Tutorial_Steering_Lookat_Rehint_v2" checkinterval="25s" instantiate="true">
+                                  <actions>
+                                    <show_help line="2153" position="1" force="true" comment="The location of your objective is displayed as a yellow circle in the HUD."/>
+                                    <show_help line="2152" position="1" force="true" comment="Hold Left Mouse Button to steer towards your objective."/>
+                                  </actions>
+                                </cue>
+
+                                <cue name="Tutorial_Steering_Lookat_Done_v2" checkinterval="1ms">
+                                  <conditions>
+                                    <check_any>
+                                      <check_value value="not $Beacon.exists"/>
+                                      <check_all>
+                                        <check_value value="player.ship"/>
+                                        <check_object object="$Beacon">
+                                          <match_is_in_view_of object="player.ship" vertical="10deg" horizontal="10deg"/>
+                                        </check_object>
+                                      </check_all>
+                                    </check_any>
+                                  </conditions>
+                                  <actions>
+                                    <destroy_object object="$Beacon" explosion="false"/>
+                                    <set_value name="$BeaconCount" operation="subtract"/>
+                                    <signal_cue cue="Tutorial_Steering_Lookat.staticbase"/>
+                                  </actions>
+                                </cue>
+                              </cues>
+                            </cue>
+                          </cues>
+                        </cue>
+                      </cues>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="Tutorial_Bars">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <remove_help all="true"/>
+                  </actions>
+                  <delay exact="0.5s"/>
+                  <actions>
+                    <show_help_multi log="true" position="7" force="true" allowclose="false">
+                      <text line="2060" comment="Your shield energy is shown as a blue bar under the target cross"/>
+                      <text line="2061" comment="Below it is your hull integrity. You ship will explode once your hull integrity reaches 0."/>
+                    </show_help_multi>
+                  </actions>
+                  <cues>
+                    <cue name="Tutorial_Bars_End">
+                      <conditions>
+                        <event_ui_triggered screen="'hintclosed'" control="'2060'"/>
+                      </conditions>
+                      <actions>
+                        <remove_help all="true"/>
+                        <signal_cue cue="Tutorial_TriggerNext"/>
+                        <cancel_cue cue="Tutorial_Bars"/>
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="Tutorial_Speed">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <delay exact="1s"/>
+                  <cues>
+                    <cue name="Tutorial_Speed_Wait">
+                      <conditions>
+                        <event_cue_completed cue="Tutorial_Speed"/>
+                      </conditions>
+                      <actions>
+                        <set_objective cue="Start" action="objective.custom" customaction="{30198,25}" text="{30198,26}" comment="Set: Speed"/>
+                        <remove_help all="true"/>
+                        <do_if value="player.input.controller or player.input.oculustouch">
+                          <show_help line="2010" log="not staticbase.$HintShown?" position="4" force="true" comment="Use $INPUT_RANGE_THROTTLE$ to accelerate and $INPUT_STATE_FULLREVERSE$ to decelerate" allowclose="false" timeout="false"/>
+                        </do_if>
+                        <do_elseif value="player.input.vivecontroller">
+                          <show_help line="4110" log="not staticbase.$HintShown?" position="4" force="true" comment="To accelerate, hold the left trigger until you feel resistance. Use $INPUT_STATE_FULLREVERSE$ to decelerate and reverse." allowclose="false" timeout="false"/>
+                        </do_elseif>
+                        <do_else>
+                          <debug_text text="'mouse'" chance="$DebugChance"/>
+                          <show_help line="2011" log="not staticbase.$HintShown?"  position="4" force="true" comment="Press $INPUT_STATE_ACCELERATE$ to accelerate and $INPUT_STATE_DECELERATE$ to decelerate" allowclose="false" timeout="false"/>
+                        </do_else>
+                        <set_value name="staticbase.$HintShown" exact="true"/>
+                      </actions>
+                      <cues>
+                        
+                        <cue name="Tutorial_Speed_End_1" checkinterval="1s">
+                          <conditions>
+                            <check_value value="player.ship"/>
+                            <check_any>
+                              <check_value value="player.ship.velocity.z" min="50m"/>
+                              <check_value value="player.ship.velocity.z" max="-20m"/>
+                            </check_any>
+                          </conditions>
+                          <delay exact="3s"/>
+                          <actions>
+                            <remove_help all="true"/>
+                            <signal_cue cue="Tutorial_TriggerNext"/>
+                            <cancel_cue cue="Tutorial_Speed"/>
+                          </actions>
+                        </cue>
+                      </cues>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="Tutorial_Speedbar">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <delay exact="1s"/>
+                  <actions>
+                    <show_help line="2051" log="false" duration="7s" position="4" force="true" comment="The control above the hull integrity is your speed bar."/>
+                  </actions>
+                  <cues>
+                    <cue name="Tutorial_Speedbar_Wait">
+                      <conditions>
+                        <event_cue_completed cue="Tutorial_Speedbar"/>
+                      </conditions>
+                      <cues>
+                        <cue name="Tutorial_Speedbar_End">
+                          <delay exact="7s"/>
+                          <actions>
+                            <signal_cue cue="Tutorial_TriggerNext"/>
+                            <cancel_cue cue="Tutorial_Speedbar"/>
+                          </actions>
+                        </cue>
+                      </cues>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="Tutorial_Boost">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <delay exact="1s"/>
+                  <actions>
+                    <set_objective cue="Start" action="objective.custom" customaction="{30198,22}" text="{30198,23}" comment="Engage: Boost"/>
+                  </actions>
+                  <cues>
+                    <cue name="Tutorial_Boost_Wait">
+                      <conditions>
+                        <event_cue_completed cue="Tutorial_Boost"/>
+                      </conditions>
+                      <cues>
+                        <cue name="Tutorial_Boost_ReHint" instantiate="true" checkinterval="20s">
+                          <actions>
+                            <remove_help all="true"/>
+                            <!--TODO @Owen @Roger update hint texts-->
+                            <do_if value="player.input.boosttoggle">
+                              <debug_text text="'boost toggled'" chance="$DebugChance"/>
+                              <do_if value="player.input.vivecontroller">
+                                <show_help line="4111" log="not staticbase.$HintShown?" duration="30s" position="1" force="true" comment="Press the left trigger until it clicks to boost and travel longer distances in a shorter time."/>
+                              </do_if>
+                              <do_else>
+                                <show_help line="2020" log="not staticbase.$HintShown?" duration="30s" position="1" force="true" comment="Press $INPUT_STATE_BOOST$ to start boosting and travel longer distances in a shorter time."/>
+                              </do_else>
+                            </do_if>
+                            <do_else>
+                              <debug_text text="'hold key to boost'" chance="$DebugChance"/>
+                              <do_if value="player.input.vivecontroller">
+                                <show_help line="4112" log="not staticbase.$HintShown?" duration="30s" position="1" force="true" comment="Hold the left trigger until it clicks to boost and travel longer distances in a shorter time."/>
+                              </do_if>
+                              <do_else>
+                                <show_help line="2021" log="not staticbase.$HintShown?" duration="30s" position="1" force="true" comment="Hold $INPUT_STATE_BOOST$ to start boosting and travel longer distances in a shorter time."/>
+                              </do_else>
+                            </do_else>
+                            <set_value name="staticbase.$HintShown" exact="true"/>
+                          </actions>
+                        </cue>
+                        <cue name="Tutorial_Boost_End_1">
+                          <conditions>
+                            <check_any>
+                              <event_player_boost_started/>
+                              <!--<event_player_boost_stopped/>-->
+                            </check_any>
+                          </conditions>
+                          <delay exact="2s"/>
+                          <actions>
+                            <remove_help all="true"/>
+                            <signal_cue cue="Tutorial_TriggerNext"/>
+                            <cancel_cue cue="Tutorial_Boost"/>
+                          </actions>
+                        </cue>
+
+                        <cue name="Tutorial_Boost_End_2" onfail="cancel">
+                          <conditions>
+                            <check_value value="player.ship and player.ship.boost.active"/>
+                          </conditions>
+                          <delay exact="3s"/>
+                          <actions>
+                            <remove_help all="true"/>
+                            <signal_cue cue="Tutorial_TriggerNext"/>
+                            <cancel_cue cue="Tutorial_Boost"/>
+                          </actions>
+                        </cue>
+                      </cues>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="Tutorial_Stop_Boost">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <delay exact="1s"/>
+                  <actions>
+                    <do_if value="player.input.boosttoggle">
+                      <do_if value="player.input.controller or player.input.vrcontroller">
+                        <debug_text text="'controller'" chance="$DebugChance" />
+                        <show_help line="2030" log="true" duration="30s" position="1" force="true" comment="Press '$INPUT_STATE_FULLREVERSE$' to stop boosting and decelerate."/>
+                      </do_if>
+                      <do_else>
+                        <show_help line="2031" log="true" duration="30s" position="1" force="true" comment="Press $INPUT_STATE_DECELERATE$ to stop boosting and decelerate"/>
+                      </do_else>
+                    </do_if>
+                    <do_else>
+                      <do_if value="player.input.vivecontroller">
+                        <show_help line="4113" log="true" duration="30s" position="1" force="true" comment="Release this clicked button to stop boosting."/>
+                      </do_if>
+                      <do_else>
+                        <show_help line="2032" log="true" duration="30s" position="1" force="true" comment="Release $INPUT_STATE_BOOST$ to stop boosting."/>
+                      </do_else>
+                    </do_else>
+                    <set_objective cue="Start" action="objective.custom" customaction="{30198,27}" text="{30198,23}" comment="Disengage: Boost"/>
+                  </actions>
+                  <cues>
+                    <cue name="Tutorial_Stop_Boost_Wait">
+                      <conditions>
+                        <event_cue_completed cue="Tutorial_Stop_Boost"/>
+                      </conditions>
+                      <cues>
+                        <cue name="Tutorial_Stop_Boost_End_1">
+                          <conditions>
+                            <event_player_boost_stopped/>
+                          </conditions>
+                          <delay exact="2s"/>
+                          <actions>
+                            <remove_help all="true"/>
+                            <signal_cue cue="Tutorial_TriggerNext"/>
+                            <cancel_cue cue="Tutorial_Stop_Boost"/>
+                          </actions>
+                        </cue>
+
+                        <cue name="Tutorial_Stop_Boost_End_2" instantiate="true" checkinterval="1s">
+                          <conditions>
+                            <check_value value="not @player.ship.boost.active"/>
+                          </conditions>
+                          <delay exact="2s"/>
+                          <actions>
+                            <remove_help all="true"/>
+                            <signal_cue cue="Tutorial_TriggerNext"/>
+                            <cancel_cue cue="Tutorial_Stop_Boost"/>
+                          </actions>
+                        </cue>
+
+                        <cue name="Tutorial_Stop_Boost_End_3" comment="fallback">
+                          <delay exact="15s"/>
+                          <actions>
+                            <remove_help all="true"/>
+                            <signal_cue cue="Tutorial_TriggerNext"/>
+                            <cancel_cue cue="Tutorial_Stop_Boost"/>
+                          </actions>
+                        </cue>
+                      </cues>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="Tutorial_Shields">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <delay exact="1s"/>
+                  <actions>
+                    <set_value name="$hintposition" exact="4"/>
+                    <show_help line="2033" log="true" duration="7s" position="$hintposition" force="true" comment="Boosting drains your shield energy."/>
+                  </actions>
+                  <cues>
+                    <cue name="Tutorial_Shields_Wait">
+                      <conditions>
+                        <event_cue_completed cue="Tutorial_Shields"/>
+                      </conditions>
+                      <delay exact="7s"/>
+                      <actions>
+                        <remove_help all="true"/>
+                        <signal_cue cue="Tutorial_TriggerNext"/>
+                        <cancel_cue cue="Tutorial_Shields"/>
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="Tutorial_WeaponGroups">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <show_help_multi log="true" position="18" force="true" width="250" allowclose="false">
+                      <text line="2070" comment="There are 4 primary weapon groups ..."/>
+                      <text line="2076" comment="Primary weapons are lasers and other weapons..."/>
+                      <text line="2075" comment="Primary and secondary mappings can be changed in the SHIP MENU."/>
+                      <text line="2077" comment="Next to the primary weapon you..."/>
+                    </show_help_multi>
+                    <show_help line="2080" log="true" duration="7s" position="18" force="true" comment="open Ship menu to change mapping." allowclose="false" timeout="false"/>
+                  </actions>
+                  <cues>
+
+                    <cue name="Tutorial_WeaponGroups_Menu_Open">
+                      <conditions>
+                        <event_ui_triggered screen="'DockedMenu'" control="''"/>
+                        <check_value value="event.param2 == ''"/>
+                      </conditions>
+                      <actions>
+                        <remove_help all="true"/>
+                        <show_help_multi log="true" position="4" force="true" width="140" allowclose="false">
+                          <text line="2088" comment="One line represents one weapon group. By default the first group will..."/>
+                          <text line="if player.input.controller or player.input.joystick then 2091 else 2089" comment="You can select items in this menu with... For special tasks..."/>
+                        </show_help_multi>
+                        <show_help line="1010" log="true" position="4" force="true" comment="Close the menu by pressing..." allowclose="false" timeout="false"/>
+                      </actions>
+                      <cues>
+
+                        <cue name="Tutorial_WeaponGroups_Menu_Close">
+                          <conditions>
+                            <event_ui_triggered screen="'DockedMenu'" control="'menu_close'"/>
+                          </conditions>
+                          <actions>
+                            <remove_help all="true"/>
+                          </actions>
+                        </cue>
+
+                        <cue name="Tutorial_WeaponGroups_Wait">
+                          <conditions>
+                            <event_cue_completed cue="Tutorial_WeaponGroups_Menu_Close"/>
+                          </conditions>
+                          <actions>
+                            <remove_help all="true"/>
+                          </actions>
+                          <delay exact="0.5s"/>
+                          <actions>
+                            <signal_cue cue="Tutorial_TriggerNext"/>
+                            <cancel_cue cue="Tutorial_WeaponGroups"/>
+                          </actions>
+                        </cue>
+                      </cues>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="Missiles_Dropped" instantiate="true">
+                  <conditions>
+                    <event_object_dropped_objects group="$Beacons"/>
+                  </conditions>
+                  <actions>
+                    <do_all exact="event.param.count" counter="$i">
+                      <do_if value="event.param.{$i}.isclass.collectableammo and event.param.{$i}.ammo.macro.isclass.missile">
+                        <debug_text text="'Missile drop ' + event.param.{$i} + ' added to group to collect'" chance="$DebugChance"/>
+                        <add_to_group groupname="$Missiles" object="event.param.{$i}"/>
+                      </do_if>
+                    </do_all>
+                  </actions>
+                </cue>
+
+                <cue name="Tutorial_Mission_Target">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <delay exact="1s"/>
+                  <actions>
+                    <do_if value="player.zone.isclass.highway">
+                      <set_value name="$StartZone" exact="player.zone.exit.zone"/>
+                      <do_all exact="3">
+                        <create_object name="$Beacon" groupname="$Beacons" macro="macro.eq_arg_satellite_01_macro" zone="$StartZone" owner="faction.ownerless">
+                          <safepos object="player.zone.exit" z="3km" max="300m"/>
+                        </create_object>
+                      </do_all>
+                    </do_if>
+                    <do_else>
+                      <set_value name="$StartZone" exact="player.zone"/>
+                      <do_all exact="3">
+                        <create_object name="$Beacon" groupname="$Beacons" macro="macro.eq_arg_satellite_01_macro" zone="$StartZone" owner="faction.ownerless">
+                          <safepos object="player.ship" z="3km" max="300m"/>
+                        </create_object>
+                      </do_all>
+                    </do_else>
+
+                    <do_all exact="$Beacons.count" counter="$i">
+                      <set_drop_object object="$Beacons.{$i}" drop="'drops_tutorial_guided_missiles'"/>
+                    </do_all>
+
+                    <do_if value="player.input.controller">
+                      <show_help_multi log="true" position="1" force="true" allowclose="false">
+                        <text line="2101" comment="These yellow icons are mission targets..."/>
+                        <text line="2102" comment="Use the $INPUT_ACTION_NEXT_TARGET_ACTION$ button to select the next target."/>
+                      </show_help_multi>
+                      <show_help position="1" force="true" line="2102" comment="Use the $INPUT_ACTION_NEXT_TARGET_ACTION$ button to select the next target." allowclose="false" timeout="false"/>
+                    </do_if>
+                    <do_elseif value="player.input.vrcontroller">
+                      <do_if value="player.input.vivecontroller">
+                        <show_help line="4114" log="true" position="1" force="true" comment="The Trackpads can also act as up to five buttons; Centre, Up, Down, Left and Right." allowclose="false" timeout="false"/>
+                      </do_if>
+                      <do_elseif value="player.input.oculustouch">
+                        <show_help line="4115" log="true" position="1" force="true" comment="Point with your index finger to activate the VR Pointer. This works with either hand." allowclose="false" timeout="false"/>
+                      </do_elseif>
+                      <show_help line="4102" log="true" position="1" force="true" comment="These yellow icons are mission targets. Point at them and press $INPUT_STATE_3DPOINTER_LBUTTON$ to select them." allowclose="false" timeout="false"/>
+                    </do_elseif>
+                    <do_else>
+                      <show_help line="2100" log="true" position="1" force="true" comment="These yellow icons are mission targets. You can select them by clicking with the Left Mouse Button." allowclose="false" timeout="false"/>
+                    </do_else>
+                  </actions>
+                  <cues>
+                    <cue name="Tutorial_Mission_Target_Wait">
+                      <conditions>
+                        <event_cue_completed cue="Tutorial_Mission_Target"/>
+                      </conditions>
+                      <actions>
+                        <set_objective cue="Start" action="objective.custom" customaction="{30198,28}" text="macro.eq_arg_satellite_01_macro.name" group="$Beacons" comment="Target: "/>
+                      </actions>
+                      <cues>
+                        <cue name="Tutorial_Mission_Target_Targetted" checkinterval="1s">
+                          <conditions>
+                            <check_any>
+                              <check_value value="not $Beacons.count"/>
+                              <check_value value="$Beacons.indexof.{player.target}"/>
+                            </check_any>
+                          </conditions>
+                          <actions>
+                            <remove_help all="true"/>
+                            <do_if value="$Beacons.count and player.entity.distanceto.{$Beacons.{1}} gt 100m">
+                              <set_objective cue="Start" action="objective.flyto" group="$Beacons"/>
+                            </do_if>
+                            <do_else>
+                              <signal_cue cue="Tutorial_TriggerNext"/>
+                              <cancel_cue cue="Tutorial_Mission_Target"/>
+                            </do_else>
+                          </actions>
+                          <cues>
+                            <cue name="Tutorial_Mission_Target_FlytoRehint" checkinterval="20s" instantiate="true">
+                              <conditions>
+                                <check_any>
+                                  <check_value value="not $Beacons.count"/>
+                                  <check_any exact="$Beacons.count" counter="$i">
+                                    <check_value value="$Beacons.{$i}.distanceto.{player.ship} gt 500m"/>
+                                  </check_any>
+                                </check_any>
+                              </conditions>
+                              <actions>
+                                <remove_help all="true"/>
+                                <show_help line="2110" duration="20s" position="18" force="true" comment="Fly towards the satellites."/>
+                              </actions>
+                            </cue>
+
+                            <cue name="Tutorial_Mission_Target_Flyto" checkinterval="1s">
+                              <conditions>
+                                <check_any>
+                                  <check_value value="not $Beacons.count"/>
+                                  <check_any exact="$Beacons.count" counter="$i">
+                                    <check_value value="$Beacons.{$i}.distanceto.{player.ship} lt 500m"/>
+                                  </check_any>
+                                </check_any>
+                              </conditions>
+                              <actions>
+                                <remove_help all="true"/>
+                                <signal_cue cue="Tutorial_TriggerNext"/>
+                                <cancel_cue cue="Tutorial_Mission_Target"/>
+                              </actions>
+                            </cue>
+                          </cues>
+                        </cue>
+                      </cues>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="Tutorial_Fire">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <do_if value="player.ship.dps.primary == 0">
+                      <set_value name="$Index" operation="add" comment="Force skipping next section"/>
+                      <show_help_multi position="1" force="true" allowclose="false">
+                        <text line="2601" comment="The upcoming section of the tutorial can only be completed if you are equipped with weapons that can destroy satellites."/>
+                      </show_help_multi>
+                      <destroy_group group="$Beacons"/>
+                      <signal_cue cue="Tutorial_TriggerNext"/>
+                      <cancel_cue cue="Tutorial_Fire"/>
+                    </do_if>
+
+                    <do_if value="not @$Beacons.count">
+                      <do_if value="player.zone.isclass.highway">
+                        <set_value name="$StartZone" exact="player.zone.exit.zone"/>
+                        <create_object name="$Beacon" groupname="$Beacons" macro="macro.eq_arg_satellite_01_macro" zone="$StartZone">
+                          <safepos object="player.zone.exit" z="3km" max="300m"/>
+                        </create_object>
+                      </do_if>
+                      <do_else>
+                        <set_value name="$StartZone" exact="player.zone"/>
+                        <create_object name="$Beacon" groupname="$Beacons" macro="macro.eq_arg_satellite_01_macro" zone="$StartZone">
+                          <safepos object="player.ship" z="3km" max="300m"/>
+                        </create_object>
+                      </do_else>
+                    </do_if>
+
+                    <set_objective cue="Start" action="objective.destroy" group="$Beacons"/>
+                  </actions>
+                  <cues>
+
+                    <cue name="Tutorial_Fire_Hint">
+                      <actions>
+                        <do_if value="player.isvrmode or player.input.controller or player.input.joystick or player.input.vrcontroller">
+                          <show_help_multi log="true" position="1" force="true" width="140" allowclose="false">
+                            <text line="2043" log="true" comment="Press $INPUT_STATE_FIRE_PRIMARY_WEAPON$ to fire your primary weapons."/>
+                          </show_help_multi>
+                        </do_if>
+                        <do_else>
+                          <show_help_multi log="true" position="1" force="true" width="140" allowclose="false">
+                            <text line="2041" log="true" comment="Press $INPUT_STATE_FIRE_PRIMARY_WEAPON_AT_CURSOR$ to fire your weapon towards your mousecursor."/>
+                            <text line="2042" log="true" comment=">While holding $INPUT_STATE_TOGGLEMOUSESTEERING$ for steering you can also fire with RMB."/>
+                          </show_help_multi>
+                        </do_else>
+                      </actions>
+                      <cues>
+                        <cue name="Tutorial_Fire_HintClosed">
+                          <conditions>
+                            <check_any>
+                              <event_ui_triggered screen="'hintclosed'" control="'2041'"/>
+                              <event_ui_triggered screen="'hintclosed'" control="'2043'"/>
+                            </check_any>
+                          </conditions>
+                          <cues>
+
+                            <cue name="Tutorial_Fire_ReHint_v2" checkinterval="20s" instantiate="true">
+                              <conditions>
+                                <check_value value="$Beacons.count == 3"/>
+                              </conditions>
+                              <actions>
+                                <remove_help all="true"/>
+                                <do_if value="player.isvrmode">
+                                  <show_help line="4103" log="not staticbase.$HintShown?" duration="8s" position="1" force="true" comment="Press $INPUT_STATE_FIRE_PRIMARY_WEAPON$. Your weapon shoots in the direction you are looking." />
+                                </do_if>
+                                <do_else>
+                                  <do_if value="player.input.controller">
+                                    <show_help line="2040" log="not staticbase.$HintShown?" duration="8s" position="1" force="true" comment="Press $INPUT_STATE_FIRE_PRIMARY_WEAPON$ - Your weapon shoots towards the center of the screen."/>
+                                    <show_help  line="2044" position="1" force="true" comment="Destroy the satellites by shooting at them." allowclose="false" timeout="false"/>
+                                  </do_if>
+                                  <do_else>
+                                    <show_help  line="2044" position="1" force="true" comment="Destroy the satellites by shooting at them." allowclose="false" timeout="false"/>
+                                  </do_else>
+                                </do_else>
+                                <set_value name="staticbase.$HintShown" exact="true"/>
+                              </actions>
+                            </cue>
+                          </cues>
+                        </cue>
+
+                      </cues>
+                    </cue>
+
+                    <cue name="Tutorial_Fire_Done">
+                      <conditions>
+                        <event_object_destroyed group="$Beacons"/>
+                        <check_value value="$Beacons.count le 1"/>
+                      </conditions>
+                      <delay exact="5s"/>
+                      <actions>
+                        <remove_help all="true"/>
+                        <signal_cue cue="Tutorial_TriggerNext"/>
+                        <cancel_cue cue="Tutorial_Fire"/>
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="Tutorial_Collect_Missiles">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <delay exact="1s"/>
+                  <actions>
+                    <do_if value="$Missiles.count">
+                      <show_help line="2300" log="true" duration="5s" position="18" force="true" comment="Ships can drop containers when destroyed. These contain missiles."/>
+                      <do_if value="player.input.vivecontroller">
+                        <show_help line="2310" log="true" duration="15s" position="18" force="true" comment="You can fly over containers to collect them."/>
+                      </do_if>
+                      <do_else>
+                        <show_help line="2301" log="true" duration="15s" position="18" force="true" comment="You can press $INPUT_STATE_LOOTMAGNET$ to make them float closer to your ship for collection." allowclose="false" timeout="false"/>
+                      </do_else>
+                      <set_objective cue="Start" action="objective.collect" group="$Missiles" text="''"/>
+                      <update_mission cue="Start">
+                        <briefing>
+                          <objective step="$CurrentStep" action="objective.collect" group="$Missiles" text="{30198,28}"/>
+                        </briefing>
+                      </update_mission>
+                      <set_objective step="$CurrentStep" cue="Start" action="objective.collect" group="$Missiles" text="{30198,28}"/>
+                    </do_if>
+                    <do_else>
+                      <signal_cue cue="Tutorial_TriggerNext"/>
+                      <cancel_cue cue="Tutorial_Collect_Missiles"/>
+                    </do_else>
+                  </actions>
+                  <cues>
+                    <cue name="Tutorial_Collect_Missiles_Destroyed">
+                      <conditions>
+                        <event_object_destroyed group="$Missiles"/>
+                        <check_value value="$Missiles.count le 1"/>
+                      </conditions>
+                      <actions>
+                        <remove_help all="true"/>
+                        <signal_cue cue="Tutorial_TriggerNext"/>
+                        <cancel_cue cue="Tutorial_Collect_Missiles"/>
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+
+              </cues>
+            </cue>
+
+            <cue name="Cleanup">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <remove_help_overlay all="true"/>
+                <debug_text text="'cleanup'" chance="$DebugChance"/>
+                <do_if value="$BriefingCutsceneStarted?">
+                  <stop_cutscene key="$CutsceneKey"/>
+                </do_if>
+                <do_if value="$Beacons?">
+                  <destroy_group group="$Beacons"/>
+                </do_if>
+                <remove_offer cue="Start"/>
+                <remove_mission cue="Start" />
+                <reset_cue cue="Trigger"/>
+              </actions>
+            </cue>
+
+          </cues>
+        </cue>
+
+      </cues>
+    </cue>
+  </cues>
+</mdscript>

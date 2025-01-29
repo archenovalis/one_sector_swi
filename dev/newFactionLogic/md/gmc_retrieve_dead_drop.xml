@@ -1,0 +1,2479 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="GMC_Retrieve_Dead_Drop" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+    <!--Generic Mission Chain - Retrieve Dead Drop-->
+
+    <!--Base Mission information-->
+    <!--
+      Generic Mission name:    Retrieve Dead Drop
+      Primary 'missiontype':   missiontype.deliver 
+      Page: 30232
+    -->
+
+    <!--
+      The Feedback Manager contains a table of feedback values related to this Generic Mission. 
+		  This table is 'const' during the mission (the table itself doesn't change anymore after inialization)
+	    There are several maintypes of feedback:
+        event:    Something which happens during a mission but does not cause it to end e.g. the mission being accepted
+        removed:  The mission offer was removed before acceptance
+        success:  The mission was successfully completed by the player
+        failure:  The player failed the mission
+        error:    Something went wrong with the mission set-up or during the mission
+    -->
+    <cue name="FeedbackValueManager" namespace="this" version="3">
+      <actions>
+        <set_value name="$FeedbackValues" exact="table[
+                   $MISSION_GENERATED             = table[$type = 'event',    $text = 'Mission variation generated successfully'],
+                   $MISSION_ACCEPTED              = table[$type = 'event',    $text = 'Mission accepted'],
+                   $MISSION_NO_VARIANT            = table[$type = 'event',    $text = 'No mission variant currently possible'],
+                   
+                   $OFFER_REMOVED                 = table[$type = 'removed',  $text = 'Offer removed'],
+                   $DECLINED_OFFER                = table[$type = 'removed',  $text = 'Player declined Event Offer'],
+                   $EVENT_OFFER_TIMEOUT           = table[$type = 'removed',  $text = 'Event Offer timeout'],
+                   $SIGNAL_LEAK_REMOVED           = table[$type = 'removed',  $text = 'Signal leak offer removed'],
+                   $NPCCONTACT_KILLED_EARLY       = table[$type = 'removed',  $text = 'Delivery NPC was killed early'],
+                   $STATION_DESTROYED_EARLY       = table[$type = 'removed',  $text = 'Deliver station destroyed early'],
+                   
+                   $MISSION_SUCCEEDED             = table[$type = 'success',  $text = 'Mission succeeded'],
+                   
+                   $MISSION_ABORTED               = table[$type = 'failure',  $text = 'Mission aborted by player'],
+                   $FORCED_CLEANUP                = table[$type = 'failure',  $text = 'Forced to end from outside'],
+                   $MISSION_TIMEOUT               = table[$type = 'failure',  $text = 'Mission timeout'],
+                   $MISSION_FAILED                = table[$type = 'failure',  $text = 'Mission failure'],
+                   $NPCCONTACT_KILLED             = table[$type = 'failure',  $text = 'Delivery NPC was killed'],
+                   $DELIVERY_STATION_DESTROYED    = table[$type = 'failure',  $text = 'Deliver station destroyed'],
+                   
+                   $NO_VALID_CLIENT_OWNER         = table[$type = 'error',    $text = 'No valid ClientOwner parameter provided'],
+                   $INVALID_OFFER_TYPE            = table[$type = 'error',    $text = 'No offer parameters were valid'],
+                   $NO_TEXT_OFFSET                = table[$type = 'error',    $text = 'No TextOffset set'],
+                   $INVALID_NPCCONTACT_PARAM      = table[$type = 'error',    $text = 'Invalid NPCContact param'],
+                   $INVALID_STATION_PARAM         = table[$type = 'error',    $text = 'Invalid DeliveryStation param'],
+                   $INVALID_INTERIOR_PARAMS       = table[$type = 'error',    $text = 'Invalid delivery room params. Either InteriorRoomMacro, InteriorCorridorMacro, Doors or InteriorName'],
+                   $INVALID_DELIVERYITEM_PARAM    = table[$type = 'error',    $text = 'Invalid DeliveryItem param'],
+                   $INVALID_DELIVERY_TARGET       = table[$type = 'error',    $text = '$DeliverToPassenger was set without a PassengerTransport ($TransportStartToDeadDrop or $TransportDeadDropToTarget)'],
+                   $INVALID_BRIEFING_UPDATE       = table[$type = 'error',    $text = '$TransportXXXXX_BriefingUpdate was set without an appropriate PassengerTransport ($TransportStartToDeadDrop or $TransportDeadDropToTarget)'],
+                   $INVALID_FORCE_CLEANUP         = table[$type = 'error',    $text = 'ForceCleanup cue invalid']
+                   ]"/>
+      </actions>
+      <patch sinceversion="3">
+        <!--To patch new feedback values, increment 'version' and 'sinceversion' number-->
+        <force_cue cue="FeedbackValueManager"/>
+      </patch>
+    </cue>
+
+    <!--Required variables: $Page & $TextOffset (and any below substitute_text values)
+    If text is to be substituted for a new text variant, people should feel free to add the substitution below. Alternatively, pass in an overriding text in the $TextTable param-->
+    <library name="GenerateTextTable">
+      <actions>
+
+        <!-- Ship to big for target dock warning, Passenger will not come on board, Page hardcoded because it's not Offset-dependant and should be used by subscriptions -->
+        <set_value name="$TextTable.$ship_bigger_than_M" exact="readtext.{30232}.{101}" chance="if $TextTable.$ship_bigger_than_M? then 0 else 100"/>
+        <set_value name="$TextTable.$ship_bigger_than_S" exact="readtext.{30232}.{102}" chance="if $TextTable.$ship_bigger_than_S? then 0 else 100"/>
+
+        <!-- Mission name + descriptions, descr.2 uncovers after the player accepts -->
+        <set_value name="$TextTable.$missionname"  exact="readtext.{$Page}.{$TextOffset + 1}" chance="if $TextTable.$missionname? then 0 else 100"/>
+
+        <do_if value="$NPCPassenger.exists and $NPCPassenger.isfemale">
+          <set_value name="$TextTable.$description" exact="readtext.{$Page}.{$TextOffset + 3}" chance="if $TextTable.$description? then 0 else 100"/>
+          <set_value name="$TextTable.$description2" exact="readtext.{$Page}.{$TextOffset + 6}" chance="if $TextTable.$description2? then 0 else 100"/>
+        </do_if>
+        <do_else>
+          <set_value name="$TextTable.$description" exact="readtext.{$Page}.{$TextOffset + 2}" chance="if $TextTable.$description? then 0 else 100"/>
+          <set_value name="$TextTable.$description2" exact="readtext.{$Page}.{$TextOffset + 5}" chance="if $TextTable.$description2? then 0 else 100"/>
+        </do_else>
+
+
+        <set_value name="$TextTable.$logbook"      exact="readtext.{$Page}.{$TextOffset + 10}" chance="if $TextTAble.$logbook? then 0 else 100"/>
+
+        <do_if value="player.entity and player.entity.isfemale">
+          <!-- PlayerChoice to call the briefing to see the update -->
+          <set_value name="$TextTable.$briefing_update"            exact="readtext.{$Page}.{$TextOffset + 21}" chance="if $TextTable.$briefing_update? then 0 else 100"/>
+          <!-- "Come on Board" from $StartContainer to $DeadDropContainer -->
+          <set_value name="$TextTable.$start_conv_plr"             exact="readtext.{$Page}.{$TextOffset + 31}" chance="if $TextTable.$start_conv_plr? then 0 else 100"/>
+          <!-- Item Delivery -->
+          <set_value name="$TextTable.$deliver_conversationoption" exact="readtext.{$Page}.{$TextOffset + 41}" chance="if $TextTable.$deliver_conversationoption? then 0 else 100"/>
+          <!-- "Come on Board" from $DeadDropContainer to $TargetContainer -->
+          <set_value name="$TextTable.$depart_conv_plr1"           exact="readtext.{$Page}.{$TextOffset + 51}" chance="if $TextTable.$depart_conv_plr1? then 0 else 100"/>
+        </do_if>
+        <do_else>
+          <!-- PlayerChoice to call the briefing to see the update -->
+          <set_value name="$TextTable.$briefing_update"            exact="readtext.{$Page}.{$TextOffset + 20}" chance="if $TextTable.$briefing_update? then 0 else 100"/>
+          <!-- "Come on Board" from $StartContainer to $DeadDropContainer -->
+          <set_value name="$TextTable.$start_conv_plr"             exact="readtext.{$Page}.{$TextOffset + 30}" chance="if $TextTable.$start_conv_plr? then 0 else 100"/>
+          <!-- Item Delivery -->
+          <set_value name="$TextTable.$deliver_conversationoption" exact="readtext.{$Page}.{$TextOffset + 40}" chance="if $TextTable.$deliver_conversationoption? then 0 else 100"/>
+          <!-- "Come on Board" from $DeadDropContainer to $TargetContainer -->
+          <set_value name="$TextTable.$depart_conv_plr1"           exact="readtext.{$Page}.{$TextOffset + 50}" chance="if $TextTable.$depart_conv_plr1? then 0 else 100"/>
+        </do_else>
+
+        <!-- Player Mission Choices and related -->
+        <set_value name="$TextTable.$deliver_progress"           exact="readtext.{$Page}.{$TextOffset + 60}" chance="if $TextTable.$deliver_progress? then 0 else 100"/>
+        <set_value name="$TextTable.$deliver_tooltip"            exact="readtext.{$Page}.{$TextOffset + 61}" chance="if $TextTable.$deliver_tooltip? then 0 else 100"/>
+
+        <set_value name="$TextTable.$deaddropitem"               exact="$PickupWare.name" chance="if $TextTable.$deaddropitem? then 0 else 100"/>
+
+      </actions>
+    </library>
+
+    <library name="GenerateVoiceTable">
+      <actions>
+        <run_actions ref="md.LIB_Generic.GenerateGenericVoiceTable" result="$VoiceTable">
+          <param name="VoiceTable" value="$VoiceTable"/>
+        </run_actions>
+      </actions>
+    </library>
+
+    <library name="Start" version="3">
+      <params>
+        <!-- Generic Parameters -->
+        <param name="OfferObject" default="null" comment="The object on which this mission is based e.g. A Ship / Station / Signal Leak. Only needed for missions with a physical location."/>
+        <param name="Client" default="null" comment="Pre-existing client"/>
+        <param name="ClientOwner" default="null" comment="Overriding owner for reward calculation or creation of $Client if not provided. Defaults to $OfferObject owner if able"/>
+        <param name="MissionCue" default="null" comment="Cue the mission is attached to. Defaults to Start (this)."/>
+        <param name="MissionThread" default="null" comment="Mission thread for the offer and mission"/>
+
+        <param name="GenerateReward" default="true" comment="If RewardCr or RewardNotoriety are invalid, generate them?"/>
+        <param name="RewardCr" default="null" comment="If the reward for this mission is credits, the number of credits should be set to this variable." />
+        <param name="RewardObj" default="null" comment="If the reward for this mission is not credits, and is an object, it should be set to this variable." />
+        <param name="RewardNotoriety" default="null"/>
+        <param name="RewardText" default="null"  comment="Any text needed to define the reward for this mission - may be used in conjunction with $RewardCr and $RewardObj." />
+        <param name="MissionDuration" default="null"/>
+        <param name="MissionType" default="missiontype.deliver" comment="Variations can override mission type if required"/>
+        <param name="MissionLevel"/>
+        <param name="Difficulty"/>
+
+        <!--Offer location and conversation-->
+        <param name="WithoutOffer" default="false" comment="Do not create a mission offer. Either run immediatly or wait for WithoutOfferWaitCue"/>
+        <param name="WithoutOfferWaitCue" default="null" comment="Do not create a mission offer but wait for this cue to be completed before running the mission"/>
+        <param name="DeclineButton" default="true" comment="Have a decline button instead of a back button in the offer conversation"/>
+        <param name="EventOffer" default="false" comment="Is the mission offered directly to the player with an interactive event"/>
+        <param name="ConversationOffer" default="false" comment="When $EventOffer is false, should this offer be through a conversation with the $Client. Otherwise, offer at mission location"/>
+        <param name="ConversationTriggerCue" default="null" comment="If provided, when this cue is signalled, start the mission offer conversation."/>
+        <param name="OfferMaxDistance" default="null"/>
+        <param name="HideFromBBS" default="false" comment="Hide this offer from the BBS? Show only through locations or special conversation handling."/>
+        <param name="RemoveOnSectorChange" default="true"/>
+        <param name="OfferDistance" default="50km" comment="Distance to the offer location before it becomes visible on the map or BBS (unless otherwise hidden)"/>
+
+        <!--BBS only params-->
+        <param name="BBSObject" default="null"/>
+        <param name="BBSDistance" default="null"/>
+        <param name="BBSTimeoutMin" default="null"/>
+        <param name="BBSTimeoutMax" default="null"/>
+        <param name="BBSSpace" default="null"/>
+
+        <!--Mission text-->
+        <param name="Page"        comment="Allows a different text page to be used instead of the generic one. Text IDs must be mapped similarly."/>
+        <param name="TextOffset"  comment="The text offset for this variant's text on the page."/>
+        <param name="TextTable" default="table[]" comment="Table, usually populated by the mission, to store the texts by an identifier key e.g. $missionname = 'Kill Bala Gi'
+               Check library 'GenerateTextTable' for identifier keys. Pass in a table with such an entry to override the text usually generated from the $Page and $TextOffset"/>
+        <param name="VoiceTable" default="table[]" comment="Table, usually populated by the mission, keys can have a value of 0 (=stay silent)
+               .$SignalLeakVoiceLine = The line that should be used for signal leak introductions to this mission"/>
+
+        <!--******************************** Mission specific params ********************************-->
+        <param name="StartContainer"          comment="The Station/Ship to initually pick the NPC up on"/>
+        <param name="DeadDropContainer"       comment="The Station/Ship to pick the DeadDrop (and optional Passenger) up on"/>
+        <param name="TargetContainer"         comment="The Station/Ship to deliver the DeadDrop (and optional Passenger) to"/>
+        <param name="Crates"                  comment="List of Crates to be used for Crates containing the DeadDropItem ($PickupWare)"/>
+        <param name="CrateSlots"              comment="List of CrateSlots to be used for Crates containing the DeadDropItem ($PickupWare)"/>
+        <param name="PickupWare"              comment="The item which needs to be recovered from a crate"/>
+
+        <param name="TransportStartToDeadDrop"  comment="Passenger Transport"/>
+        <param name="TransportDeadDropToTarget" comment="Passenger Transport"/>
+        <param name="TransportStartToDeadDrop_BriefingUpdate"    default="false" />
+        <param name="TransportDeadDropToTarget_BriefingUpdate"   default="false" />
+        <param name="DeliverToPassenger"        comment="Deliver the Item to the Passenger (only works if there is a Passenger Transport)"/>
+
+        <param name="DeadDropContainerMDock" default="false" comment="Does the target allow M sized docking?"/>
+        <param name="TargetContainerMDock"   default="false" comment="Does the target allow M sized docking?"/>
+
+        <param name="NPCPassenger"          default="null"  comment="The NPC which has to be transported" />
+        <param name="NPCDeliverTo"                        comment="mandatory, The NPC to which the items should be delivered, can be same as NPCPassenger" />
+        <param name="PlacementTable"        default="table[$cue = namespace, $priority = 50]"  comment="Table containing the owning cue and priority of placing the NPC vs other missions"/>
+        <param name="ContactNPCSlotTags"    default="[tag.npc_generic]" comment="NPC slot tags to help position the NPCContact" />
+
+        
+        <param name="Station"                             comment="The station which is the focus of these missions" />
+        <param name="InteriorRoomMacro"     default="null"  comment="The dynamic interior room the NPCContact should be placed in, if not placed already" />
+        <param name="InteriorCorridorMacro" default="null"  comment="The dynamic interior corridor leading to InteriorRoomMacro" />
+        <param name="InteriorDoors"         default="null"  comment="The possible dynamic interior doors used to connect the room and corridor. When defining a room or corridor macro, this is is the variable saved in the doors parameter" />
+        <param name="InteriorName"          default="null"  comment="The name of the dynamic interior the NPCContact should used, if not placed already" />
+
+        <!--Passenger Transport Mission from StartStation to Station-->
+        <param name="StartStation"               comment="The station to initially pick the NPC up on" />
+        <param name="StartInteriorRoomMacro"     default="null" comment="The dynamic interior room the NPCContact should be placed in, if not placed already" />
+        <param name="StartInteriorCorridorMacro" default="null" comment="The dynamic interior corridor leading to InteriorRoomMacro" />
+        <param name="StartInteriorDoors"         default="null" comment="The possible dynamic interior doors used to connect the room and corridor. When defining a room or corridor macro, this is is the variable saved in the doors parameter" />
+        <param name="StartInteriorName"          default="null" comment="The name of the dynamic interior the NPCContact should used, if not placed already" />
+        <!-- ************************************************************************************************************************************************************************ -->
+
+        <!--Deliver Inventory Mission-->
+        <param name="DeliveryWaresTable"                  comment="Table of ware amounts. Key = ware. Value = amount. Inventory wares only."/>
+
+        <!--Deploy Object Mission-->
+        <param name="DeployRadius"          default="5km" comment="Radius around the station in which to deploy defences"/>
+        <param name="DeployCount"           default="[4,5,6].random" comment="Amount of objects to deploy around the station"/>
+        <param name="DeployCategory"        default="deployablecategory.lasertower" comment="deployablecategory of objects to deploy"/>
+        <!--TODO @Owen - make use of the enemy faction-->
+        <param name="EnemyFaction"          default="null"/>
+
+        <param name="ReportSignalCue" default="null" comment="Cue to be signalled when something happens which could be of interest to the calling cue. Saves values to ReportSignalCue.$FeedbackValue and ReportSignalCue.$EndFeedbackValue"/>
+        <param name="CancelOfferCue" default="null" comment="Cue which when completed will force this missions offer to be removed and cleaned up. No effect if mission has been accepted."/>
+        <param name="ForceCleanup" default="null" comment="Cue to force a cleanup from outside when completed"/>
+        <param name="DebugChance" default="0"/>
+      </params>
+      <actions>
+        <!--Feedback value setup-->
+        <set_value name="$Feedback" exact="null"/>
+        <set_value name="$FeedbackManager" exact="md.GMC_Retrieve_Dead_Drop.FeedbackValueManager"/>
+
+        <assert value="$WithoutOffer or not $MissionCue or (not $MissionCue.hasmission and not $MissionCue.hasmissionoffer)"
+                text="'Mission is set to create an offer but provided MissionCue: ' + $MissionCue + ' already has an offer or is a running mission [Owen]'"/>
+
+        <!--Param validation-->
+
+        <do_if value="not $WithoutOffer">
+          <!--Optional variables (at least one should exist): $OfferObject, (bool)$HideFromBBS, (bool)$ConversationOffer, (bool)$EventOffer
+          Result variables:
+          $OfferType = 'signalleak' OR 'objectbased' OR 'eventoffer' OR 'conversationoffer'
+          $AllowOfferEvent = Will an event offering this event be also fired immediatly?-->
+          <include_actions ref="md.GenericMissions.GetOfferType"/>
+          <do_if value="not $OfferType">
+            <set_value name="$Feedback" exact="'$INVALID_OFFER_TYPE'"/>
+          </do_if>
+        </do_if>
+
+        <do_if value="not $Feedback">
+          <do_if value="not $TextOffset">
+            <set_value name="$Feedback" exact="'$NO_TEXT_OFFSET'"/>
+          </do_if>
+          <do_else>
+            <do_if value="$Client">
+              <set_value name="$PreexistingClient"/>
+            </do_if>
+            <do_if value="not $ClientOwner">
+              <set_value name="$ClientOwner" exact="if $Client then $Client.owner else @$OfferObject.owner"/>
+              <assert value="$ClientOwner" text="'No valid $ClientOwner [Owen]'"/>
+            </do_if>
+
+            <do_if value="not $ClientOwner">
+              <set_value name="$Feedback" exact="'$NO_VALID_CLIENT_OWNER'"/>
+            </do_if>
+            <do_else>
+              <!--Mission specific param checks-->
+              <do_if value="not $NPCDeliverTo.isclass.npc">
+                <set_value name="$Feedback" exact="'$INVALID_NPCCONTACT_PARAM'"/>
+              </do_if>
+              <do_elseif value="not ($Station.isclass.station and $Station.isoperational)">
+                <set_value name="$Feedback" exact="'$INVALID_STATION_PARAM'" />
+              </do_elseif>
+              <!--
+              <do_elseif value="not ($InteriorRoomMacro and $InteriorCorridorMacro and $InteriorDoors and $InteriorName) and 
+                       not (not $InteriorRoomMacro and not $InteriorCorridorMacro and not $InteriorDoors and not $InteriorName)">
+                <!-&-Interior parameters were incomplete-&->
+                <set_value name="$Feedback" exact="'$INVALID_INTERIOR_PARAMS'"/>
+              </do_elseif>-->
+              <do_elseif value="$DeliverToPassenger" comment="Deliver the Item to the Passenger (only works if there is a Passenger Transport)">
+                <do_if value="not ($TransportStartToDeadDrop or $TransportDeadDropToTarget)" comment="check if there is a Passenger Transport">
+                  <set_value name="$Feedback" exact="'$INVALID_DELIVERY_TARGET'"/>
+                  <!-- Trying to Deliver the Item to the Passenger when there is no PassengerTransport -->
+                </do_if>
+              </do_elseif>
+              <do_elseif value="$TransportStartToDeadDrop_BriefingUpdate" comment="Deliver the Item to the Passenger (only works if there is a Passenger Transport)">
+                <do_if value="not $TransportStartToDeadDrop" comment="check if there is a Passenger Transport">
+                  <set_value name="$Feedback" exact="'$INVALID_BRIEFING_UPDATE'"/>
+                </do_if>
+              </do_elseif>
+              <do_elseif value="$TransportDeadDropToTarget_BriefingUpdate" comment="Deliver the Item to the Passenger (only works if there is a Passenger Transport)">
+                <do_if value="not ($TransportStartToDeadDrop or $TransportDeadDropToTarget)" comment="check if there is a Passenger Transport">
+                  <set_value name="$Feedback" exact="'$INVALID_BRIEFING_UPDATE'"/>
+                </do_if>
+              </do_elseif>
+            </do_else>
+          </do_else>
+        </do_if>
+      </actions>
+      <patch sinceversion="3">
+        <set_value name="$VoiceTable" exact="table[]"/>
+        <set_value name="$VoiceTable.$SignalLeakVoiceLine" exact="$SignalLeakVoiceLine" comment="use table instead of standalone parameter"/>
+      </patch>
+      <cues>
+        <cue name="Do_Not_Start_Mission" onfail="cancel">
+          <conditions>
+            <check_value value="$Feedback"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="CleanUp"/>
+          </actions>
+        </cue>
+
+        <cue name="Do_Start_Mission" onfail="cancel">
+          <conditions>
+            <check_value value="not $Feedback"/>
+          </conditions>
+          <actions>
+            <do_if value="not $MissionCue">
+              <set_value name="$MissionCue" exact="Start"/>
+            </do_if>
+
+            <do_if value="not $PreexistingClient?">
+              <!-- No pre-existing client, create a temporary client for this mission -->
+              <create_cue_actor cue="Start" name="$Client">
+                <select faction="$ClientOwner" tags="tag.crew"/>
+                <owner exact="$ClientOwner"/>
+              </create_cue_actor>
+            </do_if>           
+            
+            <!-- Set Mission Steps with and without Offer -->
+            <!-- Figure out the proper Mission Steps (updated after the Briefing) -->
+            <!-- Barebone Setup: Find Item, Deliver Item -->
+            <set_value name="$StepToDeadDropTalk"       exact="1"/>
+            <set_value name="$StepToDeadDropTransport"  exact="1"/>
+            <set_value name="$StepFindDeadDrop"         exact="1"/>
+            <set_value name="$StepToTargetTalk"         exact="2"/>
+            <set_value name="$StepToTargetTransport"    exact="2"/>
+            <set_value name="$StepDeliverItem"          exact="2"/>
+
+            <do_if value="$TransportStartToDeadDrop">
+              <set_value name="$StepToDeadDropTransport"  exact="1" operation="add"/>
+              <set_value name="$StepFindDeadDrop"         exact="2" operation="add"/>
+              <set_value name="$StepToTargetTalk"         exact="2" operation="add"/>
+              <set_value name="$StepToTargetTransport"    exact="2" operation="add"/>
+              <set_value name="$StepDeliverItem"          exact="2" operation="add"/>
+            </do_if>
+            <do_if value="$TransportDeadDropToTarget">
+              <set_value name="$StepToTargetTransport"    exact="1" operation="add"/>
+              <set_value name="$StepDeliverItem"          exact="2" operation="add"/>
+            </do_if>
+            <do_if value="$DeliverToPassenger"    comment="Move the $DeliverItemStep to the DeadDropContainer">
+              <set_value name="$temp" exact="$StepToTargetTalk"/>
+              <set_value name="$StepToTargetTalk"         exact="$StepToTargetTransport"/>
+              <set_value name="$StepToTargetTransport"    exact="$StepDeliverItem"/>
+              <set_value name="$StepDeliverItem"          exact="$temp"/>
+            </do_if>
+
+            <!-- Determine the reward (credits/object/notoriety) -->
+            <do_if value="$GenerateReward">
+              <include_actions ref="md.LIB_Reward_Balancing.Allocate_RewardWeight" comment="input: $Difficulty, $ClientOwner; output: $RewardCreditsWeight, $RewardModWeight, $RewardSeminarWeight"/>
+              <do_any>
+                <do_if value="not $RewardCr" weight="$RewardCreditsWeight">
+                  <signal_cue_instantly cue="md.LIB_Reward_Balancing.Reward_Money" param="[Start, $Difficulty, $MissionLevel, $ClientOwner]" comment="basic reward credits"/>
+                  <include_actions ref="md.LIB_Reward_Balancing.Apply_RewardMultiplier" comment="signal leak and mission thread bonus"/>
+                  <run_actions ref="CalculateResourceCost" result="$ResourceCost__Result">
+                    <param name="DeliveryWaresTable" value="$DeliveryWaresTable"/>
+                  </run_actions>
+                  <set_value name="$RewardCr" exact="$Reward_Money__Result_Multiplied + $ResourceCost__Result"/>
+                </do_if>
+                <do_if value="not $RewardObj" weight="$RewardModWeight">
+                  <signal_cue_instantly cue="md.LIB_Reward_Balancing.Reward_ModPart" param="[Start]" />
+                  <set_value name="$RewardObj" exact="$Reward_ModPart__Result" />
+                  <set_value name="$RewardText" exact="$RewardObj.name" />
+                </do_if>
+                <do_if value="not $RewardObj" weight="$RewardSeminarWeight">
+                  <signal_cue_instantly cue="md.LIB_Reward_Balancing.Reward_Seminar" param="[Start]" />
+                  <set_value name="$RewardObj" exact="$Reward_Seminar__Result" />
+                  <set_value name="$RewardText" exact="$RewardObj.name" />
+                </do_if>
+              </do_any>
+
+              <do_if value="not $RewardNotoriety">
+                <signal_cue_instantly cue="md.LIB_Reward_Balancing.Reward_Notoriety" param="[Start, $Difficulty, $MissionLevel, $ClientOwner]"/>
+                <set_value name="$RewardNotoriety" exact="$Reward_Notoriety__Result"/>
+              </do_if>
+            </do_if>
+            
+            <include_actions ref="GenerateTextTable"/> 
+            <include_actions ref="GenerateVoiceTable"/>
+
+            <do_if value="$ReportSignalCue">
+              <!--Signal the $ReportSignalCue that the mission has been successfully generated-->
+              <set_value name="$FeedbackData" exact="$FeedbackManager.$FeedbackValues.$MISSION_GENERATED.clone"/>
+              <set_value name="$FeedbackData.$ID" exact="'$MISSION_GENERATED'"/>
+              <set_value name="$ReportSignalCue.$FeedbackValue" exact="$FeedbackData.clone" comment="Mission variation generated successfully"/>
+              <signal_cue_instantly cue="$ReportSignalCue" param="table[$Name = $TextTable.$missionname, $Cue = $MissionCue, $Reward = $RewardCr, $RewardText = $RewardText]"/>
+            </do_if>
+          </actions>
+          <cues>
+
+            <!--***MISSION OFFER***-->
+            <cue name="With_Offer" onfail="cancel">
+              <conditions>
+                <check_value value="$WithoutOffer" exact="false"/>
+              </conditions>
+              <cues>
+                <!--Cue which creates the offer, when signalled. To be signalled from the GenericMissions.OfferMission library, referenced below-->
+                <cue name="CreateOffer" instantiate="true" comment="instanced to prevent cleanup">
+                  <conditions>
+                    <event_cue_signalled/>
+                    <check_value value="not @$OfferCreated"/>
+                  </conditions>
+                  <actions>
+                    <do_if value="not @$OfferCreated">
+
+                      <!-- Create Empty Offer, update_mission accordingly-&->
+                      <create_offer cue="$MissionCue" location="$OfferObject" distance="$OfferDistance" name="$TextTable.$missionname" description="$TextTable.$description" difficulty="$Difficulty" actor="$Client"
+                                   faction="$ClientOwner" type="$MissionType" reward="$RewardCr" rewardtext="$RewardText" duration="$MissionDuration" hidden="$HideFromBBS" space="$BBSSpace">
+                        <briefing>
+                          <!-&- Create empty Briefing, update_mission accordingly -&->
+                        </briefing>
+                      </create_offer>-->
+
+                      <!-- BriefingUpdate is set, the Offer only tells about the transport, a BriefingUpdate will add information on the (publicly secret) deaddrop pickup -->
+                      <do_if value="$TransportStartToDeadDrop_BriefingUpdate or $TransportDeadDropToTarget_BriefingUpdate">
+                        <!-- Just tell about the Passenger Transports -->
+                        <!-- Fake Briefing-->
+                        <do_if value="$TransportStartToDeadDrop and $TransportDeadDropToTarget">
+                          <create_offer cue="$MissionCue" location="$OfferObject" distance="$OfferDistance" name="$TextTable.$missionname" description="$TextTable.$description" difficulty="$Difficulty" actor="$Client"
+                                   faction="$ClientOwner" type="$MissionType" reward="$RewardCr" rewardtext="$RewardText" duration="$MissionDuration" hidden="$HideFromBBS" space="$BBSSpace">
+                            <briefing>
+                              <objective step="1"       action="objective.talkto"    comment="optional"   text="$NPCPassenger.knownname"/>
+                              <objective step="2"       action="objective.transport" comment="optional"   text="$NPCPassenger.knownname"/>
+                              <objective step="3"       action="objective.talkto"    comment="optional"   text="$NPCPassenger.knownname"/>
+                              <objective step="4"       action="objective.transport" comment="optional"   text="$NPCPassenger.knownname"/>
+                            </briefing>
+                          </create_offer>
+                        </do_if>
+                        <do_elseif value="$TransportStartToDeadDrop or $TransportDeadDropToTarget">
+                          <create_offer cue="$MissionCue" location="$OfferObject" distance="$OfferDistance" name="$TextTable.$missionname" description="$TextTable.$description" difficulty="$Difficulty" actor="$Client"
+                                   faction="$ClientOwner" type="$MissionType" reward="$RewardCr" rewardtext="$RewardText" duration="$MissionDuration" hidden="$HideFromBBS" space="$BBSSpace">
+                            <briefing>
+                              <objective step="1"       action="objective.talkto"    comment="optional"   text="$NPCPassenger.knownname"/>
+                              <objective step="2"       action="objective.transport" comment="optional"   text="$NPCPassenger.knownname"/>
+                            </briefing>
+                          </create_offer>
+                        </do_elseif>
+                        <do_else>
+                          <assert value="false" text="'Attempting to spawn a mission with a supposed briefing update, but no NPCPassenger who would trigger the briefing update.'"/>
+                        </do_else>
+                      </do_if>
+                      <do_else>
+                        <create_offer cue="$MissionCue" location="$OfferObject" distance="$OfferDistance" name="$TextTable.$missionname" description="$TextTable.$description" difficulty="$Difficulty" actor="$Client"
+                                   faction="$ClientOwner" type="$MissionType" reward="$RewardCr" rewardtext="$RewardText" duration="$MissionDuration" hidden="$HideFromBBS" space="$BBSSpace">
+                          <briefing>
+                            <objective step="$StepToDeadDropTalk"       action="objective.talkto"    comment="optional"   text="$NPCPassenger.knownname"/>
+                            <objective step="$StepToDeadDropTransport"  action="objective.transport" comment="optional"   text="$NPCPassenger.knownname"/>
+                            <objective step="$StepFindDeadDrop"         action="objective.pickup"    comment="mandatory"  text="$TextTable.$deaddropitem"/>
+                            <objective step="$StepToTargetTalk"         action="objective.talkto"    comment="optional"   text="$NPCPassenger.knownname"/>
+                            <objective step="$StepToTargetTransport"    action="objective.transport" comment="optional"   text="$NPCPassenger.knownname"/>
+                            <objective step="$StepDeliverItem"          action="objective.deliver"   comment="mandatory"  text="$NPCDeliverTo.knownname"/>
+                          </briefing>
+                        </create_offer>
+                      </do_else>
+                    </do_if>
+                    <set_value name="$OfferCreated" exact="true"/>
+
+                    <do_if value="$OfferObject.isclass.signalleak">
+                      <do_if value="readtext.{$Client.page}.{$VoiceTable.$SignalLeakVoiceLine}?">
+                        <update_signal_leak_voice object="$OfferObject" page="$Client.page" lines="$VoiceTable.$SignalLeakVoiceLine" />
+                      </do_if>
+                      <do_else>
+                        <set_value name="$Feedback" exact="'$INVALID_SIGNALLEAKVOICELINE_PARAM'" />
+                        <signal_cue cue="CleanUp" />
+                      </do_else>
+                    </do_if>
+                  </actions>
+                </cue>
+
+                <!--The majority of the offer logic is within this library. The parameters we pass down below, specify in which way this mission is going to be offered to the player (i.e. BBS, Signal-Leak, ...)
+                Some of the mission specific handling is still contained in this file but triggered via the library via a signal e.g. setting up the briefing details via the 'CreateOffer' cue above.-->
+                <cue name="Offer_Management" ref="md.GenericMissions.OfferMission">
+                  <param name="OfferType"     value="$OfferType"/>
+                  <param name="OfferCue"      value="$MissionCue"/>
+                  <param name="CleanupCue"    value="Offer_End"/>
+                  <param name="BriefingSetupCue" value="CreateOffer"/>
+                  <param name="MissionName"   value="$TextTable.$missionname"/>
+                  <param name="CancelOfferCue" value="$CancelOfferCue"/>
+
+                  <!--Object based params (offered by Station/Ship/Signal-leak)-->
+                  <param name="TimeoutMin"  value="8min" comment="Minimum time the offer remains valid"/>
+                  <param name="TimeoutMax"  value="12min"/>
+                  <param name="MaxDistance" value="$OfferMaxDistance"/>
+                  <param name="RemoveOnSectorChange" value="$RemoveOnSectorChange"/>
+
+                  <!--Object and Signal Leak based params-->
+                  <param name="OfferObject" value="$OfferObject"/>
+
+                  <!--BBS based offers-->
+                  <param name="BBSObject"     value="@$BBSObject"/>
+                  <param name="BBSDistance"   value="@$BBSDistance"/>
+                  <param name="BBSTimeoutMin" value="@$BBSTimeoutMin"/>
+                  <param name="BBSTimeoutMax" value="@$BBSTimeoutMax"/>
+
+                  <!--Conversation event offers-->
+                  <param name="AllowOfferEvent" value="$AllowOfferEvent"/>
+                  <param name="ConversationTriggerCue" value="$ConversationTriggerCue"/>
+
+                  <!--Client-->
+                  <param name="Client"                 value="$Client"/>
+                  <param name="VoiceTable"             value="$VoiceTable"/>
+
+                  <param name="DebugChance" value="$DebugChance"/>
+                </cue>
+
+                <!--Cue signalled when the offer library is finished-->
+                <cue name="Offer_End">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <do_if value="this.$Feedback.$ID == '$accepted_offer'">
+                      <signal_cue cue="MissionAccepted"/>
+                    </do_if>
+                    <do_elseif value="this.$Feedback.$ID == '$DECLINED_OFFER'">
+                      <set_value name="$Feedback" exact="'$DECLINED_OFFER'"/>
+                      <signal_cue cue="CleanUp" />
+                    </do_elseif>
+                    <do_elseif value="this.$Feedback.$ID == '$OFFER_REMOVED'">
+                      <set_value name="$Feedback" exact="'$OFFER_REMOVED'"/>
+                      <signal_cue cue="CleanUp" />
+                    </do_elseif>
+                    <do_elseif value="this.$Feedback.$ID == '$SIGNAL_LEAK_REMOVED'">
+                      <set_value name="$Feedback" exact="'$SIGNAL_LEAK_REMOVED'"/>
+                      <signal_cue cue="CleanUp" />
+                    </do_elseif>
+                    <do_elseif value="this.$Feedback.$ID == '$EVENT_OFFER_TIMEOUT'">
+                      <set_value name="$Feedback" exact="'$EVENT_OFFER_TIMEOUT'"/>
+                      <signal_cue cue="CleanUp" />
+                    </do_elseif>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <!--These cues handle the cases where a mission is automatically accepted on creation-->
+            <cue name="Without_Offer" onfail="cancel">
+              <conditions>
+                <check_value value="$WithoutOffer"/>
+                <check_value value="not $WithoutOfferWaitCue"/>
+              </conditions>
+              <actions>
+                <signal_cue cue="MissionAccepted" />
+              </actions>
+            </cue>
+
+            <cue name="Without_Offer_Wait_Cue" onfail="cancel">
+              <conditions>
+                <check_value value="$WithoutOffer"/>
+                <check_value value="$WithoutOfferWaitCue"/>
+              </conditions>
+              <cues>
+                <cue name="Without_Offer_Wait_Cue_Completed">
+                  <conditions>
+                    <check_any>
+                      <event_cue_completed cue="$WithoutOfferWaitCue"/>
+                      <check_all>
+                        <event_cue_signalled cue="$WithoutOfferWaitCue"/>
+                        <check_value value="event.param == $MissionCue"/>
+                      </check_all>
+                    </check_any>
+                  </conditions>
+                  <actions>
+                    <signal_cue_instantly cue="MissionAccepted" />
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <!--These cues handle the briefing presentations e.g. Holomap or cutscene render targets (depending on the mission)-->
+            <cue name="BriefingStarted">
+              <conditions>
+                <check_any>
+                  <event_briefing_started cue="$MissionCue"/>
+                  <event_briefing_submission_selected cue="$MissionCue"/>
+                </check_any>
+              </conditions>
+              <actions>
+                <set_value name="$RenderTarget" exact="event.param.{1}"/>
+
+                <set_value name="$BriefingCutsceneStarted" />
+                <debug_text text="'Briefing started'" chance="$DebugChance"/>
+              </actions>
+              <cues>
+
+                <cue name="DisplayCutscene" onfail="cancel">
+                  <conditions>
+                    <check_value value="$BriefingCutsceneStarted?"/>
+                  </conditions>
+                  <actions>
+                    <set_value name="$CutsceneObject" exact="$NPCPassenger" />
+                    <set_value name="$CutsceneKey" exact="'ShowCharacter'" />
+                    <play_cutscene key="$CutsceneKey" rendertarget="$RenderTarget">
+                      <param name="npcref" object="$CutsceneObject" />
+                    </play_cutscene>
+                  </actions>
+                </cue>
+
+                <cue name="BriefingStopped">
+                  <conditions>
+                    <check_any>
+                      <event_briefing_cancelled cue="$MissionCue"/>
+                      <event_briefing_submission_unselected cue="$MissionCue"/>
+                    </check_any>
+                  </conditions>
+                  <actions>
+                    <!--Temp value. This is used to identify if a cutscene for this mission is still playing.-->
+                    <do_if value="$BriefingCutsceneStarted?">
+                      <remove_value name="$BriefingCutsceneStarted"/>
+                      <stop_cutscene key="$CutsceneKey"/>
+                    </do_if>
+
+                    <debug_text text="'Briefing cancelled'" chance="$DebugChance"/>
+                    <reset_cue cue="BriefingStarted"/>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="NPC_Contact_Killed_Early">
+              <conditions>
+                <check_any>
+                  <event_object_destroyed object="$NPCDeliverTo"/>
+                  <event_object_destroyed object="$NPCPassenger"/>
+                </check_any>
+              </conditions>
+              <actions>
+                <set_value name="$Feedback" exact="'$NPCCONTACT_KILLED_EARLY'"/>
+                <signal_cue cue="CleanUp"/>
+              </actions>
+            </cue>
+
+            <cue name="StationDestroyed_Early">
+              <conditions>
+                <event_object_destroyed object="$Station"/>
+              </conditions>
+              <actions>
+                <set_value name="$Feedback" exact="'$STATION_DESTROYED_EARLY'"/>
+                <signal_cue cue="CleanUp"/>
+              </actions>
+            </cue>
+
+            <!--This cue creates the mission itself, either from scratch or via an existing mission offer-->
+            <cue name="MissionAccepted">
+              <conditions>
+                <event_cue_signalled />
+              </conditions>
+              <actions>
+                <debug_text text="'Mission accepted!'" chance="$DebugChance"/>
+                <set_value name="stat.missions_accepted" operation="add"/>
+
+                <do_if value="$WithoutOffer">
+                  <!--$MissionCue may already be a mission cue passed in as a parameter-->
+                  <do_if value="not $MissionCue.hasmission">
+                    <do_if value="$MissionThread">
+                      <create_mission cue="$MissionCue" missionthread="$MissionThread" name="$TextTable.$missionname" description="$TextTable.$description" difficulty="$Difficulty" faction="$ClientOwner" type="$MissionType" reward="$RewardCr" rewardtext="$RewardText"/>
+                    </do_if>
+                    <do_else>
+                      <create_mission cue="$MissionCue" name="$TextTable.$missionname" description="$TextTable.$description" difficulty="$Difficulty" faction="$ClientOwner" type="$MissionType" reward="$RewardCr" rewardtext="$RewardText"/>
+                    </do_else>
+                  </do_if>
+                </do_if>
+                <do_else>
+                  <!--Copy data from the offer, then remove it-->
+                  <do_if value="$MissionThread">
+                    <create_mission cue="$MissionCue" offercue="$MissionCue" missionthread="$MissionThread"/>
+                  </do_if>
+                  <do_else>
+                    <create_mission cue="$MissionCue" offercue="$MissionCue"/>
+                  </do_else>
+                  <remove_offer cue="$MissionCue"/>
+                  <cancel_cue cue="With_Offer"/>
+                </do_else>
+
+                <do_if value="$ReportSignalCue">
+                  <set_value name="$FeedbackData" exact="$FeedbackManager.$FeedbackValues.$MISSION_ACCEPTED.clone"/>
+                  <set_value name="$FeedbackData.$ID" exact="'$MISSION_ACCEPTED'"/>
+                  <set_value name="$ReportSignalCue.$FeedbackValue" exact="$FeedbackData.clone" comment="Mission accepted"/>
+                  <signal_cue_instantly cue="$ReportSignalCue"/>
+                </do_if>
+
+                <signal_cue_instantly cue="md.GenericMissions.GenericAcceptLogbookEntry" param="[$TextTable.$missionname, $Client, $ClientOwner]"/>
+              </actions>
+              <cues>
+                <cue name="ActivateImmediately" onfail="cancel">
+                  <conditions>
+                    <check_value value="not $MissionThread"/>
+                  </conditions>
+                  <actions>
+                    <signal_cue cue="ActivateMission"/>
+                  </actions>
+                </cue>
+
+                <cue name="ActivateOnCondition" onfail="cancel">
+                  <conditions>
+                    <check_value value="$MissionThread"/>
+                  </conditions>
+                  <actions>
+                    <do_if value="$MissionThread.canactivatesubmission.{$MissionCue}">
+                      <signal_cue cue="ActivateMission"/>
+                      <cancel_cue cue="ActivateOnCondition"/>
+                    </do_if>
+                  </actions>
+                  <cues>
+                    <!--TODO @Owen add an event for when a submission has been removed from the thread-->
+                    <cue name="CheckMissionThreadState" checkinterval="1s">
+                      <conditions>
+                        <check_value value="$MissionThread.canactivatesubmission.{$MissionCue}"/>
+                      </conditions>
+                      <actions>
+                        <signal_cue cue="ActivateMission"/>
+                        <cancel_cue cue="ActivateOnCondition"/>
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="ActivateMission">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <cancel_cue cue="NPC_Contact_Killed_Early"/>
+                    <cancel_cue cue="StationDestroyed_Early"/>
+
+                    <set_value name="$DeadDropDeliveryContainer" exact="$TargetContainer"/>
+
+                    <do_if value="$NPCDeliverTo.type == entitytype.shadyguy">
+                      <!-- If this is the mission variant working with a shady guy, check to see whether they require unlocking -->
+                      <debug_text text="'We are working with a shady guy - look to see whether they require unlocking'" chance="$DebugChance" />
+                      <do_if value="not $NPCDeliverTo.tradesvisible">
+                        <debug_text text="'Registering this mission ' + $MissionCue + ' as a requester for shady guy instantiation of ' + $NPCDeliverTo" chance="$DebugChance" />
+                        <do_if value="not $NPCDeliverTo.$InstantiationRequesters?">
+                          <set_value name="$NPCDeliverTo.$InstantiationRequesters" exact="[]"/>
+                        </do_if>
+                        <append_to_list name="$NPCDeliverTo.$InstantiationRequesters" exact="$MissionCue"/>
+                        <signal_objects object="$Station" param="'npc_instantiation__mission'" comment="Make sure the shady guy is actually properly instantiated on the station" />
+                      </do_if>
+                    </do_if>
+
+                  </actions>
+                  <cues>
+                    <cue name="Debug_AddNecessaryItems" instantiate="true">
+                      <conditions>
+                        <event_cue_signalled />
+                      </conditions>
+                      <actions>
+                        <add_inventory entity="player.entity" ware="$PickupWare" exact="1" />
+                        <debug_text text="1 + ' ' + $PickupWare + ' added to player inventory'" />
+                      </actions>
+                    </cue>
+
+                    <!--At this point, the mission is accepted and activated, ready for objectives to be set.
+                    These are usually done by triggering a RML, but there could also be other objectives until then e.g. talk to mission actor.-->
+                    <cue name="Initialise_Mission">
+                      <actions>
+                        <!-- TODO @Heinrich initialize chain variables here? -->
+
+                        <!-- Signal Mission Start Cues -->
+                        <!-- CHAIN LOGIC - Trigger the next step of this mission chain -->
+                        <do_if value="$TransportStartToDeadDrop">
+                          <signal_cue_instantly cue="md.NPC_Instantiation.NPC_Placement_Manager" param="['add_definition', $NPCPassenger, 
+                                          table[
+                                          $requestercue = $PlacementTable.$cue,
+                                          $priority = $PlacementTable.$priority,
+                                          $location = $StartContainer,
+                                          $slottags = $ContactNPCSlotTags,
+                                          $debugchance = $DebugChance,
+                                          $debugcaller = if $DebugChance == 100 then this else null]
+                                          ]"/>
+                          <signal_cue cue="Passenger_Transport_To_DeadDrop"/>
+                        </do_if>
+                        <do_elseif value="$TransportDeadDropToTarget">
+                          <signal_cue_instantly cue="md.NPC_Instantiation.NPC_Placement_Manager" param="['add_definition', $NPCPassenger, 
+                                          table[
+                                          $requestercue = $PlacementTable.$cue,
+                                          $priority = $PlacementTable.$priority,
+                                          $location = $DeadDropContainer,
+                                          $slottags = $ContactNPCSlotTags,
+                                          $debugchance = $DebugChance,
+                                          $debugcaller = if $DebugChance == 100 then this else null]
+                                          ]"/>
+                          <signal_cue cue="Find_DeadDropItem"/>
+                        </do_elseif>
+                        <do_else  comment="We start with the first mandatory step, retrieving the dead drop">
+                          <signal_cue cue="Find_DeadDropItem"/>
+                        </do_else>
+                      </actions>
+                    </cue>
+
+                    <cue name="Passenger_Transport_To_DeadDrop"   comment="Optional">
+                      <conditions>
+                        <event_cue_signalled/>
+                      </conditions>
+                      <actions>
+                        <set_value name="$PassengerShip" exact="null" />
+                        <set_value name="$NPCPassengerTemplate" exact="$NPCPassenger.npctemplate"/>
+                      </actions>
+                      <cues>
+                        <!--This RML will end when the NPC is on a ship docked at the destination. It is up to the caller to decide what to do with the NPC after that e.g. move them off the ship.-->
+                        <cue name="Passenger_Transport_To_DeadDrop_Ref" ref="md.RML_Transport_Passengers_V2.TransportPassengers_V2">
+                          <param name="EndSignalCue"    value="Passenger_Transport_To_DeadDrop_End"/>
+                          <param name="MissionCue"      value="$MissionCue"/>
+                          <param name="StartStep"       value="$StepToDeadDropTalk"  comment="Briefing step to start the mission on"/>
+                          <param name="UpdateBriefing"  value="true"        comment="Update the briefing objective step when the objective is updated"/>
+
+                          <param name="Passenger"       value="$NPCPassenger"/>
+                          <param name="Destination"     value="$DeadDropContainer"  comment="Destination object to drop off the passenger"/>
+                          <param name="PlaceNPC"        value="true"/>
+                          <param name="PlacementTable"  value="$PlacementTable"/>
+
+                          <!-- ************************************************************************************************************************************************************************ -->
+                          <!-- If the mission is to manage placing the delivery NPC, all of these parameters must be passed in together -->
+                          <!-- Room, corridor and door definitions could be provided by the caller through get_room_definition -->
+                          <param name="StartObject"           value="$StartStation"  comment="Object to place the NPC on"/>
+                          <!-- ************************************************************************************************************************************************************************ -->
+
+                          <param name="DebugChance"           value="$DebugChance"/>
+                        </cue>
+
+                        <cue name="Passenger_Transport_To_DeadDrop_Conversation_Handler" instantiate="true">
+                          <conditions>
+                            <check_any>
+                              <event_conversation_started actor="$NPCPassenger" />
+                              <event_conversation_returned_to_section actor="$NPCPassenger" />
+                            </check_any>
+                          </conditions>
+                          <actions>
+                            <set_value name="$NPCPassenger.$PassengerConvHandlerExists" exact="true" comment="Validation blackboard variable so the RML can know something is looking after the conversation."/>
+                            <add_npc_line line="2002" comment="(Greeting - neutral)" />
+
+                            <do_if value="$TransportStartToDeadDrop_BriefingUpdate">
+                              <update_mission cue="$MissionCue" description="$TextTable.$description2">
+                                <briefing>
+                                  <objective step="$StepToDeadDropTalk"       action="objective.talkto"    comment="optional"   text="$NPCPassenger.knownname"/>
+                                  <objective step="$StepToDeadDropTransport"  action="objective.transport" comment="optional"   text="$NPCPassenger.knownname"/>
+                                  <objective step="$StepFindDeadDrop"         action="objective.pickup"    comment="mandatory"  text="$TextTable.$deaddropitem"/>
+                                  <objective step="$StepToTargetTalk"         action="objective.talkto"    comment="optional"   text="$NPCPassenger.knownname"/>
+                                  <objective step="$StepToTargetTransport"    action="objective.transport" comment="optional"   text="$NPCPassenger.knownname"/>
+                                  <objective step="$StepDeliverItem"          action="objective.deliver"   comment="mandatory"  text="$NPCDeliverTo.knownname"/>
+                                </briefing>
+                              </update_mission>
+                              <add_player_choice text="$TextTable.$briefing_update" position="left" section="passenger_mission_update" comment="Show Mission Briefing"/>
+                            </do_if>
+
+                            <do_if value="not $PassengerShip">
+                              <add_player_choice text="$TextTable.$start_conv_plr" position="bottom_left" section="passenger_onboard" comment="Ready to enter"/>
+                            </do_if>
+                            <add_player_choice text="{1002,2}" position="bottom_right" section="g_finish" comment="Goodbye"/>
+                          </actions>
+                        </cue>
+
+                        <cue name="Passenger_Transport_To_DeadDrop_Conversation_Handler_2" instantiate="true">
+                          <!-- Show the Mission Briefing -->
+                          <conditions>
+                            <event_conversation_next_section actor="$NPCPassenger"/>
+                            <check_value value="event.param == 'passenger_mission_update'"/>
+                          </conditions>
+                          <actions>
+                            <open_conversation_menu menu="MissionBriefingMenu" param="[0, 0, $MissionCue, false]" />
+                          </actions>
+                        </cue>
+
+                        <cue name="Passenger_Transport_To_DeadDrop_NextSection_SelectShip" instantiate="true">
+                          <conditions>
+                            <event_conversation_next_section actor="$NPCPassenger" />
+                            <check_value value="event.param == 'passenger_onboard'" />
+                          </conditions>
+                          <actions>
+
+                            <do_if value="$DeadDropContainerMDock">
+                              <find_object_component name="this.$PlayerShips" object="$NPCPassenger.container" owner="faction.player" class="[class.ship_s, class.ship_m]" recursive="true" multiple="true" />
+                              <set_value name="$ShipTooBig" exact="$TextTable.$ship_bigger_than_M"/>
+                            </do_if>
+                            <do_else>
+                              <find_object_component name="this.$PlayerShips" object="$NPCPassenger.container" owner="faction.player" class="[class.ship_s]" recursive="true" multiple="true" />
+                              <set_value name="$ShipTooBig" exact="$TextTable.$ship_bigger_than_S"/>
+                            </do_else>
+                            <open_conversation_menu menu="PlatformUndockMenu" param="[0, 0, $NPCPassenger.container, 'movepassenger', [ this.$PlayerShips, $ShipTooBig]]" />
+                          </actions>
+                        </cue>
+
+                        <cue name="Passenger_Transport_To_DeadDrop_Check_Ship" instantiate="true">
+                          <conditions>
+                            <event_conversation_next_section actor="$NPCPassenger" />
+                            <check_value value="event.param == 'c_movepassenger_destinationselected'" />
+                          </conditions>
+                          <actions>
+                            <!--people.free does not count control entity slots, which is fine for this case
+                            Inbound people should be flagged as 'intransit' and included in the current total of people-->
+                            <debug_text text="'$PassengerShip ' + event.param2 + ' has ' + event.param2.people.free + ' free people slots'" chance="$DebugChance"/>
+                            <do_if value="event.param2.people.free">
+                              <!--Ship has enough space for the passenger. Add them to the ship's people list and attempt to have them walk to it.-->
+                              <set_value name="$PassengerShip" exact="event.param2" />
+                              <!-- Make NPC walk to selected ship. As their destination slot is a NPC transport slot, they will become 'hidden' on arrival. They will continue to exist. -->
+                              <find_npc_waypoint name="this.$DespawnWaypoints" object="$PassengerShip" tags="tag.npctransport" multiple="true"/>
+                              <assert value="this.$DespawnWaypoints.count" text="'No waypoints on ' + $PassengerShip + ' ' + $PassengerShip.knownname + ' tagged ' + tag.npctransport + '. No place to despawn passengers.'"/>
+                              <debug_text text="'Attempting to add ' + $NPCPassenger + ' to ' + $PassengerShip + ' ' +$PassengerShip.knownname + ' as a passenger'" chance="$DebugChance"/>
+                              <create_npc_template name="this.$Template" object="$PassengerShip" entity="$NPCPassenger" role="entityrole.passenger"/>
+                              <assert value="$NPCPassengerTemplate == this.$Template" text="'Template of passenger added to the ship ' + this.$Template + ' does not match that stored earlier ' + $NPCPassengerTemplate + ' [Owen]'"/>
+                              <assert value="this.$Template" text="'Attempted to add passenger to the selected ship but it failed. [Owen]'"/>
+                              <do_if value="this.$Template">
+                                <do_if value="this.$DespawnWaypoints.count">
+                                  <signal_cue_instantly cue="md.NPC_Instantiation.NPC_Placement_Manager" param="['add_definition', $NPCPassenger, 
+                                          table[
+                                          $requestercue = $PlacementTable.$cue,
+                                          $priority = $PlacementTable.$priority,
+                                          $location = this.$DespawnWaypoints.random,
+                                          $debugchance = $DebugChance,
+                                          $debugcaller = if $DebugChance == 100 then this else null]
+                                          ]"/>
+                                </do_if>
+                                <do_else>
+                                  <assert value="this.$DespawnWaypoints.count" text="'No place for the NPC was found on the selected ship ' + $PassengerShip + ' ' + $PassengerShip.macro.id + ' - This will fail the RML. [Owen]'"/>
+                                  <remove_actor_from_room actor="$NPCPassenger"/>
+                                </do_else>
+                              </do_if>
+                              <signal_objects object="$NPCPassenger" param="'passenger_transport_ship_selected'" param2="$PassengerShip"/>
+                            </do_if>
+                            <do_else>
+                              <add_npc_line speaker="$NPCPassenger" line="11803" comment="(No room on selected ship)" />
+                            </do_else>
+                          </actions>
+                        </cue>
+
+                        <cue name="Passenger_Transport_To_DeadDrop_End">
+                          <conditions>
+                            <event_cue_signalled/>
+                          </conditions>
+                          <actions>
+                            <!-- Failure case -->
+                            <do_if value="this.$EndFeedbackValue" max="0">
+                              <debug_text text="'This mission has failed. Feedback: ' + this.$EndFeedbackValue" chance="$DebugChance"/>
+                              <set_value name="$Feedback" exact="'$MISSION_FAILED'"/>
+                              <signal_cue_instantly cue="md.NPC_Instantiation.NPC_Placement_Manager" param="['remove_request', $NPCPassenger, namespace]"/>
+                              <signal_cue_instantly cue="md.NPC_Missions.Disembark_Passenger" param="table[
+                                         $passenger = $NPCPassenger,
+                                         $object = $PassengerShip,
+                                         $debugchance = $DebugChance]"/>
+                              <!--TODO - don't speak if NPC was killed-->
+                              <speak actor="$NPCPassenger" line="1000403" comment="(failed mission)" />
+                              <signal_cue_instantly cue="md.GenericMissions.GenericFailLogbookEntry" param="[$TextTable.$missionname, $Client, @this.$EndFeedbackText]"/>
+
+                              <remove_mission cue="$MissionCue" type="failed" reason="@this.$EndFeedbackText"/>
+                              <signal_cue cue="CleanUp" />
+                            </do_if>
+                            <!-- Success case -->
+                            <do_else>
+                              <!--The passenger has successfully been delivered to the station.-->
+                              <assert value="$NPCPassenger.hascontext.{$PassengerShip}" text="'Passenger ' + $NPCPassenger + ' ' + $NPCPassenger.knownname + ' exists but is not on the expected ship. Their object is ' + $NPCPassenger.object + ' ' + @$NPCPassenger.object.knownname + ' [Owen]'"/>
+                            </do_else>
+                          </actions>
+                          <cues>
+                            <cue name="Passenger_Transport_To_DeadDrop_End_Delay">
+                              <!--TODO @Owen see why this fails so often-->
+                              <!--Slight delay after the passenger transport mission to have a better chance of the walkable navmeshes being generated-->
+                              <delay exact="5s"/>
+                              <actions>
+                                <speak actor="$NPCPassenger" line="2113" comment="Excellent."/>
+
+                                <!--Start the library which will manage the NPCs location on the station-->
+                                <signal_cue_instantly cue="md.NPC_Instantiation.NPC_Placement_Manager" param="['add_definition', $NPCPassenger, 
+                                          table[
+                                          $requestercue = $PlacementTable.$cue,
+                                          $priority = $PlacementTable.$priority,
+                                          $location = $DeadDropContainer,
+                                          $slottags = $ContactNPCSlotTags,
+                                          $debugchance = $DebugChance,
+                                          $debugcaller = if $DebugChance == 100 then this else null]
+                                          ]"/>
+                                <remove_npc_template object="$PassengerShip" template="$NPCPassengerTemplate"/>
+                                <!-- Add to Target first? 
+                                <cancel_cue cue="Passenger_Transport_To_DeadDrop"/>
+                                Be wary of "Cancel_Cue", probably cleans up my Passenger :( @Heinrich -->
+                                <!--Signal the next stage of the mission-->
+                                <signal_cue cue="Find_DeadDropItem"/>
+                                <cancel_cue cue="Passenger_Transport_To_DeadDrop"/>
+                              </actions>
+                            </cue>
+                          </cues>
+                        </cue>
+                      </cues>
+                    </cue>
+
+                    <cue name="Find_DeadDropItem"                 comment="Mandatory">
+                      <conditions>
+                        <event_cue_signalled/>
+                      </conditions>
+                      <actions>
+                        <!-- Spawn Crates with the PickupItem in some of the CrateSlots -->
+                        <shuffle_list list="$CrateSlots"/>
+                        <set_value name="$SpawnNum" exact="1" comment="Ship DockingAreas are quite small, just place one crate"/>
+                        <do_if value="$DeadDropContainer.isclass.station">
+                          <set_value name="$SpawnNum" exact="[($CrateSlots.count / 5)i, 1].max" comment="Use 20% of the available CrateSlots on stations"/>
+                        </do_if>
+
+                        <do_all exact="$SpawnNum" counter="$slot">
+                          <create_crate name="$TempCrate" macro="macro.crate_gen_s_01_macro" slot="$CrateSlots.{$slot}" />
+                          <add_cargo object="$TempCrate" ware="$PickupWare" exact="1"/>
+                          <append_to_list name="$Crates" exact="$TempCrate"/>
+                        </do_all>
+
+                        <set_objective cue="$MissionCue" action="objective.pickup" text="$TextTable.$deaddropitem"/>
+                      </actions>
+                      <cues>
+                        <cue name="Finding_Item_Helper" comment="Help the player if he couldn't find the crate">
+                          <delay exact="60s"/>
+                          <actions>
+                            <do_if value="$Crates.count">
+
+                              <set_value name="$ClosestCrate" exact="$Crates.{1}"/>
+                              <set_value name="$ShortestDistanceFound" exact="$Crates.{1}.distanceto.{player.entity}"/>
+                              <do_all exact="$Crates.count" counter="$c">
+                                <do_if value="$Crates.{$c}.distanceto.{player.entity} lt $ShortestDistanceFound">
+                                  <set_value name="$ShortestDistanceFound" exact="$Crates.{$c}.distanceto.{player.entity}"/>
+                                  <set_value name="$ClosestCrate" exact="$Crates.{$c}"/>
+                                </do_if>
+                              </do_all>
+
+                              <do_all exact="$Crates.count" counter="$c" reverse="true">
+                                <do_if value="$Crates.{$c} != $ClosestCrate">
+                                  <remove_cargo object="$Crates.{$c}" ware="$PickupWare" exact="1"/>
+                                  <destroy_object object="$Crates.{$c}"/>
+                                  <remove_value name="$Crates.{$c}"/>
+                                </do_if>
+                              </do_all>
+                              <clear_list list="$Crates"/>
+                              <append_to_list name="$Crates" exact="$ClosestCrate"/>
+
+                              <set_objective cue="$MissionCue" action="objective.pickup" object="$ClosestCrate"/>
+
+                            </do_if>
+                          </actions>
+                        </cue>
+                        <cue name="Found_DeadDropItem">
+                          <conditions>
+                            <event_player_opened_crate/>
+                            <check_value list="$Crates" value="event.param"/>
+                          </conditions>
+                          <actions>
+
+                            <set_value name="$CratePicked" exact="event.param"/>
+                            <do_if value="Finding_Item_Helper.state" exact="cuestate.waiting">
+                              <cancel_cue cue="Finding_Item_Helper"/>
+                            </do_if>
+
+                            <!-- Remove all as soon as the player picks up any one of them -->
+                            <do_if value="$Crates.count">
+                              <do_all exact="$Crates.count" counter="$c" reverse="true">
+                                <do_if value="not ($Crates.{$c} == $CratePicked)" comment="Ignore the opened crate">
+                                  <!-- Remove cargo from all the other crates which will be destroyed (necessary?)-->
+                                  <remove_cargo object="$Crates.{$c}" ware="$PickupWare" exact="1"/>
+                                </do_if>
+                                <!-- Remove all crates including the one crate which the player looted -->
+                                <destroy_object object="$Crates.{$c}"/>
+                              </do_all>
+                            </do_if>
+                            <clear_list list="$Crates" comment="cannot remove_value because the Finding_Item_Helper might still try $Crates.count"/>
+
+                            <!-- CHAIN LOGIC - Trigger the next step of this mission chain -->
+                            <do_if value="$DeliverToPassenger">
+                              <!-- Deliver to: DeadDropContainer[Station/Ship] on which you found the DeadDrop -->
+                              <set_value name="$DeadDropDeliveryContainer" exact="$DeadDropContainer"/>
+                              <signal_cue cue="Deliver_Inventory"/>
+                            </do_if>
+                            <do_elseif value="$TransportDeadDropToTarget">
+                              <signal_cue cue="Passenger_Transport_To_Target"/>
+                            </do_elseif>
+                            <do_else comment="deliver to another NPC ($NPCDeliverTo)">
+                              <!-- Deliver to: TargetContainer[Station/Ship] -->
+                              <set_value name="$DeadDropDeliveryContainer" exact="$TargetContainer"/>
+                              <signal_cue cue="Deliver_Inventory"/>
+                            </do_else>
+                          </actions>
+                        </cue>
+                      </cues>
+                    </cue>
+
+                    <cue name="Passenger_Transport_To_Target"     comment="Optional">
+                      <conditions>
+                        <event_cue_signalled/>
+                      </conditions>
+                      <actions>
+                        <set_value name="$PassengerShip" exact="null" />
+                        <set_value name="$NPCPassengerTemplate" exact="$NPCPassenger.npctemplate"/>
+                      </actions>
+                      <cues>
+                        <!--This RML will end when the NPC is on a ship docked at the destination. It is up to the caller to decide what to do with the NPC after that e.g. move them off the ship.-->
+                        <cue name="Passenger_Transport_To_Target_Ref" ref="md.RML_Transport_Passengers_V2.TransportPassengers_V2">
+                          <param name="EndSignalCue"    value="Passenger_Transport_To_Target_End"/>
+                          <param name="MissionCue"      value="$MissionCue"/>
+                          <param name="StartStep"       value="$StepToTargetTalk"  comment="Briefing step to start the mission on"/>
+                          <param name="UpdateBriefing"  value="true"        comment="Update the briefing objective step when the objective is updated"/>
+
+                          <param name="Passenger"       value="$NPCPassenger"/>
+                          <param name="Destination"     value="$TargetContainer"  comment="Destination object to drop off the passenger"/>
+                          <param name="PlaceNPC"        value="false"/>
+                          <param name="PlacementTable"  value="$PlacementTable"/>
+
+                          <!-- ************************************************************************************************************************************************************************ -->
+                          <!-- If the mission is to manage placing the delivery NPC, all of these parameters must be passed in together -->
+                          <!-- Room, corridor and door definitions could be provided by the caller through get_room_definition -->
+                          <param name="StartObject"           value="$StartStation"  comment="Object to place the NPC on"/>
+
+                          <param name="DebugChance"           value="$DebugChance"/>
+                        </cue>
+
+                        <cue name="Passenger_Transport_To_Target_Conversation_Handler" instantiate="true">
+                          <conditions>
+                            <check_any>
+                              <event_conversation_started actor="$NPCPassenger" />
+                              <event_conversation_returned_to_section actor="$NPCPassenger" />
+                            </check_any>
+                          </conditions>
+                          <actions>
+                            <set_value name="$NPCPassenger.$PassengerConvHandlerExists" exact="true" comment="Validation blackboard variable so the RML can know something is looking after the conversation."/>
+                            <add_npc_line line="2002" comment="(Greeting - neutral)" />
+
+                            <do_if value="$TransportDeadDropToTarget_BriefingUpdate">
+                              <update_mission cue="$MissionCue" description="$TextTable.$description2">
+                                <briefing>
+                                  <objective step="$StepToDeadDropTalk"       action="objective.talkto"    comment="optional"   text="$NPCPassenger.knownname"/>
+                                  <objective step="$StepToDeadDropTransport"  action="objective.transport" comment="optional"   text="$NPCPassenger.knownname"/>
+                                  <objective step="$StepFindDeadDrop"         action="objective.pickup"    comment="mandatory"  text="$TextTable.$deaddropitem"/>
+                                  <objective step="$StepToTargetTalk"         action="objective.talkto"    comment="optional"   text="$NPCPassenger.knownname"/>
+                                  <objective step="$StepToTargetTransport"    action="objective.transport" comment="optional"   text="$NPCPassenger.knownname"/>
+                                  <objective step="$StepDeliverItem"          action="objective.deliver"   comment="mandatory"  text="$NPCDeliverTo.knownname"/>
+                                </briefing>
+                              </update_mission>
+                              <add_player_choice text="$TextTable.$briefing_update" position="left" section="passenger_mission_update_2" comment="Show Mission Briefing"/>
+                            </do_if>
+
+                            <do_if value="not $PassengerShip">
+                              <add_player_choice text="$TextTable.$depart_conv_plr1" position="bottom_left" section="passenger_onboard" comment="Ready to enter"/>
+                            </do_if>
+                            <add_player_choice text="{1002,2}" position="bottom_right" section="g_finish" comment="Goodbye"/>
+                          </actions>
+                        </cue>
+
+                        <cue name="Passenger_Transport_To_Target_Conversation_Handler_2" instantiate="true">
+                          <!-- Show the Mission Briefing -->
+                          <conditions>
+                            <event_conversation_next_section actor="$NPCPassenger"/>
+                            <check_value value="event.param == 'passenger_mission_update_2'"/>
+                          </conditions>
+                          <actions>
+                            <open_conversation_menu menu="MissionBriefingMenu" param="[0, 0, $MissionCue, false]" />
+                          </actions>
+                        </cue>
+
+                        <cue name="Passenger_Transport_To_Target_NextSection_SelectShip" instantiate="true">
+                          <conditions>
+                            <event_conversation_next_section actor="$NPCPassenger" />
+                            <check_value value="event.param == 'passenger_onboard'" />
+                          </conditions>
+                          <actions>
+
+                            <do_if value="$TargetContainerMDock">
+                              <find_object_component name="this.$PlayerShips" object="$NPCPassenger.container" owner="faction.player" class="[class.ship_s, class.ship_m]" recursive="true" multiple="true" />
+                              <set_value name="$ShipTooBig" exact="$TextTable.$ship_bigger_than_M"/>
+                            </do_if>
+                            <do_else>
+                              <find_object_component name="this.$PlayerShips" object="$NPCPassenger.container" owner="faction.player" class="[class.ship_s]" recursive="true" multiple="true" />
+                              <set_value name="$ShipTooBig" exact="$TextTable.$ship_bigger_than_S"/>
+                            </do_else>
+                            <open_conversation_menu menu="PlatformUndockMenu" param="[0, 0, $NPCPassenger.container, 'movepassenger', [ this.$PlayerShips, $ShipTooBig]]" />
+                          </actions>
+                        </cue>
+
+                        <cue name="Passenger_Transport_To_Target_Check_Ship" instantiate="true">
+                          <conditions>
+                            <event_conversation_next_section actor="$NPCPassenger" />
+                            <check_value value="event.param == 'c_movepassenger_destinationselected'" />
+                          </conditions>
+                          <actions>
+                            <!--people.free does not count control entity slots, which is fine for this case
+                            Inbound people should be flagged as 'intransit' and included in the current total of people-->
+                            <debug_text text="'$PassengerShip ' + event.param2 + ' has ' + event.param2.people.free + ' free people slots'" chance="$DebugChance"/>
+                            <do_if value="event.param2.people.free">
+                              <!--Ship has enough space for the passenger. Add them to the ship's people list and attempt to have them walk to it.-->
+                              <set_value name="$PassengerShip" exact="event.param2" />
+                              <!-- Make NPC walk to selected ship. As their destination slot is a NPC transport slot, they will become 'hidden' on arrival. They will continue to exist. -->
+                              <find_npc_waypoint name="this.$DespawnWaypoints" object="$PassengerShip" tags="tag.npctransport" multiple="true"/>
+                              <assert value="this.$DespawnWaypoints.count" text="'No waypoints on ' + $PassengerShip + ' ' + $PassengerShip.knownname + ' tagged ' + tag.npctransport + '. No place to despawn passengers.'"/>
+                              <debug_text text="'Attempting to add ' + $NPCPassenger + ' to ' + $PassengerShip + ' ' +$PassengerShip.knownname + ' as a passenger'" chance="$DebugChance"/>
+                              <create_npc_template name="this.$Template" object="$PassengerShip" entity="$NPCPassenger" role="entityrole.passenger"/>
+                              <assert value="$NPCPassengerTemplate == this.$Template" text="'Template of passenger added to the ship ' + this.$Template + ' does not match that stored earlier ' + $NPCPassengerTemplate + ' [Owen]'"/>
+                              <assert value="this.$Template" text="'Attempted to add passenger to the selected ship but it failed. [Owen]'"/>
+                              <do_if value="this.$Template">
+                                <do_if value="this.$DespawnWaypoints.count">
+                                  <signal_cue_instantly cue="md.NPC_Instantiation.NPC_Placement_Manager" param="['add_definition', $NPCPassenger, 
+                                          table[
+                                          $requestercue = $PlacementTable.$cue,
+                                          $priority = $PlacementTable.$priority,
+                                          $location = this.$DespawnWaypoints.random,
+                                          $debugchance = $DebugChance,
+                                          $debugcaller = if $DebugChance == 100 then this else null]
+                                          ]"/>
+                                </do_if>
+                                <do_else>
+                                  <assert value="this.$DespawnWaypoints.count" text="'No place for the NPC was found on the selected ship ' + $PassengerShip + ' ' + $PassengerShip.macro.id + ' - This will fail the RML. [Owen]'"/>
+                                  <remove_actor_from_room actor="$NPCPassenger"/>
+                                </do_else>
+                              </do_if>
+                              <signal_objects object="$NPCPassenger" param="'passenger_transport_ship_selected'" param2="$PassengerShip"/>
+                            </do_if>
+                            <do_else>
+                              <add_npc_line speaker="$NPCPassenger" line="11803" comment="(No room on selected ship)" />
+                            </do_else>
+                          </actions>
+                        </cue>
+
+                        <cue name="Passenger_Transport_To_Target_End">
+                          <conditions>
+                            <event_cue_signalled/>
+                          </conditions>
+                          <actions>
+                            <!-- Failure case -->
+                            <do_if value="this.$EndFeedbackValue" max="0">
+                              <debug_text text="'This mission has failed. Feedback: ' + this.$EndFeedbackValue" chance="$DebugChance"/>
+                              <set_value name="$Feedback" exact="'$MISSION_FAILED'"/>
+                              <signal_cue_instantly cue="md.NPC_Instantiation.NPC_Placement_Manager" param="['remove_request', $NPCPassenger, namespace]"/>
+                              <signal_cue_instantly cue="md.NPC_Missions.Disembark_Passenger" param="table[
+                                         $passenger = $NPCPassenger,
+                                         $object = $PassengerShip,
+                                         $debugchance = $DebugChance]"/>
+                              <!--TODO - don't speak if NPC was killed-->
+                              <speak actor="$NPCPassenger" line="1000403" comment="(failed mission)" />
+                              <signal_cue_instantly cue="md.GenericMissions.GenericFailLogbookEntry" param="[$TextTable.$missionname, $Client, @this.$EndFeedbackText]"/>
+
+                              <remove_mission cue="$MissionCue" type="failed" reason="@this.$EndFeedbackText"/>
+                              <signal_cue cue="CleanUp" />
+                            </do_if>
+                            <!-- Success case -->
+                            <do_else>
+                              <!--The passenger has successfully been delivered to the station.-->
+                              <assert value="$NPCPassenger.hascontext.{$PassengerShip}" text="'Passenger ' + $NPCPassenger + ' ' + $NPCPassenger.knownname + ' exists but is not on the expected ship. Their object is ' + $NPCPassenger.object + ' ' + @$NPCPassenger.object.knownname + ' [Owen]'"/>
+                            </do_else>
+                          </actions>
+                          <cues>
+                            <cue name="Passenger_Transport_To_Target_End_Delay">
+                              <!--TODO @Owen see why this fails so often-->
+                              <!--Slight delay after the passenger transport mission to have a better chance of the walkable navmeshes being generated-->
+                              <delay exact="5s"/>
+                              <actions>
+                                <speak actor="$NPCPassenger" line="2113" comment="Excellent."/>
+
+                                <!--Start the library which will manage the NPCs location on the station-->
+                                <signal_cue_instantly cue="md.NPC_Instantiation.NPC_Placement_Manager" param="['add_definition', $NPCPassenger, 
+                                          table[
+                                          $requestercue = $PlacementTable.$cue,
+                                          $priority = $PlacementTable.$priority,
+                                          $location = $TargetContainer,
+                                          $slottags = $ContactNPCSlotTags,
+                                          $debugchance = $DebugChance,
+                                          $debugcaller = if $DebugChance == 100 then this else null]
+                                          ]"/>
+                                
+                                <remove_npc_template object="$PassengerShip" template="$NPCPassengerTemplate"/>
+
+                                <!--Signal the next stage of the mission-->
+                                <do_if value="$DeliverToPassenger">
+                                  <signal_cue cue="MissionEnded" comment="We already delivered"/>
+                                </do_if>
+                                <do_else>
+                                  <signal_cue cue="Deliver_Inventory"/>
+                                </do_else>
+                                <cancel_cue cue="Passenger_Transport_To_Target"/>
+                              </actions>
+                            </cue>
+                          </cues>
+                        </cue>
+                      </cues>
+                    </cue>
+
+                    <cue name="Place_NPC_Passenger">
+                      <!-- @Heinrich Duplicated Code in the next cue -->
+                      <conditions>
+                        <event_cue_signalled/>
+                      </conditions>
+                      <actions>
+                        <set_value name="$PlaceContainer" exact="event.param"/>
+                        <signal_cue_instantly cue="md.NPC_Instantiation.NPC_Placement_Manager" param="['add_definition', $NPCPassenger, 
+                                          table[
+                                          $requestercue = $PlacementTable.$cue,
+                                          $priority = $PlacementTable.$priority,
+                                          $location = $PlaceContainer,
+                                          $slottags = $ContactNPCSlotTags,
+                                          $debugchance = $DebugChance,
+                                          $debugcaller = if $DebugChance == 100 then this else null]
+                                          ]"/>
+                        <set_entity_traits entity="$NPCPassenger" missionactor="true" remote="false" hidden="false" customhandler="true" />
+                      </actions>
+                    </cue>
+
+                    <!-- @Heinrich This is a copy of Place_NPC_Passenger-Code, but is only called once and not repeatedly being called/resetted as for the NPC_Passenger 
+                         fix the code duplicate when the code NPC_Placement code becomes a proper library.
+                    -->
+                    <!-- TODO: @Owen put into a Library-->
+                    <cue name="Place_NPC_Contact">
+                      <!-- @Heinrich Duplicated Code in the previous cue -->
+                      <conditions>
+                        <event_cue_signalled/>
+                        <check_value value="not $DeliverToPassenger"/>
+                      </conditions>
+                      <actions>
+                        <set_value name="$PlaceContainer" exact="$TargetContainer"/>
+                      </actions>
+                      <cues>
+                        <cue name="Place_NPC_Contact_Init">
+                          <actions>
+                            <do_if value="$PlaceContainer.attention ge attention.nearby">
+                              <signal_cue cue="Place_NPC_Contact_Nearby"/>
+                            </do_if>
+                          </actions>
+                        </cue>
+                        <cue name="Place_NPC_Contact_Nearby" instantiate="true">
+                          <conditions>
+                            <check_any>
+                              <event_cue_signalled/>
+                              <check_all>
+                                <event_object_changed_attention object="$PlaceContainer"/>
+                                <check_value value="event.param ge attention.nearby"/>
+                              </check_all>
+                              <event_npc_slots_validated object="$PlaceContainer" recalculation="false"/>
+                            </check_any>
+                          </conditions>
+                          <actions>
+                            <find_npc_slot name="$NPC_Slot" object="$PlaceContainer"/>
+                            <do_if value="$NPC_Slot">
+                              <set_entity_traits entity="$NPCDeliverTo" missionactor="true" remote="false" hidden="false" customhandler="true" />
+                              <do_if value="$NPCDeliverTo.exists">
+                                <set_value name="$MovementTable" exact="table[$slot = $NPC_Slot]" />
+                                <signal_objects object="$NPCDeliverTo" param="'npc_move_to'" param2="$MovementTable.clone"/>
+                              </do_if>
+                              <do_else>
+                                <add_actor_to_room actor="$NPCDeliverTo" slot="$NPC_Slot"/>
+                              </do_else>
+                            </do_if>
+                          </actions>
+                        </cue>
+
+                        <cue name="Place_NPC_Contact_Distant" instantiate="true">
+                          <conditions>
+                            <event_object_changed_attention object="$PlaceContainer"/>
+                            <check_value value="event.param lt attention.nearby"/>
+                          </conditions>
+                          <actions>
+                            <remove_actor_from_room actor="$NPCDeliverTo"/>
+                          </actions>
+                        </cue>
+                      </cues>
+                    </cue>
+
+                    <cue name="Deliver_Inventory"                 comment="Mandatory">
+                      <conditions>
+                        <event_cue_signalled/>
+                      </conditions>
+                      <actions>
+                        <do_if value="not $DeliverToPassenger">
+                          <signal_cue_instantly cue="md.NPC_Instantiation.NPC_Placement_Manager" param="['add_definition', $NPCDeliverTo, 
+                                          table[
+                                          $requestercue = $PlacementTable.$cue,
+                                          $priority = $PlacementTable.$priority,
+                                          $location = $TargetContainer,
+                                          $slottags = $ContactNPCSlotTags,
+                                          $debugchance = $DebugChance,
+                                          $debugcaller = if $DebugChance == 100 then this else null]
+                                          ]"/>
+                        </do_if>
+                      </actions>
+                      <cues>
+                        <cue name="Deliver_Inventory_Ref" ref="md.RML_Deliver_Inventory.Deliver_Inventory">
+                          <param name="EndSignalCue"    value="Deliver_Inventory_End"/>
+                          <param name="MissionCue"      value="$MissionCue"/>
+                          <param name="StartStep"       value="$StepDeliverItem"  comment="Briefing step to start the mission on"/>
+                          <param name="UpdateBriefing"  value="true"        comment="Update the briefing objective step when the objective is updated"/>
+
+                          <!--Delivery params-->
+                          <param name="WaresTableParam"         value="$DeliveryWaresTable"/>
+                          <param name="DeliveryNPC"             value="$NPCDeliverTo"      comment="The NPC to which the items should be delivered." />
+                          <param name="DeliveryObject"          value="$DeadDropDeliveryContainer"  comment="The object on which to point to before the NPC is placed. Also used to create the interior with the below parameters" />
+                          <param name="ProgressBarText"         value="$TextTable.$deliver_progress" comment="Text to be displayed next to the ware delivery progress bar e.g. ('Delivered')"/>
+                          <param name="ConversationOptionText"  value="$TextTable.$deliver_conversationoption"/>
+                          <param name="ConversationTipText"     value="$TextTable.$deliver_tooltip"/>
+                          <param name="PlaceNPC"                value="not $DeliverToPassenger"/>
+                          <param name="PlacementTable"          value="if not $DeliverToPassenger then $PlacementTable else null"/>
+                          
+                          <param name="DebugChance"             value="$DebugChance"/>
+                        </cue>
+                      </cues>
+                    </cue>
+
+                    <cue name="Deliver_Inventory_End">
+                      <conditions>
+                        <event_cue_signalled/>
+                      </conditions>
+                      <actions>
+                        <!-- Failure case -->
+                        <do_if value="this.$EndFeedbackValue" max="0">
+                          <debug_text text="'This mission has failed. Feedback: ' + this.$EndFeedbackValue" chance="$DebugChance"/>
+                          <do_if value="this.$EndFeedbackValue == -3">
+                            <set_value name="$Feedback" exact="'$DELIVERY_STATION_DESTROYED'"/>
+                          </do_if>
+                          <do_elseif value="this.$EndFeedbackValue == -2">
+                            <set_value name="$Feedback" exact="'$DELIVERYNPC_KILLED'"/>
+                          </do_elseif>
+                          <do_else>
+                            <set_value name="$Feedback" exact="'$MISSION_FAILED'"/>
+                            <speak actor="$Client" line="1000403" comment="(failed mission)" />
+                          </do_else>
+                          <signal_cue_instantly cue="md.GenericMissions.GenericFailLogbookEntry" param="[$TextTable.$missionname, $Client, @this.$EndFeedbackText]"/>
+
+                          <remove_mission cue="$MissionCue" type="failed" reason="@this.$EndFeedbackText"/>
+                          <signal_cue cue="CleanUp" />
+                        </do_if>
+                        <!-- Success case -->
+                        <do_else>
+
+                          <!-- CHAIN LOGIC - Signal the next stage of the mission-->
+                          <do_if value="$DeliverToPassenger and $TransportDeadDropToTarget">
+                            <signal_cue cue="Passenger_Transport_To_Target"/>
+                          </do_if>
+                          <do_else>
+                            <signal_cue cue="MissionEnded"/>
+                          </do_else>
+                        </do_else>
+                      </actions>
+                    </cue>
+
+                    <cue name="Aborted">
+                      <conditions>
+                        <event_mission_aborted cue="$MissionCue"/>
+                      </conditions>
+                      <actions>
+                        <signal_cue_instantly cue="md.GenericMissions.GenericAbortLogbookEntry" param="[$TextTable.$missionname, $Client]"/>
+
+                        <set_value name="$Feedback" exact="'$MISSION_ABORTED'"/>
+                        <remove_mission cue="$MissionCue" type="aborted"/>
+                        <signal_cue cue="CleanUp" />
+                      </actions>
+                    </cue>
+
+                    <cue name="MissionTimeout" onfail="cancel">
+                      <conditions>
+                        <check_value value="typeof $MissionDuration == datatype.time"/>
+                        <check_value value="$MissionDuration" min="1s"/>
+                      </conditions>
+                      <delay exact="$MissionDuration"/>
+                      <actions>
+                        <signal_cue_instantly cue="md.GenericMissions.GenericTimeoutLogbookEntry" param="[$TextTable.$missionname, $Client]"/>
+
+                        <remove_mission cue="$MissionCue" type="failed"/>
+                        <set_value name="$Feedback" exact="'$MISSION_TIMEOUT'"/>
+                        <signal_cue_instantly cue="CleanUp" />
+                      </actions>
+                    </cue>
+
+                    <!--Mission is successful for the original client, the station, not the 'specialist'-->
+                    <cue name="MissionEnded">
+                      <conditions>
+                        <event_cue_signalled/>
+                      </conditions>
+                      <actions>
+                        <do_if value="$RewardNotoriety and $ClientOwner">
+                          <debug_text text="'Relation was: ' + player.entity.relationto.{$ClientOwner}" chance="$DebugChance"/>
+                          <add_faction_relation faction="faction.player" otherfaction="$ClientOwner" value="$RewardNotoriety" reason="relationchangereason.missioncompleted" />
+                          <debug_text text="'Relation is now: ' + player.entity.relationto.{$ClientOwner}" chance="$DebugChance"/>
+                        </do_if>
+
+                        <do_if value="$RewardCr">
+                          <reward_player money="$RewardCr" />
+                        </do_if>
+                        <do_elseif value="$RewardObj">
+                          <do_if value="typeof $RewardObj == datatype.ware and $RewardObj.isinventory">
+                            <add_inventory entity="player.entity" ware="$RewardObj" />
+                            <show_notification text="[{1015,100}, '', $RewardText]" sound="notification_achievement" comment="Item received" />
+                          </do_if>
+                          <do_elseif value="$RewardObj.isclass.npc and $RewardObj.isshadyguy">
+                            <set_entity_traits entity="$RewardObj" tradesvisible="true"/>
+                            <unlock_achievement name="BLACK_MARKET"/>
+                          </do_elseif>
+                        </do_elseif>
+                        <set_value name="stat.missions_completed" operation="add"/>
+                        <set_value name="$Feedback" exact="'$MISSION_SUCCEEDED'"/>
+                        <speak actor="$Client" line="1000401" comment="(successful mission)" />
+                        <write_to_logbook category="missions" title="$TextTable.$missionname" text="$TextTable.$logbook" entity="$Client" money="$RewardCr" />
+
+                        <remove_mission cue="$MissionCue" type="completed" activate="next" />
+                        <signal_cue_instantly cue="CleanUp" />
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+              </cues>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="ForceCleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ForceCleanup"/>
+          </conditions>
+          <actions>
+            <do_if value="not $ForceCleanup.exists">
+              <set_value name="$Feedback" exact="'$INVALID_FORCE_CLEANUP'"/>
+              <signal_cue_instantly cue="CleanUp"/>
+            </do_if>
+          </actions>
+          <cues>
+            <cue name="ForceCleanup_Wait">
+              <conditions>
+                <check_any>
+                  <event_cue_completed cue="$ForceCleanup"/>
+                  <check_all>
+                    <event_cue_signalled cue="$ForceCleanup"/>
+                    <check_value value="event.param == $MissionCue"/>
+                  </check_all>
+                </check_any>
+              </conditions>
+              <actions>
+                <set_value name="$Feedback" exact="'$FORCED_CLEANUP'"/>
+                <signal_cue_instantly cue="CleanUp"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="CleanUp">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <!--Temp value. This is used to identify if a cutscene for this mission is still playing.-->
+            <do_if value="$BriefingCutsceneStarted?">
+              <remove_value name="$BriefingCutsceneStarted"/>
+              <stop_cutscene key="$CutsceneKey"/>
+
+              <do_if value="$CutsceneCluster.exists">
+                <destroy_object object="$CutsceneCluster"/>
+              </do_if>
+              <do_if value="$CutsceneShip.exists">
+                <destroy_object object="$CutsceneShip"/>
+              </do_if>
+            </do_if>
+            <do_if value="$HoloMap?">
+              <remove_holomap />
+              <remove_value name="$HoloMap"/>
+            </do_if>
+
+
+            <!--***Cleanup objects***-->
+            <!--No .exists check here as $Client may not be connected to gamegraph-->
+
+
+            <!-- TODO @Heinrich we have 2 NPCs, cleanUp both -->
+            <do_if value="$NPCPassenger.exists and $NPCPassenger.isclass.npc and (not $PreexistingClient?)">
+              <signal_cue_instantly cue="md.GenericMissions.CleanupActor" param="[$NPCPassenger]" />
+            </do_if>
+            <do_if value="$NPCDeliverTo.exists and $NPCDeliverTo.isclass.npc and (not $PreexistingClient?)">
+              <signal_cue_instantly cue="md.GenericMissions.CleanupActor" param="[$NPCDeliverTo]" />
+            </do_if>
+
+            <do_if value="$NPCDeliverTo.$InstantiationRequesters?">
+              <remove_from_list name="$NPCDeliverTo.$InstantiationRequesters" exact="$MissionCue" />
+              <do_if value="$NPCDeliverTo.$InstantiationRequesters.count == 0">
+                <remove_value name="$NPCDeliverTo.$InstantiationRequesters"/>
+              </do_if>
+            </do_if>
+
+            <!--***Evaluate result***-->
+            <do_if value="$DebugChance or $ReportSignalCue">
+              <set_value name="$FeedbackData" exact="$FeedbackManager.$FeedbackValues.{$Feedback}.clone"/>
+              <do_if value="$FeedbackData">
+                <set_value name="$FeedbackData.$ID" exact="$Feedback"/>
+                <debug_text text="'Mission ended with reason: ' + $FeedbackData.$type + ' - ' + $FeedbackData.$text" chance="$DebugChance"/>
+              </do_if>
+              <do_else>
+                <set_value name="$FeedbackData" exact="table[$ID = 'error_unknown', $type = 'error', $text = 'This is an unknown error']" comment="feedback = id, type and error-text from the above FeedbackValues-table"/>
+                <assert value="false" text="'Mission ended with unknown case: ' + $Feedback + ' [Owen]'" break="1"/>
+              </do_else>
+
+              <do_if value="$ReportSignalCue" comment ="The cue which called us">
+                <set_value name="$ReportSignalCue.$EndFeedbackValue" exact="$FeedbackData" comment="return feedback-data to calling cue"/>
+                <signal_cue cue="$ReportSignalCue"/>
+              </do_if>
+            </do_if>
+
+            <cancel_cue cue="Start"/>
+          </actions>
+        </cue>
+      </cues>
+    </library>
+
+    <!--Cue signalled from the mission for when the mission will be cleaned up but the station should contact the player again later
+    param: table[
+    $missionname = 'the mission name',
+    $clientname = 'the name of the client',
+    $logbookmessage = 'message text for the logbook'
+    $rewardcr = the credit reward the player should have gotten,
+    $rewardobj = the reward objects the player should have gotten,
+    $delay = time delay until the player gets the message
+    ]-->
+    <cue name="Delayed_Logbook_Message" instantiate="true" namespace="this">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <set_value name="$Params" exact="event.param"/>
+        <do_if value="typeof $Params.$delay != datatype.time">
+          <cancel_cue cue="Delayed_Logbook_Message"/>
+        </do_if>
+      </actions>
+      <cues>
+        <cue name="Delayed_Logbook_Message_Delay">
+          <delay exact="$Params.$delay"/>
+          <actions>
+            <do_if value="@$Params.$rewardcr">
+              <reward_player money="$Params.$rewardcr"/>
+            </do_if>
+            <do_elseif value="@$Params.$rewardobj">
+              <do_if value="typeof $Params.$rewardobj == datatype.ware and $Params.$rewardobj.isinventory">
+                <add_inventory entity="player.entity" ware="$Params.$rewardobj" />
+                <show_notification text="[{1015,100}, '', $RewardText]" sound="notification_achievement" comment="Item received" />
+              </do_if>
+              <do_elseif value="$Params.$rewardobj.isclass.npc and $Params.$rewardobj.isshadyguy">
+                <set_entity_traits entity="$Params.$rewardobj" tradesvisible="true"/>
+              </do_elseif>
+            </do_elseif>
+            <write_to_logbook category="missions" title="$Params.$missionname" text="$Params.$logbookmessage" entity="$Params.$clientname" money="$Params.$rewardcr" />
+          </actions>
+        </cue>
+      </cues>
+    </cue>
+
+    <!-- MISSION SETUP HELPERS -->
+
+
+    <library name="CalculateResourceCost" purpose="run_actions">
+      <params>
+        <param name="DeliveryWaresTable"/>
+      </params>
+      <actions>
+        <set_value name="$ResourceCost__Result" exact="0Cr"/>
+        <!-- reimburse cost of required inventory items -->
+        <do_all exact="$DeliveryWaresTable.keys.count" counter="$i">
+          <set_value name="this.$Ware" exact="$DeliveryWaresTable.keys.{$i}"/>
+          <do_if value="typeof $DeliveryWaresTable.{this.$Ware} == datatype.list">
+            <set_value name="$ResourceCost__Result" exact="(this.$Ware.maxprice * $DeliveryWaresTable.{this.$Ware}.{1}) / (10Cr) * (10Cr)" comment="round"/>
+          </do_if>
+          <do_else>
+            <set_value name="$ResourceCost__Result" exact="(this.$Ware.maxprice * $DeliveryWaresTable.{this.$Ware}) / (10Cr) * (10Cr)" comment="round"/>
+          </do_else>
+        </do_all>
+        <return value="$ResourceCost__Result"/>
+      </actions>
+    </library>
+
+
+    <!--GENERIC MISSION VARIANTS-->
+
+    <cue name="Force_Generic_Var_1" instantiate="true">
+      <conditions>
+        <event_cue_signalled />
+      </conditions>
+      <actions>
+        <signal_cue cue="md.GenericMissions.RemoveAllOffers" />
+        <do_all exact="30">
+          <signal_cue_instantly cue="GenerateGenericMission" param="table[$Sector = player.sector, $MissionVariant = 1, $DebugChance = 100]"/>
+        </do_all>
+      </actions>
+      <force name="GM_RetrieveDeadDrop_Var_1" />
+    </cue>
+
+    <!--event.param = table[
+    $Sector,
+    $ReportSignalCue (Optional. Cue to be signalled when something happens which could be of interest to the calling cue. Saves values to ReportSignalCue.$FeedbackValue and ReportSignalCue.$EndFeedbackValue)
+    $MissionVariant (Optional),
+    $RemoveOnSectorChange (Optional, defaults to true)
+    $DebugChance (Optional)]-->
+    <cue name="GenerateGenericMission" instantiate="true" namespace="this">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <set_value name="$Sector"           exact="event.param.$Sector"/>
+        <set_value name="$ReportSignalCue"  exact="@event.param.$ReportSignalCue"/>
+        <set_value name="$MissionVariant"   exact="@event.param.$MissionVariant"/>
+        <do_if value="event.param.$RemoveOnSectorChange?">
+          <set_value name="$RemoveOnSectorChange" exact="event.param.$RemoveOnSectorChange"/>
+        </do_if>
+        <do_else>
+          <set_value name="$RemoveOnSectorChange" exact="true"/>
+        </do_else>
+
+        <set_value name="$DebugChance"      exact="@event.param.$DebugChance"/>
+        <set_value name="$ReportSignalCue.$GM_Wrapper" exact="this"/>
+
+        <set_value name="$FeedbackManager" exact="FeedbackValueManager"/>
+        <assert value="$FeedbackManager.$FeedbackValues.$MISSION_NO_VARIANT?" text="'Required error code does not exist. Was the FeedbackValueManager not updated for stand-alone missions? [Owen/Roger]'"/>
+
+        <debug_text text="'Attempting to generate a generic mission'" chance="$DebugChance"/>
+      </actions>
+      <cues>
+        <cue name="GenerateGenericMission_SelectVariant">
+          <actions>
+            <set_value name="$ValidVariants" exact="[]"/>
+
+            <!--Set up some common variables first so that the variants don't have to do things multiple times-->
+
+            <!--Find potential offer stations in the sector-->
+            <do_if value="player.exists">
+              <find_station name="$PotentialOfferStations" excluded="md.GenericMissions.Manager.$ExcludedOfferObjects" space="$Sector" multiple="true">
+                <match owner="md.GenericMissions.Manager.$DefaultExcludedOfferFactions" negate="true"/>
+                <match_relation_to object="player.entity" comparison="not" relation="enemy" />
+                <match_dock size="[tag.dock_s, tag.dock_m]" walkable="true"/>
+              </find_station>
+            </do_if>
+
+            <do_if value="$PotentialOfferStations.count">
+
+              <do_if value="$MissionVariant">
+                <!--A specific MissionVariant ID was requested-->
+                <debug_text text="'Checking if requested ' + $MissionVariant + ' can be spawned'" chance="$DebugChance"/>
+                <do_if value="$MissionVariant == 1">
+                  <signal_cue_instantly cue="GenerateGenericMission_Variant_1"/>
+                </do_if>
+                <do_else>
+                  <assert value="false" text="'Unknown $MissionVariant ID ' + $MissionVariant + ' [Owen]'"/>
+                </do_else>
+              </do_if>
+              <do_else>
+                <!--Attempt to chose a mission variant at random-->
+                <signal_cue_instantly cue="GenerateGenericMission_Variant_1"/>
+              </do_else>
+            </do_if>
+
+            <do_if value="$ValidVariants.count">
+              <signal_cue cue="$ValidVariants.random"/>
+            </do_if>
+            <do_else>
+              <do_if value="$ReportSignalCue">
+                <set_value name="$FeedbackData" exact="$FeedbackManager.$FeedbackValues.$MISSION_NO_VARIANT.clone"/>
+                <set_value name="$FeedbackData.$ID" exact="'$MISSION_NO_VARIANT'"/>
+                <set_value name="$ReportSignalCue.$FeedbackValue" exact="$FeedbackData.clone" comment="No mission variant possible"/>
+                <signal_cue_instantly cue="$ReportSignalCue"/>
+              </do_if>
+              <cancel_cue cue="GenerateGenericMission"/>
+            </do_else>
+
+          </actions>
+        </cue>
+
+        <cue name="GenerateGenericMission_Variant_1" namespace="this">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <set_value name="$Valid" exact="false"/>
+            <set_value name="$MissionLevel" exact="3" comment="Short mission chain, takes a while."/>
+            <set_value name="$Difficulty" exact="level.veryeasy" comment="No requirements, no fighting."/>
+            <!--this uses its own namespace so grab the shared data from GenerateGenericMission-->
+            <set_value name="$Sector" exact="GenerateGenericMission.$Sector"/>
+            <set_value name="$DebugChance" exact="GenerateGenericMission.$DebugChance"/>
+            <set_value name="$OfferStations" exact="GenerateGenericMission.$PotentialOfferStations"/>
+            <shuffle_list list="$OfferStations"/>
+
+            <!--
+                1. StartContainer     [ship/station] Pickup Passenger
+                2. DeadDropContainer  [ship/station] Bring to DeadDropDock, Find Item, Pickup Passenger
+                3. TargetContainer    [ship/station] Bring Item/Passenger to TargetDock 
+            
+            Find: 3 Dockingbays which fit into 1 theme & faction, but cover both container-Variants (ship + station)            
+            Count Station Types / Ship Types to figure out which story variation is possible here
+             - Station Types: Trade, Defence, FactionHQ, Pirate, Factory (station.resources.{ware.helium}.exists)
+             - Ship Types:    Trade, Build, Mine, Fight, Auxiliary -->
+
+            <create_list name="$Ships_All"/>
+            <!-- M ships with dockinbays are out (Frigates) since they could be put in storage by other ships/stations docks and be inaccessable to the player -->
+            <find_ship name="$Ships_All" space="$Sector" multiple="true" docked="false" capturable="true" masstraffic="false" deployable="false" class="[class.ship_xl, class.ship_l]">
+              <match_any>
+                <match primarypurpose="purpose.trade"/>
+                <match primarypurpose="purpose.build"/>
+                <match primarypurpose="purpose.mine"/>
+                <match primarypurpose="purpose.fight"/>
+                <match primarypurpose="purpose.auxiliary"/>
+              </match_any>
+              <match_dock size="[tag.dock_s, tag.dock_m]" walkable="true"/>
+            </find_ship>
+            <shuffle_list list="$Ships_All"/>
+
+            <!-- INPUT: $Sector, $OfferStations, $Ships_All -->
+            <!-- OUTPUT:
+                  $Stations_Trade, $Stations_Defence, $Stations_Pirate,
+                  $Stations_FactionHQ, $Stations_Equipmentdock, $Stations_Wharf,
+                  $Stations_Shipyard, $Stations_Factory
+                  $Ships_All, $Ships_Trade, $Ships_Build, $Ships_Mine, $Ships_Fight, $Ships_Auxiliary -->
+            <include_actions ref="FindDockingContainers"/>
+
+            <!-- Populate the 3 Containers [Stations/Ships] -->
+            <set_value name="$StartContainer"    exact="null"/>
+            <set_value name="$DeadDropContainer" exact="null"/>
+            <set_value name="$TargetContainer"   exact="null"/>
+            <set_value name="$TransportStartToDeadDrop"  exact="true"   comment="Passenger Transport"/>
+            <set_value name="$TransportDeadDropToTarget" exact="true"   comment="Passenger Transport"/>
+            <set_value name="$TransportStartToDeadDrop_BriefingUpdate"   exact="false" />
+            <set_value name="$TransportDeadDropToTarget_BriefingUpdate"  exact="false" />
+            <set_value name="$DeliverToPassenger"        exact="false"  comment="Deliver the Item to the Passenger"/>
+            <set_value name="$PickupWare" exact="ware.inv_sensitivedatapacket" comment="Overwrite for story specific unique items"/>
+
+            <do_if value="$Ships_All.count and $OfferStations.count" comment="Both Container Variants(Ships and Stations) are available">
+              <!--  SETUP STORY VARIATION  -->
+              <!-- Always have a mix of Stations and Ships -->
+              <!-- Find 2-3 distinct objects from multiple containers lists owned by the same faction -->
+              <do_all exact="5" counter="$StorySetupChanceModifier" comment="Try to find a valid set of DockingBays, but abort after failing a couple of times">
+                <set_value name="$StorySetupChance" exact="$StorySetupChanceModifier * 20"  comment="100% in the last run of the loop"/>
+                <set_value name="$Faction"    exact="null"/>
+                <set_value name="$StoryFound" exact="false"/>
+
+                <!-- STORY VARIANT: Military Police Inspection -->
+                <!-- DOCKS: FoundA = DefenceStation, FoundB = MilitaryVessel - Can spawn as: ABA, BAB               -->
+                <do_if value="not $StoryFound" chance="$StorySetupChance">
+                  <!-- Find Factions which have entries in both lists -->
+                  <set_value name="$ContainersA" exact="$Stations_Defence"/>
+                  <set_value name="$ContainersB" exact="[$Ships_Fight, $Ships_Auxiliary].random"/>
+                  <include_actions ref="FindPossibleFactions" comment="input: $ContainersA, $ContainersB output: $PossibleFactions"/>
+                  <!-- Factions Found -->
+                  <do_if value="$PossibleFactions.count gt 0">
+                    <set_value name="$Faction" exact="$PossibleFactions.random"/>
+
+                    <!-- Save a fitting Station of $Faction to $FoundA -->
+                    <remove_value name="$Containers" comment="Necessary?"/>
+                    <set_value name="$Containers" exact="$ContainersA"/>
+                    <include_actions ref="FindContainer" comment="input: $Faction, $Containers output: $Container"/>
+                    <set_value name="$FoundA" exact="$Container"/>
+
+                    <!-- Save a fitting Ship of $Faction to $FoundB -->
+                    <remove_value name="$Containers" comment="Necessary?"/>
+                    <set_value name="$Containers" exact="$ContainersB"/>
+                    <include_actions ref="FindContainer" comment="input: $Faction, $Containers output: $Container"/>
+                    <set_value name="$FoundB" exact="$Container"/>
+
+                    <do_if value="true" chance="50" comment="Randomly Swap both">
+                      <set_value name="$temp" exact="$FoundA"/>
+                      <set_value name="$FoundA" exact="$FoundB"/>
+                      <set_value name="$FoundB" exact="$temp"/>
+                    </do_if>
+                    <set_value name="$StartContainer"    exact="$FoundA"/>
+                    <set_value name="$DeadDropContainer" exact="$FoundB"/>
+                    <set_value name="$TargetContainer"   exact="$FoundA"/>
+                    <set_value name="$StoryFound" exact="true"/>
+                    <set_value name="$TextOffset" exact="2000"/>
+                    <set_value name="$PickupWare" exact="[ware.inv_encrypted_contract, ware.inv_encrypted_recording, ware.inv_encrypted_evidence].random"/>
+                    <set_value name="$TransportStartToDeadDrop"  exact="true" comment="Passenger Transport"/>
+                    <set_value name="$TransportDeadDropToTarget" exact="[true, false].random" comment="Passenger Transport"/>
+                    <set_value name="$DeliverToPassenger"        exact="true"/>
+                    <set_value name="$TransportStartToDeadDrop_BriefingUpdate" exact="true"/>
+                  </do_if>
+                </do_if>
+
+                <!-- STORY VARIANT: Criminal Investigation -->
+                <!-- DOCKS: Trade/Build/Mine Ships, Pirate/Factory Stations-->
+                <do_if value="not $StoryFound" chance="$StorySetupChance">
+                  <!-- Find Factions which have entries in both lists -->
+                  <set_value name="$ContainersA" exact="[$Stations_Factory, $Stations_Pirate].random"/>
+                  <set_value name="$ContainersB" exact="[$Ships_Trade, $Ships_Build, $Ships_Mine].random"/>
+                  <include_actions ref="FindPossibleFactions" comment="input: $ContainersA, $ContainersB output: $PossibleFactions"/>
+
+                  <!-- Factions Found -->
+                  <do_if value="($PossibleFactions.count gt 0)">
+                    <set_value name="$Faction" exact="$PossibleFactions.random"/>
+
+                    <!-- Save a fitting Station of $Faction to $FoundA -->
+                    <remove_value name="$Containers" comment="Necessary?"/>
+                    <set_value name="$Containers" exact="$ContainersA"/>
+                    <include_actions ref="FindContainer" comment="input: $Faction, $Containers output: $Container"/>
+                    <set_value name="$FoundA" exact="$Container"/>
+
+                    <!-- Save a fitting Ship of $Faction to $FoundB -->
+                    <remove_value name="$Containers" comment="Necessary?"/>
+                    <set_value name="$Containers" exact="$ContainersB"/>
+                    <include_actions ref="FindContainer" comment="input: $Faction, $Containers output: $Container"/>
+                    <set_value name="$FoundB" exact="$Container"/>
+
+                    <!-- Find a $ContainerC at which the player is allowed to dock -->
+                    <create_list name="$ContainersC"/>
+                    <append_to_list name="$ContainersC" exact="$Stations_Factory"/>
+                    <append_to_list name="$ContainersC" exact="$Stations_Pirate"/>
+                    <append_to_list name="$ContainersC" exact="$Ships_Trade"/>
+                    <append_to_list name="$ContainersC" exact="$Ships_Build"/>
+                    <append_to_list name="$ContainersC" exact="$Ships_Mine"/>
+                    <set_value name="$FoundC" exact="null"/>
+                    <do_all exact="$ContainersC.count" counter="$list">
+                      <do_all exact="$ContainersC.{$list}.count" counter="$c">
+                        <set_value name="$Container" exact="$ContainersC.{$list}.{$c}"/>
+                        <do_if value="($Container != $FoundA) and ($Container != $FoundB)">
+                          <do_if value="$Container.hasrelation.dock.{faction.player}">
+                            <set_value name="$FoundC" exact="$Container"/>
+                            <break/>
+                          </do_if>
+                        </do_if>
+                      </do_all>
+                      <do_if value="$FoundC">
+                        <break/>
+                      </do_if>
+                    </do_all>
+                    <remove_value name="$Container"/>
+                    <remove_value name="$ContainersC"/>
+
+                    <do_if value="$FoundC">
+                      <create_list name="$ShuffleOrder"/>
+                      <append_to_list name="$ShuffleOrder" exact="$FoundA"/>
+                      <append_to_list name="$ShuffleOrder" exact="$FoundB"/>
+                      <append_to_list name="$ShuffleOrder" exact="$FoundC"/>
+                      <shuffle_list list="$ShuffleOrder"/>
+                      <set_value name="$StartContainer"    exact="$ShuffleOrder.{1}"/>
+                      <set_value name="$DeadDropContainer" exact="$ShuffleOrder.{2}"/>
+                      <set_value name="$TargetContainer"   exact="$ShuffleOrder.{3}"/>
+                      <remove_value name="$ShuffleOrder"/>
+
+                      <set_value name="$StoryFound" exact="true"/>
+                      <set_value name="$TextOffset" exact="3000"/>
+                      <set_value name="$PickupWare" exact="[ware.inv_encrypted_contract, ware.inv_encrypted_recording, ware.inv_encrypted_evidence, ware.inv_encrypted_report, ware.inv_encrypted_researchpaper, ware.inv_encrypted_malware].random"/>
+                      <set_value name="$TransportStartToDeadDrop"  exact="true" comment="Passenger Transport"/>
+                      <set_value name="$TransportDeadDropToTarget" exact="true" comment="Passenger Transport"/>
+                      <set_value name="$DeliverToPassenger"        exact="true"/>
+                      <set_value name="$TransportStartToDeadDrop_BriefingUpdate" exact="true"/>
+                    </do_if>
+                  </do_if>
+                </do_if>
+
+                <!-- STORY VARIANT: Bureaucratic Inspection -->
+                <!-- DOCKS: A, B, C-->
+                <do_if value="not $StoryFound" chance="$StorySetupChance">
+                  <!-- Find Faction which have 3 distinct(?) items-->
+                  <set_value name="$ContainersA" exact="[$Ships_Build, $Ships_Mine, $Ships_Trade].random"/>
+                  <set_value name="$ContainersB" exact="[$Stations_Equipmentdock, $Stations_Wharf, $Stations_Shipyard, $Stations_Factory].random"/>
+                  <include_actions ref="FindPossibleFactions" comment="input: $ContainersA, $ContainersB output: $PossibleFactions"/>
+                  <!-- Factions Found -->
+                  <do_if value="$PossibleFactions.count gt 0">
+                    <set_value name="$Faction" exact="$PossibleFactions.random"/>
+
+                    <!-- Save a fitting Station of $Faction to $FoundA -->
+                    <remove_value name="$Containers" comment="Necessary?"/>
+                    <set_value name="$Containers" exact="$ContainersA"/>
+                    <include_actions ref="FindContainer" comment="input: $Faction, $Containers output: $Container"/>
+                    <set_value name="$FoundA" exact="$Container"/>
+
+                    <!-- Save a fitting Ship of $Faction to $FoundB -->
+                    <remove_value name="$Containers" comment="Necessary?"/>
+                    <set_value name="$Containers" exact="$ContainersB"/>
+                    <include_actions ref="FindContainer" comment="input: $Faction, $Containers output: $Container"/>
+                    <set_value name="$FoundB" exact="$Container"/>
+
+                    <!-- Find $FoundC of the same $Faction -->
+                    <create_list name="$ContainersC"/>
+                    <append_to_list name="$ContainersC" exact="$Stations_Factory"/>
+                    <append_to_list name="$ContainersC" exact="$Stations_FactionHQ"/>
+                    <set_value name="$FoundC" exact="null"/>
+                    <do_all exact="$ContainersC.count" counter="$list">
+                      <do_all exact="$ContainersC.{$list}.count" counter="$c">
+                        <set_value name="$Container" exact="$ContainersC.{$list}.{$c}"/>
+                        <do_if value="($Container != $FoundA) and ($Container != $FoundB)">
+                          <do_if value="$Container.trueowner == $Faction">
+                            <set_value name="$FoundC" exact="$Container"/>
+                            <break/>
+                          </do_if>
+                        </do_if>
+                      </do_all>
+                      <do_if value="$FoundC">
+                        <break/>
+                      </do_if>
+                    </do_all>
+                    <remove_value name="$Container"/>
+                    <remove_value name="$ContainersC"/>
+
+                    <do_if value="$FoundC">
+                      <do_if value="true" chance="50" comment="Randomly Swap both">
+                        <set_value name="$temp" exact="$FoundA"/>
+                        <set_value name="$FoundA" exact="$FoundB"/>
+                        <set_value name="$FoundB" exact="$temp"/>
+                      </do_if>
+
+                      <set_value name="$StartContainer"    exact="$FoundA"/>
+                      <set_value name="$DeadDropContainer" exact="$FoundB"/>
+                      <set_value name="$TargetContainer"   exact="$FoundC"/>
+                      <set_value name="$StoryFound" exact="true"/>
+                      <set_value name="$TextOffset" exact="4000"/>
+                      <set_value name="$PickupWare" exact="[ware.inv_encrypted_contract, ware.inv_encrypted_espionagedocument, ware.inv_encrypted_evidence, ware.inv_encrypted_malware, ware.inv_encrypted_recording, ware.inv_encrypted_report, ware.inv_encrypted_researchpaper].random"/>
+                      <set_value name="$TransportStartToDeadDrop"  exact="true" comment="Passenger Transport"/>
+                      <set_value name="$TransportDeadDropToTarget" exact="[true, false].random" comment="Passenger Transport"/>
+                      <set_value name="$DeliverToPassenger"        exact="false"/>
+                      <set_value name="$TransportStartToDeadDrop_BriefingUpdate" exact="true"/>
+                    </do_if>
+                  </do_if>
+                </do_if>
+
+
+                <do_if value="$StoryFound">
+                  <!-- Validation of Parameters -->
+                  <do_if value="$StartContainer and $DeadDropContainer and $TargetContainer" comment="Mandatory, All (possibly) required targets are set">
+                    <!-- If no Transports are set there will be no Passenger to deliver the item to, abort in this case-->
+                    <do_if value="$DeliverToPassenger">
+                      <do_if value="not ($TransportStartToDeadDrop or $TransportDeadDropToTarget)">
+                        <set_value name="$StoryFound" exact="false" comment="DeliverToPassenger with no Passenger"/>
+                        <debug_text text="'Wrong Mission Setup: Trying $DeliverToPassenger with no PassengerTransport set, abort story variation. [Heinrich] TextOffSet: ' + $TextOffset"/>
+                      </do_if>
+                    </do_if>
+                    <do_if value="$StoryFound">
+                      <break/>
+                    </do_if>
+                  </do_if>
+                  <do_else>
+                    <set_value name="$StoryFound" exact="false" comment="Missing a crucial variable"/>
+                    <debug_text text="'Wrong Mission Setup: $StartContainer and $DeadDropContainer and $TargetContainer need to be set, abort story variation. [Heinrich] TextOffSet: ' + $TextOffset"/>
+                  </do_else>
+                </do_if>
+              </do_all>
+
+              <do_if value="$StoryFound">
+
+                <set_value name="$OfferStation"   exact="$StartContainer" />
+                <set_value name="$StartStation"   exact="$StartContainer" />
+                <set_value name="$TargetStation"  exact="$TargetContainer"/>
+                <remove_value name="$Ships_All"/>
+                <remove_value name="$Ships_Trade"/>
+                <remove_value name="$Ships_Build"/>
+                <remove_value name="$Ships_Mine"/>
+                <remove_value name="$Ships_Fight"/>
+                <remove_value name="$Ships_Auxiliary"/>
+                <remove_value name="$Stations_Trade"/>
+                <remove_value name="$Stations_Defence"/>
+                <remove_value name="$Stations_Pirate"/>
+                <remove_value name="$Stations_FactionHQ"/>
+                <remove_value name="$Stations_Equipmentdock"/>
+                <remove_value name="$Stations_Wharf"/>
+                <remove_value name="$Stations_Shipyard"/>
+                <remove_value name="$Stations_Factory"/>
+
+                <!-- Set StartStation for Room Generation -->
+                <!-- TODO: What if a variation doesn't use stations at all? would be not supported here -->
+                <!--
+                <do_if value="$StartContainer.isclass.station">
+                  <set_value name="$StartStation"  exact="$StartContainer"/>
+                </do_if>
+                <do_elseif value="$DeadDropContainer.isclass.station">
+                  <set_value name="$StartStation"  exact="$DeadDropContainer"/>
+                </do_elseif>
+                <do_elseif value="$TargetContainer.isclass.station">
+                  <set_value name="$StartStation"  exact="$TargetContainer"/>
+                </do_elseif>
+                <do_else>
+                  <set_value name="$StartStation" exact="null"/>
+                </do_else>-->
+
+                <do_if value="$TargetContainer.isclass.station">
+                  <set_value name="$TargetStation"  exact="$TargetContainer"/>
+                </do_if>
+                <do_elseif value="$DeadDropContainer.isclass.station">
+                  <set_value name="$TargetStation"  exact="$DeadDropContainer"/>
+                </do_elseif>
+                
+                <do_if value="$StartContainer.isclass.ship">
+                  <set_value name="$MissionLevel" operation="add"/>
+                </do_if>
+
+                <do_if value="$DeadDropContainer.isclass.ship">
+                  <set_value name="$MissionLevel" operation="add"/>
+                </do_if>
+
+                <do_if value="$TargetContainer.isclass.ship">
+                  <set_value name="$MissionLevel" operation="add"/>
+                </do_if>
+
+                <!--
+                <do_if value="$TargetStation?">
+                  <get_room_definition macro="$InteriorCorridorMacro" doors="$InteriorDoors" race="$TargetStation.trueowner.primaryrace" tags="tag.corridor" />
+                  <get_room_definition macro="$InteriorRoomMacro" tags="tag.bar" />
+                  <do_if value="$InteriorCorridorMacro and $InteriorRoomMacro">
+                    <set_value name="$Valid" exact="true"/>
+                    <set_value name="$InteriorName" exact="readtext.{20007}.{1031}" />
+                  </do_if>
+                </do_if>-->
+
+                <!-- Check dock sizes to tell the player if he can use an M ship for this mission -->
+                <find_dockingbay name="$DeadDropContainerMDock" object="$DeadDropContainer" checkoperational="true" multiple="false">
+                  <match_dock size="tag.dock_m" walkable="true"/>
+                </find_dockingbay>
+                <find_dockingbay name="$TargetContainerMDock" object="$TargetContainer" checkoperational="true" multiple="false">
+                  <match_dock size="tag.dock_m" walkable="true"/>
+                </find_dockingbay>
+
+                <!-- Find $DockingBays in the $DeadDropContainer -->
+                <find_dockingbay name="$DockingBays" object="$DeadDropContainer" checkoperational="true" multiple="true">
+                  <match_dock size="[tag.dock_s, tag.dock_m]" walkable="true"/>
+                </find_dockingbay>
+
+                <!-- Find $CrateSlots in all $DockingBays-->
+                <create_list name="$CrateSlots"/>
+                <create_list name="$Crates"/>
+                <do_all exact="$DockingBays.count" counter="$db">
+                  <find_crate_slot name="$DockingBayCrateSlots" object="$DockingBays.{$db}" tags="tag.crate_s" multiple="true" />
+                  <debug_text text="$DockingBayCrateSlots.count + ' Docking Bay Crate Slots found in Docking Bay ' + $DockingBays.{$db}" chance="$DebugChance"/>
+                  <do_all exact="$DockingBayCrateSlots.count" counter="$CrateSlotCounter">
+                    <append_to_list name="$CrateSlots" exact="$DockingBayCrateSlots.{$CrateSlotCounter}" />
+                  </do_all>
+                  <debug_text text="$CrateSlots.count + ' Docking Bay Crate Slots added to List'" chance="$DebugChance"/>
+                </do_all>
+
+                <do_if value="$CrateSlots.count" comment="Mandatory for Retrieve Dead Drop Missions">
+                  <set_value name="$Valid" exact="true"/>
+                </do_if>
+
+              </do_if>
+            </do_if>
+            <do_if value="$Valid">
+              <append_to_list name="GenerateGenericMission.$ValidVariants" exact="this"/>
+            </do_if>
+            <do_else>
+              <cancel_cue cue="this"/>
+            </do_else>
+          </actions>
+          <cues>
+            <cue name="GenerateGenericMission_Variant_1_Trigger">
+              <conditions>
+                <event_cue_signalled cue="parent"/>
+              </conditions>
+              <actions>
+                <do_if value="$TransportStartToDeadDrop or $TransportDeadDropToTarget">
+                  <!--More objectives, increase $MissionLevel-->
+                  <set_value name="$MissionLevel" operation="add"/>
+                  <do_if value="$TransportStartToDeadDrop and $TransportDeadDropToTarget">
+                    <set_value name="$MissionLevel" operation="add"/>
+                  </do_if>
+                  <!-- Create Passenger -->
+
+                  <get_character_definition reference="$CasualDefinition" faction="$Faction" tags="tag.casual"/>
+                  <do_any>
+                    <set_value name="$ClientTag" exact="tag.crew" weight="10"/>
+                    <set_value name="$ClientTag" exact="tag.casual" weight="if $CasualDefinition then 1 else 0"/>
+                  </do_any>
+                  <create_cue_actor cue="GenerateGenericMission_Variant_1_Trigger" name="$NPCPassenger">
+                    <select faction="$Faction" tags="$ClientTag"/>
+                    <owner exact="$Faction"/>
+                    <skills>
+                      <skill type="management"  min="7"   max="12"/>
+                      <skill type="morale"      min="7"   max="12"/>
+                      <skill type="piloting"    min="3"   max="6"/>
+                      <skill type="engineering" min="3"   max="6"/>
+                      <skill type="boarding"    min="3"   max="6"/>
+                    </skills>
+                  </create_cue_actor>
+                  <remove_value name="$ClientTag"/>
+                  <remove_value name="$CasualDefinition"/>
+                  <set_entity_type entity="$NPCPassenger" type="entitytype.crowd"/>
+                  <set_entity_traits entity="$NPCPassenger" missionactor="true" customhandler="true"/>
+                </do_if>
+
+                <do_if value="not $DeliverToPassenger">
+                  <!--More objectives, increase $MissionLevel-->
+                  <set_value name="$MissionLevel" operation="add"/>
+                  <do_if value="not $TransportDeadDropToTarget">
+                    <set_value name="$MissionLevel" operation="add"/>
+                  </do_if>
+                  <!-- Create NPCDeliverTo-->
+                  <get_character_definition reference="$CasualDefinition" faction="$Faction" tags="tag.casual"/>
+                  <do_any>
+                    <set_value name="$ClientTag" exact="tag.crew" weight="10"/>
+                    <set_value name="$ClientTag" exact="tag.casual" weight="if $CasualDefinition then 1 else 0"/>
+                  </do_any>
+                  <create_cue_actor cue="GenerateGenericMission_Variant_1_Trigger" name="$NPCDeliverTo">
+                    <select faction="$Faction" tags="$ClientTag"/>
+                    <owner exact="$Faction"/>
+                    <skills>
+                      <skill type="management"  min="0"   max="6"/>
+                      <skill type="morale"      min="0"   max="6"/>
+                      <skill type="piloting"    min="0"   max="6"/>
+                      <skill type="engineering" min="0"   max="6"/>
+                      <skill type="boarding"    min="0"   max="6"/>
+                    </skills>
+                  </create_cue_actor>
+                  <remove_value name="$ClientTag"/>
+                  <remove_value name="$CasualDefinition"/>
+                  <set_entity_type entity="$NPCDeliverTo" type="entitytype.crowd"/>
+                  <set_entity_traits entity="$NPCDeliverTo" missionactor="true" customhandler="true"/>
+                </do_if>
+                <do_else>
+                  <!-- Else use the Passenger as DeliverTo-Target -->
+                  <set_value name="$NPCDeliverTo" exact="$NPCPassenger"/>
+                </do_else>
+
+
+                <set_value name="$DeliveryWaresTable" exact="table[]"/>
+                <set_value name="$DeliveryWaresTable.{$PickupWare}" exact="1"/>
+              </actions>
+              <cues>
+                <cue name="GenerateGenericMission_Variant_1_Ref" ref="Start">
+                  <param name="OfferObject"   value="$OfferStation"/>
+                  <param name="MissionLevel"  value="$MissionLevel"/>
+                  <param name="Difficulty"    value="$Difficulty"/>
+
+                  <!--Mission offer-->
+                  <param name="RemoveOnSectorChange" value="@GenerateGenericMission.$RemoveOnSectorChange"/>
+                  <param name="BBSSpace" value="$Sector"/>
+
+                  <!--Mission text-->
+                  <param name="Page"          value="30232"/>
+                  <param name="TextOffset"    value="$TextOffset"/>
+
+                  <!--Mission specific params-->
+                  <param name="DeadDropContainerMDock"      value="$DeadDropContainerMDock"/>
+                  <param name="TargetContainerMDock"        value="$TargetContainerMDock"/>
+                  <param name="StartContainer"              value="$StartContainer"/>
+                  <param name="DeadDropContainer"           value="$DeadDropContainer"/>
+                  <param name="TargetContainer"             value="$TargetContainer"/>
+                  <param name="TransportStartToDeadDrop"    value="$TransportStartToDeadDrop"/>
+                  <param name="TransportDeadDropToTarget"   value="$TransportDeadDropToTarget"/>
+
+                  <param name="TransportStartToDeadDrop_BriefingUpdate"  value="$TransportStartToDeadDrop_BriefingUpdate"   />
+                  <param name="TransportDeadDropToTarget_BriefingUpdate" value="$TransportDeadDropToTarget_BriefingUpdate"  />
+
+                  <param name="DeliverToPassenger"          value="$DeliverToPassenger"/>
+                  <param name="Crates"                      value="$Crates"/>
+                  <param name="CrateSlots"                  value="$CrateSlots"/>
+                  <param name="PickupWare"                  value="$PickupWare"/>
+                  <param name="DeliveryWaresTable"          value="$DeliveryWaresTable"/>
+
+                  <param name="NPCPassenger"                value="$NPCPassenger"/>
+                  <param name="NPCDeliverTo"                value="$NPCDeliverTo" />
+
+
+                  <param name="Station"                     value="$TargetStation" />
+                  <!--
+                  <param name="InteriorRoomMacro"     value="$InteriorRoomMacro" />
+                  <param name="InteriorCorridorMacro" value="$InteriorCorridorMacro" />
+                  <param name="InteriorDoors"         value="$InteriorDoors" />
+                  <param name="InteriorName"          value="$InteriorName" />-->
+
+                  <param name="StartStation"                value="$StartStation"/>
+                  <!--
+                  <param name="StartInteriorRoomMacro"      value="$InteriorRoomMacro" />
+                  <param name="StartInteriorCorridorMacro"  value="$InteriorCorridorMacro" />
+                  <param name="StartInteriorDoors"          value="$InteriorDoors" />
+                  <param name="StartInteriorName"           value="$InteriorName" />-->
+                  <!-- TODO @Heinrich don't initialize Interior-Variables if you don't want to use them -->
+
+                  <param name="ReportSignalCue"     value="@GenerateGenericMission.$ReportSignalCue"/>
+                  <param name="DebugChance"         value="@GenerateGenericMission.$DebugChance"/>
+                </cue>
+              </cues>
+            </cue>
+          </cues>
+        </cue>
+      </cues>
+    </cue>
+
+
+    <!-- MISSION SETUP HELPERS -->
+
+    <!-- Input: $OfferStations, $Ships_All, $Sector
+         Output:
+                  $Stations_Trade, $Stations_Defence, $Stations_Pirate,
+                  $Stations_FactionHQ, $Stations_Equipmentdock, $Stations_Wharf,
+                  $Stations_Shipyard, $Stations_Factory
+                  $Ships_All, $Ships_Trade, $Ships_Build, $Ships_Mine, $Ships_Fight, $Ships_Auxiliary     
+    -->
+    <library name="FindDockingContainers" comment="Creates all of the lists">
+      <actions>
+        <!-- STATIONS -->
+        <create_list name="$Stations_Trade"/>
+        <create_list name="$Stations_Defence"/>
+        <create_list name="$Stations_Pirate"/>
+        <create_list name="$Stations_FactionHQ"/>
+        <create_list name="$Stations_Equipmentdock"/>
+        <create_list name="$Stations_Wharf"/>
+        <create_list name="$Stations_Shipyard"/>
+        <create_list name="$Stations_Factory"/>
+
+        <do_if value="$OfferStations.count">
+          <do_all exact="$OfferStations.count" counter="$os">
+            <set_value name="$Lib_Station" exact="$OfferStations.{$os}"/>
+            <!-- Stations can end up in multiple lists -->
+            <do_if value="$Lib_Station.istradestation">
+              <append_to_list name="$Stations_Trade" exact="$Lib_Station"/>
+            </do_if>
+            <do_if value="$Lib_Station.isdefencestation and not ($Lib_Station.iswharf or $Lib_Station.isshipyard)">
+              <append_to_list name="$Stations_Defence" exact="$Lib_Station"/>
+            </do_if>
+            <do_if value="$Lib_Station.ispiratebase">
+              <append_to_list name="$Stations_Pirate" exact="$Lib_Station"/>
+            </do_if>
+            <do_if value="$Lib_Station.isfactionheadquarters">
+              <append_to_list name="$Stations_FactionHQ" exact="$Lib_Station"/>
+            </do_if>
+            <do_if value="$Lib_Station.isequipmentdock">
+              <append_to_list name="$Stations_Equipmentdock" exact="$Lib_Station"/>
+            </do_if>
+            <do_if value="$Lib_Station.iswharf">
+              <append_to_list name="$Stations_Wharf" exact="$Lib_Station"/>
+            </do_if>
+            <do_if value="$Lib_Station.isshipyard">
+              <append_to_list name="$Stations_Shipyard" exact="$Lib_Station"/>
+            </do_if>
+            <do_if value="$Lib_Station.resources.count and not ($Lib_Station.iswharf or $Lib_Station.isshipyard)">
+              <append_to_list name="$Stations_Factory" exact="$Lib_Station"/>
+            </do_if>
+          </do_all>
+        </do_if>
+        <remove_value name="$Lib_Station"/>
+
+        <!-- SHIPS -->
+        <!-- Count Ship Types to figure out which story variation is possible here -->
+        <create_list name="$Ships_Trade"/>
+        <create_list name="$Ships_Build"/>
+        <create_list name="$Ships_Mine"/>
+        <create_list name="$Ships_Fight"/>
+        <create_list name="$Ships_Auxiliary"/>
+
+        <do_if value="$Ships_All.count">
+          <do_all exact="$Ships_All.count" counter="$ds" reverse="true">
+            <set_value name="$Lib_CurrentShip" exact="$Ships_All.{$ds}"/>
+
+            <!-- Add the Ship to the appropriate Ships-List -->
+            <do_if value="$Lib_CurrentShip.primarypurpose == purpose.trade">
+              <append_to_list name="$Ships_Trade" exact="$Lib_CurrentShip"/>
+            </do_if>
+            <do_elseif value="$Lib_CurrentShip.primarypurpose == purpose.build">
+              <append_to_list name="$Ships_Build" exact="$Lib_CurrentShip"/>
+            </do_elseif>
+            <do_elseif value="$Lib_CurrentShip.primarypurpose == purpose.mine">
+              <append_to_list name="$Ships_Mine" exact="$Lib_CurrentShip"/>
+            </do_elseif>
+            <do_elseif value="$Lib_CurrentShip.primarypurpose == purpose.fight">
+              <append_to_list name="$Ships_Fight" exact="$Lib_CurrentShip"/>
+            </do_elseif>
+            <do_elseif value="$Lib_CurrentShip.primarypurpose == purpose.auxiliary">
+              <append_to_list name="$Ships_Auxiliary" exact="$Lib_CurrentShip"/>
+            </do_elseif>
+          </do_all>
+        </do_if>
+        <remove_value name="$Lib_CurrentShip"/>
+      </actions>
+    </library>
+
+
+    <!-- Required: $ContainersA, $ContainersB output: $PossibleFactions (list) -->
+    <library name="FindPossibleFactions" comment="input: $ContainersA, $ContainersB output: $PossibleFactions">
+      <actions>
+        <remove_value name="$PossibleFactions"/>
+        <create_list name="$PossibleFactions" comment="Factions which appear in both provided lists"/>
+        <do_if value="$ContainersA.count and $ContainersB.count">
+          <set_value name="$Lib_FactionCountTable" exact="table[]"/>
+          <do_all exact="$ContainersA.count" counter="$a">
+            <do_all exact="$ContainersB.count" counter="$b">
+              <do_if value="$ContainersA.{$a}.owner == $ContainersB.{$b}.owner">
+                <do_if value="not ($Lib_FactionCountTable.{$ContainersA.{$a}.owner}?)" comment="if there is no entry for this $Faction-Key (unique find)">
+                  <set_value name="$Lib_FactionCountTable.{$ContainersA.{$a}.owner}" exact="true"/>
+                  <append_to_list name="$PossibleFactions" exact="$ContainersA.{$a}.owner"/>
+                </do_if>
+              </do_if>
+            </do_all>
+          </do_all>
+          <remove_value name="$Lib_FactionCountTable"/>
+        </do_if>
+      </actions>
+    </library>
+
+    <library name="FindContainer" comment="input: $Faction, $Containers output: $Container">
+      <actions>
+        <set_value name="$Container" exact="null"/>
+        <shuffle_list list="$Containers"/>
+        <do_all exact="$Containers.count" counter="$c">
+          <do_if value="$Containers.{$c}.owner == $Faction">
+            <set_value name="$Container" exact="$Containers.{$c}"/>
+            <break/>
+          </do_if>
+        </do_all>
+        <do_if value="$Container == null">
+          <debug_text text="'FindContainer didnt find $Container of $Faction [Heinrich]'"/>
+        </do_if>
+      </actions>
+    </library>
+
+    <!-- Requires: $DockingCandidates, $Faction (null for any) Result: $Faction (if it was null and we found anything), $ContainerA, $ContainerB -->
+    <!-- 
+          INPUT:    $DockingCandidates, $Faction as null or faction
+          RESULT:   TRY:    Find 2 distinct ListEntries of the same $Faction.     Return $ContainerA, $ContainerB, $Faction
+                    ELSE:   If not possible,                                      Return 1 list entry of its $Faction, $ContainerB as null
+                    ELSE:   If the list was empty,                                Return $ContainerA and $ContainerB as null, do not change $Faction
+    -->
+    <library name="FindTwoDockingContainers" comment="Finds 2 distinct Dockingcontainers from the same faction and list">
+      <actions>
+        <set_value name="$ContainerA" exact="null" comment="result null if nothing found"/>
+        <set_value name="$ContainerB" exact="null" comment="result null if nothing found"/>
+        <do_if value="$DockingCandidates.count">
+          <do_if value="$Faction">
+            <!-- $DockingCandidates has only 1 entry; Check if it has the correct $Faction-->
+            <do_if value="$DockingCandidates.count lt 2">
+              <do_if value="$DockingCandidates.{1}.owner == $Faction">
+                <set_value name="$ContainerA" exact="$DockingCandidates.{1}"/>
+              </do_if>
+            </do_if>
+            <!-- $DockingCandidates has multiple entries, Shuffle and put the first two as output-->
+            <do_else>
+              <shuffle_list list="$DockingCandidates"/>
+              <do_all exact="$DockingCandidates.count" counter="$dc">
+                <set_value name="$Lib_Candidate" exact="$DockingCandidates.{$dc}"/>
+                <do_if     value="($ContainerA == null) and ($Lib_Candidate.owner == $Faction)">
+                  <set_value name="$ContainerA" exact="$Lib_Candidate"/>
+                </do_if>
+                <do_elseif value="($ContainerB == null) and ($Lib_Candidate.owner == $Faction)">
+                  <set_value name="$ContainerB" exact="$Lib_Candidate"/>
+                  <break/>
+                </do_elseif>
+              </do_all>
+            </do_else>
+          </do_if>
+          <do_elseif value="$DockingCandidates.count == 1">
+            <!--No Faction Given, return the only Entry and its Faction-->
+            <set_value name="$ContainerA" exact="$DockingCandidates.{1}"/>
+            <set_value name="$Faction" exact="$DockingCandidates.{1}.owner"/>
+          </do_elseif>
+          <do_else comment="No Faction given, DockingCandidates ge 2">
+            <!-- Determine which Faction allows to pick multiple $DockingCandidates -->
+            <!-- Count all DockingCandidates by Owner -->
+            <set_value name="$Lib_FactionCount" exact="table[]"/>
+            <do_all exact="$DockingCandidates.count" counter="$dc">
+              <do_if value="$Lib_FactionCount.{$DockingCandidates.{$dc}.owner}?">
+                <set_value name="$Lib_FactionCount.{$DockingCandidates.{$dc}.owner}" operation="add"/>
+              </do_if>
+              <do_else>
+                <set_value name="$Lib_FactionCount.{$DockingCandidates.{$dc}.owner}" exact="1"/>
+              </do_else>
+            </do_all>
+            <!-- Pick all Factions which have 2 or more DockingContainers -->
+            <create_list name="$Lib_ValidFactions"/>
+            <do_all exact="$Lib_FactionCount.keys.count" counter="$k">
+              <set_value name="$key" exact="$Lib_FactionCount.keys.{$k}"/>
+              <do_if value="$Lib_FactionCount.{$key} ge 2">
+                <append_to_list name="$Lib_ValidFactions" exact="$key"/>
+              </do_if>
+            </do_all>
+            <do_if value="$Lib_ValidFactions.count">
+              <shuffle_list list="$Lib_ValidFactions"/>
+              <set_value name="$Faction" exact="$Lib_ValidFactions.{1}"/>
+              <!-- Find 2 Candidates from this Faction -->
+              <shuffle_list list="$DockingCandidates"/>
+              <do_all exact="$DockingCandidates.count" counter="$dc">
+                <do_if value="($ContainerA == null) and ($DockingCandidates.{$dc}.owner == $Faction)">
+                  <set_value name="$ContainerA" exact="$DockingCandidates.{$dc}"/>
+                </do_if>
+                <do_elseif value="($ContainerB == null) and ($DockingCandidates.{$dc}.owner == $Faction)">
+                  <set_value name="$ContainerB" exact="$DockingCandidates.{$dc}"/>
+                  <break/>
+                </do_elseif>
+              </do_all>
+            </do_if>
+            <do_else comment="There is no faction with ge 2 entries">
+              <!-- We just return any Candidate in ContainerA and set the Faction-->
+              <shuffle_list list="$DockingCandidates"/>
+              <set_value name="$ContainerA" exact="$DockingCandidates.{1}"/>
+              <set_value name="$Faction"    exact="$ContainerA.owner"/>
+            </do_else>
+          </do_else>
+        </do_if>
+        <remove_value name="$Lib_Candidate"/>
+        <remove_value name="$Lib_FactionCount"/>
+        <remove_value name="$Lib_ValidFactions"/>
+      </actions>
+    </library>
+
+  </cues>
+</mdscript>

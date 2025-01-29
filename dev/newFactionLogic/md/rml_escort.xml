@@ -1,0 +1,477 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_Escort" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--
+    $feedbackvalue:
+    -103: EndSignalCue or MissionCue not defined
+    -102: TargetShip not defined
+    -101: Destinations list not valid
+    -100: Undefined failure. Defaulted to -100
+    1: Destination reached 
+    
+   -->
+
+    <!--TODO: Param to count destroyed enemies between patrol points-->
+
+    <library name="Escort">
+      <params>
+        <param name="EndSignalCue" />
+        <param name="MissionCue" />
+        <param name="StartStep" default="1" comment="Briefing step to start the mission on"/>
+        <param name="UpdateBriefing" default="true" comment="Update the briefing objective step when the objective is updated"/>
+        <param name="ObjectiveText"/>
+
+        <!--Destinations is a list.
+        Element 1 - The patrol target component e.g. Sector, zone or station
+        Element 2 - Target offset (defaults to 0, 0, 0).
+        Element 3 - Patrol range: Distance from patrol target (see below for details)
+        Element 4 - Patrol alias: Define optional objective text (defaults to object name) 
+        -->
+
+        <param name="DepartureLocation"/>
+        <param name="TargetLocation"/>
+        <param name="TargetShip"/>
+
+        <param name="EnemyStrength" default="4"/>
+        <param name="NoBoost" default="false"/>
+
+        <param name="Faction" comment="Faction of whom to find enemies for."/>
+        <param name="EnemyFactions" comment="Faction or List of factions to attack"/>
+        <param name="BlackListEnemies" default="null" comment="Group of enemies to exclude from attack objectives"/>
+
+        <param name="DebugChance" default="0"/>
+      </params>
+      <actions>
+        <set_value name="$feedbackvalue" exact="0" />
+        <create_list name="$ErrorList"/>
+
+        <do_if value="not $TargetLocation.exists">
+          <append_to_list name="$ErrorList" exact="-101"/>
+        </do_if>
+
+        <do_if value="not $TargetShip.exists">
+          <append_to_list name="$ErrorList" exact="-102"/>
+        </do_if>
+
+        <do_if value="not $EndSignalCue or not $MissionCue">
+          <append_to_list name="$ErrorList" exact="-103"/>
+        </do_if>
+
+        <do_if value="$ErrorList.count == 0">
+
+          <do_if value="not $EnemyFactions">
+            <get_factions_by_relation result="$EnemyFactions" faction="$Faction" relation="enemy"/>
+            <remove_from_list name="$EnemyFactions" exact="faction.smuggler" multiple="false" />
+          </do_if>
+          <do_elseif value="typeof $EnemyFactions == datatype.faction">
+            <set_value name="$EnemyFactions" exact="[$EnemyFactions]"/>
+          </do_elseif>
+
+          <assert break="always" value="$EnemyFactions.count" text="'Faction doesn\'t have enemies so patrolling is pointless. Faction: ' + $Faction.knownname"/>
+          <create_group groupname="$CommandeeredEnemies"/>
+          <create_group groupname="$EnemyReinforcements"/>
+          <create_group groupname="$PotentialEnemyReinforcements"/>
+        </do_if>
+      </actions>
+      <cues>
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count != 0" />
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup" />
+          </actions>
+        </cue>
+
+        <cue name="StartMission" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count == 0" />
+          </conditions>
+          <actions>
+            <commandeer_object object="$TargetShip"/>
+            <cancel_all_orders object="$TargetShip"/>
+            <create_order object="$TargetShip" id="'DockAndWait'" name="$dockorder" default="true">
+              <param name="destination" value="$TargetLocation"/>
+            </create_order>
+            <create_order object="$TargetShip" id="'MoveGeneric'" name="$moveorder" immediate="true">
+              <param name="destination" value="$TargetLocation"/>
+              <param name="uselocalhighways" value="false"/>
+              <param name="noboost" value="$NoBoost"/>
+            </create_order>
+
+            <debug_text text="'Ordered ' + $TargetShip + ' ' + $TargetShip.knownname + ' to move to ' + $TargetLocation.knownname" chance="$DebugChance"/>
+          </actions>
+          <cues>
+            <cue name="CheckDockingState">
+              <actions>
+                <do_if value="$TargetShip.dock">
+                  <set_objective cue="$MissionCue" action="objective.wait" object="$DepartureLocation"/>
+                  <signal_cue_instantly cue="WaitForUndock"/>
+                </do_if>
+                <do_else>
+                  <signal_cue_instantly cue="UpdateBriefing"/>
+                </do_else>
+              </actions>
+            </cue>
+            <cue name="WaitForUndock">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <cues>
+                <cue name="TargetUndocked">
+                  <conditions>
+                    <event_object_undocked object="$TargetShip"/>
+                  </conditions>
+                  <actions>
+                    <signal_cue_instantly cue="UpdateBriefing"/>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="UpdateBriefing">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <do_if value="$UpdateBriefing">
+                  <update_mission cue="$MissionCue">
+                    <briefing>
+                      <objective step="$StartStep" action="objective.escort" object="$TargetShip" text="$TargetShip.knownname" encyclopedia="$TargetShip"/>
+                    </briefing>
+                  </update_mission>
+                  <set_objective cue="$MissionCue" step="$StartStep" action="objective.escort" object="$TargetShip" text="$TargetShip.knownname"/>
+                </do_if>
+              </actions>
+            </cue>
+
+            <cue name="LookForEnemyPresence">
+              <conditions>
+                <event_cue_signalled cue="UpdateBriefing"/>
+              </conditions>
+              <actions>
+                <do_if value="$TargetShip.class == class.ship_m">
+                  <set_value name="$EnemyClass" exact="[class.ship_s, class.ship_m]"/>
+                </do_if>
+                <do_else>
+                  <set_value name="$EnemyClass" exact="[class.ship_m, class.ship_l]"/>
+                </do_else>
+                <create_list name="$EnemyShipsList"/>
+                <do_all exact="$EnemyFactions.count" counter="$f">
+                  <find_ship_by_true_owner name="$EnemyShipsList" space="$TargetLocation.sector" faction="$EnemyFactions.{$f}" primarypurpose="purpose.fight" commandeerable="true" class="$EnemyClass" sortbydistanceto="$TargetShip" sortlimit="$EnemyStrength" multiple="true" append="true"/>
+                </do_all>
+                <set_value name="$PrimaryFaction" exact="$EnemyFactions.{1}"/>
+                <create_group groupname="$EnemyShipsGroup"/>
+                <create_group groupname="$CommandeeredEnemies"/>
+
+                <find_cluster_in_range name="$SurroundingClusters" object="$TargetLocation.sector" mindistance="1" maxdistance="1" multiple="true"/>
+
+                <do_if value="$EnemyShipsList.count ge $EnemyStrength">
+                  <do_for_each in="$EnemyShipsList" name="$enemy">
+                    <add_to_group groupname="$EnemyShipsGroup" object="$enemy"/>
+                  </do_for_each>
+                  <debug_text text="'Strongest Factions: ' + $EnemyShipsGroup.count + ' ' + $PrimaryFaction + ' ' + $EnemyShipsGroup" chance="$DebugChance"/>
+                  <do_for_each name="$ship" in="$EnemyShipsGroup">
+                    <do_if value="$ship.subordinates.count gt $EnemyStrength">
+                      <!-- This ship already has a significant amount of subordinates, so there is no need to continue-->
+                      <clear_group group="$EnemyShipsGroup"/>
+                      <add_to_group groupname="$EnemyShipsGroup" object="$ship"/>
+                      <break/>
+                    </do_if>
+                  </do_for_each>
+                  <signal_cue_instantly cue="CommandeerEnemies" param="$EnemyShipsGroup"/>
+                </do_if>
+                <do_else>
+                  <do_all exact="$SurroundingClusters.count" counter="$c">
+                    <do_all exact="$EnemyFactions.count" counter="$f">
+                      <find_ship_by_true_owner name="$EnemyShipsList" space="$SurroundingClusters.{$c}" faction="$EnemyFactions.{$f}" primarypurpose="purpose.fight" sortlimit="$EnemyStrength" commandeerable="true" class="$EnemyClass" multiple="true" sortbydistanceto="$TargetShip" append="true"/>
+                    </do_all>
+                  </do_all>
+                  <sort_list list="$EnemyShipsList" sortbyvalue="loop.element.distanceto.[$TargetShip.sector, $TargetShip.position]"/>
+                  <do_for_each in="$EnemyShipsList" name="$enemy">
+                    <do_if value="$EnemyShipsGroup.count lt $EnemyStrength">
+                      <add_to_group groupname="$EnemyShipsGroup" object="$enemy"/>
+                    </do_if>
+                  </do_for_each>
+                  <debug_text text="'Strongest Factions: ' + $EnemyShipsGroup.count + ' ' + $PrimaryFaction + ' ' + $EnemyShipsGroup" chance="$DebugChance"/>
+                  <do_for_each name="$ship" in="$EnemyShipsGroup">
+                    <do_if value="$ship.subordinates.count gt $EnemyStrength">
+                      <!-- This ship already has a significant amount of subordinates, so there is no need to continue-->
+                      <create_group groupname="$EnemyShipsGroup"/>
+                      <add_to_group groupname="$EnemyShipsGroup" object="$ship"/>
+                      <break/>
+                    </do_if>
+                  </do_for_each>
+                  <signal_cue_instantly cue="CommandeerEnemies" param="$EnemyShipsGroup"/>
+                </do_else>
+              </actions>
+              <cues>
+
+                <cue name="SearchReinforcements" instantiate="true" checkinterval="10s">
+                  <conditions>
+                    <check_value value="$CommandeeredEnemies.count lt $EnemyStrength"/>
+                  </conditions>
+                  <delay exact="1s"/>
+                  <actions>
+                    <find_cluster_in_range name="$SurroundingClusters" object="$TargetLocation.sector" mindistance="0" maxdistance="1" multiple="true"/>
+                    <clear_group group="$PotentialEnemyReinforcements"/>
+                    <clear_group group="$EnemyReinforcements"/>
+                    <do_all exact="$SurroundingClusters.count" counter="$c">
+                      <find_ship_by_true_owner groupname="$PotentialEnemyReinforcements" space="$SurroundingClusters.{$c}" faction="$PrimaryFaction" primarypurpose="purpose.fight" commandeerable="true" class="$EnemyClass" multiple="true" append="true" excluded="$CommandeeredEnemies"/>
+                    </do_all>
+                    <do_if value="$PotentialEnemyReinforcements.count">
+                      <do_all exact="$CommandeeredEnemies.count" counter="$i">
+                        <do_if value="$PotentialEnemyReinforcements.indexof.{$CommandeeredEnemies.{$i}}">
+                          <remove_from_group group="$PotentialEnemyReinforcements" object="$CommandeeredEnemies.{$i}"/>
+                        </do_if>
+                        <do_for_each name="$ship" in="$PotentialEnemyReinforcements" reverse="true">
+                          <do_if value="$ship.subordinates">
+                            <remove_from_group group="$PotentialEnemyReinforcements" object="$ship"/>
+                          </do_if>
+                        </do_for_each>
+                      </do_all>
+                      <sort_group group="$PotentialEnemyReinforcements" sortbyvalue="loop.element.distanceto.{$TargetLocation}"/>
+                      <set_value name="$reinforcements" exact="$EnemyStrength - $CommandeeredEnemies.count"/>
+                      <do_all exact="if $reinforcements gt $PotentialEnemyReinforcements.count then $PotentialEnemyReinforcements.count else $reinforcements" counter="$i">
+                        <add_to_group groupname="$EnemyReinforcements" object="$PotentialEnemyReinforcements.{$i}"/>
+                      </do_all>
+                      <debug_text text="$EnemyReinforcements.count + ' Enemy Reinforcements: ' + $EnemyReinforcements + ' from Faction: ' + $PrimaryFaction" chance="$DebugChance"/>
+                      <signal_cue_instantly cue="CommandeerEnemies" param="$EnemyReinforcements"/>
+                    </do_if>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="CommandeerEnemies" instantiate="true">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <set_value name="$EnemyGroup" exact="event.param"/>
+                <find_ship_by_true_owner groupname="$PlayerShips" faction="faction.player" space="$TargetShip.sector" multiple="true" unit="false">
+                  <match_distance object="$TargetShip" space="$TargetShip.sector"  max="25km"/>
+                </find_ship_by_true_owner>
+                <add_to_group groupname="$AlternateSecondaryTargets" object="$TargetShip"/>
+                <add_to_group groupname="$AlternateSecondaryTargets" group="$PlayerShips"/>
+
+                <do_all exact="$EnemyGroup.count" counter="$i">
+                  <commandeer_object object="$EnemyGroup.{$i}"/>
+                  <cancel_all_orders object="$EnemyGroup.{$i}"/>
+                  <do_for_each name="$ship" in="$EnemyGroup.{$i}.subordinates">
+                    <do_if value="$CommandeeredEnemies.count lt $EnemyStrength">
+                      <add_to_group groupname="$CommandeeredEnemies" object="$ship"/>
+                    </do_if>
+                    <do_else>
+                      <add_to_group groupname="$CommandeeredEnemies" object="$ship"/>
+                      <do_if value="not $TemporaryCommander?">
+                        <set_value name="$TemporaryCommander" exact="$ship"/>
+                        <cancel_all_orders object="$ship"/>
+                        <create_order object="$ship" id="'Patrol'" default="true">
+                          <param name="space" value="$ship.sector"/>
+                        </create_order>
+                      </do_if>
+                      <do_else>
+                        <create_order id="'AssignCommander'" object="$ship" immediate="true">
+                          <param name="commander" value="$TemporaryCommander"/>
+                          <param name="assignment" value="assignment.defence"/>
+                          <param name="cancelorders" value="true"/>
+                        </create_order>
+                      </do_else>
+                    </do_else>
+                  </do_for_each>
+                  <remove_value name="$TemporaryCommander"/>
+
+                  <!-- If the ship is L-class, always engage the Escort target, otherwise vary it a little -->
+                  <do_if value="$EnemyGroup.{$i}.isclass.ship_l">
+                    <create_order object="$EnemyGroup.{$i}" id="'Attack'" name="$attackorder" immediate="true">
+                      <param name="primarytarget" value="$TargetShip"/>
+                      <param name="secondarytargets" value="$PlayerShips"/>
+                      <param name="allowothertargets" value="false"/>
+                      <param name="pursuetargets" value="true"/>
+                      <param name="checkrelation" value="false"/>
+                    </create_order>
+                  </do_if>
+                  <do_else>
+                    <do_any comment="make sure the enemy also engages the player occasionally">
+                      <do_all weight="80">
+                        <create_order object="$EnemyGroup.{$i}" id="'Attack'" name="$attackorder" immediate="true">
+                          <param name="primarytarget" value="$TargetShip"/>
+                          <param name="secondarytargets" value="$PlayerShips"/>
+                          <param name="allowothertargets" value="false"/>
+                          <param name="pursuetargets" value="true"/>
+                          <param name="checkrelation" value="false"/>
+                        </create_order>
+                      </do_all>
+                      <do_all weight="20">
+                        <create_order object="$EnemyGroup.{$i}" id="'Attack'" name="$attackorder" immediate="true">
+                          <param name="primarytarget" value="player.entity.ship"/>
+                          <param name="secondarytargets" value="$AlternateSecondaryTargets"/>
+                          <param name="allowothertargets" value="false"/>
+                          <param name="pursuetargets" value="true"/>
+                          <param name="checkrelation" value="false"/>
+                        </create_order>
+                      </do_all>
+                    </do_any>
+                  </do_else>
+                  <add_to_group groupname="$CommandeeredEnemies" object="$EnemyGroup.{$i}"/>
+                  <debug_text text="'Enemy ' + $EnemyGroup.{$i} + ' ' + $EnemyGroup.{$i}.knownname + ' in ' +  $EnemyGroup.{$i}.sector.knownname + ' is attacking target.'" chance="$DebugChance"/>
+                </do_all>
+                <debug_text text="'Total Enemy Count: ' + $CommandeeredEnemies.count" chance="$DebugChance"/>
+              </actions>
+            </cue>
+
+            <cue name="CheckTargetShipLocation" checkinterval="5s">
+              <conditions>
+                <check_value value="$TargetShip.distanceto.{$TargetLocation} lt 10km"/>
+              </conditions>
+              <actions>
+                <do_if value="$TargetShip.isclass.ship_m">
+                  <set_value name="$DockSize" exact="tag.dock_m"/>
+                  <set_value name="$InternalStorage" exact="true"/>
+                </do_if>
+                <do_elseif value="$TargetShip.isclass.ship_l">
+                  <set_value name="$DockSize" exact="tag.dock_l"/>
+                  <set_value name="$InternalStorage" exact="false"/>
+                </do_elseif>
+                <debug_text text="'Reached TargetStation'" chance="$DebugChance"/>
+                <find_dockingbay name="$TargetLocationDocks" object="$TargetLocation" multiple="true" state="componentstate.operational">
+                  <match_dock storage="$InternalStorage" size="$DockSize"/>
+                </find_dockingbay>
+                <do_if value="$TargetLocationDocks.count" comment="check to see if the ship can dock">
+                  <debug_text text="'Ordered ' + $TargetShip + ' ' + $TargetShip.knownname + ' to dock at ' + $TargetLocation.knownname" chance="$DebugChance"/>
+                </do_if>
+                <do_else>
+                  <set_value name="$feedbackvalue" exact="1" comment="success"/>
+                  <signal_cue cue="Cleanup"/>
+                </do_else>
+              </actions>
+              <cues>
+                <cue name="TargetDocked" instantiate="true">
+                  <conditions>
+                    <event_object_docked_at container="$TargetLocation"/>
+                  </conditions>
+                  <actions>
+                    <do_if value="$TargetShip.hascontext.{$TargetLocation}">
+                      <set_value name="$feedbackvalue" exact="1" comment="success"/>
+                      <signal_cue cue="Cleanup"/>
+                    </do_if>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="MissionObjectsDestroyed">
+              <conditions>
+                <check_any>
+                  <event_object_destroyed object="$TargetLocation"/>
+                  <event_object_destroyed object="$TargetShip"/>
+                  <event_object_changed_owner object="$TargetShip"/>
+                </check_any>
+              </conditions>
+              <actions>
+                <do_if value="$TargetLocation.isoperational">
+                  <set_value name="$feedbackvalue" exact="-1" comment="Escort Ship destroyed"/>
+                </do_if>
+                <do_else>
+                  <set_value name="$feedbackvalue" exact="-2" comment="Station destroyed"/>
+                </do_else>
+                <signal_cue cue="Cleanup"/>
+              </actions>
+            </cue>
+
+          </cues>
+        </cue>
+
+        <cue name="CommandeerCleanup">
+          <conditions>
+            <check_any>
+              <event_mission_aborted cue="$MissionCue"/>
+              <event_cue_signalled/>
+            </check_any>
+          </conditions>
+          <actions>
+            <!-- Release Commandeered Ships-->
+            <do_if value="$CommandeeredEnemies?">
+              <do_all exact="$CommandeeredEnemies.count" counter="$i">
+                <release_commandeered_object object="$CommandeeredEnemies.{$i}"/>
+                <debug_text text="'Releasing Enemy ' + $CommandeeredEnemies.{$i}.knownname" chance="100"/>
+              </do_all>
+            </do_if>
+          </actions>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <signal_cue_instantly cue="CommandeerCleanup"/>
+
+            <!--TODO remove_objective-->
+            <do_if value="$feedbackvalue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'ERROR: Feedback value is 0 and no error values were set. Defaulting to -100'" chance="$DebugChance"/>
+                <set_value name="$feedbackvalue" exact="-100"/>
+              </do_if>
+              <do_else>
+                <set_value name="$feedbackvalue" exact="$ErrorList.{1}"/>
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+                    <do_if value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'Destinations list not valid'"/>
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-102">
+                      <set_value name="$FeedbackText" exact="'TargetShip not defined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-103">
+                      <set_value name="$FeedbackText" exact="'EndSignalCue or MissionCue not defined'"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                    </do_else>
+
+                    <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+
+              <do_if value="$feedbackvalue" exact="-1">
+                <set_value name="$FeedbackText" exact="{30004,6041}"/>
+              </do_if>
+
+              <do_if value="$feedbackvalue" exact="-2">
+                <set_value name="$FeedbackText" exact="{30004,6040}"/>
+              </do_if>
+
+              <do_if value="$feedbackvalue" exact="1">
+                <set_value name="$FeedbackText" exact="'Patrol ended'"/>
+              </do_if>
+
+              <do_if value="$feedbackvalue" min="1">
+                <debug_text text="'Mission Successful. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_if>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission Failed. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+            <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$feedbackvalue"/>
+            <signal_cue cue="$EndSignalCue"/>
+            <cancel_cue cue="Escort"/>
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<aiscript name="orders.base.tradecomputer" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd">
+  <!--
+
+  Base wrapper script to execute all orders that the tradecomputer handles.
+
+  Author: Michael / Klaus
+  Date: 2018-03-29
+
+  -->
+  <interrupts>
+    <handler>
+      <conditions>
+        <!-- Abort order script if order in non-critical state was cancelled, so we can continue with the next order -->
+        <event_object_order_cancelled object="$object" immediate="true" />
+        <!-- Important: The event may be received after the cancelled order returned or was already removed, so a new order could already have started in the meantime. -->
+        <!-- A cancelled order cannot be running any more, so if there is a running order, it is a different one and we should not interrupt. -->
+        <check_value value="not @$object.order.isrunning" />
+      </conditions>
+      <actions>
+        <abort_called_scripts />
+      </actions>
+    </handler>
+  </interrupts>
+
+  <init>
+    <set_value name="$debugchance" exact="0" />
+    <set_value name="$object" exact="this.assignedcontrolled" />
+  </init>
+
+  <attention min="unknown">
+    <actions>
+
+      <do_if value="not $object.isclass.ship or this != $object.tradecomputer">
+        <debug_text text="'Script orders.base.tradecomputer started on entity that is not the tradecomputer of %1 (%2), aborting'.[@$object.knownname, $object]" filter="error" />
+        <return/>
+      </do_if>
+
+      <label name="loop"/>
+
+      <set_value name="$objectcontainer" exact="$object.container"/>
+      <do_if value="not $objectcontainer">
+        <debug_text text="'trade computer may only run while %1 (%2) is docked, aborting'.[$object.knownname, $object]" filter="error" />
+        <resume label="finish"/>
+      </do_if>
+
+      <set_value name="$tradecomputerorder" exact="null" />
+
+      <do_if value="@$object.order.istradecomputer">
+        <set_value name="$tradecomputerorder" exact="$object.order" />
+      </do_if>
+
+      <set_value name="$orders" exact="$object.tradeorders"/>
+      <do_if value="$orders.count gt 0 and not $tradecomputerorder">
+        <do_for_each name="$order" in="$orders">
+          <do_if value="$order.state != orderstate.ready">
+            <break />
+          </do_if>
+          <do_if value="$order.trade">
+            <do_if value="$order.trade.exchangepartner.{$object} == $objectcontainer">
+              <do_if value="$order.isinloop">
+                <!-- In a loop, the part that is most likely to fail is setting the order as the current one. First check if that will work. -->
+                <set_current_loop_order order="$order" check="true" result="$movesuccess"/>
+                <move_order order="$order" newindex="1" result="$movesuccess" chance="if $movesuccess then 100 else 0"/>
+                <set_current_loop_order order="$order" result="$movesuccess" chance="if $movesuccess then 100 else 0"/>
+              </do_if>
+              <do_else>
+                <move_order order="$order" newindex="1" result="$movesuccess"/>
+              </do_else>
+              <do_if value="$movesuccess">
+                <set_value name="$tradecomputerorder" exact="$order" />
+                <!-- BEGIN debug info block -->
+                <debug_text text="'debug order queue:'" chance="$debugchance"/>
+                <do_for_each name="$curorder" counter="$d" in="$object.orders" chance="$debugchance">
+                  <debug_text text="'%1: %2 (%3)'.[$d, $curorder.id, $curorder]"/>
+                </do_for_each>
+                <!-- END debug info block -->
+                <do_while value="$object.orders.count gt 1 and @$object.orders.{2}.$callerid == $tradecomputerorder and ($object.orders.{2}.id == 'DockAt' or $object.orders.{2}.id == 'DockAndWait')">
+                  <debug_text text="'cancel %1 order at index 2'.[$object.orders.{2}.id]" chance="$debugchance"/>
+                  <cancel_order order="$object.orders.{2}"/>
+                </do_while>
+              </do_if>
+            </do_if>
+            <!-- we stop after the first tradeorder -->
+            <break />
+          </do_if>
+        </do_for_each>
+      </do_if>
+
+      <do_if value="$tradecomputerorder">
+        <debug_text text="'%s %s starting order %s \'%s\''.[$object.knownname, $object, $tradecomputerorder.id, $tradecomputerorder]" chance="$debugchance"/>
+        <run_order_script order="$tradecomputerorder" />
+        <!-- start over, check if there's another suitable order in the queue -->
+        <resume label="loop"/>
+      </do_if>
+
+      <label name="finish"/>
+
+      <debug_text text="'post-trade-step, orders: %1, order1: %2, buildorderobject: %3, objectcontainer: %4'.[$object.buildorders.count, $object.buildorders.{1}, $object.buildorders.{1}.build.object, $objectcontainer]" chance="$debugchance"/>
+      <do_if value="$object.buildorders.count and $object.buildorders.{1}.build.object == $objectcontainer">
+        <debug_text text="'trade computer done, signalling build orders to be processed'" chance="$debugchance"/>
+        <signal_objects object="player.entity" param="$object" param2="'docked_player_process_build'"/>
+      </do_if>
+
+      <debug_text text="'%s %s done, self-destructing'.[$object.knownname, $object]" chance="$debugchance"/>
+      <destroy_object object="this" explosion="false"/>
+
+    </actions>
+  </attention>
+</aiscript>

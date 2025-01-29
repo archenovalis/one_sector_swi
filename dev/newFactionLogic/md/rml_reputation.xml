@@ -1,0 +1,485 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_Reputation" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--
+    This RML is intended for use in Master-Missions
+
+    $feedbackvalue:
+    -103 $Reputation is incorrectly defined.
+    -102 $TargetFaction is incorrectly defined.
+    -101 Cue parameters not defined
+    -100: Undefined failure. Defaulted to -100
+    1: Reputation achieved -->
+
+    <library name="Reputation">
+      <params>
+        <param name="EndSignalCue"/>
+        <param name="MissionCue"/>
+        <param name="StartStep"       default="1"     comment="Briefing step to start the mission on"/>
+        <param name="UpdateBriefing"  default="true"  comment="Update the briefing objective step when the objective is updated"/>
+        <param name="DebugChance"     default="0" />
+
+        <param name="TargetFaction"                   comment="a faction or list of factions"/>
+        <param name="Reputation"                      comment="see factions.xml for description of the values; can be a list with the same length as TargetFaction"/>
+        <param name="GoAbove"       default="true"    comment="default is checking for go above specified reputation, set this value to false when checking for going below; can be a list with the same length as TargetFaction"/>
+      </params>
+      <actions>
+        <set_value name="$feedbackvalue" exact="0"/>
+        <create_list name="$ErrorList"/>
+
+        <do_if value="not $EndSignalCue or not $MissionCue">
+          <append_to_list name="$ErrorList" exact="-101"/>
+        </do_if>
+        <do_if value="not $TargetFaction">
+          <append_to_list name="$ErrorList" exact="-102"/>
+        </do_if>
+        <do_if value="not $Reputation">
+          <append_to_list name="$ErrorList" exact="-103"/>
+        </do_if>
+
+        <do_if value="typeof $Reputation == datatype.list">
+          <assert value="typeof $TargetFaction == datatype.list"/>
+          <assert value="$Reputation.count"/>
+          <assert value="$Reputation.count == $TargetFaction.count"/>
+        </do_if>
+        <do_if value="typeof $GoAbove == datatype.list">
+          <assert value="typeof $TargetFaction == datatype.list"/>
+          <assert value="$GoAbove.count"/>
+          <assert value="$GoAbove.count == $TargetFaction.count"/>
+        </do_if>
+
+        <!-- Internally transform $TargetFaction, $Reputation and $GoAbove to lists to avoid case differentiations -->
+        <do_if value="typeof $TargetFaction != datatype.list">
+          <set_value name="$tempTargetFaction" exact="$TargetFaction"/>
+          <create_list name="$TargetFaction"/>
+          <append_to_list name="$TargetFaction" exact="$tempTargetFaction"/>
+        </do_if>
+        <do_if value="typeof $Reputation != datatype.list">
+          <set_value name="$tempReputation" exact="$Reputation"/>
+          <create_list name="$Reputation"/>
+          <do_all exact="$TargetFaction.count">
+            <append_to_list name="$Reputation" exact="$tempReputation"/>
+          </do_all>
+        </do_if>
+        <do_if value="typeof $GoAbove != datatype.list">
+          <set_value name="$tempGoAbove" exact="$GoAbove"/>
+          <create_list name="$GoAbove"/>
+          <do_all exact="$TargetFaction.count">
+            <append_to_list name="$GoAbove" exact="$tempGoAbove"/>
+          </do_all>
+        </do_if>
+
+      </actions>
+      <cues>
+
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="1"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup"/>
+          </actions>
+        </cue>
+
+        <cue name="StartMission" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="0"/>
+          </conditions>
+          <cues>
+
+            <cue name="SetupFactionRelationChangeListeners">
+              <actions>
+                <create_list name="$FactionListeners"/>
+
+                <create_list          name="$RemainingFactions" comment="Factions for which the reputation has not been reached yet"/>
+                <append_list_elements name="$RemainingFactions" other="$TargetFaction"/>
+                <do_for_each in="$TargetFaction" name="$faction" counter="$i">
+                  <!-- Reptuation Goal Reached -->
+                  <!--<do_if value="($GoAbove.{$i} and ($faction.relationto.{faction.player} ge $Reputation.{$i}))
+                         or (not $GoAbove.{$i} and ($faction.relationto.{faction.player} le $Reputation.{$i}))">
+                    <remove_from_list name="$RemainingFactions" exact="$faction"/>
+                  </do_if>-->
+                  <signal_cue_instantly cue="CheckMissionStatus_FactionListener" param="[$faction, $Reputation.{$i}, $GoAbove.{$i}]"/>
+                </do_for_each>
+                <!-- After Setup, either UpdateBriefing or Cleanup -->
+                <do_if value="$RemainingFactions.count gt 0">
+                  <signal_cue cue="UpdateBriefing"/>
+                </do_if>
+                <do_else comment="no Remaining Factions left">
+                  <set_value name="$feedbackvalue" exact="1" comment="success"/>
+                  <signal_cue cue="Cleanup"/>
+                </do_else>
+              </actions>
+            </cue>
+
+            <cue name="CheckMissionStatus_FactionListener" instantiate="true">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <append_to_list name="$FactionListeners" exact="this"/>
+                <set_value exact="event.param.{1}" name="this.$TargetFaction"/>
+                <set_value exact="event.param.{2}" name="this.$Reputation"/>
+                <set_value exact="event.param.{3}" name="this.$GoAbove"/>
+              </actions>
+              <cues>
+
+                <cue name="CheckMissionStatus_Init">
+                  <actions>
+                    <signal_cue_instantly cue="CheckMissionStatus_Complete"/>
+                  </actions>
+                </cue>
+                
+                <cue name="CheckMissionStatus_Complete">
+                  <conditions>
+                    <check_any>
+                      <check_all>
+                        <!-- Init -->
+                        <event_cue_signalled/>
+                        <set_value name="this.$newRelation" exact="parent.$TargetFaction.relationto.{faction.player}"/>
+                      </check_all>
+                      <check_all>
+                        <!-- Relation Changed -->
+                        <event_player_relation_changed faction="parent.$TargetFaction"/>
+                        <check_value value="not event.object" comment="only permanent changes are relevant"/>
+                        <set_value name="this.$newRelation" exact="event.param2.{1}"/>
+                      </check_all>
+                    </check_any>
+                    <!-- reputation checks -->
+                    <check_any>
+                      <check_all>
+                        <check_value value="parent.$GoAbove"/>
+                        <check_value value="this.$newRelation ge parent.$Reputation" comment="new relation"/>
+                      </check_all>
+                      <check_all>
+                        <check_value value="not parent.$GoAbove"/>
+                        <check_value value="this.$newRelation le parent.$Reputation" comment="new relation"/>
+                      </check_all>
+                    </check_any>
+                  </conditions>
+                  <actions>
+                    <!-- We reached the target Reputation range with the TargetFaction -->
+                    <remove_from_list name="$RemainingFactions" exact="parent.$TargetFaction"/>
+                    <remove_from_list name="$FactionListeners"  exact="this"/>
+
+                    <do_if value="$RemainingFactions.count">
+                      <signal_cue cue="UpdateBriefing"/>
+                    </do_if>
+                    <do_else comment="no Remaining Factions left">
+                      <set_value name="$feedbackvalue" exact="1" comment="success"/>
+                      <signal_cue cue="Cleanup"/>
+                    </do_else>
+                  </actions>
+                  <cues>
+                    <cue name="CheckMissionStatus_Undone" comment="player undoes progress">
+                      <conditions>
+                        <!-- Relation Changed -->
+                        <event_player_relation_changed faction="parent.parent.$TargetFaction"/>
+                        <check_value value="not event.object" comment="only permanent changes are relevant"/>
+                        <!-- reputation checks -->
+                        <check_any>
+                          <check_all>
+                            <check_value value="parent.parent.$GoAbove"/>
+                            <check_value value="event.param2.{1} lt parent.parent.$Reputation" comment="new relation"/>
+                          </check_all>
+                          <check_all>
+                            <check_value value="not parent.parent.$GoAbove"/>
+                            <check_value value="event.param2.{1} gt parent.parent.$Reputation" comment="new relation"/>
+                          </check_all>
+                        </check_any>
+                      </conditions>
+                      <actions>
+                        <append_to_list name="$RemainingFactions" exact="parent.parent.$TargetFaction"/>
+                        <append_to_list name="$FactionListeners"  exact="parent"/>
+                        <signal_cue cue="UpdateBriefing"/>
+                        <reset_cue cue="parent"/>
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+
+              </cues>
+            </cue>
+
+            <cue name="DebugCues">
+              <cues>
+                <cue name="Debug_AddRep_Faction_1" instantiate="true">
+                  <conditions>
+                    <event_cue_signalled/>
+                    <check_value value="$TargetFaction.count ge 1"/>
+                  </conditions>
+                  <actions>
+                    <signal_cue_instantly cue="Debug_AddRep_Output" param="$TargetFaction.{1}"/>           
+                  </actions>
+                </cue>
+                <cue name="Debug_AddRep_Faction_2" instantiate="true">
+                  <conditions>
+                    <event_cue_signalled/>
+                    <check_value value="$TargetFaction.count ge 2"/>
+                  </conditions>
+                  <actions>
+                    <signal_cue_instantly cue="Debug_AddRep_Output" param="$TargetFaction.{2}"/>                
+                  </actions>
+                </cue>
+                <cue name="Debug_AddRep_Faction_3" instantiate="true">
+                  <conditions>
+                    <event_cue_signalled/>
+                    <check_value value="$TargetFaction.count ge 3"/>
+                  </conditions>
+                  <actions>
+                    <signal_cue_instantly cue="Debug_AddRep_Output" param="$TargetFaction.{3}"/>                
+                  </actions>
+                </cue>
+                <cue name="Debug_AddRep_Faction_4" instantiate="true">
+                  <conditions>
+                    <event_cue_signalled/>
+                    <check_value value="$TargetFaction.count ge 4"/>
+                  </conditions>
+                  <actions>
+                    <signal_cue_instantly cue="Debug_AddRep_Output" param="$TargetFaction.{4}"/>              
+                  </actions>
+                </cue>
+                <cue name="Debug_AddRep_Faction_5" instantiate="true">
+                  <conditions>
+                    <event_cue_signalled/>
+                    <check_value value="$TargetFaction.count ge 5"/>
+                  </conditions>
+                  <actions>
+                    <signal_cue_instantly cue="Debug_AddRep_Output" param="$TargetFaction.{5}"/>
+                  </actions>
+                </cue>
+                <cue name="Debug_RemoveRep_Faction_1" instantiate="true">
+                  <conditions>
+                    <event_cue_signalled/>
+                    <check_value value="$TargetFaction.count ge 1"/>
+                  </conditions>
+                  <actions>
+                    <signal_cue_instantly cue="Debug_RemoveRep_Output" param="$TargetFaction.{1}"/>
+                  </actions>
+                </cue>
+                <cue name="Debug_RemoveRep_Faction_2" instantiate="true">
+                  <conditions>
+                    <event_cue_signalled/>
+                    <check_value value="$TargetFaction.count ge 2"/>
+                  </conditions>
+                  <actions>
+                    <signal_cue_instantly cue="Debug_RemoveRep_Output" param="$TargetFaction.{2}"/>
+                  </actions>
+                </cue>
+                <cue name="Debug_RemoveRep_Faction_3" instantiate="true">
+                  <conditions>
+                    <event_cue_signalled/>
+                    <check_value value="$TargetFaction.count ge 3"/>
+                  </conditions>
+                  <actions>
+                    <signal_cue_instantly cue="Debug_RemoveRep_Output" param="$TargetFaction.{3}"/>
+                  </actions>
+                </cue>
+                <cue name="Debug_RemoveRep_Faction_4" instantiate="true">
+                  <conditions>
+                    <event_cue_signalled/>
+                    <check_value value="$TargetFaction.count ge 4"/>
+                  </conditions>
+                  <actions>
+                    <signal_cue_instantly cue="Debug_RemoveRep_Output" param="$TargetFaction.{4}"/>
+                  </actions>
+                </cue>
+                <cue name="Debug_RemoveRep_Faction_5" instantiate="true">
+                  <conditions>
+                    <event_cue_signalled/>
+                    <check_value value="$TargetFaction.count ge 5"/>
+                  </conditions>
+                  <actions>
+                    <signal_cue_instantly cue="Debug_RemoveRep_Output" param="$TargetFaction.{5}"/>
+                  </actions>
+                </cue>
+                <cue name="Debug_AddRep_Output" instantiate="true">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <do_if value="event.param">
+                      <add_faction_relation faction="faction.player" otherfaction="event.param" value="0.01" reason="relationchangereason.smalltalkreward"/>
+                    </do_if>
+                    <debug_text text="'== Added Rep to ' + event.param + ' =='"/>
+                    <do_for_each in="$TargetFaction" name="$faction">
+                      <debug_text text="'Relation to ' + $faction + ' ' + $faction.relation.{$faction.relationto.{faction.player}}.uivalue"/>
+                    </do_for_each>
+                  </actions>
+                </cue>
+                <cue name="Debug_RemoveRep_Output" instantiate="true">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <do_if value="event.param">
+                      <add_faction_relation faction="faction.player" otherfaction="event.param" value="-0.01" reason="relationchangereason.smalltalkreward"/>
+                    </do_if>
+                    <debug_text text="'== Removed Rep from ' + event.param + ' =='"/>
+                    <do_for_each in="$TargetFaction" name="$faction">
+                      <debug_text text="'Relation to ' + $faction + ' ' + $faction.relation.{$faction.relationto.{faction.player}}.uivalue"/>
+                    </do_for_each>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+          </cues>
+        </cue>
+
+        <library name="ObjectiveText">
+          <actions>
+            <!--p 1004
+            97 (custom action)Improve relations with: $FACTION$ to: $RELATION
+            (i.e.: Improve relations with: Terran Protectorate to: Neutral (-9))
+            98 (custom action)Diminish relations with: $FACTION$ to: $RELATION
+            (i.e.: Diminish relations with: Terran Protectorate to: Neutral (-9))-->
+
+            <do_if value="$tempReputation ge 0.1" comment="Allied (+20 to +30)">
+              <set_value name="$RelationPhrase" exact="{1001,5203}"/>
+            </do_if>
+            <do_elseif value="$tempReputation ge 0.01" comment="Friendly (+10 to +19.999)">
+              <set_value name="$RelationPhrase" exact="{1001,5215}"/>
+            </do_elseif>
+            <do_elseif value="$tempReputation gt -0.01" comment="Neutral (-9.999 to +9.999)">
+              <set_value name="$RelationPhrase" exact="{1001,5202}"/>
+            </do_elseif>
+            <do_elseif value="$tempReputation gt -0.1" comment="Enemy (-10 to -19.999)">
+              <set_value name="$RelationPhrase" exact="{1001,5201}"/>
+            </do_elseif>
+            <do_else comment="Hostile (-20 to -30)">
+              <set_value name="$RelationPhrase" exact="{1001,5212}"/>
+            </do_else>
+
+            <do_if value="$tempGoAbove">
+              <substitute_text text="$ObjectiveText" source="readtext.{1004}.{97}">
+                <replace string="'$FACTION$'"   with="$tempFaction"/>
+                <replace string="'$RELATION$'"  with="$RelationPhrase + ' (' + $tempFaction.relation.{$tempReputation}.uivalue + ')'"/>
+              </substitute_text>
+            </do_if>
+            <do_else>
+              <substitute_text text="$ObjectiveText" source="readtext.{1004}.{98}">
+                <replace string="'$FACTION$'"   with="$tempFaction"/>
+                <replace string="'$RELATION$'"  with="$RelationPhrase + ' (' + $tempFaction.relation.{$tempReputation}.uivalue + ')'"/>
+              </substitute_text>
+            </do_else>
+          </actions>
+        </library>
+
+        <cue name="UpdateBriefing" instantiate="true" comment="Called each time a briefing-update is needed">
+          <conditions>
+            <event_cue_signalled/>
+            <check_value value="$UpdateBriefing"/>
+          </conditions>
+          <actions>
+
+            <set_value name="$Step" exact="$StartStep"/>
+
+            <!-- First add all factions for which we already have reached the rep goal -->
+            <do_for_each in="$TargetFaction" name="$faction" counter="$i">
+              <do_if value="$RemainingFactions.indexof.{$faction} == 0">
+                <set_value name="$tempFaction"    exact="$faction"/>
+                <set_value name="$tempReputation" exact="$Reputation.{$TargetFaction.indexof.{$faction}}"/>
+                <set_value name="$tempGoAbove"    exact="$GoAbove.{$TargetFaction.indexof.{$faction}}"/>
+
+                <include_actions ref="ObjectiveText" comment="Set $ObjectiveText for $faction and $Reputation"/>
+                <update_mission cue="$MissionCue">
+                  <briefing>
+                    <objective step="$Step" action="objective.custom" customaction="$ObjectiveText"/>
+                  </briefing>
+                </update_mission>
+                <set_value name="$Step" operation="add"/>
+              </do_if>
+            </do_for_each>
+
+            <!-- Now add all $RemainingFactions which remain ToDo for the player -->
+            <do_for_each in="$RemainingFactions" name="$faction">
+              <set_value name="$tempFaction"    exact="$faction"/>
+              <set_value name="$tempReputation" exact="$Reputation.{$TargetFaction.indexof.{$faction}}"/>
+              <set_value name="$tempGoAbove"    exact="$GoAbove.{$TargetFaction.indexof.{$faction}}"/>
+              <include_actions ref="ObjectiveText" comment="Set $ObjectiveText for $faction and $Reputation"/>
+              <update_mission cue="$MissionCue">
+                <briefing>
+                  <objective step="$Step" action="objective.custom" customaction="$ObjectiveText"/>
+                </briefing>
+              </update_mission>
+              <set_value name="$Step" operation="add"/>
+            </do_for_each>
+
+            <do_if value="$RemainingFactions.count" comment="otherwise we would overstep">
+              <set_objective_from_briefing cue="$MissionCue" step="$StartStep + $TargetFaction.count - $RemainingFactions.count"/>
+            </do_if>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep + $TargetFaction.count"/>
+
+          </actions>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <!--TODO remove_objective-->
+
+            <do_if value="$feedbackvalue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'ERROR: Feedback value is 0 and no error values were set. Defaulting to -100'"/>
+                <set_value name="$feedbackvalue" exact="-100"/>
+              </do_if>
+              <do_else>
+                <set_value name="$feedbackvalue" exact="$ErrorList.{1}"/>
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+                    <do_if value="$ErrorList.{$Counter}" exact="-103">
+                      <set_value name="$FeedbackText" exact="'Reputation parameter left undefined'"/>
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-102">
+                      <set_value name="$FeedbackText" exact="'$TargetFaction parameter left undefined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'Cue parameters not defined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-100">
+                      <set_value name="$FeedbackText" exact="'Undefined failure. Defaulted to -100'"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                    </do_else>
+
+                    <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+
+              <do_if value="$feedbackvalue" exact="1">
+                <set_value name="$FeedbackText" exact="'success (reputation at required level)'"/>
+              </do_if>
+
+              <do_if value="$feedbackvalue" min="1">
+                <debug_text text="'Mission Successful. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_if>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission Failed. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+            <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$feedbackvalue"/>
+            <signal_cue cue="$EndSignalCue"/>
+            <cancel_cue cue="Reputation"/>
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

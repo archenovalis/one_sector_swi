@@ -1,0 +1,327 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_Capture" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--
+    $feedbackvalue:
+    -120: defined Target is invalid
+
+    -113: TargetClass not defined
+    -112: TargetSpace not defined
+    -111: TargetFaction not defined
+    -110: Target not defined
+
+    -101: Started with invalid or incomplete parameters
+    -100: Undefined failure. Defaulted to -100
+
+    -1: Target was destroyed
+    1: Target has been successfully captured -->
+
+    <!-- Either
+          Target OR 
+          TargetFaction and TargetSpace and TargetClass
+            have to be set.
+
+          If Target is set, that object is set as an objective for capture. Attributes of Target override anything entered as TargetFaction, TargetSpace, or TargetClass.
+          If TargetFaction, TargetSpace, and TargetClass are set, an appropriate object of class.TargetClass belonging to TargetFaction in TargetSpace is found and designated for capture.
+
+          In addition:
+            If ReachedTargetSignalCue is set, an external cue could be triggered when Target is in close proximity.
+            If ProceedTriggerCue is set, an external cue triggers boarding or claiming to proceed.
+            
+            If CapturedSignalCue is set, an external cue could be triggered after Target has been boarded or claimed.
+            If EndTriggerCue is set, an external cue triggers ending this script and cleanup.
+            
+          NB: if Target is a small ship, make sure that Target is abandoned before $ProceedTriggerCue is triggered.
+          
+        to do: support capturing groups? -->
+
+    <library name="Capture">
+      <params>
+        <param name="EndSignalCue"/>
+        <param name="MissionCue"/>
+        <param name="StartStep" default="1" comment="Briefing step to start the mission on"/>
+        <param name="CaptureStep" default="2" comment="Briefing step for the claiming or boarding operation"/>
+        <param name="UpdateBriefing" default="true" comment="Update the briefing objective step when the objective is updated"/>
+        <param name="HideUnknown" default="true" comment="Does not reveal information that is not known to the player"/>
+
+        <param name="Target" default="null" comment="Ship to board or claim"/>
+
+        <param name="TargetFaction" default="null" comment="Faction to which Target should belong"/>
+        <param name="TargetSpace" default="null" comment="Space in which Target will be looked for. Can be Cluster, Sector, or Zone"/>
+        <param name="TargetClass" default="null" comment="Class of the Target that will be looked for. Format: class.ship_s, class.ship_m, class.ship_l, class.ship_xl, class.station"/>
+
+        <param name="ReachedTargetSignalCue" default="null" comment="External cue to be signalled when player reaches the target"/>
+        <param name="ProceedTriggerCue" default="null" comment="Cue that signals boarding or claiming to proceed"/>
+
+        <param name="CapturedSignalCue" default="null" comment="External cue to be signalled when the target has been successfully captured"/>
+        <param name="EndTriggerCue" default="null" comment="Cue that signals this script to end."/>
+
+        <param name="DebugChance" default="0"/>
+      </params>
+      <actions>
+        <set_value name="$feedbackvalue" exact="0"/>
+        <create_list name="$ErrorList"/>
+
+        <do_if value="not $Target and not ($TargetFaction and $TargetSpace and $TargetClass)">
+          <append_to_list name="$ErrorList" exact="-101"/>
+          <do_if value="not $Target">
+            <append_to_list name="$ErrorList" exact="-110"/>
+          </do_if>
+          <do_if value="not $TargetFaction">
+            <append_to_list name="$ErrorList" exact="-111"/>
+          </do_if>
+          <do_if value="not $TargetSpace">
+            <append_to_list name="$ErrorList" exact="-112"/>
+          </do_if>
+          <do_if value="not $TargetClass">
+            <append_to_list name="$ErrorList" exact="-113"/>
+          </do_if>
+        </do_if>
+
+        <!-- $Board == 1, board. $Board == 0, claim. -->
+        <do_if value="$Target.isclass.[class.ship_xl, class.ship_l, class.station]">
+          <set_value name="$Board"/>
+        </do_if>
+        <do_elseif value="$Target.isclass.[class.ship_m, class.ship_s]">
+          <set_value name="$Board" exact="0"/>
+        </do_elseif>
+        <do_else>
+          <append_to_list name="$ErrorList" exact="-120"/>
+        </do_else>
+      </actions>
+      <cues>
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="1"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup"/>
+          </actions>
+        </cue>
+
+        <cue name="StartMission" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" exact="0"/>
+          </conditions>
+          <actions>
+            <debug_text text="'Mission to capture %1 started.'.[$Target.knownname]" chance="$DebugChance"/>
+            <do_if value="$Target">
+              <set_value name="$TargetFaction" exact="$Target.owner"/>
+              <set_value name="$TargetSpace" exact="$Target.sector"/>
+              <set_value name="$TargetClass" exact="$Target.class"/>
+            </do_if>
+            <do_elseif value="$TargetFaction and $TargetSpace and $TargetClass">
+              <do_if value="$TargetClass" exact="class.station">
+                <find_station name="$Target" owner="$TargetFaction" space="$TargetSpace"/>
+              </do_if>
+              <do_else>
+                <find_ship name="$Target" owner="$TargetFaction" space="$TargetSpace" class="$TargetClass"/>
+              </do_else>
+            </do_elseif>
+          </actions>
+          <cues>
+            <cue name="TargetDestroyed">
+              <conditions>
+                <event_object_destroyed object="$Target"/>
+              </conditions>
+              <actions>
+                <debug_text text="'%1 was destroyed'.[$Target.knownname]" chance="$DebugChance"/>
+                <signal_cue_instantly cue="md.GenericMissions.GenericFailLogbookEntry" param="[$MissionName, $Client]"/>
+                <set_value name="$feedbackvalue" exact="-1"/>
+                <remove_mission cue="MissionCue" type="failed"/>
+                <signal_cue cue="Cleanup"/>
+              </actions>
+            </cue>
+
+            <cue name="FlyTo_Ref" ref="md.RML_FlyTo.FlyTo">
+              <param name="EndSignalCue" value="Reached"/>
+              <param name="MissionCue" value="$MissionCue"/>
+              <param name="StartStep" value="$StartStep" comment="Briefing step to start the mission on"/>
+              <param name="UpdateBriefing" value="$UpdateBriefing"/>
+              <param name="HideUnknown" value="$HideUnknown"/>
+
+              <param name="Target" value="$Target"/>
+
+              <param name="DebugChance" value="$DebugChance"/>
+            </cue>
+
+            <cue name="Reached">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <debug_text text="'Target reached.'" chance="$DebugChance"/>
+                <do_if value="$ReachedTargetSignalCue">
+                  <signal_cue cue="$ReachedTargetSignalCue"/>
+                  <do_if value="not $ProceedTriggerCue">
+                    <signal_cue cue="ExecuteCapture"/>
+                    <cancel_cue cue="this"/>
+                  </do_if>
+                </do_if>
+                <do_else>
+                  <signal_cue cue="ExecuteCapture"/>
+                  <cancel_cue cue="this"/>
+                </do_else>
+              </actions>
+              <cues>
+                <cue name="Proceed">
+                  <conditions>
+                    <event_cue_signalled cue="$ProceedTriggerCue"/>
+                  </conditions>
+                  <actions>
+                    <debug_text text="'Proceed to ship capture.'" chance="$DebugChance"/>
+                    <signal_cue cue="ExecuteCapture"/>
+                    <cancel_cue cue="Reached"/>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="ExecuteCapture">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <cues>
+                <cue name="Board" onfail="cancel">
+                  <conditions>
+                    <check_value value="$Board"/>
+                  </conditions>
+                  <actions>
+                    <debug_text text="'Boarding %1'.[$Target.knownname]" chance="$DebugChance"/>
+                    <do_if value="$UpdateBriefing">
+                      <set_objective cue="$MissionCue" step="$CaptureStep" action="objective.board" object="$Target" checkunknown="$HideUnknown"/>
+                    </do_if>
+                  </actions>
+                </cue>
+                <cue name="Claim" onfail="cancel">
+                  <conditions>
+                    <check_value value="not $Board"/>
+                  </conditions>
+                  <actions>
+                    <debug_text text="'Claiming %1'.[$Target.knownname]" chance="$DebugChance"/>
+                    <do_if value="$UpdateBriefing">
+                      <!-- to do: change when objective.claim gets added. -->
+                      <set_objective cue="$MissionCue" step="$CaptureStep" action="objective.custom" object="$Target" customaction="{1010,5}" checkunknown="$HideUnknown"/>
+                    </do_if>
+                  </actions>
+                </cue>
+
+                <cue name="CaptureDone">
+                  <conditions>
+                    <event_object_changed_true_owner object="$Target"/>
+                    <check_value value="event.param" exact="faction.player"/>
+                    <!--<event_cue_signalled/>-->
+                  </conditions>
+                  <actions>
+                    <debug_text text="'%1 captured.'.[$Target.knownname]" chance="$DebugChance"/>
+                    <do_if value="$CapturedSignalCue">
+                      <signal_cue cue="CapturedSignalCue"/>
+                      <do_if value="not $EndTriggerCue">
+                        <set_value name="$feedbackvalue" exact="1"/>
+                        <signal_cue cue="Cleanup"/>
+                        <cancel_cue cue="this"/>
+                      </do_if>
+                    </do_if>
+                    <do_else>
+                      <set_value name="$feedbackvalue" exact="1"/>
+                      <signal_cue cue="Cleanup"/>
+                      <cancel_cue cue="this"/>
+                    </do_else>
+                  </actions>
+                  <cues>
+                    <cue name="End">
+                      <conditions>
+                        <event_cue_signalled cue="$EndTriggerCue"/>
+                      </conditions>
+                      <actions>
+                        <debug_text text="'End triggered'" chance="$DebugChance"/>
+                        <set_value name="$feedbackvalue" exact="1"/>
+                        <signal_cue cue="Cleanup"/>
+                        <cancel_cue cue="CaptureDone"/>
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+              </cues>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <do_if value="$feedbackvalue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'ERROR: Feedback value is 0 and no error values were set. Defaulting to -100'"/>
+                <set_value name="$feedbackvalue" exact="-100"/>
+              </do_if>
+              <do_else>
+                <set_value name="$feedbackvalue" exact="$ErrorList.{1}"/>
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+                    <do_if value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'RML was started with invalid or incomplete parameters.'"/>
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-110">
+                      <set_value name="$FeedbackText" exact="'Target was not set at start.'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-111">
+                      <set_value name="$FeedbackText" exact="'TargetFaction was not defined.'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-112">
+                      <set_value name="$FeedbackText" exact="'TargetSpace was not defined.'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-113">
+                      <set_value name="$FeedbackText" exact="'TargetClass was not defined.'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-120">
+                      <set_value name="$FeedbackText" exact="'defined Target is invalid'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-100">
+                      <set_value name="$FeedbackText" exact="'Undefined failure. Defaulted to -100'"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                    </do_else>
+
+                    <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+
+              <do_if value="$feedbackvalue" exact="-1">
+                <set_value name="$FeedbackText" exact="{30004,6020}" comment="'Mission failed. Target was destroyed.'"/>
+              </do_if>
+              <do_elseif value="$feedbackvalue" exact="1">
+                <set_value name="$FeedbackText" exact="'Target has been successfully captured.'"/>
+              </do_elseif>
+
+              <do_if value="$feedbackvalue" min="1">
+                <debug_text text="'Mission Successful. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_if>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission Failed. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+            <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$feedbackvalue"/>
+            <signal_cue cue="$EndSignalCue"/>
+            <cancel_cue cue="parent"/>
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

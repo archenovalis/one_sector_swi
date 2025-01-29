@@ -1,0 +1,285 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_LargeSupply" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--
+    This RML is intended for use in Master-Missions. 
+    It handles checking if the player delivered specified resources to stations.
+    
+    $feedbackvalue:
+    -103 $Faction parameter left undefined
+    -102 $StationSupply is incorrectly defined.
+    -101 Cue parameters not defined
+    -100: Undefined failure. Defaulted to -100
+    1: supplies partially delivered 
+    2: All supplies delivered -->
+
+    <library name="LargeSupply">
+      <params>
+        <param name="EndSignalCue"/>
+        <param name="MissionCue"/>
+        <param name="StartStep"       default="1"     comment="Briefing step to start the mission on"/>
+        <param name="UpdateBriefing"  default="true"  comment="Update the briefing objective step when the objective is updated"/>
+        <param name="DebugChance"     default="0" />
+
+        <param name="Text_Objective"            comment="Objective text for the 'deliver: ' objective"/>
+        <param name="StationSpace"              comment="Space in which to supply stations"/>
+        <param name="StationSupply"             comment="List of ware order tables the stations are looking for: [ table[$amount, $delivered, $ware] ]"/>
+        <param name="Faction"                   comment="The faction to which it needs to be delivered"/>
+      </params>
+      <actions>
+        <set_value name="$feedbackvalue" exact="0"/>
+        <create_list name="$ErrorList"/>
+
+        <do_if value="not $EndSignalCue or not $MissionCue">
+          <append_to_list name="$ErrorList" exact="-101"/>
+        </do_if>
+
+        <do_if value="typeof $StationSupply != datatype.list">
+          <append_to_list name="$ErrorList" exact="-102" />
+        </do_if>
+        <do_elseif value="$StationSupply.count" max="0">
+          <append_to_list name="$ErrorList" exact="-102" />
+        </do_elseif>
+
+        <do_if value="not $Faction">
+          <append_to_list name="$ErrorList" exact="-103"/>
+        </do_if>
+
+      </actions>
+      <cues>
+
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="1"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup"/>
+          </actions>
+        </cue>
+
+        <cue name="StartMission" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="0"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="UpdateBriefing"/>
+          </actions>
+          <cues>
+
+            <cue name="DebugDeliverSupply" instantiate="true">
+              <conditions>
+                <event_cue_signalled comment="manually trigger for testing TradeCompleted-cue"/>
+              </conditions>
+              <actions>
+
+                <set_value name="$index" min="1" max="$StationSupply.count"/>
+                <set_value name="$Ware" exact="$StationSupply.{$index}.$ware" />
+                <set_value name="$WareAmount" exact="$StationSupply.{$index}.$amount" />
+
+                <find_station name="$PossibleStations" owner="$Faction" space="player.galaxy" multiple="true">
+                  <match_buyoffer wares="[$Ware]"/>
+                </find_station>
+                <do_if value="$PossibleStations.count gt 0">
+
+                  <!-- Create a ship with the required wares, near a station buying (some of) them -->
+                  <set_value name="$Zone" exact="$PossibleStations.{1}.zone" />
+                  <create_ship name="$TraderLargeSolid" macro="ship_arg_l_trans_container_01_a_macro" zone="$Zone">
+                    <pilot group="argon.pilot">
+                      <owner exact="faction.player"/>
+                    </pilot>
+                    <units>
+                      <unit category="unitcategory.transport" mk="1" exact="5" />
+                      <unit category="unitcategory.repair" mk="1" exact="1" />
+                    </units>
+                    <!--loadout loadout="$loadout.{1}"/-->
+                    <owner exact="faction.player"/>
+                    <drop ref="standardwares"/>
+                    <safepos object="$PossibleStations.{1}" exact="8km"/>
+                  </create_ship>
+
+                  <debug_text text="'ship with idcode=' + $TraderLargeSolid.idcode + ' handling ware ' + $Ware"/>
+
+                  <add_cargo object="$TraderLargeSolid" ware="$Ware" min="50" max="100" />
+                  <!--add_cargo object="$TraderLargeSolid" ware="ware.missilecomponents" min="50" max="100" />
+                  <add_cargo object="$TraderLargeSolid" ware="ware.shieldcomponents" min="50" max="100" />
+                  <add_cargo object="$TraderLargeSolid" ware="ware.turretcomponents" min="50" max="100" />
+                  <add_cargo object="$TraderLargeSolid" ware="ware.weaponcomponents" min="50" max="100" />
+                  <add_cargo object="$TraderLargeSolid" ware="ware.medicalsupplies" min="50" max="100" /-->
+
+                  <find_buy_offer buyer="$PossibleStations.{1}" wares="[$Ware]" result="$BuyOffer"/>
+                  <create_trade_order object="$TraderLargeSolid" tradeoffer="$BuyOffer" amount="$WareAmount"/>
+
+                </do_if>
+                <do_else>
+                  <debug_text text="'RML_LargeSupply.DebugDeliverSupply: No stations looking for ' + $Ware + 'found.'"/>
+                </do_else>
+              </actions>
+            </cue>
+
+
+            <cue name="TradeCompleted" instantiate="true">
+              <conditions>
+                <event_player_trade_completed/>
+              </conditions>
+              <actions>
+                <set_value name="$trade" exact="event.param" />
+
+                <do_if value="$trade.seller.isplayerowned and $trade.buyer.owner == $Faction and $trade.buyer.hascontext.{$StationSpace}" comment="Filter player(Owned) selling to $Faction">
+                  <do_all exact="$StationSupply.count" counter="$Counter">
+                    <do_if value="$trade.ware == $StationSupply.{$Counter}.$ware" comment="is the ware which was traded in the list?">
+                      <set_value name="$StationSupply.{$Counter}.$delivered" exact="$trade.transferredamount" operation="add"/>
+                      <signal_cue cue="UpdateBriefing"/>
+                      <break/>
+                    </do_if>
+                  </do_all>
+                </do_if>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="UpdateBriefing" instantiate="true" comment="Called each time a briefing-update is needed">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <do_if value="$UpdateBriefing">
+
+              <set_value name="$Done" exact="[]"/>
+              <set_value name="$Remaining" exact="[]"/>
+
+              <do_all exact="$StationSupply.count" counter="$i">
+                <do_if value="$StationSupply.{$i}.$delivered ge $StationSupply.{$i}.$amount">
+                  <append_to_list name="$Done" exact="$StationSupply.{$i}"/>
+                </do_if>
+                <do_else>
+                  <append_to_list name="$Remaining" exact="$StationSupply.{$i}"/>
+                </do_else>
+              </do_all>
+
+              <do_if value="$Remaining.count" comment="Still trades which need to be completed">
+                <do_if value="$UpdateBriefing">
+                  <set_value name="$DoneCount" exact="$Done.count"/>
+                  <do_all exact="$DoneCount" counter="$i">
+                    <!--Done briefing objectives:
+                    (completed)Deliver: 123 x Energy Cells-->
+                    <substitute_text text="$ObjectiveText" source="{30004,1052}">
+                      <replace string="'$WARENAME$'" with="$Done.{$i}.$ware.name"/>
+                      <replace string="'$COUNT$'" with="$Done.{$i}.$amount"/>
+                    </substitute_text>
+
+                    <update_mission cue="$MissionCue">
+                      <briefing>
+                        <objective step="$StartStep + ($i - 1)" action="objective.deliver" text="$ObjectiveText"/>
+                      </briefing>
+                    </update_mission>
+                  </do_all>
+                  
+                  <!--Deliver: $ObjetiveText e.g. 'Construction wares to stations in Argon Prime'-->
+                  <update_mission cue="$MissionCue">
+                    <briefing>
+                      <objective step="$StartStep + $DoneCount" action="objective.deliver" text="$Text_Objective"/>
+                    </briefing>
+                  </update_mission>
+
+                  <do_all exact="$Remaining.count" counter="$i">
+                    <!--Remaining briefing objectives:
+                    Deliver: Energy Cells (66 / 123)-->
+                    <substitute_text text="$ObjectiveText" source="{30004,1053}">
+                      <replace string="'$WARENAME$'" with="$Remaining.{$i}.$ware.name"/>
+                      <replace string="'$COUNT$'" with="$Remaining.{$i}.$delivered"/>
+                      <replace string="'$TOTAL$'" with="$Remaining.{$i}.$amount"/>
+                    </substitute_text>
+
+                    <update_mission cue="$MissionCue">
+                      <briefing>
+                        <objective step="$StartStep + $DoneCount + $i" action="objective.deliver" text="$ObjectiveText"/>
+                      </briefing>
+                    </update_mission>
+                  </do_all>
+
+                  <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep + $Done.count + $Remaining.count"/>
+                  <set_objective cue="$MissionCue" step="$StartStep + $DoneCount" action="objective.deliver" text="$Text_Objective"/>
+                </do_if>
+                <do_else>
+                  <set_objective cue="$MissionCue" step="$StartStep" action="objective.deliver" text="$Text_Objective"/>
+                </do_else>
+              </do_if>
+              <do_else>
+                <set_value name="$feedbackvalue" exact="2" comment="all wares delivered"/>
+                <signal_cue cue="Cleanup" />
+              </do_else>
+            </do_if>
+
+          </actions>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+
+            <do_if value="$feedbackvalue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'ERROR: Feedback value is 0 and no error values were set. Defaulting to -100'"/>
+                <set_value name="$feedbackvalue" exact="-100"/>
+              </do_if>
+              <do_else>
+                <set_value name="$feedbackvalue" exact="$ErrorList.{1}"/>
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+                    <do_if value="$ErrorList.{$Counter}" exact="-103">
+                      <set_value name="$FeedbackText" exact="'$Faction parameter left undefined'"/>
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-102">
+                      <set_value name="$FeedbackText" exact="'$StationSupply is incorrectly defined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'Cue parameters not defined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-100">
+                      <set_value name="$FeedbackText" exact="'Undefined failure. Defaulted to -100'"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                    </do_else>
+
+                    <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+
+              <do_if value="$feedbackvalue" exact="1">
+                <set_value name="$FeedbackText" exact="'Delivered some supplies'"/>
+              </do_if>
+              <do_elseif value="$feedbackvalue" exact="2">
+                <set_value name="$FeedbackText" exact="'Delivered all supplies'"/>
+              </do_elseif>
+
+              <do_if value="$feedbackvalue" min="1">
+                <debug_text text="'Mission Successful. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_if>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission Failed. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+            </do_else>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+            <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$feedbackvalue"/>
+            <signal_cue cue="$EndSignalCue"/>
+            <cancel_cue cue="LargeSupply"/>
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

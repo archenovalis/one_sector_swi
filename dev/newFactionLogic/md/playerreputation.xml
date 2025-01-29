@@ -1,0 +1,909 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="PlayerReputation" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+    <!--Cue to be signalled from NPC_FactionRepresentative when an event happens in a ceremony (listened to by FactionRepresentativePromotionCallback)
+    param: [FactionRep, EventID (string), AdditionalParam(depending on EventID)]-->
+    <cue name="CeremonyEvent" instantiate="true">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+    </cue>
+
+    <cue name="DebugShowLicenses">
+      <conditions>
+        <event_cue_signalled/>
+        <check_value value="@player.target.owner"/>
+      </conditions>
+      <actions>
+        <set_value name="$Faction" exact="player.target.owner"/>
+        <set_faction_relation faction="faction.player" otherfaction="$Faction" value="0.1"/>
+        <debug_text text="'%s-vs-player rep=%s uitvalue=%s'.[
+                    $Faction,
+                    $Faction.relationto.{faction.player}, 
+                    $Faction.relation.{$Faction.relationto.{faction.player}}.uivalue
+                  ]"/>
+
+        <do_all exact="$Faction.licences.count" counter="$i">
+          <set_value name="$licence" exact="$Faction.licences.{$i}"/>
+          <debug_text text="'- license=%s haslicence=%s canhold=%s'.[$licence.type, faction.player.haslicence.{$licence}, faction.player.canholdlicence.{$licence}]" chance="100"/>
+        </do_all>
+        
+      </actions>
+    </cue>
+    
+
+    <!--cue name="DebugPlayerReputation">
+      <conditions>
+        <event_object_changed_zone object="player.entity" />
+      </conditions>
+      <actions>
+        <add_faction_relation faction="faction.teladi" otherfaction="faction.player" value="0.0007" reason="relationchangereason.killedobject"/>
+        <add_faction_relation faction="faction.antigone" otherfaction="faction.player" value="0.007" reason="relationchangereason.killedobject"/>
+      </actions>
+    </cue-->
+
+    <cue name="TrackPlayerReputation" namespace="this" onfail="cancel" mapeditor="false" version="3">
+      <conditions>
+        <check_value value="player.galaxy.macro == macro.xu_ep2_universe_macro" comment="only in main-galaxy"/>
+      </conditions>
+      <actions>
+        <set_value name="$DebugChance" exact="0" />
+
+        <!-- Faction relation ranges: [-1 enemy -0.1]  <-0.1 unfriendly -0.01]  <-0.01 neutral -0.01>  [+0.01 friendly +0.1>  [+0.1 member +0.5> [+0.5 ally +1] -->
+
+        <!--        range1 range2 comp1  comp2   string      mission? VoiceProm.  VoiceDemotion   OnPromotion-notifications                  OnDemotion-notifications -->
+        <!--         {1}     {2}   {3}   {4}     {5}          {6}    {7}           {8}           {9}                                         {10}                     -->
+        <set_value name="$FactionRelation" exact="[
+                  [ -1.00, -0.10, true,  true,  'enemy',      false, null        , null,         [],                                         []], 
+                  [ -0.10, -0.01, false, true,  'unfriendly', false, null        , null,         [],                                         [{30003,2004}, {30003,2016}, {30003,2009}]],
+                  [ -0.01, +0.01, false, false, 'neutral',    false, null        , {30003,2005}, [{30003,1004}, {30003,1016}, {30003,1009}], []],
+                  [ +0.01, +0.10, true,  false, 'friendly',   true,  {30003,1005}, {30003,2006}, [],                                         []],
+                  [ +0.10, +0.50, true,  true,  'member',     true,  {30003,1006}, null,         [],                                         [{30003,2023}]],
+                  [ +0.50, +1.00, true,  true,  'ally',       false, null        , null,         [{30003,1023}],                             [] ],
+              ]"/>
+      </actions>
+      <patch sinceversion="2" state="complete">
+        <!--Correct Ministry licence states as ally and friend minrelations were swapped-->
+        <do_if value="not @md.$FactionData.{faction.ministry}.$PromotionActive and (faction.player.haslicence.ceremonyfriend.{faction.ministry} or faction.player.canholdlicence.ceremonyfriend.{faction.ministry})">
+          <!--Player has or can hold the friend licence. Clean up any licences they shouldn't have and give them the correct one. If promotion ceremony is active, don't patch anything.-->
+          <do_if value="faction.player.haslicence.ceremonyfriend.{faction.ministry}">
+            <do_if value="not faction.player.canholdlicence.ceremonyfriend.{faction.ministry}">
+              <remove_licence faction="faction.player" licencefaction="faction.ministry" type="ceremonyfriend"/>
+              <debug_text text="'Removing Ministry friend licence which should not be held at this relation'" filter="savegame"/>
+            </do_if>
+          </do_if>
+          <do_elseif value="faction.player.canholdlicence.ceremonyfriend.{faction.ministry}">
+            <add_licence faction="faction.player" licencefaction="faction.ministry" type="ceremonyfriend"/>
+            <debug_text text="'Adding Ministry friend licence which should have been given at this relation'" filter="savegame"/>
+          </do_elseif>
+
+          <do_if value="faction.player.haslicence.ceremonyally.{faction.ministry}">
+            <do_if value="not faction.player.canholdlicence.ceremonyally.{faction.ministry}">
+              <remove_licence faction="faction.player" licencefaction="faction.ministry" type="ceremonyally"/>
+              <debug_text text="'Removing Ministry ally licence which should not be held at this relation'" filter="savegame"/>
+            </do_if>
+          </do_if>
+          <do_elseif value="faction.player.canholdlicence.ceremonyally.{faction.ministry}">
+            <add_licence faction="faction.player" licencefaction="faction.ministry" type="ceremonyally"/>
+            <debug_text text="'Adding Ministry ally licence which should have been given at this relation'" filter="savegame"/>
+          </do_elseif>
+        </do_if>
+      </patch>
+      <patch sinceversion="3" state="complete">
+        <!-- DLC_Timelines_TrackPlayerReputation_patchmarker -->
+      </patch>
+
+      <cues>
+
+        <library name="CalculateFactionRelation">
+          <!-- Input:  $NewValue,    $OldValue    (relationship value in range -1 to +1
+               Output: $RelationNew, $RelationOld (indexes into above array)-->
+          <actions>
+            <!-- find the previous and the new faction-relation -->
+            <set_value name="$LocalRelation" exact="md.PlayerReputation.TrackPlayerReputation.$FactionRelation"/>
+            <do_all exact="$LocalRelation.count" counter="$i">
+              <do_if value="(if $LocalRelation.{$i}.{3} then $NewValue ge $LocalRelation.{$i}.{1} else $NewValue gt $LocalRelation.{$i}.{1}) and 
+                              (if $LocalRelation.{$i}.{4} then $NewValue le $LocalRelation.{$i}.{2} else $NewValue lt $LocalRelation.{$i}.{2})">
+                <!--debug_text text="'Found-new at ' + $i + ' for ' + $NewValue" chance="$DebugChance" /-->
+                <set_value name="$RelationNew" exact="$i" comment="index into the $FactionRelation-table"/>
+              </do_if>
+              <do_if value="(if $LocalRelation.{$i}.{3} then $OldValue ge $LocalRelation.{$i}.{1} else $OldValue gt $LocalRelation.{$i}.{1}) and 
+                              (if $LocalRelation.{$i}.{4} then $OldValue le $LocalRelation.{$i}.{2} else $OldValue lt $LocalRelation.{$i}.{2})">
+                <!--debug_text text="'Found-old at ' + $i + ' for ' + $OldValue" chance="$DebugChance" /-->
+                <set_value name="$RelationOld" exact="$i" comment="index into the $FactionRelation-table"/>
+              </do_if>
+            </do_all>
+            <remove_value name="$LocalRelation"/>
+          </actions>
+        </library>
+
+        <cue name="Base" instantiate="true">
+          <conditions>
+            <check_any>
+              <event_player_relation_changed />
+              <event_cue_signalled/>
+            </check_any>
+          </conditions>
+          <actions>
+            <debug_text text="event.name" chance="$DebugChance"/>
+
+            <set_value name="$Faction" exact="null"/>
+            <do_if value="event.name == 'event_player_relation_changed'">
+              <do_if value="not event.object">
+                <set_value name="$Faction"            exact="event.param" />
+                <set_value name="$NewValue"           exact="event.param2.{1}" />
+                <set_value name="$OldValue"           exact="event.param2.{2}" />
+              </do_if>
+              <do_else>
+                <debug_text text="'Player\'s relation has been boosted - ignore'" chance="$DebugChance" />
+              </do_else>
+            </do_if>
+            <do_else>
+              <set_value name="$Faction"            exact="event.param.{1}" />
+              <set_value name="$NewValue"           exact="event.param.{2}" />
+              <set_value name="$OldValue"           exact="event.param.{3}" />
+            </do_else>
+            <do_if value="$Faction">
+              <!-- calculate factionrelation ($RelationNew and $RelationOld from $NewValue and $OldValue) -->
+              <include_actions ref="CalculateFactionRelation"/>
+
+              <assert value="$RelationNew and $RelationOld" text="'Unable to determine faction-relation (RB)'"/>
+              <debug_text text="'Player\'s relationship with %s was %s(%s) and is now %s(%s) - delta=%s'.[$Faction.name, $FactionRelation.{$RelationOld}.{5}, $OldValue, $FactionRelation.{$RelationNew}.{5}, $NewValue, ($NewValue - $OldValue)]" chance="$DebugChance" />
+
+              <do_if value="$RelationNew != $RelationOld">
+                <do_if value="$RelationOld lt $RelationNew">
+                  <!-- Promotion (some effects instant, some applied after talking to faction-representative (or instant, if no representative available) -->
+                  <set_value name="this.$PromotionMissionOffer" exact="false"/>
+                  <set_value name="this.$RankName" exact="''" comment="store the rank, if any, because if we go from -10 to +27 then the PromotionMission-cue can't otherwise determine that with the info it has"/>
+
+                  <set_value name="$iter" exact="$RelationOld"/>
+                  <do_while value="$iter lt $RelationNew">
+                    <set_value name="$iter" operation="add"/>
+                    <debug_text text="'checking level %s (%s) haspromotion=%s'.[$iter, $FactionRelation.{$iter}.{5}, $FactionRelation.{$iter}.{6}]" chance="$DebugChance"/>
+                    <do_if value="$FactionRelation.{$iter}.{6}">
+                      <set_value name="this.$PromotionMissionOffer" exact="true" comment="any 'true' in the table, on the way from oldrel to newrel?"/>
+                      <do_if value="$iter" exact="4">
+                        <set_value name="this.$RankName" exact="$Faction.licence.ceremonyfriend.name" comment="remember the best rank name"/>
+                      </do_if>
+                      <do_elseif value="$iter" exact="5">
+                        <set_value name="this.$RankName" exact="$Faction.licence.ceremonyally.name" comment="remember the best rank name"/>
+                      </do_elseif>
+                    </do_if>
+
+                    <!-- Show OnPromotion-notifications -->
+                    <do_all exact="$FactionRelation.{$iter}.{9}.count" counter="$ni">
+                      <show_notification text="[$FactionRelation.{$iter}.{9}.{$ni}, '', $Faction.name]" />
+                    </do_all>
+                  </do_while>
+
+                  <!-- Trigger promotion mission, if required (no promotion-mission needed from enemy to unfriendly) -->
+                  <do_if value="@md.$FactionData.{$Faction}.$PromotionActive">
+                    <!-- promotion is already active, the running mission will handle a double-promotion -->
+                    <debug_text text="'promotion-mission already running ($RelationNew=' + $RelationNew + ' entry=' + $FactionRelation.{$RelationNew}.{6}" chance="$DebugChance"/>
+                  </do_if>
+                  <do_elseif value="this.$PromotionMissionOffer">
+                    <set_value name="$Parameters" exact="[$Faction, $RelationNew, $RelationOld, $NewValue, $OldValue, this.$RankName]" />
+
+                    <set_value name="$Headquarters" exact="@md.$FactionData.{$Faction}.$Headquarters" />
+                    <set_value name="$Representative" exact="@md.$FactionData.{$Faction}.$Representative" />
+
+                    <do_if value="$Headquarters and $Representative">
+                      <signal_cue_instantly cue="PromotionMission" param="$Parameters" />
+                    </do_if>
+                    <do_else>
+                      <signal_cue_instantly cue="PromotionInstant" param="$Parameters" />
+                    </do_else>
+
+                  </do_elseif>
+                  <do_else>
+                    <debug_text text="'No promotion ceremony for this relationchange ($RelationNew=%s, entry=%s)'.[$RelationNew, $FactionRelation.{$RelationNew}.{6}]" chance="$DebugChance"/>
+                    <include_actions ref="UpdateNonPromotionLicences" comment="Add free licenses, if any (matching min-relation and price = 0"/>
+                  </do_else>
+
+                  <include_actions ref="UpdateInstantPromotionLicences" comment="Add instance licenses to be gained instantly when reaching a promotion threshold"/>
+
+                  <!-- Notify about new voice/treatment -->
+                  <do_if value="$FactionRelation.{$RelationNew}.{7}">
+                    <show_notification text="[$FactionRelation.{$RelationNew}.{7}, '', $Faction.name]" />
+                  </do_if>
+
+                </do_if>
+                <do_else>
+                  <!-- Demotion (all effects instant) -->
+
+                  <!-- loop from old index to new index (passing all relevant faction-relation levels for demotions -->
+                  <set_value name="$iter" exact="$RelationOld"/>
+                  <do_while value="$iter gt $RelationNew">
+                    <set_value name="$iter" operation="subtract"/>
+                    <!-- Show OnDemotion-notifications -->
+                    <do_all exact="$FactionRelation.{$iter}.{10}.count" counter="$ni">
+                      <show_notification text="[$FactionRelation.{$iter}.{10}.{$ni}, '', $Faction.name]" />
+                    </do_all>
+                  </do_while>
+
+                  <!-- check all licences the player has with this faction; strip away if necessary -->
+                  <set_value name="$iter" exact="$RelationOld"/>
+                  <create_list name="$LicencesToRemove"/>
+                  <do_all exact="faction.player.heldlicences.count" counter="$i">
+                    <set_value name="$licence" exact="faction.player.heldlicences.{$i}"/>
+                    <do_if value="($licence.faction == $Faction) and not (faction.player.canholdlicence.{$licence})">
+                      <debug_text text="$licence + ' queue-for-removal'" chance="$DebugChance"/>
+                      <append_to_list name="$LicencesToRemove" exact="$licence"/>
+                    </do_if>
+                    <do_else>
+                      <debug_text text="$licence + ' keep'" chance="$DebugChance"/>
+                    </do_else>
+                  </do_all>
+
+                  <!-- *instantly* remove licences (ranks are also licences) and show summarized notifications -->
+                  <set_value name="$LicencesToRemoveText" exact="''"/>
+                  <set_value name="$RanksToRemoveText" exact="''"/>
+                  <do_for_each name="$licence" in="$LicencesToRemove">
+                    <do_if value="$licence.type == 'ceremonyfriend' or $licence.type == 'ceremonyally'">
+                      <set_value name="$RanksToRemoveText" exact="$RanksToRemoveText + $licence.name + '\n'"/>
+                    </do_if>
+                    <do_else>
+                      <set_value name="$LicencesToRemoveText" exact="$LicencesToRemoveText + $licence.name + '\n'"/>
+                    </do_else>
+                    <remove_licence licence="$licence" />
+                  </do_for_each>
+
+                  <do_if value="$RanksToRemoveText != ''">
+                    <show_notification text="{30003,2001} + '\n' + $RanksToRemoveText" comment="You have been stripped of rank(s):"/>
+                  </do_if>
+
+                  <!--do_if value="$LicencesToRemoveText != ''">
+                    <show_notification text="{30003,2002} + '\n' + $LicencesToRemoveText" comment="You have been stripped of licence:"/>
+                  </do_if-->
+                  <run_actions ref="LicencesInformPlayer">
+                    <param name="Faction"   value="$Faction"/>
+                    <param name="Gained"    value="false" />
+                    <param name="Licenses"  value="$LicencesToRemove"/>
+                    <param name="logbook"   value="true"/>
+                    <param name="email"     value="true"/>
+                  </run_actions>
+
+                  <!-- Notify about new voice/treatment -->
+                  <do_if value="$FactionRelation.{$RelationNew}.{8}">
+                    <show_notification text="[$FactionRelation.{$RelationNew}.{8}, '', $Faction.name]" />
+                  </do_if>
+                </do_else>
+
+                <remove_value name="$RelationNew"/>
+                <remove_value name="$RelationOld"/>
+              </do_if>
+              <do_else>
+                <debug_text text="'Player\'s relationship with ' + $Faction.name + ' remains as-is.'" chance="$DebugChance" />
+              </do_else>
+
+            </do_if>
+
+          </actions>
+        </cue>
+
+
+        <!-- Input: $Faction
+        -->
+        <library name="UpdateNonPromotionLicences" comment="licences check for any reputation-level changes which do NOT signal a promotion invitation (see mission-field in the $FactionRelation table further above, so eg 0-9, 11-19)" >
+          <actions>
+            <debug_text text="'checking nonpromotion-licences'" chance="$DebugChance"/>
+            <do_all exact="$Faction.licences.count" counter="$i">
+              <set_value name="$licence" exact="$Faction.licences.{$i}"/>
+
+              <do_if value="faction.player.haslicence.{$licence}">
+                <debug_text text="$licence + ' no (already has it)'" chance="$DebugChance"/>
+              </do_if>
+              <do_elseif value="faction.player.canholdlicence.{$licence} and $licence.price == 0">
+                <add_licence licence="$licence" />
+                <debug_text text="'+ faction=%s haslicence=%s canholdlicence=%s price=%s licence=%s'.[$Faction, faction.player.haslicence.{$licence}, faction.player.canholdlicence.{$licence}, $licence.price, $licence.name]" chance="$DebugChance"/>
+              </do_elseif>
+            </do_all>
+          </actions>
+        </library>
+
+
+        <!-- Input: $Faction
+        -->
+        <library name="UpdateInstantPromotionLicences" comment="licenses you get instantly when invited for the promotion ceremony (+10, +20)">
+          <actions>
+            <debug_text text="'checking promotion-instant licences'" chance="$DebugChance"/>
+            <do_all exact="$Faction.licences.count" counter="$i">
+              <set_value name="$licence" exact="$Faction.licences.{$i}"/>
+              <do_if value="($licence.type == 'innercore_access' or $licence.type == 'outercore_access') and (not faction.player.haslicence.{$licence}) and (faction.player.canholdlicence.{$licence}) and ($licence.price == 0)">
+                <add_licence licence="$licence" />
+                <debug_text text="'+ type=%s name=%s (added)'.[$licence.type, $licence.name]" chance="$DebugChance"/>
+
+                <do_if value="@$AccessGrantedCoHPatchMarker" comment="actual condition and actions patched in by the CoH-DLC">
+                </do_if>
+
+              </do_if>
+            </do_all>
+          </actions>
+        </library>
+
+        <library name="GiftedWares" purpose="run_actions" comment="wares locked behind a license, given together with the license">
+          <params>
+            <param name="Faction"/>
+            <param name="License"       comment="license in question"/>
+          </params>
+          <actions>
+            <get_ware_definition result="$wares" faction="$Faction" tags="tag.rewarded">
+              <owner licence="$License"/>
+            </get_ware_definition>
+            <do_for_each name="$ware" in="$wares">
+              <do_if value="(not $ware.hastag.noblueprint and not $ware.hastag.noplayerblueprint) and ($ware.hastag.ship or $ware.hastag.module or $ware.hastag.equipment)" comment="can not have the noblueprint or noplayerblueprint flags, and must be either ship/module/equipment">
+                <debug_text text="'rewarded blueprint ware=`%s`'.[$ware]" chance="$DebugChance"/>
+                <add_blueprints wares="$ware"/>
+              </do_if>
+              <do_else>
+                <debug_text text="'ware %s cannot be rewarded (tags=%s)'.[$ware, $ware.tags]" filter="error" comment="Not a valid ware for rewarding a blueprint"/>
+              </do_else>
+            </do_for_each>
+            <add_blueprints />
+          </actions>
+        </library>
+
+        <!-- Input: $Faction
+        Output: $ShipsAndEquipment, $PoliceCanBuy, $Subgroups, $LicencesToAdd[] -->
+        <library name="CalculateLicences">
+          <actions>
+            <!-- check which ranks the player gains (these are 'precursor' for other licences, so handle first)! -->
+            <debug_text text="'CalculateLicences player-vs-%s (rep%s uivalue=%s)'.[$Faction, $Faction.relationto.{faction.player}, $Faction.relation.{$Faction.relationto.{faction.player}}.uivalue]" chance="$DebugChance"/>
+            <do_all exact="$Faction.licences.count" counter="$i">
+              <set_value name="$licence" exact="$Faction.licences.{$i}"/>
+              <debug_text text="'- checking %s canhold=%s'.[$licence.type, faction.player.canholdlicence.{$licence}]" chance="$DebugChance"/>
+              <do_if value="faction.player.canholdlicence.{$licence}">
+                <do_if value="$licence.type == 'ceremonyfriend' or $licence.type == 'ceremonyally'">
+                  <add_licence licence="$licence" />
+                  <run_actions ref="GiftedWares">
+                    <param name="Faction"   value="$Faction"/>
+                    <param name="License"   value="$licence"/>
+                  </run_actions>
+                </do_if>
+              </do_if>
+            </do_all>
+
+            <!-- Check which other licences to add -->
+            <set_value name="$ShipsAndEquipment" exact="false" />
+            <set_value name="$PoliceCanBuy" exact="false" />
+            <set_value name="$Subgroups" exact="false" />
+
+            <create_list name="$LicencesToAdd"/>
+            <do_all exact="$Faction.licences.count" counter="$i">
+              <set_value name="$licence" exact="$Faction.licences.{$i}"/>
+
+              <do_if value="faction.player.haslicence.{$licence}">
+                <debug_text text="$licence + ' no (already has it)'" chance="$DebugChance"/>
+              </do_if>
+              <do_elseif value="$licence.issellable" comment="filter out licences which are sold">
+                <do_if value="(faction.player.canholdlicence.{$licence}) and $Faction.licence.police">
+                  <set_value name="$PoliceCanBuy" exact="true" />
+                </do_if>
+                <debug_text text="$licence + ' no (sold)'" chance="$DebugChance"/>
+              </do_elseif>
+              <do_elseif value="$licence.type == 'ceremonyfriend' or $licence.type == 'ceremonyally'" comment="filter out ranks">
+                <debug_text text="$licence + ' no (rank)'" chance="$DebugChance"/>
+              </do_elseif>
+              <do_elseif value="(faction.player.canholdlicence.{$licence})">
+                <debug_text text="$licence + ' yes'" chance="$DebugChance"/>
+                <!-- update some bools, which determine which textlines the representative will speak -->
+                <do_if value="$Faction.licence.militaryship or $Faction.licence.militaryequipment or $Faction.licence.capitalship or $Faction.licence.capitalequipment">
+                  <set_value name="$ShipsAndEquipment" exact="true" />
+                </do_if>
+                <do_elseif value="$Faction.licence.subgroupfriend">
+                  <set_value name="$Subgroups" exact="true" />
+                </do_elseif>
+
+                <append_to_list name="$LicencesToAdd" exact="$licence"/>
+                <add_licence licence="$licence" />
+                <run_actions ref="GiftedWares">
+                  <param name="Faction"   value="$Faction"/>
+                  <param name="License"   value="$licence"/>
+                </run_actions>
+              </do_elseif>
+              <do_else>
+                <debug_text text="$licence + ' no (not unlocked)'" chance="$DebugChance"/>
+              </do_else>
+            </do_all>
+          </actions>
+        </library>
+
+        <library name="LicencesNotificationsAndLogbook">
+          <actions>
+            <!-- licences header for logbook -->
+            <do_if value="$LicencesToAdd.count">
+              <append_to_list name="$LogbookText" exact="readtext.{30003}.{1002}" />
+              <set_value name="$EmailText" exact="readtext.{30003}.{1018} + '\n'"/>
+            </do_if>
+
+            <!-- licence notifications-->
+            <set_value name="$LicencesText2" exact="''"/>
+
+            <do_while value="$LicencesToAdd.count" >
+
+              <do_all exact="$LicencesToAdd.count" counter="$i" reverse="true">
+
+                <append_to_list name="$LogbookText" exact="'\n' + $licence.name" />
+                <set_value name="$EmailText" exact="$EmailText + '\n   ' + $licence.name"/>
+                <set_value name="$licence" exact="$LicencesToAdd.{$LicencesToAdd.count}"/>
+                <remove_value name="$LicencesToAdd.{$LicencesToAdd.count}"/>
+
+              </do_all>
+
+            </do_while>
+
+            <set_value name="$EmailText" exact="$EmailText + '\n\n' + {30003,1020}"/>
+            <show_notification text="{30003,1019} + '\n' + $LicencesText2" comment="You have been granted licences:" />
+
+          </actions>
+        </library>
+
+        <library name="LicencesInformPlayer" purpose="run_actions">
+          <params>
+            <param name="Faction"/>
+            <param name="Gained"        comment="true=gained, false=lost"/>
+            <param name="Licenses"      comment="change in licenses (either gained, or lost)"/>
+            <param name="logbook"       default="false"/>
+            <param name="email"         default="false"/>
+          </params>
+          <actions>
+
+            <set_value name="$Rank" exact="''"/>
+
+            <debug_text text="'Lost Licenses:%s $Rank=%s Gained=%s'.[$Licenses, $Rank, $Gained]" chance="0"/>
+
+            <do_if value="$Licenses.count and ($logbook or $email)">
+              <!-- set $Title and $EmailText -->
+              <do_if value="$Gained">
+                <!-- determine Rank text on promotion -->
+                <do_if value="faction.player.haslicence.ceremonyfriend.{$Faction}">
+                  <set_value name="$Rank" exact="$Faction.licence.ceremonyfriend.name"/>
+                </do_if>
+                <do_if value="faction.player.haslicence.ceremonyally.{$Faction}" comment="Ally is more important than friend, overwrite">
+                  <set_value name="$Rank" exact="$Faction.licence.ceremonyally.name"/>
+                </do_if>
+                <substitute_text text="$Title" source="readtext.{30003}.{1017}" comment="Promotion to: xxx">
+                  <replace string="'$RANK$'" with="$Rank" />
+                </substitute_text>
+                <set_value name="$EmailText" exact="readtext.{30003}.{1018} + '\n'" comment="You have been granted licences:"/>
+              </do_if>
+              <do_else>
+                <!-- determine Rank text on demotion -->
+                <do_for_each name="$licence" in="$Licenses">
+                  <do_if value="$licence.type == 'ceremonyfriend' or $licence.type == 'ceremonyally'">
+                    <set_value name="$Rank" exact="$Rank + '\n  ' + $licence.name"/>
+                  </do_if>
+                </do_for_each>
+                <set_value name="$Title" exact="readtext.{30003}.{2020}" comment="You have been stripped of your Rank"/>
+                <set_value name="$EmailText" exact="readtext.{30003}.{2001} + $Rank" comment="You have been stripped of rank: "/>
+                <set_value name="$EmailText" exact="$EmailText + '\n\n' + readtext.{30003}.{2022}" comment="The following licences have been revoked:"/>
+              </do_else>
+
+              <!-- licence names -->
+              <do_for_each name="$licence" in="$Licenses">
+                <do_if value="($licence.type != 'ceremonyfriend') and ($licence.type != 'ceremonyally')">
+                  <set_value name="$EmailText" exact="$EmailText + '\n   ' + $licence.name"/>
+                </do_if>
+              </do_for_each>
+
+              <do_if value="$logbook">
+                <do_if value="$Gained">
+                  <write_to_logbook category="general" title="$Title" text="{30003,1019}" faction="$Faction" comment=">You have been granted licences" />
+                </do_if>
+                <do_else>
+                  <write_to_logbook category="general" title="$Title" text="{30003,2021}" faction="$Faction" comment="Lost rank + connected privileges" />
+                </do_else>
+              </do_if>
+              <do_if value="$email">
+                <do_if value="$Gained">
+                  <set_value name="$EmailText" exact="$EmailText + '\n\n' + {30003,1020}" comment="Should you lose your standing with this faction, your licenses will be revoked."/>
+                </do_if>
+                <write_incoming_message title="$Title" text="$EmailText" source="$Faction.knownname" highpriority="true" comment="License Email"/>
+              </do_if>
+            </do_if>
+            <do_else>
+              <debug_text text="'Ignored (licenses=%s, logbook=%s, email=%s)'.[$Licenses.count, $logbook, $email]" chance="0"/>
+            </do_else>
+            <!--Inform player about access to live stream view-->
+            <do_if value="$Gained">
+              <do_if value="faction.player.haslicence.ceremonyfriend.{$Faction} and not faction.player.haslicence.ceremonyally.{$Faction}">
+                <substitute_text text="$LiveStreamTitle" source="{30005,12100}">
+                  <replace string="'$FACTION$'" with="$Faction.knownname"/>
+                </substitute_text>
+                <set_value name="$LiveStreamText" exact="{30005,12111} + '\n' + {30005,12113}"/>
+                <write_incoming_message title="$LiveStreamTitle" text="$LiveStreamText" source="$Faction.knownname" highpriority="false" comment="Live Stream Email"/>
+              </do_if>
+              <do_if value="faction.player.haslicence.ceremonyally.{$Faction}">
+                <substitute_text text="$LiveStreamTitle" source="{30005,12100}">
+                  <replace string="'$FACTION$'" with="$Faction.knownname"/>
+                </substitute_text>
+                <set_value name="$LiveStreamText" exact="{30005,12112} + '\n' + {30005,12113}"/>
+                <write_incoming_message title="$LiveStreamTitle" text="$LiveStreamText" source="$Faction.knownname" highpriority="false" comment="Live Stream Email"/>
+              </do_if>
+            </do_if>
+          </actions>
+        </library>
+
+        <cue name="PromotionInstant" instantiate="true" namespace="this" version="2">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <set_value name="$DebugChance"       exact="md.PlayerReputation.TrackPlayerReputation.$DebugChance"/>
+            <set_value name="$Faction"           exact="event.param.{1}" />
+            <set_value name="$RelationNewParam"  exact="event.param.{2}" />
+            <set_value name="$RelationOldParam"  exact="event.param.{3}" />
+
+            <remove_value name="md.$FactionData.{$Faction}.$PromotionActive"/>
+
+            <debug_text text="'No $Headquarters and/or $Representative available - instantly promoting player'" chance="$DebugChance" />
+
+            <!-- determine which ranks & licenses to add and applies those changes -->
+            <include_actions ref="CalculateLicences" comment="returns $ShipsAndEquipment, $PoliceCanBuy, $Subgroups, $LicencesToAdd[]"/>
+
+          </actions>
+          <patch sinceversion="2">
+            <set_value name="$DebugChance"       exact="md.PlayerReputation.TrackPlayerReputation.$DebugChance"/>
+            <set_value name="$Faction"           exact="parent.namespace.$Faction" />
+            <set_value name="$RelationNewParam"  exact="parent.namespace.$RelationNewParam" />
+            <set_value name="$RelationOldParam"  exact="parent.namespace.$RelationOldParam" />
+          </patch>
+          <cues>
+            <cue name="DelayedRankNotification">
+              <delay exact="7s"/>
+              <actions>
+                <!-- rank notification -->
+                <do_if value="faction.player.haslicence.ceremonyally.{$Faction}">
+                  <set_value name="$TitlePostfix" exact="$Faction.licence.ceremonyally.name" />
+                  <show_notification text="[{30003,1001}, '', $Faction.licence.ceremonyally.name]" />
+                </do_if>
+                <do_elseif value="faction.player.haslicence.ceremonyfriend.{$Faction}">
+                  <set_value name="$TitlePostfix" exact="$Faction.licence.ceremonyfriend.name" />
+                  <show_notification text="[{30003,1001}, '', $Faction.licence.ceremonyfriend.name]" />
+                </do_elseif>
+                <do_else>
+                  <!-- This can happen if you were demoted during the 7 second delay, in which case we don't display the notification/logbook-entry -->
+                </do_else>
+              </actions>
+              <cues>
+                <cue name="DelayedLicensesNotification">
+                  <conditions>
+                    <event_cue_completed cue="DelayedRankNotification"/>
+                  </conditions>
+                  <delay exact="7s"/>
+                  <actions>
+                    <!-- show notifications and logbook text-->
+                    <!-- and add to logbook -->
+                    <do_if value="$TitlePostfix?">
+                      <run_actions ref="LicencesInformPlayer">
+                        <param name="Faction"   value="$Faction"/>
+                        <param name="Gained"    value="true" />
+                        <param name="Licenses"  value="$LicencesToAdd"/>
+                        <param name="logbook"   value="true"/>
+                        <param name="email"     value="true"/>
+                      </run_actions>
+                    </do_if>
+                    <do_else>
+                      <debug_text text="'Skipped logbook/notification'" chance="$DebugChance"/>
+                    </do_else>
+                  </actions>
+                  <cues>
+                    <cue name="DelayedPoliceNotification">
+                      <conditions>
+                        <event_cue_completed cue="DelayedLicensesNotification"/>
+                      </conditions>
+                      <delay exact="7s"/>
+                      <actions>
+                        <!-- police licence notification -->
+                        <do_if value="$PoliceCanBuy">
+                          <show_notification text="[{30003,1010}, '', $Faction.licence.police.name]" comment="You can now purchase:"/>
+                        </do_if>
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+              </cues>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="PromotionMissionDelayedHint" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <delay exact="20s"/>
+          <actions>
+            <show_help line="920" position="1" comment="You were invited by a faction representative to be rewarded."/>
+            <show_help line="921" position="1" comment="Open your mission interface to activate the invitation mission."/>
+          </actions>
+        </cue>
+
+        <!-- Promotion Mission (basically a dummy-mission, waiting checking "not md.$FactionData.{$Faction}.$PromotionActive?" ) -->
+        <cue name="PromotionMission" instantiate="true" namespace="this" version="2">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <actions>
+            <signal_cue cue="PromotionMissionDelayedHint" comment="trigger tutorial hints"/>
+
+            <set_value name="$DebugChance" exact="parent.namespace.$DebugChance" comment="needed because of namespace"/>
+            <set_value name="$Faction"       exact="event.param.{1}" />
+            <set_value name="$RelationNewParam"  exact="event.param.{2}" />
+            <set_value name="$RelationOldParam"  exact="event.param.{3}" />
+            <set_value name="$RelationNewValue"  exact="event.param.{4}" />
+            <set_value name="$RelationOldValue"  exact="event.param.{5}" />
+            <set_value name="$RankName"          exact="event.param.{6}" />
+
+            <set_value name="$Headquarters" exact="md.$FactionData.{$Faction}.$Headquarters" />
+            <set_value name="$Representative" exact="md.$FactionData.{$Faction}.$Representative" />
+
+            <do_if value="$Headquarters and $Representative">
+              <debug_text text="'Talk to representative for ' + $Faction.name + ' for promotion ('+$RelationOldParam+'->'+$RelationNewParam+')'" chance="$DebugChance" />
+              <debug_text text="'$Representative for ' + $Faction.name + ': ' + $Representative.name + '. $Headquarters is in ' + $Headquarters.sector.knownname + ', ' + $Headquarters.cluster.knownname" chance="$DebugChance" />
+
+              <!-- Text -->
+              <do_if value="$RelationNewParam" exact="4">
+                <do_if value="$Faction.licence.outercore_access.exists and faction.player.canholdlicence.outercore_access.{$Faction}" comment="PromotionMission-cue was signalled instantly, so player doesn't have this license yet (but will shortly)">
+                  <set_value name="$AccessText" exact="{20207,8013}"/>
+                </do_if>
+              </do_if>
+              <do_elseif value="$RelationNewParam" exact="5">
+                <do_if value="$Faction.licence.innercore_access.exists and faction.player.canholdlicence.innercore_access.{$Faction}" comment="PromotionMission-cue was signalled instantly, so player doesn't have this license yet (but will shortly)">
+                  <set_value name="$AccessText" exact="{20207,8003}"/>
+                </do_if>
+              </do_elseif>
+
+              <substitute_text text="$MissionName" source="readtext.{30003}.{10001}" comment="Promotion to: $RANK$">
+                <replace string="'$RANK$'" with="$RankName" />
+              </substitute_text>
+              <substitute_text text="$MissionDescription" source="readtext.{30003}.{10002}">
+                <replace string="'$FACTION$'" with="$Faction.name" />
+              </substitute_text>
+              <substitute_text text="$RewardText" source="readtext.{30003}.{10003}">
+                <replace string="'$RANK$'" with="$RankName" />
+              </substitute_text>
+
+              <!-- Create Mission -->
+              <create_mission cue="PromotionMission" name="$MissionName" description="$MissionDescription" faction="$Faction" difficulty="level.trivial" type="missiontype.talkto" rewardtext="$RewardText" activate="not player.hasactivemission" abortable="false" comment="Abortable == false is subject to change">
+                <briefing>
+                  <objective step="1" action="objective.talkto" object="$Representative" />
+                </briefing>
+              </create_mission>
+              <set_objective cue="PromotionMission" step="1" action="objective.talkto" object="$Representative" />
+              <set_value name="md.$FactionData.{$Faction}.$PromotionActive" exact="true" />
+
+              <!-- Send invitation email -->
+
+              <substitute_text text="$Title" source="readtext.{30003}.{12001}">
+                <replace string="'$FACTION$'" with="$Faction" />
+              </substitute_text>
+
+              <substitute_text text="$EmailText" source="readtext.{30003}.{12002} +'\n\n' + readtext.{30003}.{12003} + readtext.{30003}.{12004} + (if $AccessText? then '\n\n' + $AccessText else '') +  '\n\n' + readtext.{30003}.{12006} + '\n\n' + if $Representative.isfemale then readtext.{30003}.{12007} else  readtext.{30003}.{12008}">
+                <replace string="'$RANK$'" with="$RankName" />
+                <replace string="'$FACTION$'" with="$Faction" />
+              </substitute_text>
+
+              <write_incoming_message title="$Title" text="$EmailText" source="$Faction.knownname" highpriority="true" comment="License Email"/>
+
+            </do_if>
+            <do_else>
+              <debug_text text="'No Headquarters or RepresentativeHQ  for faction ' + $Faction.name" filter="error"/>
+            </do_else>
+          </actions>
+          <patch sinceversion="2" state="complete">
+            <do_if value="not md.$Patch_ActivePromotionMissions?">
+              <create_list name="md.$Patch_ActivePromotionMissions"/>
+            </do_if>
+            <debug_text text="'active ' + namespace + ' ' + $Faction" chance="$DebugChance" filter="savegame"/>
+            <append_to_list name="md.$Patch_ActivePromotionMissions" exact="namespace"/>
+            <debug_text text="'active promotion missions: ' + md.$Patch_ActivePromotionMissions" chance="$DebugChance" filter="savegame"/>
+          </patch>
+          <cues>
+
+            <!-- Check for reputation changes for the faction we are running the promotion-mission, 
+              mission completes when "not md.$FactionData.{$Faction}.$PromotionActive" 
+            -->
+            <cue name="ReputationChanged" instantiate="true">
+              <conditions>
+                <event_player_relation_changed />
+                <check_value value="event.param == $Faction"/>
+              </conditions>
+              <actions>
+                <set_value name="$NewValue"           exact="event.param2.{1}" />
+                <set_value name="$OldValue"           exact="event.param2.{2}" />
+
+                <include_actions ref="CalculateFactionRelation" comment="Calculate faction-relation index from faction-relation value, returns $RelationNew and $RelationOld"/>
+
+                <!-- If the new reputation goes down to or below $RelationOldParam (reputation we had when we started the mission) then cancel the mission (no need for promotion) -->
+                <do_if value="$RelationNew le $RelationOldParam">
+                  <debug_text text="'Removing promotion mission for ' + $Faction + ' from ' + $RelationNewParam + ' to ' + $RelationNew" chance="$DebugChance"/>
+                  <set_value name="md.$FactionData.{$Faction}.$PromotionActive" exact="false" comment="this removed the rank-dialog option at the faction-representative"/>
+                  <remove_mission cue="PromotionMission" type="aborted" />
+                  <cancel_cue cue="PromotionMission"/>
+                </do_if>
+
+                <!-- If the current reputation is different to what we are promoted to when we started the mission, we need to update briefing-texts (and remember the new value) -->
+                <do_if value="$RelationNew != $RelationNewParam">
+                  <debug_text text="'Updating RelationNewParam' + $Faction + ' from ' + $RelationNewParam + ' to ' + $RelationNew" chance="$DebugChance"/>
+                  <set_value name="$RelationNewParam" exact="$RelationNew" />
+                </do_if>
+
+              </actions>
+            </cue>
+
+            <cue name="FactionRepresentativeKilled" instantiate="true">
+              <conditions>
+                <check_any>
+                  <event_object_destroyed object="$Representative" />
+                  <event_faction_representative_changed faction="$Faction"/>
+                </check_any>
+              </conditions>
+              <actions>
+                <!-- TODO: @Owen, @Roger: Update mission to use new representative, see CreateNewFactionRepresentative -->
+                <!--set_objective cue="PromotionMission" step="1" action="objective.talkto" object="$Representative" /-->
+
+                <!-- instant promotion -->
+                <set_value name="$Parameters" exact="[$Faction, $RelationNewParam, $RelationOldParam, $RelationNewValue, $RelationOldValue]" />
+                <signal_cue_instantly cue="PromotionInstant" param="$Parameters" />
+                <!-- remove the mission -->
+                <remove_mission cue="PromotionMission" type="completed" />
+                <cancel_cue cue="PromotionMission"/>
+              </actions>
+            </cue>
+
+            <cue name="MissionRunning" onfail="cancel">
+              <conditions>
+                <check_value value="md.$FactionData.{$Faction}.$PromotionActive?" />
+              </conditions>
+              <actions>
+                <debug_text text="'Promotion Ceremony mission for ' + $Faction.name + ' is running...'" chance="$DebugChance" />
+              </actions>
+              <cues>
+                <cue name="KeepAlive" checkinterval="1min" comment="Unfortunate hack where we must stop mission from being removed">
+                  <conditions>
+                    <check_value value="false" />
+                  </conditions>
+                </cue>
+
+                <cue name="MissionBriefingStarted">
+                  <conditions>
+                    <event_briefing_started cue="PromotionMission" />
+                  </conditions>
+                  <actions>
+                    <set_value name="$BriefingCutsceneStarted" />
+                    <play_cutscene key="'OrbitIndefinitely'" rendertarget="event.param.{1}">
+                      <param name="targetobject" object="$Headquarters" />
+                    </play_cutscene>
+                  </actions>
+                  <cues>
+                    <cue name="MissionBriefingStopped">
+                      <conditions>
+                        <event_briefing_cancelled cue="PromotionMission" />
+                      </conditions>
+                      <actions>
+                        <do_if value="$BriefingCutsceneStarted?">
+                          <stop_cutscene key="'OrbitIndefinitely'" />
+                          <remove_value name="$BriefingCutsceneStarted" />
+                        </do_if>
+                        <reset_cue cue="MissionBriefingStarted" />
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="MissionComplete" checkinterval="1s">
+                  <conditions>
+                    <check_value value="not md.$FactionData.{$Faction}.$PromotionActive?" />
+                  </conditions>
+                  <actions>
+                    <debug_text text="'Representative ' + $Representative.name + ' has finished promoting player - mission is complete'" chance="$DebugChance" />
+                    <!-- TODO (@Lorraine): Write letter to logbook with details of promotion -->
+
+                    <do_if value="$BriefingCutsceneStarted?">
+                      <stop_cutscene key="'OrbitIndefinitely'" />
+                      <remove_value name="$BriefingCutsceneStarted" />
+                    </do_if>
+
+                    <remove_mission cue="PromotionMission" type="completed" />
+                    <cancel_cue cue="PromotionMission"/>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="FactionRepresentativePromotionCallback" instantiate="true">
+              <conditions>
+                <event_cue_signalled cue="CeremonyEvent"/>
+                <check_value value="event.param.{2} == 'ceremonystarted' or event.param.{2} == 'ceremonyline' or event.param.{2} == 'ceremonycomplete'"/>
+                <check_value value="event.param.{1}.owner == $Faction" comment="Talking to the representative of the faction we are promoting on"/>
+              </conditions>
+              <actions>
+                <set_value name="$FactionRepresentative" exact="event.param.{1}"/>
+                <debug_text text="$FactionRepresentative.name +' handling ' + event.param.{2}" chance="$DebugChance"/>
+
+                <do_if value="event.param.{2} == 'ceremonystarted'">
+                  <create_list name="$LogbookText" />
+                  <set_value name="$EmailText"/>
+
+                  <!-- determine which licenses to add and applies those changes -->
+                  <include_actions ref="CalculateLicences" comment="returns $ShipsAndEquipment, $PoliceCanBuy, $Subgroups, $LicencesToAdd[]"/>
+
+                  <create_list name="$RepresentativeLines" />
+
+                  <!-- Friend/Ally introduction lines -->
+                  <do_if value="faction.player.haslicence.ceremonyally.{$Faction}">
+                    <append_to_list name="$RepresentativeLines" exact="12108" comment="Second intro line - ally" />
+                    <append_to_list name="$RepresentativeLines" exact="12110" comment="Medal line - ally" />
+                  </do_if>
+                  <do_elseif value="faction.player.haslicence.ceremonyfriend.{$Faction}">
+                    <append_to_list name="$RepresentativeLines" exact="12107" comment="Second intro line - friendly" />
+                    <append_to_list name="$RepresentativeLines" exact="12109" comment="Medal line - friendly" />
+                  </do_elseif>
+
+                  <!-- Licences -->
+                  <do_if value="$ShipsAndEquipment or $PoliceCanBuy or $Subgroups">
+                    <append_to_list name="$RepresentativeLines" exact="12111" comment="Benefits line" />
+                  </do_if>
+
+                  <append_to_list name="$RepresentativeLines" exact="12112" comment="First line to spread out notifications" />
+                  <append_to_list name="$RepresentativeLines" exact="12113" comment="Second line to spread out notifications" />
+                  <append_to_list name="$RepresentativeLines" exact="12114" comment="Third line to spread out notifications" />
+
+                  <do_if value="$Subgroups or $PoliceCanBuy">
+                    <append_to_list name="$RepresentativeLines" exact="12115" comment="Subgroup licence line" />
+                  </do_if>
+
+                  <!-- Outro -->
+                  <append_to_list name="$RepresentativeLines" exact="12116" comment="First outro line" />
+                  <append_to_list name="$RepresentativeLines" exact="12117" comment="Outro, this triggers the 'ceremonycomplete' callback "/>
+
+                  <!-- Add lines to the queue -->
+                  <do_all exact="$RepresentativeLines.count" counter="$LineCounter">
+                    <add_npc_line speaker="$FactionRepresentative" lookat="player.entity" line="$RepresentativeLines.{$LineCounter}" />
+                  </do_all>
+
+                </do_if>
+                <do_elseif value="event.param.{2} == 'ceremonyline'">
+
+                  <do_if value="event.param.{3} == 12109">
+                    <!-- rank notification -->
+                    <show_notification text="[{30003,1001}, '', $Faction.licence.ceremonyfriend.name]" />
+                    <set_value name="$TitlePostfix" exact="$Faction.licence.ceremonyfriend.name" />
+                  </do_if>
+                  <do_elseif value="event.param.{3} == 12110">
+                    <!-- rank notification -->
+                    <show_notification text="[{30003,1001}, '', $Faction.licence.ceremonyally.name]" />
+                    <set_value name="$TitlePostfix" exact="$Faction.licence.ceremonyally.name" />
+                  </do_elseif>
+                  <do_elseif value="event.param.{3} == 12111">
+                    <!--include_actions ref="LicencesNotificationsAndLogbook"/-->
+                  </do_elseif>
+                  <do_elseif value="event.param.{3} == 12115">
+                    <!-- police licence notification -->
+                    <show_notification text="[{30003,1010}, '', $Faction.licence.police.name]" comment="You can now purchase:"/>
+                  </do_elseif>
+
+                </do_elseif>
+                <do_elseif value="event.param.{2} == 'ceremonycomplete'">
+
+                  <debug_text text="'Ceremony completed.'" chance="$DebugChance"/>
+
+                  <run_actions ref="LicencesInformPlayer">
+                    <param name="Faction"   value="$Faction"/>
+                    <param name="Gained"    value="true" />
+                    <param name="Licenses"  value="$LicencesToAdd"/>
+                    <param name="logbook"   value="true"/>
+                    <param name="email"     value="true"/>
+                  </run_actions>
+
+                </do_elseif>
+              </actions>
+
+            </cue>
+          </cues>
+        </cue>
+
+      </cues>
+    </cue>
+  </cues>
+</mdscript>

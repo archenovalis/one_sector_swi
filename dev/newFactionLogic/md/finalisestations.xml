@@ -1,0 +1,1009 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="FinaliseStations" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <documentation>
+    <author name="Lorraine Wilson" alias="Lothari" contact="lorraine@egosoft.com" />
+    <version date="29.11.2017" status="development" number="0.7" />
+  </documentation>
+  <cues>
+    <cue name="God_DefaultFinaliseFactory" instantiate="true" namespace="this">
+      <conditions>
+        <event_god_created_factory space="player.galaxy" />
+        <check_value value="event.param.isgamestartgodentry"/>
+      </conditions>
+      <actions>
+
+        <do_if value="not md.$NumBuilds?">
+          <debug_text text="'Universe generation begins at ' + player.systemtime.{'%Y-%m-%d %H:%M:%S'}"/>
+        </do_if>
+
+        <set_value name="md.$NumBuilds" operation="add" />
+
+        <set_value name="$Station" exact="event.param" />
+        <set_value name="$NewPlannedModules" exact="event.param2" />
+        <set_value name="$BaseSequence" exact="event.param3" />
+        <set_value name="$PlannedModules" exact="$NewPlannedModules.clone"/>
+        <do_if value="$BaseSequence">
+          <do_all exact="$BaseSequence.count" counter="$i">
+            <append_to_list name="$PlannedModules" exact="$BaseSequence.{$i}.macro"/>
+          </do_all>
+        </do_if>
+        <set_value name="$ModuleSet" exact="event.param.modulesets.{1}" />
+
+        <set_value name="$DebugFileName" exact="md.$SystemTimeAtGamestart + '_' + $Station" comment="The name of the file to which the log will be saved. This is 'god.txt'" />
+        <set_value name="$DebugDirectory" exact="'god'" comment="The directory under which log files should be kept" />
+        <set_value name="$DebugOutput" exact="false" comment="Should the log file also be printed to VS output? - Make sure this is false for release builds" />
+
+        <debug_to_file name="$DebugFileName" directory="$DebugDirectory" text="'Finalising ' + $Station.knownname + ' ({' + $Station + '}) - [Factory]' + ', seed: ' + $Station.generationseed" output="$DebugOutput" />
+        <!-- Create a collection of macros to add to the construction sequence in station finalisation -->
+        <set_value name="$AddModules" exact="table[]" />
+
+        <!-- Habitation Rules - These must be set for DefaultCalulateHabitation library to function -->
+        <set_value name="$Hab_UseForeignModules" exact="false" />
+        <set_value name="$Hab_ValidRaces" exact="[race.argon, race.boron, race.paranid, race.teladi, race.split, race.terran]" />
+
+        <!-- Defence Rules - These must be set for DefaultCalculateDefence library to function -->
+        <set_value name="$Def_UseModules" exact="true" />
+
+        <!-- Script Variables - These variables are used in multiple libraries, so should be set and stored in one location for safe access -->
+        <set_value name="$Def_StationScore" exact="0" comment="Set in DefaultCalculateDefence library, used in this cue" />
+        <set_value name="$Conn_PlannedConnectors" exact="[]" comment="Set in DefaultCalculateConnections library, used in this cue" />
+
+        <!-- Finalise Station -->
+        <do_if value="$Station.owner != faction.xenon">
+          <!-- Xenon do not use workforce, no need for habitation -->
+          <include_actions ref="DefaultCalculateHabitation" />
+        </do_if>
+        <include_actions ref="DefaultCalculateDocks" />
+        <do_if value="$Station.owner != faction.xenon">
+          <!-- Xenon do not use capital trading ships, no need for piers -->
+          <include_actions ref="DefaultCalculatePiers" />
+        </do_if>
+        <include_actions ref="DefaultCalculateDefence" />
+        <include_actions ref="DefaultCalculateConnections" />
+
+        <!-- Transform table to list -->
+        <do_all exact="$AddModules.keys.count" counter="$ModuleCounter">
+          <set_value name="$ModuleToAdd" exact="$AddModules.keys.{$ModuleCounter}" />
+          <set_value name="$NumberToAdd" exact="$AddModules.{$ModuleToAdd}" />
+
+          <do_all exact="$NumberToAdd">
+            <append_to_list name="$PlannedModules" exact="$ModuleToAdd" />
+            <append_to_list name="$NewPlannedModules" exact="$ModuleToAdd"/>
+          </do_all>
+        </do_all>
+
+        <set_value name="$dbg_str" exact="''"/>
+
+        <do_if value="$NewPlannedModules.count" min="1">
+          <set_value name="$dbg_str" exact="$dbg_str + '$NewPlannedModules: \n'"/>
+          <do_all exact="$NewPlannedModules.count" counter="$ModuleCounter">
+            <set_value name="$dbg_str" exact="$dbg_str + $ModuleCounter + ': ' + $NewPlannedModules.{$ModuleCounter} +'\n'"/>
+          </do_all>
+
+        </do_if>
+        <do_else>
+          <set_value name="$dbg_str" exact="$dbg_str + '$NewPlannedModules is empty!'"/>
+        </do_else>
+
+        <!-- Create the construction sequence (including production and storage modules passed into script) -->
+        <do_if value="$Conn_PlannedConnectors.count">
+          <!-- If the ruleset has calculated that there should be connection modules, add them -->
+          <create_construction_sequence station="$Station" macros="$NewPlannedModules" connectors="$Conn_PlannedConnectors" base="$BaseSequence" />
+        </do_if>
+        <do_else>
+          <!-- Otherwise just add the necessary planned modules -->
+          <create_construction_sequence station="$Station" macros="$NewPlannedModules" base="$BaseSequence" />
+        </do_else>
+        <debug_to_file name="$DebugFileName" directory="$DebugDirectory" text="$dbg_str" output="$DebugOutput" />
+        <remove_value name="$dbg_str" />
+      </actions>
+      <cues>
+        <!--TODO @Owen add event for <event_game_loaded> just in case the player saved while the sequence was being generated-->
+        <cue name="ConstructionSequenceCompleted">
+          <conditions>
+            <event_object_construction_sequence_created object="$Station" />
+          </conditions>
+          <actions>
+            <set_value name="$dbg_str" exact="''"/>
+            <set_value name="$ConstructionSequence" exact="event.param" />
+            <do_if value="$ConstructionSequence">
+              <set_value name="$dbg_str" exact="$dbg_str + 'Construction sequence for station ' + $Station + ' has been completed. seed: ' + $Station.generationseed + '\n'"/>
+              <!-- Generate and apply a loadout to each module in the construction sequence -->
+              <create_list name="$PossibleWares" comment="This list should be filled with 'sensible' wares - that is wares it makes sense to use in loadouts" />
+              <do_if value="md.$EquipmentTable">
+                <set_value name="$Faction" exact="$Station.owner" />
+                <set_value name="$PossibleWares" exact="md.$EquipmentTable.{$Faction}" />
+              </do_if>
+              <do_if value="$PossibleWares.count" max="0">
+                <debug_text text="'Automatic station generation was not able to find any \'sensible\' wares for use in loadouts for faction ' + $Station.owner + ', for station ' + $Station.knownname + ' ({' + $Station + '})' + ' - [Owen]'" filter="error"/>
+                <set_value name="$dbg_str" exact="$dbg_str + 'Automatic station generation was not able to find any \'sensible\' wares for use in loadouts for faction ' + $Station.owner + ', for station ' + $Station.knownname + ' ({' + $Station + '})' + ' - [Owen]\n'"/>
+              </do_if>
+
+              <set_loadout_level object="$Station" exact="$Def_StationScore" />
+              <generate_loadout result="$Loadouts" sequence="$ConstructionSequence" faction="$Station.owner" wares="$PossibleWares" level="$Def_StationScore" variation="0" />
+              <do_all exact="$Loadouts.count" counter="$LoadoutIndex">
+                <set_value name="$WareList" exact="$Loadouts.{$LoadoutIndex}.wares.list"/>
+                <do_if value="$WareList.count" min="1">
+                  <set_value name="$dbg_str" exact="$dbg_str + 'Loadout for ' + $ConstructionSequence.{$LoadoutIndex}.macro + ':\n'"/>
+                </do_if>
+                <do_all exact="$WareList.count" counter="$WareIndex">
+                  <set_value name="$dbg_str" exact="$dbg_str + $WareIndex + ': ' + $WareList.{$WareIndex} + '\n'"/>
+                </do_all>
+                <apply_loadout loadout="$Loadouts.{$LoadoutIndex}" sequence="$ConstructionSequence" index="$LoadoutIndex" />
+              </do_all>
+
+              <!-- Construct the station -->
+              <apply_construction_sequence station="$Station" sequence="$ConstructionSequence" />
+
+              <!-- Extend the build plot of the station to include new modules -->
+              <set_value name="$BBoxSize" exact="$Station.size / 2" />
+              <set_build_plot object="$Station" x="$BBoxSize" y="$BBoxSize" z="$BBoxSize" allowreduction="true" />
+              <set_value name="$dbg_str" exact="$dbg_str + 'Station ({' + $Station + '}) has been finalised\n\n'"/>
+
+              <!-- Allow the station to be set up with rooms, resources and the such -->
+              <signal_objects object="player.galaxy" param="'init station'" param2="$Station" param3="true" />
+            </do_if>
+            <do_else>
+              <debug_text text="'Automatic station generation was not able to create a construction sequence for ' + $Station.knownname + '(' + $Station + ') - [Owen]'" filter="error" />
+              <set_value name="$dbg_str" exact="$dbg_str + 'Automatic station generation was not able to create a construction sequence for ' + $Station.knownname + '(' + $Station + ') - [Owen]\n'"/>
+            </do_else>
+            <set_value name="md.$NumBuilds" operation="subtract" />
+            <do_if value="md.$NumBuilds" exact="0">
+              <debug_text text="'Universe generation is complete at %1 - game can continue to load'.[player.systemtime.{'%Y-%m-%d %H:%M:%S'}]" />
+              <remove_value name="md.$StationGenerationBegin"/>
+              <notify_universe_generated />
+            </do_if>
+            <debug_to_file name="$DebugFileName" directory="$DebugDirectory" text="$dbg_str" output="$DebugOutput" />
+          </actions>
+        </cue>
+      </cues>
+    </cue>
+
+    <!--signal if referencing NewStation_GenerateFactory directly is not suitable due to the calling cue potentially being cancelled before the station is done
+    event.param = table[
+    $station,
+    $plannedmodules,
+    $basesequence, (optional)
+    $moduleset,
+    $addbuild, (defaults to true if omitted)
+    $reportcue, (defaults to null if omitted)
+    $debugoutput (defaults to false if omitted)
+    ]-->
+    <cue name="NewStation_GenerateFactory_Signal" namespace="this" instantiate="true">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <set_value name="$Params" exact="event.param"/>
+      </actions>
+      <cues>
+        <cue name="NewStation_GenerateFactory_Ref" ref="NewStation_GenerateFactory">
+          <param name="Station" value="parent.$Params.$station" />
+          <param name="NewPlannedModules" value="parent.$Params.$plannedmodules" />
+          <param name="BaseSequence" value="@parent.$Params.$basesequence" />
+          <param name="ModuleSet" value="parent.$Params.$moduleset" />
+          <param name="AddBuild" value="if parent.$Params.$addbuild? then parent.$Params.$addbuild else true" />
+          <param name="ReportCue" value="@parent.$Params.$reportcue" />
+          <param name="DebugOutput" value="if parent.$Params.$debugoutput? then parent.$Params.$debugoutput else false" />
+        </cue>
+      </cues>
+    </cue>
+
+    <cue name="NewStation_GenerateFactory_God_Runtime" namespace="this" instantiate="true">
+      <conditions>
+        <event_god_created_factory space="player.galaxy" />
+        <check_value value="not event.param.isgamestartgodentry"/>
+      </conditions>
+      <actions>
+        <set_value name="$Station" exact="event.param" />
+        <set_value name="$NewPlannedModules" exact="event.param2" />
+        <set_value name="$BaseSequence" exact="event.param3" />
+      </actions>
+      <cues>
+        <cue name="NewStation_GenerateFactory_God_Runtime_Ref" ref="NewStation_GenerateFactory">
+          <param name="Station" value="$Station" />
+          <param name="NewPlannedModules" value="$NewPlannedModules" />
+          <param name="BaseSequence" value="$BaseSequence" />
+          <param name="ModuleSet" value="$Station.modulesets.{1}" />
+          <param name="AddBuild" value="$Station.isconstruction" />
+        </cue>
+      </cues>
+    </cue>
+
+    <!--event.param = [$station, $modulelist]-->
+    <library name="NewStation_GenerateFactory" namespace="this">
+      <params>
+        <param name="Station" comment="Existing and bare station, already placed in universe"/>
+        <param name="NewPlannedModules" comment="List of module macros"/>
+        <param name="BaseSequence" default="null" comment="Base construction sequence to add $PlannedModules to"/>
+        <param name="ModuleSet" comment="Module set to be used"/>
+        <param name="AddHabitation" default="true" comment="Include new habitation modules if appropriate"/>
+        <param name="AddBuild" default="true" comment="Add a build task for the station on its build storage?"/>
+        <param name="ReportCue" default="null" comment="Cue to be signalled when this library wants to inform the caller"/>
+        <param name="DebugOutput" default="false"/>
+      </params>
+      <actions>
+        <set_value name="$PlannedModules" exact="$NewPlannedModules.clone"/>
+        <do_if value="$BaseSequence">
+          <do_all exact="$BaseSequence.count" counter="$i">
+            <append_to_list name="$PlannedModules" exact="$BaseSequence.{$i}.macro"/>
+          </do_all>
+        </do_if>
+
+        <set_value name="$DebugFileName" exact="md.$SystemTimeAtGamestart + '_constructing_' + $Station" comment="The name of the file to which the log will be saved." />
+        <set_value name="$DebugDirectory" exact="'factionlogic'" comment="The directory under which log files should be kept" />
+        <!-- Create a collection of macros to add to the construction sequence in station finalisation -->
+        <set_value name="$AddModules" exact="table[]" />
+
+        <!-- Habitation Rules - These must be set for DefaultCalulateHabitation library to function -->
+        <set_value name="$Hab_UseForeignModules" exact="false" />
+        <set_value name="$Hab_ValidRaces" exact="[race.argon, race.boron, race.paranid, race.teladi, race.split, race.terran]" />
+
+        <!-- Defence Rules - These must be set for DefaultCalculateDefence library to function -->
+        <set_value name="$Def_UseModules" exact="true" />
+
+        <!-- Script Variables - These variables are used in multiple libraries, so should be set and stored in one location for safe access -->
+        <set_value name="$Def_StationScore" exact="0" comment="Set in DefaultCalculateDefence library, used in this cue" />
+        <set_value name="$Conn_PlannedConnectors" exact="[]" comment="Set in DefaultCalculateConnections library, used in this cue" />
+
+        <!-- Finalise Station -->
+        <do_if value="$AddHabitation and $Station.owner != faction.xenon">
+          <!-- Xenon do not use workforce, no need for habitation -->
+          <include_actions ref="DefaultCalculateHabitation" />
+        </do_if>
+        <include_actions ref="DefaultCalculateDocks" />
+        <do_if value="$Station.owner != faction.xenon">
+          <!-- Xenon do not use capital trading ships, no need for piers -->
+          <include_actions ref="DefaultCalculatePiers" />
+        </do_if>
+        <include_actions ref="DefaultCalculateDefence" />
+        <include_actions ref="DefaultCalculateConnections" />
+
+        <!-- Transform table to list -->
+        <do_all exact="$AddModules.keys.count" counter="$ModuleCounter">
+          <set_value name="$ModuleToAdd" exact="$AddModules.keys.{$ModuleCounter}" />
+          <set_value name="$NumberToAdd" exact="$AddModules.{$ModuleToAdd}" />
+
+          <do_all exact="$NumberToAdd">
+            <append_to_list name="$PlannedModules" exact="$ModuleToAdd" />
+            <append_to_list name="$NewPlannedModules" exact="$ModuleToAdd" />
+          </do_all>
+        </do_all>
+
+        <set_value name="$dbg_str" exact="''"/>
+
+        <do_if value="$NewPlannedModules.count" min="1">
+          <set_value name="$dbg_str" exact="$dbg_str + '$NewPlannedModules:\n'"/>
+          <do_all exact="$NewPlannedModules.count" counter="$ModuleCounter">
+            <set_value name="$dbg_str" exact="$dbg_str + $ModuleCounter + ': ' + $NewPlannedModules.{$ModuleCounter} + '\n'"/>
+          </do_all>
+        </do_if>
+        <do_else>
+          <set_value name="$dbg_str" exact="$dbg_str + '$NewPlannedModules is empty!\n'"/>
+        </do_else>
+
+        <!-- Create the construction sequence (including production and storage modules passed into script) -->
+        <do_if value="$Conn_PlannedConnectors.count">
+          <!-- If the ruleset has calculated that there should be connection modules, add them -->
+          <create_construction_sequence station="$Station" macros="$NewPlannedModules" connectors="$Conn_PlannedConnectors" base="$BaseSequence" />
+        </do_if>
+        <do_else>
+          <!-- Otherwise just add the necessary planned modules -->
+          <create_construction_sequence station="$Station" macros="$NewPlannedModules" base="$BaseSequence" />
+        </do_else>
+        <debug_to_file name="$DebugFileName" directory="$DebugDirectory" text="$dbg_str" output="$DebugOutput" />
+      </actions>
+      <cues>
+        <cue name="NewStation_ConstructionSequenceCompleted">
+          <conditions>
+            <event_object_construction_sequence_created object="$Station" />
+          </conditions>
+          <actions>
+            <set_value name="$dbg_str" exact="''"/>
+            <set_value name="$ConstructionSequence" exact="event.param" />
+            <do_if value="$ConstructionSequence">
+              <set_value name="$dbg_str" exact="'Construction sequence for station ' + $Station + ' has been completed. seed: ' + $Station.generationseed + ' \n'"/>
+              <!-- Generate and apply a loadout to each module in the construction sequence -->
+              <create_list name="$PossibleWares" comment="This list should be filled with 'sensible' wares - that is wares it makes sense to use in loadouts" />
+              <do_if value="md.$EquipmentTable">
+                <set_value name="$Faction" exact="$Station.owner" />
+                <set_value name="$PossibleWares" exact="md.$EquipmentTable.{$Faction}" />
+              </do_if>
+              <do_if value="$PossibleWares.count" max="0">
+                <set_value name="$dbg_str" exact="$dbg_str + 'Automatic station generation was not able to find any \'sensible\' wares for use in loadouts for faction ' + $Station.owner + ', for station ' + $Station.knownname + ' ({' + $Station + '})' + ' - [Owen]\n'"/>
+              </do_if>
+
+              <set_value name="$dbg_str" exact="$dbg_str + '$Def_StationScore being used for loadout: ' + $Def_StationScore + '\n'" />
+              <set_loadout_level object="$Station" exact="$Def_StationScore" />
+              <!--Exclude Ammo, Units and Drones when generating a loadout for a new station-->
+              <generate_loadout result="$Loadouts" sequence="$ConstructionSequence" faction="$Station.owner" wares="$PossibleWares" level="$Def_StationScore" flags="ammo units drones" invertflags="true" />
+              <do_all exact="$Loadouts.count" counter="$LoadoutIndex">
+                <set_value name="$WareList" exact="$Loadouts.{$LoadoutIndex}.wares.list"/>
+                <do_if value="$WareList.count" min="1">
+                  <set_value name="$dbg_str" exact="$dbg_str + 'Loadout for ' + $ConstructionSequence.{$LoadoutIndex}.macro + ':\n'"/>
+                </do_if>
+                <do_all exact="$WareList.count" counter="$WareIndex">
+                  <set_value name="$dbg_str" exact="$dbg_str + $WareIndex + ': ' + $WareList.{$WareIndex} + ':\n'"/>
+                </do_all>
+                <apply_loadout loadout="$Loadouts.{$LoadoutIndex}" sequence="$ConstructionSequence" index="$LoadoutIndex" />
+              </do_all>
+
+              <set_value name="$BuildTask" exact="null"/>
+              <do_if value="$AddBuild">
+                <add_build_to_expand_station object="$Station.buildstorage" buildobject="$Station" constructionplan="$ConstructionSequence" result="$BuildTask" />
+              </do_if>
+              <do_else>
+                <apply_construction_sequence station="$Station" sequence="$ConstructionSequence"/>
+              </do_else>
+
+              <!--TODO @Owen, init station?-->
+              <do_if value="$ReportCue">
+                <signal_cue_instantly cue="$ReportCue" param="['finished', $ConstructionSequence, $BuildTask, $Station]"/>
+              </do_if>
+            </do_if>
+            <do_else>
+              <debug_text text="'Automatic station generation was not able to create a construction sequence for ' + $Station.knownname + '(' + $Station + ') - [Owen]'" filter="error" />
+              <set_value name="$dbg_str" exact="$dbg_str + 'Automatic station generation was not able to create a construction sequence for ' + $Station.knownname + '(' + $Station + ') - [Owen]\n'"/>
+            </do_else>
+            <debug_to_file name="$DebugFileName" directory="$DebugDirectory" text="$dbg_str" output="$DebugOutput" />
+          </actions>
+        </cue>
+      </cues>
+    </library>
+
+    <library name="DefaultCalculateHabitation">
+      <actions>
+        <set_value name="$dbg_str" exact="player.age + ' BEGIN DefaultCalculateHabitation: seed = ' + $Station.generationseed + '\n'"/>
+        <!-- Check that this station belongs to a race that can have habitation modules attached -->
+        <set_value name="$ShouldCalculateHabitation" exact="false" />
+        <do_all exact="$Hab_ValidRaces.count" counter="$CheckCounter">
+          <do_if value="$Hab_ValidRaces.{$CheckCounter}" exact="$Station.owner.primaryrace">
+            <set_value name="$ShouldCalculateHabitation" exact="true" />
+          </do_if>
+        </do_all>
+
+        <do_if value="$ShouldCalculateHabitation">
+          <set_value name="$dbg_str" exact="$dbg_str + 'Station is in: ' + $Station.sector.knownname + ' (' + $Station.cluster.knownname + ')\n'"/>
+          <set_value name="$dbg_str" exact="$dbg_str + 'Station race is: ' + $Station.owner.primaryrace + '\n'"/>
+
+          <!-- Find appropriate habitation modules -->
+          <set_value name="$Cluster" exact="$Station.cluster" />
+          <find_gate name="$Gates" space="$Cluster" multiple="true" />
+          <set_value name="$dbg_str" exact="$dbg_str + $Cluster.knownname + ' has ' + $Gates.count + ' gates\n'"/>
+
+          <!-- Find the clusters connected to those gates and add their races to the list of races from which habitation modules can be taken -->
+          <set_value name="$Races" exact="[]" comment="$Races represents the races that will be used for habitation modules" />
+          <set_value name="$ActiveRaces" exact="[]" comment="$ActiveRaces represents all races that are active in and around the cluster in which the sation is placed" />
+
+          <!-- First look at which races are active inside the cluster -->
+          <find_sector name="$InternalSectors" space="$Cluster" multiple="true" />
+          <do_all exact="$InternalSectors.count" counter="$InternalSectorCounter">
+            <set_value name="$ActiveRace" exact="$InternalSectors.{$InternalSectorCounter}.owner.primaryrace" />
+            <do_if value="$ActiveRaces.indexof.{$ActiveRace} == 0">
+              <append_to_list name="$ActiveRaces" exact="$ActiveRace" />
+            </do_if>
+          </do_all>
+
+          <!-- For each gate...-->
+          <do_all exact="$Gates.count" counter="$GateCounter">
+            <set_value name="$Gate" exact="$Gates.{$GateCounter}" />
+            <!--...if the gate is active and has something on the other side...-->
+            <do_if value="$Gate.isactive and $Gate.destination">
+              <!--...find the connecting cluster...-->
+              <set_value name="$ConnectingCluster" exact="$Gate.destination.cluster" />
+              <!--...and the races active in that cluster (races must only be selected as 'active' once).-->
+              <find_sector name="$ConnectingClusterSectors" space="$ConnectingCluster" multiple="true" />
+              <do_all exact="$ConnectingClusterSectors.count" counter="$SectorCounter">
+                <set_value name="$ActiveRace" exact="$ConnectingClusterSectors.{$SectorCounter}.owner.primaryrace" />
+                <do_if value="$ActiveRaces.indexof.{$ActiveRace} == 0">
+                  <append_to_list name="$ActiveRaces" exact="$ActiveRace" />
+                </do_if>
+              </do_all>
+            </do_if>
+          </do_all>
+
+          <set_value name="$dbg_str" exact="$dbg_str + 'Active Neighbouring races are:\n'"/>
+          <do_all exact="$ActiveRaces.count" counter="$ActiveRaceCounter">
+            <set_value name="$dbg_str" exact="$dbg_str + $ActiveRaceCounter + ': ' + $ActiveRaces.{$ActiveRaceCounter} + '\n'"/>
+          </do_all>
+
+          <!-- If the primary races selected are also valid races...-->
+          <do_all exact="$ActiveRaces.count" counter="$ActiveRaceCounter">
+            <set_value name="$ActiveRace" exact="$ActiveRaces.{$ActiveRaceCounter}" />
+            <do_all exact="$Hab_ValidRaces.count" counter="$ValidRaceCounter">
+              <set_value name="$ValidRace" exact="$Hab_ValidRaces.{$ValidRaceCounter}" />
+              <do_if value="$ValidRace" exact="$ActiveRace">
+                <!--...and if the race has not already been selected as a race for this station's habitation modules -->
+                <do_if value="$Races.indexof.{$ActiveRace} == 0">
+                  <!-- Append to the list of races to which the habitation modules can belong -->
+                  <set_value name="$dbg_str" exact="$dbg_str + $ActiveRace + ' is a selected valid race\n'"/>
+                  <append_to_list name="$Races" exact="$ActiveRace" />
+                </do_if>
+              </do_if>
+            </do_all>
+          </do_all>
+
+          <set_value name="$Race" exact="$Station.owner.primaryrace" comment="Can be a single race or a list of races" />
+          <do_if value="$Hab_UseForeignModules">
+            <do_if value="$Races.count" min="1">
+              <set_value name="$Race" exact="$Races" />
+            </do_if>
+          </do_if>
+          <set_value name="$dbg_str" exact="$dbg_str + 'Getting module definition for habitation modules belonging to ' + $Race + '\n'"/>
+          <get_module_definition macro="$HabitationModuleList" faction="$Station.owner" tags="[tag.habitation, tag.module]" set="$ModuleSet" multiple="true" />
+
+          <set_value name="$dbg_str" exact="$dbg_str + 'Appropriate habitation modules are:\n'"/>
+          <do_all exact="$HabitationModuleList.count" counter="$HabitationModuleCounter">
+            <set_value name="$dbg_str" exact="$dbg_str + $HabitationModuleCounter + ': ' + $HabitationModuleList.{$HabitationModuleCounter} + '\n'"/>
+          </do_all>
+
+          <!-- Look at how many workers are necessary for the station to run (as a way of scoring possible habitation modules) -->
+          <set_value name="$NecessaryWorkers" exact="0" />
+          <set_value name="$CurrentWorkerCapacity" exact="0" />
+
+          <do_all exact="$PlannedModules.count" counter="$ModuleCounter" comment="Loop through production and storage modules, find production modules and total optimal workforce">
+            <do_if value="$PlannedModules.{$ModuleCounter}.isclass.production">
+              <set_value name="$NecessaryWorkers" operation="add" exact="$PlannedModules.{$ModuleCounter}.workforce.optimal" />
+            </do_if>
+            <do_elseif value="$PlannedModules.{$ModuleCounter}.isclass.habitation">
+              <set_value name="$CurrentWorkerCapacity" operation="add" exact="$PlannedModules.{$ModuleCounter}.workforce.capacity" />
+            </do_elseif>
+          </do_all>
+          <set_value name="$dbg_str" exact="$dbg_str + 'Station requires ' + $NecessaryWorkers + ' workers to work optimally\n'"/>
+          <do_if value="$CurrentWorkerCapacity">
+            <set_value name="$dbg_str" exact="$dbg_str + 'Station currently has a planned capacity for ' + $CurrentWorkerCapacity + ' workers\n'"/>
+            <set_value name="$NecessaryWorkers" operation="subtract" exact="$CurrentWorkerCapacity"/>
+          </do_if>
+
+          <do_if value="$NecessaryWorkers" min="1">
+            <!-- Default Ruleset: Score appropiate habitation modules based on their capacity vs the number of necessary workers -->
+            <!-- Calculation $Capacity / $NecessaryWorkers -->
+            <!-- Addition to Scoring: Accumulative - if first scoure is 1 and second score is 2, first entry will be 1 and second entry will be 3 -->
+            <set_value name="$ModuleScoreTable" exact="table[]" />
+            <set_value name="$TotalModuleScore" exact="0" />
+            <do_all exact="$HabitationModuleList.count" counter="$HabitationModuleCounter">
+              <set_value name="$HabitationModuleMacro" exact="$HabitationModuleList.{$HabitationModuleCounter}" />
+              <!-- What is the capacity of a given module? -->
+              <set_value name="$Capacity" exact="$HabitationModuleMacro.workforce.capacity" />
+              <set_value name="$dbg_str" exact="$dbg_str + 'Workforce capacity of ' + $HabitationModuleMacro + ': ' + $Capacity + '\n'"/>
+              <set_value name="$ModuleScore" exact="1" />
+              <do_if value="$NecessaryWorkers" min="1">
+                <!-- Set the score according to the ruleset calculation -->
+                <set_value name="$ModuleScore" exact="($Capacity)LF / $NecessaryWorkers" />
+              </do_if>
+              <!-- Only add the module to the score table if its score is more than 0 -->
+              <do_if value="$ModuleScore gt 0">
+                <set_value name="$TotalModuleScore" operation="add" exact="$ModuleScore" />
+                <set_value name="$dbg_str" exact="$dbg_str + 'Score for ' + $HabitationModuleMacro + ': ' + $ModuleScore + ' (' + $TotalModuleScore + ')\n'"/>
+                <set_value name="$ModuleScoreTable.{$TotalModuleScore}" exact="$HabitationModuleMacro" />
+              </do_if>
+            </do_all>
+
+            <!-- Random selection - random number is rolled between 0 and total accumulative score. If random number <= a module's score, that module is selected -->
+            <set_value name="$HabitationModulesToBuild" exact="table[]" />
+            <set_value name="$WorkforceRemaining" exact="$NecessaryWorkers" />
+            <do_if value="$ModuleScoreTable.keys.count" min="1">
+              <do_while value="$WorkforceRemaining" min="0">
+                <set_value name="$dbg_str" exact="$dbg_str + '$RandomFloat should be between 0 and ' + $TotalModuleScore + '\n'"/>
+                <set_value name="$RandomFloat" min="0LF" max="($TotalModuleScore)LF" seed="$Station" />
+                <set_value name="$dbg_str" exact="$dbg_str + '$RandomFloat set to ' + $RandomFloat + '\n'"/>
+                <set_value name="$ModuleToAdd" />
+                <!-- Select a module -->
+                <do_all exact="$ModuleScoreTable.keys.count" counter="$ScoreCounter">
+                  <set_value name="$Score" exact="$ModuleScoreTable.keys.{$ScoreCounter}" />
+                  <set_value name="$ScoredModule" exact="$ModuleScoreTable.{$Score}" />
+                  <set_value name="$dbg_str" exact="$dbg_str + 'Looking at ' + $ScoredModule + ' with score ' + $Score + '\n'"/>
+                  <do_if value="$RandomFloat le $Score">
+                    <set_value name="$dbg_str" exact="$dbg_str + $RandomFloat + ' is less than or equal to ' + $Score + '\n'"/>
+                    <set_value name="$ModuleToAdd" exact="$ScoredModule" />
+                    <break />
+                  </do_if>
+                  <do_else>
+                    <set_value name="$dbg_str" exact="$dbg_str + $RandomFloat + ' is greater than ' + $Score + '\n'"/>
+                  </do_else>
+                </do_all>
+                <do_if value="$ModuleToAdd">
+                  <set_value name="$HabitationModulesToBuild.{$ModuleToAdd}" operation="add" exact="1" />
+                  <set_value name="$WorkforceRemaining" operation="subtract" exact="$ModuleToAdd.workforce.capacity" />
+                  <set_value name="$dbg_str" exact="$dbg_str + 'Adding ' + $ModuleToAdd + '. Workforce remaining now at ' + $WorkforceRemaining + '\n'"/>
+                </do_if>
+              </do_while>
+
+              <set_value name="$dbg_str" exact="$dbg_str + 'Modules to add to station:\n'"/>
+              <do_all exact="$HabitationModulesToBuild.keys.count" counter="$Counter">
+                <set_value name="$dbg_str" exact="$dbg_str + $Counter + ': ' + $HabitationModulesToBuild.keys.{$Counter} + '\n'"/>
+              </do_all>
+
+              <!-- Add the macros to the collection to later add to the station -->
+              <do_all exact="$HabitationModulesToBuild.keys.count" counter="$HabitationModuleCounter">
+                <set_value name="$ModuleToBuild" exact="$HabitationModulesToBuild.keys.{$HabitationModuleCounter}" />
+                <set_value name="$NumberToBuild" exact="$HabitationModulesToBuild.{$ModuleToBuild}" />
+                <set_value name="$AddModules.{$ModuleToBuild}" exact="$NumberToBuild" />
+              </do_all>
+
+            </do_if>
+            <do_else>
+              <set_value name="$dbg_str" exact="$dbg_str + 'No suitable habitation modules were found for this station\n'"/>
+            </do_else>
+          </do_if>
+          <do_else>
+            <set_value name="$dbg_str" exact="$dbg_str + 'Station does not require any habitation modules\n'"/>
+          </do_else>
+        </do_if>
+        <do_else>
+          <set_value name="$dbg_str" exact="$dbg_str + 'This station\'s primary race (' + $Station.owner.primaryrace + ') is not a valid habitation race\n'"/>
+        </do_else>
+        <set_value name="$dbg_str" exact="$dbg_str + 'END DefaultCalculateHabitation: seed = ' + $Station.generationseed + '\n'"/>
+        <debug_to_file name="$DebugFileName" directory="$DebugDirectory" text="$dbg_str" output="$DebugOutput" />
+      </actions>
+    </library>
+
+    <library name="DefaultCalculateDocks">
+      <actions>
+        <set_value name="$dbg_str" exact="player.age + ' BEGIN DefaultCalculateDocks: seed = ' + $Station.generationseed + '\n'"/>
+        <!-- INPUT VALUES FOR RULESET -->
+        <set_value name="$NonCapitalTradeRatio" exact="0.45f" comment="The ratio of the volume of wares being traded by medium-class ships compared to the volume of wares being traded by capital traders" />
+        <set_value name="$MediumTradeRatio" exact="0.99f" comment="The ratio of the volume of wares being traded by class_medium ships compared to the volume of wares being traded by class_small traders" />
+        <set_value name="$TradeCapacity" exact="3000" comment="The average used capacity of a medium-class trading ship" />
+        <set_value name="$TradesPerHour" exact="20" comment="The average number of medium-class ships a single dock can process in one hour" />
+
+        <!-- Calculate the throughput of the station (volume of wares being produced and consumed on a station) -->
+        <set_value name="$ProductionVolume" exact="0" />
+        <set_value name="$ConsumptionVolume" exact="0" />
+        <do_all exact="$PlannedModules.count" counter="$ModuleCounter">
+          <do_if value="$PlannedModules.{$ModuleCounter}.isclass.production">
+            <set_value name="$ProductionVolume" operation="add" exact="$PlannedModules.{$ModuleCounter}.productionvolume" />
+            <set_value name="$ConsumptionVolume" operation="add" exact="$PlannedModules.{$ModuleCounter}.consumptionvolume" />
+          </do_if>
+        </do_all>
+        <set_value name="$dbg_str" exact="$dbg_str + 'Station producing ' + $ProductionVolume + ' units per hour\n'" />
+        <set_value name="$dbg_str" exact="$dbg_str + 'Station consuming ' + $ConsumptionVolume + ' units per hour\n'" />
+        <set_value name="$Throughput" exact="$ProductionVolume + $ConsumptionVolume" />
+        <set_value name="$dbg_str" exact="$dbg_str + 'Station throughput: ' + $Throughput + ' units per hour\n'" />
+
+        <!-- Calculate the non-capital throughput (volume of wares being traded by medium ships) -->
+        <set_value name="$NonCapitalThroughput" exact="$NonCapitalTradeRatio * $Throughput" />
+        <set_value name="$dbg_str" exact="$dbg_str + 'Non-capital throughput of station: ' + $NonCapitalThroughput + ' units per hour\n'" />
+
+        <!-- Calculate the number of s/m dockareas needed by the station 
+             Ruleset:
+                Volume of wares traded by medium ships at this station / (average capacity of medium trading ships * number of trades that can be completed by a medium ship in one hour) -->
+        <set_value name="$TradedPerHour" exact="$TradeCapacity * $TradesPerHour" />
+        <set_value name="$dbg_str" exact="$dbg_str + 'The volume traded per hour at this station by non-capital ships is ' + $TradedPerHour + ' units\n'" />
+        <set_value name="$NumRequiredDocksMedium" exact="1000 - (1000 - ($NonCapitalThroughput * $MediumTradeRatio / $TradedPerHour))i" comment="Round up to nearest integer" />
+        <set_value name="$NumRequiredDocksSmall" exact="1000  - (1000  - ($NonCapitalThroughput * (1.0f - $MediumTradeRatio) / $TradedPerHour))i" comment="Round up to nearest integer" />
+        <set_value name="$dbg_str" exact="$dbg_str + 'Number of docks required by station: medium = ' + $NumRequiredDocksMedium + ', small: ' + $NumRequiredDocksSmall + '\n'" />
+
+        <!--Take existing docks into account-->
+        <do_all exact="$PlannedModules.count" counter="$ModuleCounter">
+          <do_if value="$PlannedModules.{$ModuleCounter}.isclass.dockarea">
+            <do_if value="$NumRequiredDocksMedium gt 0">
+              <set_value name="$NumRequiredDocksMedium" exact="[$NumRequiredDocksMedium - $PlannedModules.{$ModuleCounter}.numdocks.{tag.dock_m}, 0].max" />
+              <set_value name="$dbg_str" exact="$dbg_str + 'Factoring in existing docks. Required medium docks reduced to: ' + $NumRequiredDocksMedium + '\n'" />
+            </do_if>
+            <do_if value="$NumRequiredDocksSmall gt 0">
+              <set_value name="$NumRequiredDocksSmall" exact="[$NumRequiredDocksMedium - $PlannedModules.{$ModuleCounter}.numdocks.{tag.dock_s}, 0].max" />
+              <set_value name="$dbg_str" exact="$dbg_str + 'Factoring in existing docks. Required small docks reduced to: ' + $NumRequiredDocksSmall + '\n'" />
+            </do_if>
+          </do_if>
+        </do_all>
+
+        <!-- Get Viable Docks -->
+        <do_if value="$NumRequiredDocksMedium + $NumRequiredDocksSmall" min="1">
+
+          <set_value name="$docktags" exact="[tag.dockarea, tag.module]"/>
+          <set_value name="$Sector" exact="$Station.sector" />
+          <do_if value="$Station.owner == faction.xenon">
+            <append_to_list name="$docktags" exact="tag.standard"/>
+          </do_if>
+          <do_else>
+            <!-- TODO (@Owen): Look into why the weighting of this is so skewed towards lower end of the bellcurve -->
+            <set_value name="$weight" min="($Sector.economy + $Sector.security) / 2" max="$Sector.economy + $Sector.security" seed="$Station"/>
+            <set_value name="$weight" exact="($weight / 2.0f) * 100.0f"/>
+            <do_if value="$weight gt 66">
+              <append_to_list name="$docktags" exact="tag.hightech"/>
+            </do_if>
+            <do_elseif value="$weight gt 33">
+              <append_to_list name="$docktags" exact="tag.standard"/>
+            </do_elseif>
+            <do_else>
+              <append_to_list name="$docktags" exact="tag.lowtech"/>
+            </do_else>
+          </do_else>
+
+          <get_module_definition macro="$ViableDockModules" faction="$Station.owner" tags="$docktags" set="$ModuleSet" multiple="true" />
+          <do_if value="$ViableDockModules.count == 0">
+            <set_value name="$docktags" exact="[tag.dockarea, tag.module]"/>
+            <get_module_definition macro="$ViableDockModules" faction="$Station.owner" tags="$docktags" set="$ModuleSet" multiple="true" />
+          </do_if>
+          <do_if value="$ViableDockModules.count gt 0">
+            <set_value name="$DockCountTable" exact="table[]"/>
+            <do_all exact="$ViableDockModules.count" counter="$DockCounter">
+              <set_value name="$DockArea" exact="$ViableDockModules.{$DockCounter}"/>
+              <set_value name="$DockCountTable.{$DockArea}" exact="$DockArea.numdocks.{tag.dock_m}"/>
+            </do_all>
+            <set_value name="$DockCountList" exact="$DockCountTable.keys.sorted"/>
+
+            <do_while value="($NumRequiredDocksMedium gt 0.5f) or ($NumRequiredDocksSmall gt 0.5f)">
+              <set_value name="$dbg_str" exact="$dbg_str + 'Number of docks required: medium = ' + $NumRequiredDocksMedium + ', small: ' + $NumRequiredDocksSmall + '\n'" />
+              <!-- process in reverse so we start with the dockareas that have the highest amount of medium docks -->
+              <do_all exact="$DockCountList.count" counter="$DockCounter" reverse="true">
+                <set_value name="$Dock" exact="$DockCountList.{$DockCounter}"/>
+                <!-- must not use chance attribute as chance evaluation is not seed controlled and would ruin predictability of outcome! using set_value with seed to determine reliable random value -->
+                <set_value name="$chance" min="0.0f" max="100.0f" seed="$Station"/>
+                <do_if value="$chance le 65.0f and (($DockCounter == $DockCountList.count and $DockCountTable.{$Dock} lt $NumRequiredDocksMedium) or ($DockCounter gt 1 and $DockCountTable.{$Dock} ge $NumRequiredDocksMedium and $DockCountTable.{$DockCountList.{$DockCounter - 1}} lt $NumRequiredDocksMedium) or ($DockCounter gt 1 and $DockCountTable.{$Dock} ge $NumRequiredDocksMedium and $DockCountTable.{$DockCountList.{$DockCounter - 1}} == $DockCountTable.{$Dock}))">
+                  <!-- for each dockarea there is a 65% chance it will be selected if either
+                 a) the first entry already provides fewer docks than we require OR
+                 b) the current entry provides enough and the next lower entry does not
+                 c) the current entry provides enough and the next lower entry has the same amount
+                -->
+                  <break />
+                </do_if>
+              </do_all>
+
+              <do_if value="$Dock">
+                <set_value name="$dbg_str" exact="$dbg_str + 'Selected ' + $Dock + ' from ' + $ViableDockModules.count + ' options: ' + $ViableDockModules + '\n'" />
+                <set_value name="$NumDocksMedium" exact="$Dock.numdocks.{tag.dock_m}" />
+                <set_value name="$NumDocksSmall" exact="$Dock.numdocks.{tag.dock_s}" />
+                <set_value name="$dbg_str" exact="$dbg_str + 'Number of docks on ' + $Dock + ': size M = ' + $NumDocksMedium + ', size S: ' + $NumDocksSmall + '\n'" />
+                <set_value name="$NumDocksAddedMedium" operation="add" exact="$NumDocksMedium" />
+                <set_value name="$NumDocksAddedSmall" operation="add" exact="$NumDocksSmall"  />
+                <set_value name="$NumRequiredDocksMedium" exact="[$NumRequiredDocksMedium - $NumDocksMedium, 0].max" />
+                <set_value name="$NumRequiredDocksSmall" exact="[$NumRequiredDocksSmall - $NumDocksSmall, 0].max" />
+                <set_value name="$AddModules.{$Dock}" operation="add" />
+              </do_if>
+            </do_while>
+            <set_value name="$dbg_str" exact="$dbg_str + 'Number of docks added: medium = ' + $NumDocksAddedMedium + ', small = ' + $NumDocksAddedSmall + '\n'" />
+          </do_if>
+          <do_else>
+            <debug_text text="'No viable dock areas could be found for station %1 of faction %2 using tags %3 and module set %4.'.[$Station, $Station.owner, $docktags, $ModuleSet]" filter="error"/>
+            <set_value name="$dbg_str" exact="$dbg_str + 'No viable dock areas could be found for station %1 of faction %2 using tags [tag.dockarea, tag.module] and module set %3.'.[$Station, $Station.owner, $ModuleSet] + '\n'" />
+          </do_else>
+        </do_if>
+        <do_else>
+          <set_value name="$dbg_str" exact="$dbg_str + 'Station requires no docks.\n'" />
+        </do_else>
+        <set_value name="$dbg_str" exact="$dbg_str + 'END DefaultCalculateDocks: seed = ' + $Station.generationseed + '\n'"/>
+        <debug_to_file name="$DebugFileName" directory="$DebugDirectory" text="$dbg_str" output="$DebugOutput" />
+      </actions>
+    </library>
+
+    <library name="DefaultCalculatePiers">
+      <actions>
+        <set_value name="$dbg_str" exact="player.age + ' BEGIN DefaultCalculatePiers: seed = ' + $Station.generationseed + '\n'"/>
+        <!-- INPUT VALUES FOR RULESET -->
+        <set_value name="$CapitalTradeRatio" exact="0.55f" comment="The ratio of the volume of wares being traded by capital ships compared to the volume of wares being traded by small and medium traders" />
+        <set_value name="$TradeCapacity" exact="17500" comment="The average used capacity of a capital-class trading ship" />
+        <set_value name="$TradesPerHour" exact="5" comment="The average number of capital ships one pier dock can process in one hour" />
+
+        <!-- Calculate the throughput of the station (volume of wares being produced and consumed on a station) -->
+        <set_value name="$ProductionVolume" exact="0" />
+        <set_value name="$ConsumptionVolume" exact="0" />
+        <do_all exact="$PlannedModules.count" counter="$ModuleCounter">
+          <do_if value="$PlannedModules.{$ModuleCounter}.isclass.production">
+            <set_value name="$ProductionVolume" operation="add" exact="$PlannedModules.{$ModuleCounter}.productionvolume" />
+            <set_value name="$ConsumptionVolume" operation="add" exact="$PlannedModules.{$ModuleCounter}.consumptionvolume" />
+          </do_if>
+        </do_all>
+        <set_value name="$dbg_str" exact="$dbg_str + 'Station producing ' + $ProductionVolume + ' units per hour\n'"/>
+        <set_value name="$Throughput" exact="$ProductionVolume + $ConsumptionVolume" />
+        <set_value name="$dbg_str" exact="$dbg_str + 'Station throughput: ' + $Throughput + ' units per hour\n'"/>
+
+        <!-- Calculate the capital throughput (volume of wares being traded by capital ships) -->
+        <set_value name="$CapitalThroughput" exact="$CapitalTradeRatio * $Throughput" />
+        <set_value name="$dbg_str" exact="$dbg_str + 'Capital throughput at station: ' + $CapitalThroughput + ' units per hour\n'"/>
+
+        <!-- Calculate the number of piers required by the station 
+             Ruleset:
+                Volume of wares traded by capital ships at this station / (average capacity of capital trading ships * number of trades that can be completed by a capital ship in one hour) -->
+        <set_value name="$TradedPerHour" exact="$TradeCapacity * $TradesPerHour" />
+        <set_value name="$dbg_str" exact="$dbg_str + 'The volume traded per hour at this station by capital ships is: ' + $TradedPerHour + ' units\n'"/>
+        <set_value name="$NumRequiredPiers" exact="($CapitalThroughput / $TradedPerHour)LF" />
+        <set_value name="$NumRequiredPiers" exact="1000 - (1000 - $NumRequiredPiers)i" comment="Round up to nearest integer" />
+        <set_value name="$dbg_str" exact="$dbg_str + 'Number of piers required by station: ' + $NumRequiredPiers + '\n'"/>
+
+        <!--Take existing piers into account-->
+        <set_value name="$ExistingTradeLocationsCount" exact="0"/>
+        <do_all exact="$PlannedModules.count" counter="$ModuleCounter">
+          <do_if value="$PlannedModules.{$ModuleCounter}.isclass.pier">
+            <set_value name="$ExistingTradeLocationsCount" exact="$PlannedModules.{$ModuleCounter}.numpierdocks" operation="add"/>
+          </do_if>
+        </do_all>
+
+        <!-- Get Base pier first (only one of these) -->
+        <set_value name="$NumConnections" exact="0" />
+        <do_if value="not $ExistingTradeLocationsCount">
+          <get_module_definition macro="$ViableBasePierModules" faction="$Station.owner" tags="[tag.pier, tag.base, tag.module]" set="$ModuleSet" multiple="true" />
+          <do_if value="$ViableBasePierModules.count" min="1">
+            <set_value name="$BasePier" list="$ViableBasePierModules" seed="$Station" />
+            <set_value name="$NumConnections" exact="$BasePier.numpierdocks" />
+            <set_value name="$dbg_str" exact="$dbg_str + 'This station\'s base pier will be: ' + $BasePier + ' (' + 1 + ')\n'"/>
+            <set_value name="$dbg_str" exact="$dbg_str + 'Number of connections on ' + $BasePier + ': ' + $NumConnections + '\n'"/>
+            <set_value name="$AddModules.{$BasePier}" exact="1" />
+          </do_if>
+          <do_else>
+            <debug_text text="'No viable base piers could be found for station %1 of faction %2 using tags [tag.pier, tag.base, tag.module] and module set %3.'.[$Station, $Station.owner, $ModuleSet]" filter="error"/>
+            <set_value name="$dbg_str" exact="$dbg_str + 'No viable base piers could be found. Station will attempt to add enough additional piers to compensate.\n'"/>
+          </do_else>
+        </do_if>
+
+        <set_value name="$RemainingPiers" exact="$NumRequiredPiers - $NumConnections - $ExistingTradeLocationsCount" />
+        <!-- Get Additional piers (as needed) -->
+        <do_if value="$RemainingPiers" min="1">
+          <set_value name="$dbg_str" exact="$dbg_str + 'Additional piers required: ' + $RemainingPiers + '\n'"/>
+          <get_module_definition macro="$ViableAdditionalPierModules" faction="$Station.owner" tags="[tag.pier, tag.add, tag.module]" set="$ModuleSet" multiple="true" />
+          <do_if value="$ViableAdditionalPierModules.count" min="1">
+            <set_value name="$NumAdditionalPiersAdded" exact="0" />
+            <do_while value="$RemainingPiers" min="1">
+              <set_value name="$dbg_str" exact="$dbg_str + 'Remaining piers required: ' + $RemainingPiers + '\n'"/>
+              <set_value name="$AdditionalPier" list="$ViableAdditionalPierModules" seed="$Station" />
+              <set_value name="$dbg_str" exact="$dbg_str + 'Selected ' + $AdditionalPier + '\n'"/>
+              <set_value name="$NumConnections" exact="$AdditionalPier.numpierdocks" />
+              <do_if value="$NumConnections gt 0">
+                <set_value name="$dbg_str" exact="$dbg_str + 'Number of connections on ' + $AdditionalPier + ': ' + $NumConnections + '\n'"/>
+                <set_value name="$RemainingPiers" operation="subtract" exact="$NumConnections" />
+                <set_value name="$NumAdditionalPiersAdded" operation="add" />
+                <set_value name="$AddModules.{$AdditionalPier}" operation="add" />
+              </do_if>
+              <do_else>
+                <debug_text text="$AdditionalPier.name + ' (' + $AdditionalPier.macro.name + ') does not have any docks attached to it'" filter="error" />
+                <debug_text text="'This station: ' + $Station.name + ' will not be set up correctly'" filter="error" />
+                <break />
+              </do_else>
+            </do_while>
+            <set_value name="$dbg_str" exact="$dbg_str + 'Number of additional piers added: ' + $NumAdditionalPiersAdded + '\n'"/>
+          </do_if>
+          <do_else>
+            <set_value name="$dbg_str" exact="$dbg_str + 'No viable additional piers could be found.\n'"/>
+          </do_else>
+        </do_if>
+        <do_else>
+          <set_value name="$dbg_str" exact="$dbg_str + 'Station requires no additional piers.\n'"/>
+        </do_else>
+        <set_value name="$dbg_str" exact="$dbg_str + 'END DefaultCalculatePiers: seed = ' + $Station.generationseed + '\n'"/>
+        <debug_to_file name="$DebugFileName" directory="$DebugDirectory" text="$dbg_str" output="$DebugOutput" />
+      </actions>
+    </library>
+
+    <!--TODO @Owen convert to run_actions library-->
+    <library name="DefaultCalculateDefence">
+      <actions>
+        <set_value name="$dbg_str" exact="player.age + ' BEGIN DefaultCalculateDefence: seed = ' + $Station.generationseed + '\n'"/>
+        <set_value name="$dbg_str" exact="$dbg_str + 'Station is in: ' + $Station.sector.knownname + ' (' + $Station.cluster.knownname + ')\n'"/>
+        <set_value name="$dbg_str" exact="$dbg_str + 'Station faction is: ' + $Station.owner + '\n'"/>
+
+        <set_value name="$Cluster" exact="$Station.cluster" />
+
+        <set_value name="$OpposingFactions" exact="[]" />
+        <!-- First pass - looking for other factions in the same cluster -->
+        <find_sector name="$LocalSectors" space="$Cluster" multiple="true" />
+        <do_all exact="$LocalSectors.count" counter="$SectorCounter">
+          <set_value name="$Sector" exact="$LocalSectors.{$SectorCounter}" />
+          <set_value name="$OwningFaction" exact="$Sector.owner" />
+          <set_value name="$dbg_str" exact="$dbg_str + $Sector.knownname + ' (' + $Sector.cluster.knownname + ') is owned by ' + $OwningFaction.id + '\n'"/>
+
+          <do_if value="$OwningFaction and $OwningFaction != $Station.owner">
+            <do_if value="$OpposingFactions.indexof.{$OwningFaction} == 0">
+              <append_to_list name="$OpposingFactions" exact="$OwningFaction" />
+            </do_if>
+          </do_if>
+        </do_all>
+
+        <do_if value="$OpposingFactions.count" min="1">
+          <set_value name="$dbg_str" exact="$dbg_str + 'After first pass, opposing factions are:\n'"/>
+          <do_all exact="$OpposingFactions.count" counter="$FactionCounter">
+            <set_value name="$dbg_str" exact="$dbg_str + $FactionCounter + ': ' + $OpposingFactions.{$FactionCounter}.id + '\n'"/>
+          </do_all>
+        </do_if>
+
+        <!-- Second Pass - looking for other factions in neighbouring clusters -->
+        <find_gate name="$Gates" space="$Cluster" multiple="true" />
+        <set_value name="$dbg_str" exact="$dbg_str + $Cluster.knownname + ' has ' + $Gates.count + ' gates\n'"/>
+        <do_all exact="$Gates.count" counter="$GateCounter">
+          <set_value name="$Gate" exact="$Gates.{$GateCounter}" />
+          <do_if value="$Gate.isactive and $Gate.destination">
+            <set_value name="$ConnectingCluster" exact="$Gate.destination.cluster" />
+            <find_sector name="$ConnectingSectors" space="$ConnectingCluster" multiple="true" />
+            <create_list name="$ActiveFactions" />
+
+            <do_all exact="$ConnectingSectors.count" counter="$SectorCounter">
+              <set_value name="$ActiveFaction" exact="$ConnectingSectors.{$SectorCounter}.owner" />
+              <do_if value="$ActiveFactions.indexof.{$ActiveFaction} == 0">
+                <append_to_list name="$ActiveFactions" exact="$ActiveFaction" />
+              </do_if>
+            </do_all>
+
+            <set_value name="$dbg_str" exact="$dbg_str + 'Factions active in ' + $ConnectingCluster.knownname + ' are:\n'"/>
+            <do_all exact="$ActiveFactions.count" counter="$FactionCounter">
+              <set_value name="$dbg_str" exact="$dbg_str + $FactionCounter + ': ' + $ActiveFactions.{$FactionCounter}.id + '\n'"/>
+            </do_all>
+
+            <do_all exact="$ActiveFactions.count" counter="$ActiveFactionCounter">
+              <set_value name="$ActiveFaction" exact="$ActiveFactions.{$ActiveFactionCounter}" />
+              <do_if value="$ActiveFaction and $ActiveFaction != $Station.owner">
+                <do_if value="$OpposingFactions.indexof.{$ActiveFaction} == 0">
+                  <append_to_list name="$OpposingFactions" exact="$ActiveFaction" />
+                </do_if>
+              </do_if>
+            </do_all>
+          </do_if>
+        </do_all>
+
+        <do_if value="$OpposingFactions.count" min="1">
+          <set_value name="$dbg_str" exact="$dbg_str + 'After second pass, opposing factions are:\n'"/>
+          <do_all exact="$OpposingFactions.count" counter="$FactionCounter">
+            <set_value name="$dbg_str" exact="$dbg_str + $FactionCounter + ': ' + $OpposingFactions.{$FactionCounter}.id + '\n'"/>
+          </do_all>
+        </do_if>
+
+        <do_if value="$Station.owner != faction.xenon">
+          <!-- Based on station's position and opposing factions, give it a score with which it can select necessary defence -->
+          <set_value name="$TotalScore" exact="0" />
+          <do_for_each name="$OpposingFaction" in="$OpposingFactions">
+            <set_value name="$Relationship" exact="($Station.owner.relationto.{$OpposingFaction})LF" />
+
+            <set_value name="$NormalisedRelationship" exact="(($Relationship + 1) / 2)LF" />
+            <set_value name="$Score" exact="100 - ($NormalisedRelationship * 100)" />
+            <set_value name="$dbg_str" exact="$dbg_str + 'Relationship between ' + $Station.owner + ' and ' + $OpposingFaction + ' is ' + $Relationship + ' (Score: ' + $Score + ')\n'"/>
+
+            <set_value name="$TotalScore" operation="add" exact="$Score" />
+          </do_for_each>
+          <do_if value="$TotalScore gt 0">
+            <set_value name="$TotalScore" exact="$TotalScore / $OpposingFactions.count" />
+          </do_if>
+          <set_value name="$Def_StationScore" min="($TotalScore)LF / 100" max="(($TotalScore)LF / 100) + 0.3" seed="$Station" comment="allow loadout level to be up to 0.3 higher to create some random variance" />
+        </do_if>
+        <do_else>
+          <!-- Xenon stations always should have a high loadout -->
+          <set_value name="$Def_StationScore" exact="1.0LF" />
+        </do_else>
+        <set_value name="$dbg_str" exact="$dbg_str + '$Def_StationScore set to ' + $Def_StationScore + '\n'" />
+        <do_if value="$Def_StationScore lt 0.2LF">
+          <set_value name="$Def_StationScore" exact="0.2LF" />
+        </do_if>
+        <do_elseif value="$Def_StationScore gt 1.0LF">
+          <set_value name="$Def_StationScore" exact="1.0LF" />
+        </do_elseif>
+        <set_value name="$dbg_str" exact="$dbg_str + '$Def_StationScore set to ' + $Def_StationScore + ' after clamping \n'" />
+
+        <!-- Select defence modules for stations -->
+        <!-- Egosoft Ruleset balanced as follows:
+              - Score between 0 and 0.4 = low loadout
+              - Score between 0.41 and 0.75 = medium loadout 
+              - Score between 0.76 and 1.0 = high loadout -->
+        <set_value name="$LowMaxBoundary" exact="0.4LF" />
+        <set_value name="$MidMaxBoundary" exact="0.75LF" />
+        <set_value name="$HighMaxBoundary" exact="1.0LF" />
+
+        <do_if value="$Def_StationScore ge 0 and $Def_StationScore le $LowMaxBoundary">
+          <set_value name="$dbg_str" exact="$dbg_str + 'Station should have a low loadout (' + $Def_StationScore + ')\n'"/>
+          <set_value name="$NumDefenceModules" min="0" max="1" seed="$Station" />
+        </do_if>
+        <do_elseif value="$Def_StationScore le $MidMaxBoundary">
+          <set_value name="$dbg_str" exact="$dbg_str + 'Station should have a medium loadout (' + $Def_StationScore + ', seed: ' + $Station.generationseed + ')\n'"/>
+          <set_value name="$NumDefenceModules" min="2" max="3" seed="$Station" />
+        </do_elseif>
+        <do_elseif value="$Def_StationScore le $HighMaxBoundary">
+          <set_value name="$dbg_str" exact="$dbg_str + 'Station should have a high loadout (' + $Def_StationScore + ')\n'"/>
+          <set_value name="$NumDefenceModules" min="4" max="5" seed="$Station" />
+        </do_elseif>
+        <do_else>
+          <set_value name="$dbg_str" exact="$dbg_str + 'ERROR: Station has invalid score (' + $Def_StationScore +')\n'"/>
+        </do_else>
+        <set_value name="$dbg_str" exact="$dbg_str + '$NumDefenceModules set to ' + $NumDefenceModules + '\n'"/>
+
+        <!--Take existing defence modules into account-->
+        <set_value name="$ExistingDefenceModuleCount" exact="0"/>
+        <do_all exact="$PlannedModules.count" counter="$ModuleCounter">
+          <do_if value="$PlannedModules.{$ModuleCounter}.isclass.defencemodule">
+            <set_value name="$ExistingDefenceModuleCount" operation="add"/>
+          </do_if>
+        </do_all>
+
+        <set_value name="$NumDefenceModules" operation="subtract" exact="$ExistingDefenceModuleCount"/>
+
+        <!-- Only add defence modules if this station should have defence modules added to it -->
+        <!--TODO @Owen should this library even be called if $Def_UseModules is false?-->
+        <do_if value="$Def_UseModules and $NumDefenceModules gt 0">
+          <get_module_definition macro="$ViableDefenceModules" faction="$Station.owner" tags="[tag.defence, tag.module]" set="$ModuleSet" multiple="true" />
+          <!-- Only add defence modules if there are viable defence modules to add -->
+          <do_if value="$ViableDefenceModules.count">
+            <set_value name="$dbg_str" exact="$dbg_str + 'Viable Defence Modules for this station are:\n'"/>
+            <do_all exact="$ViableDefenceModules.count" counter="$ModuleCounter">
+              <set_value name="$dbg_str" exact="$dbg_str + $ModuleCounter + ': ' + $ViableDefenceModules.{$ModuleCounter} + '\n'"/>
+            </do_all>
+
+            <do_all exact="$NumDefenceModules">
+              <set_value name="$DefenceModule" list="$ViableDefenceModules" seed="$Station" />
+              <set_value name="$dbg_str" exact="$dbg_str + 'Selected: ' + $DefenceModule + '\n'"/>
+              <set_value name="$AddModules.{$DefenceModule}" operation="add" exact="1" />
+            </do_all>
+          </do_if>
+          <do_else>
+            <debug_text text="'Automatic station generation was not able to find any valid defence modules for station ' + $Station.knownname + ' (' + $Station + ') though it should have some - [Owen]'" filter="error"/>
+            <set_value name="$dbg_str" exact="$dbg_str + 'Automatic station generation was not able to find any valid defence modules for station ' + $Station.knownname + ' (' + $Station + ') though it should have some - [Owen]\n'"/>
+          </do_else>
+        </do_if>
+        <set_value name="$dbg_str" exact="$dbg_str + 'END DefaultCalculateDefence: seed = ' + $Station.generationseed + '\n'"/>
+        <debug_to_file name="$DebugFileName" directory="$DebugDirectory" text="$dbg_str" output="$DebugOutput" />
+        <remove_value name="$dbg_str" />
+      </actions>
+    </library>
+
+    <library name="DefaultCalculateConnections">
+      <actions>
+        <set_value name="$dbg_str" exact="'BEGIN DefaultCalculateConnections: seed = ' + $Station.generationseed + '\n'"/>
+        <!-- Get viable connection modules -->
+        <get_module_definition macro="$ViableConnectionModules" faction="$Station.owner" tags="[tag.connection, tag.module]" set="$ModuleSet" multiple="true" />
+        <do_if value="$ViableConnectionModules.count" min="1">
+          <set_value name="$Conn_PlannedConnectors" exact="$ViableConnectionModules" />
+        </do_if>
+        <set_value name="$dbg_str" exact="$dbg_str + 'END DefaultCalculateConnections: seed = ' + $Station.generationseed + '\n'"/>
+        <debug_to_file name="$DebugFileName" directory="$DebugDirectory" text="$dbg_str" output="$DebugOutput" />
+        <remove_value name="$dbg_str" />
+      </actions>
+    </library>
+
+    <library name="Apply_Loadout_To_Stations" purpose="run_actions">
+      <params>
+        <param name="Stations" />
+        <param name="Faction" />
+        <param name="LoadoutLevel" default="0.9"/>
+        <param name="LevelVariation" default="0.1"/>
+        <param name="DebugChance" default="0" />
+      </params>
+      <actions>
+        <do_for_each name="$Station" in="$Stations">
+
+          <debug_text text="'Checking loadout level of station ' + $Station.debugname + ' = ' + $Station.loadoutlevel + ' against requested loadout level = ' + $LoadoutLevel" context="false" chance="$DebugChance" />
+          <do_if value="$Station.loadoutlevel lt $LoadoutLevel">
+            <!--Update loadout-->
+            <set_loadout_level object="$Station" exact="$LoadoutLevel" />
+            <set_value name="$Sequence" exact="$Station.plannedconstruction.sequence"/>
+            <generate_loadout sequence="$Sequence" level="$LoadoutLevel" result="$Loadouts" faction="$Faction" variation="$LevelVariation"/>
+            <do_all exact="$Loadouts.count" counter="$l">
+              <apply_loadout sequence="$Sequence" index="$l" loadout="$Loadouts.{$l}" />
+            </do_all>
+            <!-- <apply_construction_sequence station="$Station" sequence="$Sequence"/> -->
+
+            <add_build_to_expand_station object="$Station.buildstorage" buildobject="$Station" constructionplan="$Sequence" result="$BuildID" />
+            <debug_text text="'Started update of loadout of station ' + $Station.debugname + ' - Build ID: ' + $BuildID" context="false" chance="$DebugChance" />
+          </do_if>
+        </do_for_each>
+      </actions>
+    </library>
+
+    <cue name="Update_Neighbor_Defense_Station_Loadout" instantiate="true" mapeditor="false">
+      <conditions>
+        <check_all>
+          <event_contained_sector_changed_true_owner space="player.galaxy" />
+          <check_value value="player.galaxy.macro.ismacro.{macro.xu_ep2_universe_macro}" />
+          <check_value value="@event.param.cluster.isnormalcluster and event.param3 and event.param3 != faction.ownerless and event.param3 != faction.player" />
+          <check_value value="player.age gt 10s" />
+        </check_all>
+      </conditions>
+      <actions>
+        <set_value name="$StationsToUpdate" exact="[]" />
+        <set_value name="$StationFaction" exact="event.param3" />
+        <set_value name="$LostSector" exact="event.param" />
+
+        <!--Finding stations to update-->
+        <find_sector_in_range name="$SectorsToCheck" object="$LostSector" maxdistance="1" multiple="true" trueowner="$StationFaction" />
+        <do_for_each name="$Sector" in="$SectorsToCheck">
+          <find_station_by_true_owner name="$StationsToAdd" faction="$StationFaction" space="$Sector" checkoperational="true" multiple="true" planneddefencestation="true" />
+          <do_for_each name="$Station" in="$StationsToAdd">
+            <append_to_list name="$StationsToUpdate" exact="$Station" />
+          </do_for_each>
+        </do_for_each>
+
+        <!--Running action to pdate loadout-->
+        <run_actions ref="Apply_Loadout_To_Stations">
+          <param name="Stations" value="$StationsToUpdate" />
+          <param name="Faction" value="$StationFaction" />
+          <param name="LoadoutLevel" value="0.88f" />
+        </run_actions>
+      </actions>
+    </cue>
+
+  </cues>
+</mdscript>

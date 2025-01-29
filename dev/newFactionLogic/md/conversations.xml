@@ -1,0 +1,1935 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<mdscript name="Conversations" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+
+  <cues>
+
+    <cue name="DefaultComm" instantiate="true" namespace="this">
+      <conditions>
+        <check_any>
+          <event_conversation_started conversation="default" />
+          <event_conversation_returned_to_section section="default" />
+        </check_any>
+        <check_any>
+          <check_value value="typeof event.object == datatype.component and not event.object.customhandler" />
+          <check_value value="typeof event.object == datatype.list and event.object.{1}.people.{event.object.{2}}.exists and not event.object.{1}.people.{event.object.{2}}.customhandler"/>
+        </check_any>
+      </conditions>
+      <actions>
+        <do_if value="typeof event.object == datatype.component">
+          <debug_text text="'%1: %2, actor=%3, %4'.[event.name, event.param, event.object, event.object.knownname]" />
+          <set_value name="$locobject" exact="event.object.controlled"/>
+          <set_value name="$npctemplate" exact="null"/>
+          <set_value name="$surrenderoption" exact="player.occupiedship and not event.object.isplayerowned and event.object == @event.object.assignedcontrolled.pilot and event.object.attention ge attention.visible" comment="Both player and NPC have to be piloting" />
+          <!-- MAINTENANCE: keep synced with surrender conditions in md.Notifications.PlayerOwnedShipAttacks -->
+          <set_value name="$maysurrender" exact="$locobject and $locobject.iscapturable and $locobject.isclass.[class.ship_s, class.ship_m] and ((not $locobject.maxshield) or ($locobject.shieldpercentage lt 20)) and ($locobject.hullpercentage lt 75) and @event.object.$nextcapturechance lt player.age"/>
+          <debug_text text="'has surrender option: %s.\nmay surrender: %s.\nobject: %s\ncapturable: %s\nsize class: %s\nmaxshield: %s\nshield percentage: %s (threshold: 20)\nhull percentage: %s (threshold: 75)\nnext capture time: %s, current time: %s'.[$surrenderoption, $maysurrender, $locobject, @$locobject.iscapturable, @$locobject.class, @$locobject.maxshield, @$locobject.shieldpercentage, @$locobject.hullpercentage, @event.object.$nextcapturechance, player.age]" chance="0"/>
+        </do_if>
+        <do_else>
+          <debug_text text="'%1: %2, npctemplate=%3, object=%4 %5'.[event.name, event.param, event.object.{2}, event.object.{1}, event.object.{1}.knownname]" />
+          <set_value name="$locobject" exact="event.object.{1}"/>
+          <set_value name="$npctemplate" exact="event.object.{2}"/>
+          <set_value name="$surrenderoption" exact="false" comment="No option for npc templates" />
+          <set_value name="$maysurrender" exact="false"/>
+        </do_else>
+
+        <!-- Check 'kill' relation first, exit conversation if true. -->
+        <do_if value="not ($surrenderoption and $maysurrender) and (if $npctemplate then $locobject.hasrelation.enemy.{faction.player} else event.object.hasrelation.enemy.{faction.player})">
+          <add_npc_line line="2004" comment="(Greeting - rejected)" />
+        </do_if>
+        <do_else>
+          <do_if value="event.name == 'event_conversation_started'">
+            <set_conversation_return_section section="g_goodbye" />
+            <do_if value="$npctemplate">
+              <include_actions ref="Greeting_NPCTemplate" />
+            </do_if>
+            <do_else>
+              <include_actions ref="Greeting" />
+            </do_else>
+          </do_if>
+          <!-- To disable asking for way, set_value "$dontaskforway". That's safe because lifetime of namespace variables is tied to this instance. -->
+
+          <!-- Find out who we are talking to -->
+          <do_if value="not $npctemplate">
+            <do_if value="event.object.controlpost == controlpost.aipilot">
+              <do_if value="event.object.controlled">
+                <assert value="event.object.ship" text="'AI Pilot is controlling but does not have a ship [Owen]'"/>
+                <!--Pilot is currently in control-->
+                <do_if value="event.object.isplayerowned">
+                  <!--
+                  1: Join my squad / Leave my squad (if on other ship?) / Hand me your inventory (if player is on the ship with a pilot but not controlling it)
+                  2: Give seminar
+                  3: Proceed with current orders
+                  4: Work somewhere else for me
+                  5: More
+                    1: Fire
+                    2: Get up
+                    3: Return to normal duties
+                    4: Ship details
+                  6: Goodbye-->
+                  <!-- RIGHT -->
+                  <set_value name="$playeroccupied" exact="player.occupiedship"/>
+                  <add_player_choice_sub text="{1002,12025}" section="g_mainmore" position="right" comment="Show more options" />
+                  <!-- BOTTOM LEFT -->
+                  <do_if value="$locobject.isplayerowned and @$locobject.order.$releasesignal.{1} == 'playerownedship_proceed'">
+                    <add_player_choice text="{1002,2033}" section="g_playerownedship_proceed" position="bottom_left" comment="Proceed with current orders" selectable="true"/>
+                  </do_if>
+                  <do_if value="not @event.object.ship.isclass.ship_xs">
+                    <do_if value="not event.object.ship.buildanchor">
+                      <!-- TOP LEFT -->
+                      <do_if value="@$playeroccupied.isclass.spacesuit">
+                        <add_player_choice text="{1002,12003}" section="g_rescueplayersuit" position="top_left" comment="Help!" selectable="not $playeroccupied.dock and not $playeroccupied.assigneddock and $playeroccupied.sector and $playeroccupied.sector == $locobject.sector and @$locobject.order.state != orderstate.critical"/>
+                      </do_if>
+                      <do_else>
+                        <do_if value="$playeroccupied">
+                          <do_if value="event.object.ship.commander == $playeroccupied">
+                            <add_player_choice text="{1002,2008}" section="g_removefromsquad" position="top_left" comment="Leave my squad" selectable="event.object.command.value != command.support" />
+                          </do_if>
+                          <do_else>
+                            <add_player_choice text="{1002,2009}" section="g_addtosquad" position="top_left" comment="Join my squad" selectable="not @event.object.controlled.buildmodule.buildanchor and @event.object.controlled.canhavecommander.{$playeroccupied}"/>
+                          </do_else>
+                        </do_if>
+                        <do_elseif value="event.object.ship == player.ship">
+                          <do_if value="event.object.inventory.count">
+                            <add_player_choice text="{1002,3019}" section="g_inventorytransfer" position="top_left" comment="Hand me your inventory"/>
+                          </do_if>
+                          <do_else>
+                            <add_player_choice text="{1002,3019}" section="g_inventorytransfer" position="top_left" selectable="false" tooltip="{1026,20044}" comment="Hand me your inventory"/>
+                          </do_else>
+                        </do_elseif>
+                      </do_else>
+                    </do_if>
+                  </do_if>
+                </do_if>
+                <do_else>
+                  <!-- Non-player-owned pilot
+                  1: Surrender/Help!
+                  2: Drop your cargo
+                  3: Eject your illegal cargo
+                  4: Where can I find
+                  6: Goodbye-->
+                  <do_if value="@player.occupiedship.isclass.spacesuit">
+                    <add_player_choice text="{1002,12002}" section="g_rescueplayersuit" position="top_left" comment="Help!" selectable="not player.occupiedship.dock and not player.occupiedship.assigneddock and player.occupiedship.sector and player.occupiedship.sector == $locobject.sector and @$locobject.order.state != orderstate.critical and not event.object.hasrelation.enemy.{player.entity} and not @player.entity.$rescuer.isoperational"/>
+                  </do_if>
+                  <do_elseif value="player.entity.hascontext.{event.object.controlled}">
+                    <do_if value="@event.object.$canplayerredirect">
+                      <add_player_choice text="{1002,12009}" section="g_deliverplayer" position="top_left" choiceparam="event.object.controlled"/>
+                    </do_if>
+                  </do_elseif>
+                  <do_elseif value="$surrenderoption">
+                    <!-- MAINTENANCE: keep synced with surrender conditions in md.Notifications.PlayerOwnedShipAttacks -->
+                    <do_if value="$maysurrender">
+                      <add_player_choice text="{1002,12005}" section="g_surrender" position="top_left" choiceparam="event.object.controlled"/>
+                    </do_if>
+                    <do_else>
+                      <add_player_choice text="{1002,12005}" section="g_surrender_nope" position="top_left" choiceparam="event.object.controlled"/>
+                    </do_else>
+                  </do_elseif>
+
+                  <do_if value="not $locobject.ismission and $locobject.scannedlevel gt 0">
+                    <do_if value="$locobject.order and $locobject.order.state != orderstate.critical and $locobject.order.id != 'Attack'">
+                      <add_player_choice text="{1002, 12011}" section="g_player_piratedrop" position="left" choiceparam="$locobject" comment="Drop your cargo!"/>
+
+                      <set_value name="$lawmaker" exact="event.object.zone.policefaction" />
+                      <do_if value="$lawmaker and faction.player.haslicence.police.{$lawmaker} and ($locobject.cargo.illegalto.{$lawmaker} or event.object.inventory.illegalto.{$lawmaker})">
+                        <add_player_choice text="{1002,2007}" section="g_player_policedrop" position="bottom_left" choiceparam="$locobject" comment="Eject your illegal cargo!"/>
+                      </do_if>
+                    </do_if>
+                  </do_if>
+
+                  <remove_value name="$locobject"/>
+                </do_else>
+              </do_if>
+              <do_else>
+                <!--Pilot is not currently in control
+                2: Return to post
+                3. Give piloting seminar-->
+                <do_if value="event.object.isbusy and event.object.isplayerowned and event.object.ship == event.object.assignedcontrolled">
+                  <!--Not selectable if player is in control (or remote controlling while on the assignedcontrolled)-->
+                  <add_player_choice text="{1002,3016}" section="g_returntopost" position="left" selectable="not player.controlled or (player.controlled != event.object.assignedcontrolled and player.occupiedship != event.object.assignedcontrolled)"/>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_elseif value="event.object.controlpost == controlpost.manager and event.object.isplayerowned">
+              <do_if value="@event.object.controlled">
+                <assert value="event.object.controlled.isclass.container" text="'AI Manager is not controlling a container [Owen]'"/>
+                <!-- RIGHT -->
+                <add_player_choice_sub text="{1001,1111}" section="gMain_mapObject" position="right" choiceparam="event.object.controlled" comment="General Information" />
+              </do_if>
+            </do_elseif>
+            <do_elseif value="event.object.isplayerowned">
+              <!-- moved seminar conversation option -->
+            </do_elseif>
+          </do_if>
+
+          <do_if value="$npctemplate">
+            <do_if value="$locobject.isplayerowned">
+              <!--Hired, backroom
+              2: Give seminar (unselectable)
+              3: Get back to work (if casual)
+              4: Work somewhere else for me
+              5: More
+	              1: Fire
+              6: Goodbye-->
+              <!--Disabled for now until menu can handle being passed an object instead of an NPC-->
+              <do_if value="$locobject.people.{$npctemplate}.istransferscheduled">
+                <add_player_choice text="{1002,3020}" section="g_canceltransfer" position="top_right" choiceparam="[$locobject, $npctemplate]" comment="Cancel your scheduled transfer"/>
+              </do_if>
+              <do_else>
+                <add_player_choice text="{1002,3008}" section="g_worksomewhere" position="top_right" choiceparam="[0, 0, true, $locobject, null, 'hire', ['g_worksomewhere_positionselected', $locobject, false, $npctemplate]]" comment="Work somewhere else"/>
+              </do_else>
+              <do_if value="($locobject.people.{$npctemplate}.skill.piloting lt 15) or ($locobject.people.{$npctemplate}.skill.management lt 15)">
+                <add_player_choice_sub text="{1002,3106}" section="g_seminar" position="left"/>
+              </do_if>
+              <do_else>
+                <!-- Unselectable option with tooltip to inform the player that the NPC has reached max rank in all relevant skills. -->
+                <add_player_choice text="{1002,3106}" section="g_cancel" position="left" selectable="false" tooltip="{1026,1907}"/>
+              </do_else>
+              <!--<add_player_choice text="{1002,3008}" section="g_worksomewhere" position="top_right" choiceparam="[0, 0, true, player.container, null, 'hire', ['g_worksomewhere_positionselected', event.object, false]]" comment="Work somewhere else"/>-->
+              <add_player_choice_sub text="{1002,12025}" section="g_mainmore" position="right" comment="Show more options" selectable="not $locobject.people.{$npctemplate}.istransferscheduled" />
+            </do_if>
+          </do_if>
+          <do_else>
+            <do_if value="event.object.isplayerowned">
+              <!--
+              Hired NPC
+              2: Give seminar
+              3: Get back to work (if casual)
+              4: Work somewhere else for me
+              5: More
+	              1: Fire
+              6: Goodbye-->
+              <!--TODO @Owen rename section and implement 'g_worksomewhere'-->
+              <do_if value="event.object.istransferscheduled">
+                <add_player_choice text="{1002,3020}" section="g_canceltransfer" position="top_right" choiceparam="[event.object.controllable, event.object.npctemplate]" comment="Cancel your scheduled transfer"/>
+              </do_if>
+              <do_else>
+                <add_player_choice text="{1002,3008}" section="g_worksomewhere" position="top_right" choiceparam="[0, 0, true, event.object.controllable, null, 'hire', ['g_worksomewhere_positionselected', event.object, false]]" comment="Work somewhere else"/>
+              </do_else>
+              <do_if value="@event.object.$casual">
+                <add_player_choice text="{30222, 1766}" section="g_cancel_backtowork" position="bottom_left" comment="Get back to work" />
+              </do_if>
+              <do_if value="(event.object.skill.piloting lt 15) or (event.object.skill.management lt 15)">
+                <add_player_choice_sub text="{1002,3106}" section="g_seminar" position="left"/>
+              </do_if>
+              <do_else>
+                <!-- Unselectable option with tooltip to inform the player that the NPC has reached max rank in all relevant skills. -->
+                <add_player_choice text="{1002,3106}" section="g_cancel" position="left" selectable="false" tooltip="{1026,1907}"/>
+              </do_else>
+              <!--<add_player_choice text="'Assign ship TODO'" section="g_pilotworksomewhere" position="left" choiceparam="[0, 0, true, player.zone, null, null, 'selectplayerobject', ['g_pilotworksomewhere_objectselected', null, null, true, false, true, true]]" selectable="false" comment="Work somewhere else"/>-->
+              <add_player_choice_sub text="{1002,12025}" section="g_mainmore" position="right" comment="Show more options" selectable="not event.object.istransferscheduled" />
+            </do_if>
+            <do_else>
+              <do_if value="not event.object.iscontrolentity and @event.object.role.hirable and @event.object.roleobject.isclass.station and event.object.$HiringFee?">
+                <!--
+                1: Hire
+                3: Ask for mission -->
+                <set_value name="$fee" exact="event.object.$HiringFee"/>
+                <!--<add_player_choice text="{1002,3008}" section="cStaff_worksomewhere" position="top_right" choiceparam="[0, 0, true, player.zone, null, null, 'selectplayerobject', ['cStaff_worksomewhere_objectselected', null, null, true, false, true, false, false]]" comment="Work somewhere else"/>-->
+                <substitute_text text="$HireText" source="{1002,3014}">
+                  <replace string="'$FEE$'" with="$fee.formatted.default" />
+                </substitute_text>
+                <add_player_choice_sub text="$HireText" section="g_hireworksomewhere" position="top_left" choiceparam="[0, 0, true, player.container, null, 'hire', ['g_hire', event.object, true]]" comment="Hire (fee)"/>
+                <!--<add_player_choice_sub text="{1002,3001}" section="g_requesthire" position="bottom_left" choiceparam="[0, 0, event.object, $fee]" baseparam="event.param2" comment="I want to hire you."/>-->
+              </do_if>
+
+              <do_if value="@event.object.$MissionOfferState == 'offering' and player.station and player.station == event.object.station" comment="Player and NPC on station platform">
+                <add_player_choice_sub text="{1002,12300}" comment="Ask for: Job offer" section="g_askformission" position="bottom_left" baseparam="event.param2" />
+              </do_if>
+
+              <do_if value="not $dontaskforway?">
+                <!--
+                4: Where can I find-->
+                <add_player_choice_sub text="{1002,12008}" comment="Where can I find ...?" section="g_askforway" position="top_right" baseparam="event.param2" />
+              </do_if>
+            </do_else>
+          </do_else>
+
+          <!--6: Goodbye-->
+          <add_player_choice_return text="{1002,2}" position="bottom_right" comment="Goodbye" returnparam="[true, event.param2]" />
+
+          <!--7: Show me the Live Stream-->
+          <do_if value="not $npctemplate and event.object.station != null and event.object == event.object.station.tradenpc and player.room != null and event.object.room == player.room">
+            <set_value name="$LiveViewAvailable" exact="player.canactivateliveview"/>
+            <add_player_choice text="{1002,3200}" section="cStationManager_liveStream" tooltip="(if $LiveViewAvailable then '' else {1001,9408})" position="top_left" comment="Show me the Live Stream" selectable="$LiveViewAvailable"/>
+          </do_if>
+
+        </do_else>
+      </actions>
+    </cue>
+
+    <library name="Greeting">
+      <actions>
+        <do_if value="event.object.isplayerowned">
+          <add_npc_line line="2006" comment="(Greeting - trader / staff)" />
+        </do_if>
+        <do_elseif value="event.object.hasrelation.friend.{faction.player} or @event.object.$TradeDone or @event.object.$MissionOfferState == 'accepted'">
+          <add_npc_line line="2001" comment="(Greeting - friendly)" />
+        </do_elseif>
+        <do_elseif value="event.object.relationto.{faction.player} le -0.0032" comment="UI -5">
+          <add_npc_line line="2003" comment="(Greeting - enemy)" />
+        </do_elseif>
+        <do_else>
+          <do_if value="event.object.isinspeakrange">
+            <add_npc_line line="2002" comment="(Greeting - neutral)" />
+          </do_if>
+          <do_else>
+            <add_npc_line line="2005" comment="(Greeting - comms)" />
+          </do_else>
+        </do_else>
+      </actions>
+    </library>
+
+    <library name="Greeting_NPCTemplate">
+      <actions>
+        <do_if value="$locobject.isplayerowned">
+          <add_npc_line line="2006" comment="(Greeting - trader / staff)" />
+        </do_if>
+        <do_elseif value="$locobject.hasrelation.friend.{faction.player}">
+          <add_npc_line line="2001" comment="(Greeting - friendly)" />
+        </do_elseif>
+        <do_elseif value="$locobject.relationto.{faction.player} le -0.0032" comment="UI -5">
+          <add_npc_line line="2003" comment="(Greeting - enemy)" />
+        </do_elseif>
+        <do_else>
+          <do_if value="$locobject.isinspeakrange">
+            <add_npc_line line="2002" comment="(Greeting - neutral)" />
+          </do_if>
+          <do_else>
+            <add_npc_line line="2005" comment="(Greeting - comms)" />
+          </do_else>
+        </do_else>
+      </actions>
+    </library>
+
+    <cue name="SectionHandler" instantiate="true" namespace="this">
+      <conditions>
+        <check_any>
+          <event_conversation_next_section sectionprefix="g_" />
+          <event_conversation_returned_to_section sectionprefix="g_" />
+        </check_any>
+      </conditions>
+      <actions>
+        <debug_text text="'Next section: ' + event.param" />
+        <do_if value="typeof event.object == datatype.component">
+          <set_value name="$npctemplateobject" exact="null"/>
+          <set_value name="$npctemplate" exact="null"/>
+        </do_if>
+        <do_else>
+          <debug_text text="'%1: %2, npctemplate=%3, object=%4 %5'.[event.name, event.param, event.object.{2}, event.object.{1}, event.object.{1}.knownname]" />
+          <set_value name="$npctemplateobject" exact="event.object.{1}"/>
+          <set_value name="$npctemplate" exact="event.object.{2}"/>
+        </do_else>
+        <do_if value="event.param == 'g_finish' or event.param == 'g_cancel' or event.param == 'g_interactionresult'">
+          <!-- Trigger the conversation manager by adding a final action (not really necessary, but this is faster than waiting for the timeout) -->
+          <add_conversation_view />
+        </do_if>
+        <do_elseif value="event.param == 'g_goodbye'">
+          <do_if value="if $npctemplate then $npctemplateobject.isplayerowned else event.object.isplayerowned">
+            <do_any>
+              <set_value name="$SpokenLine" exact="3001" comment="Sir."         weight="not player.entity.isfemale" />
+              <set_value name="$SpokenLine" exact="3002" comment="Ma'am."       weight="player.entity.isfemale" />
+              <set_value name="$SpokenLine" exact="2010" comment="Over and out" weight="$npctemplate or not event.object.isinspeakrange" />
+              <set_value name="$SpokenLine" exact="2008" comment="Goodbye" />
+            </do_any>
+            <add_npc_line line="$SpokenLine" comment="(formal acknowledgement)" />
+          </do_if>
+          <do_elseif value="@event.object.$TradeDone or @event.object.$MissionOfferState == 'accepted' or (if $npctemplate then $npctemplateobject.hasrelation.friend.{faction.player} else event.object.hasrelation.friend.{faction.player})">
+            <add_npc_line line="2007" comment="(Goodbye - friendly)" />
+          </do_elseif>
+          <do_elseif value="(if $npctemplate then $npctemplateobject.relationto.{faction.player} else event.object.relationto.{faction.player}) le -0.0032" comment="UI -5">
+            <add_npc_line line="2009" comment="(Goodbye - enemy)" />
+          </do_elseif>
+          <do_else>
+            <add_npc_line line="2008" comment="(goodbye - neutral)" />
+          </do_else>
+        </do_elseif>
+        <do_elseif value="event.param == 'g_askforway'">
+          <do_if value="not $npctemplate" comment="No usecase for asking directions from NPC templates yet">
+            <do_if value="@event.object.$TradeDone or @event.object.$MissionOfferState != null or (event.object.type == entitytype.shadyguy and event.object.tradesvisible)">
+              <set_value name="$helpful" exact="true" />
+            </do_if>
+            <do_elseif value="abs(event.object.seed) % 29 lt 10" comment="modulo odd number to prevent hidden dependencies between pseudo-random values">
+              <set_value name="$helpful" exact="event.object.relationto.{faction.player} ge 0.0" />
+            </do_elseif>
+            <do_else>
+              <set_value name="$requiredrel" exact="(abs(event.object.seed) % 300) / 10 - 20" comment="between -20 and +10, biased to increase chance of helpfulness" />
+              <set_value name="$helpful" exact="faction.player.relation.{event.object.relationto.{faction.player}}.uivalue ge $requiredrel" />
+              <!-- <debug_text text="'Actor relation: %1, required relation: %2'.[faction.player.relation.{event.object.relationto.{faction.player}}.uivalue, $requiredrel]" /> -->
+            </do_else>
+            <!-- Determine whether actor is willing to help -->
+            <do_if value="not $helpful">
+              <add_npc_line line="5025" comment="(refusing to help)" />
+            </do_if>
+            <do_else>
+              <!-- Standard options: -->
+              <!-- 4: Way to: Faction representative -->
+              <!-- 5: Way to: [next sector on way to mission objective] (only present if not known yet - also currently not when docked, since player.activemissionwaypoint is not set in that case) -->
+              <!-- 6: (Back) -->
+              <add_player_choice text="{1002,12020}.[entitytype.factionrepresentative.name]" comment="Way to: Faction Representative" section="g_askforway_finish" position="top_right" choiceparam="[ entitytype.factionrepresentative ]" />
+              <add_player_choice_return text="{1002,20}" position="bottom_right" comment="Back" />
+              <!-- If on a station, add locations in sub-menu, otherwise add locations in current menu -->
+              <set_value name="$destinations" exact="[ [{1001,92}, 'shipyard'], [{1001,9805}, 'wharf'], [{1001,9804}, 'equipmentdock']]" />
+              <!-- Check if the next sector on the way to the active mission objective is unknown. In that case, mission guidance is not shown - allow asking NPCs for the way. -->
+              <set_value name="$missionwaypoint" exact="player.activemissionwaypoint" />
+              <do_if value="$missionwaypoint and not $missionwaypoint.isknown">
+                <set_value name="$nextmissionsector" exact="@$missionwaypoint.destination.sector" comment="Waypoint may be a highway or gate" />
+                <do_if value="$nextmissionsector">
+                  <add_player_choice text="{1002,12020}.[$nextmissionsector.knownname]" comment="Way to: (sector)" section="g_askforway_finish" position="right" choiceparam="[ 'activemissionwaypoint', $missionwaypoint ]" highlighted="true" />
+                </do_if>
+              </do_if>
+              <do_if value="player.station and player.station == event.object.station">
+                <!-- Options when on a station: -->
+                <!-- 1: Way to: Location... -->
+                <!-- 2: Way to Ship Trader (only if applicable) -->
+                <!-- 3: Way to: Trader -->
+                <add_player_choice_sub text="{1002,12021}.[{1001,2943}]" comment="Way to: Location..." section="g_askforway_list" position="top_left" choiceparam="$destinations" baseparam="event.param2" />
+                <do_if value="player.station.canbuildships or player.station.canequipships">
+                  <add_player_choice text="{1002,12020}.[controlpost.shiptrader.name]" comment="Way to: Ship Trader" section="g_askforway_finish" position="left" choiceparam="[ controlpost.shiptrader ]" />
+                </do_if>
+                <add_player_choice text="{1002,12020}.[{1002,12032}]" comment="Way to: Trader" section="g_askforway_finish" position="bottom_left" choiceparam="[ entitytype.trader ]" />
+              </do_if>
+              <do_else>
+                <!-- Options in space: -->
+                <!-- 1-3: Way to Shipyard, Wharf, Equipment Dock ($destinations list) -->
+                <set_value name="$slotsleft" exact="4" />
+                <do_if value="@$nextmissionsector">
+                  <set_value name="$slotsleft" operation="subtract" />
+                </do_if>
+                <do_all exact="$destinations.count">
+                  <do_if value="$slotsleft == 1 and $destinations.count gt 1">
+                    <add_player_choice_sub text="{1002,12025}" comment="More" section="g_askforway_list" choiceparam="$destinations" baseparam="event.param2" />
+                    <break />
+                  </do_if>
+                  <add_player_choice text="{1002,12020}.[$destinations.{1}.{1}]" section="g_askforway_finish" choiceparam="[ $destinations.{1}.{2} ]" />
+                  <remove_value name="$destinations.{1}" />
+                  <set_value name="$slotsleft" operation="subtract" />
+                </do_all>
+              </do_else>
+            </do_else>
+          </do_if>
+        </do_elseif>
+        <do_elseif value="event.param == 'g_askforway_list'">
+          <do_if value="not $npctemplate" comment="No usecase for asking directions from NPC templates yet">
+            <!-- event.param2 == $destination_list, consisting of [ text, destination ] elements -->
+            <add_player_choice_return text="{1002,20}" position="bottom_right" comment="Back" />
+            <set_value name="$destinations" exact="event.param2.clone" />
+            <set_value name="$slotsleft" exact="5" />
+            <do_all exact="$destinations.count">
+              <do_if value="$slotsleft == 1 and $destinations.count gt 1">
+                <add_player_choice_sub text="{1002,12025}" comment="More" section="g_askforway_list" choiceparam="$destinations" baseparam="event.param2" />
+                <break />
+              </do_if>
+              <add_player_choice text="{1002,12020}.[$destinations.{1}.{1}]" section="g_askforway_finish" choiceparam="[ $destinations.{1}.{2} ]" />
+              <remove_value name="$destinations.{1}" />
+              <set_value name="$slotsleft" operation="subtract" />
+            </do_all>
+          </do_if>
+        </do_elseif>
+        <do_elseif value="event.param == 'g_askforway_finish'">
+          <do_if value="not $npctemplate" comment="No usecase for asking directions from NPC templates yet">
+            <!-- event.param2 == [ $npc_or_entitytype_or_controlpost_or_string ] -->
+            <!-- Note: Contained in a list so it can be altered for event_conversation_finished -->
+            <!-- If string is 'activemissionwaypoint', event.param2.{2} is the waypoint -->
+            <set_value name="$target" exact="null" />
+            <!-- If target is a component, use directly -->
+            <do_if value="typeof event.param2.{1} == datatype.component">
+              <set_value name="$target" exact="event.param2.{1}" />
+            </do_if>
+            <!-- Looking for faction representative? -->
+            <do_elseif value="event.param2.{1} == entitytype.factionrepresentative">
+              <set_value name="$targets" exact="[]"/>
+              <do_for_each name="$rep" in="player.galaxy.representatives">
+                <!--Note. The following filter checks if the faction rep has a container context which the player can dock at, assuming the container is their own.
+                Could get confusing if faction reps could be on board other faction's ships / stations-->
+                <do_if value="not $rep.hasrelation.enemy.{player.entity} and @$rep.object.hasrelation.dock.{player.entity} and $rep.gatedistance.{player.zone} ge 0">
+                  <append_to_list name="$targets" exact="$rep"/>
+                </do_if>
+              </do_for_each>
+              <create_list name="$targetfactions" exact="$targets.count" />
+              <do_all exact="$targets.count" counter="$i">
+                <!-- Fallback: Pick faction representative of non-enemy faction -->
+                <set_value name="$targetfactions.{$i}" exact="$targets.{$i}.owner" />
+                <do_if value="not event.object.hasrelation.enemy.{$targetfactions.{$i}}">
+                  <set_value name="$target" exact="$targets.{$i}" />
+                </do_if>
+              </do_all>
+              <!-- Prefer faction representative of same faction as actor owner -->
+              <do_if value="$targetfactions.indexof.{event.object.owner}">
+                <set_value name="$target" exact="$targets.{$targetfactions.indexof.{event.object.owner}}" />
+              </do_if>
+              <!-- Otherwise, same faction as station/ship owner -->
+              <do_elseif value="$targetfactions.indexof.{event.object.container.owner}">
+                <set_value name="$target" exact="$targets.{$targetfactions.indexof.{event.object.container.owner}}" />
+              </do_elseif>
+              <!-- Otherwise, same faction as zone police faction -->
+              <do_elseif value="$targetfactions.indexof.{event.object.zone.policefaction}">
+                <set_value name="$target" exact="$targets.{$targetfactions.indexof.{event.object.zone.policefaction}}" />
+              </do_elseif>
+            </do_elseif>
+            <!-- Looking for NPC on this station? Parameter must be entitytype or controlpost -->
+            <do_elseif value="typeof event.param2.{1} == datatype.entitytype or typeof event.param2.{1} == datatype.controlpost">
+              <do_if value="typeof event.param2.{1} == datatype.controlpost">
+                <set_value name="$controlpost" exact="event.param2.{1}" />
+                <set_value name="$entitytype" exact="$controlpost.type" />
+              </do_if>
+              <do_else>
+                <!-- Require entitytype, but no controlpost (e.g. item trader = entitytype.trader) -->
+                <set_value name="$controlpost" exact="null" />
+                <set_value name="$entitytype" exact="event.param2.{1}" />
+              </do_else>
+              <do_if value="event.object.controlpost == $controlpost and event.object.type == $entitytype">
+                <!-- Found self -->
+                <set_value name="$target" exact="event.object" />
+              </do_if>
+              <do_elseif value="event.object.station">
+                <!-- Search for other NPCs only on same station -->
+                <!-- Find on same station -->
+                <find_object_component name="$target" object="event.object.station" controlpost="$controlpost" entitytype="$entitytype" recursive="true">
+                  <match owner="faction.player" negate="true" />
+                  <match_relation_to object="player.entity" comparison="not" relation="enemy" />
+                </find_object_component>
+              </do_elseif>
+            </do_elseif>
+            <do_elseif value="['shipyard', 'wharf', 'equipmentdock', 'tradestation', 'piratebase'].indexof.{event.param2.{1}}">
+              <set_value name="$target" exact="null" />
+              <find_station name="$targets" space="player.galaxy" multiple="true" reachablefrom="player.zone"
+                            shipyard="event.param2.{1} == 'shipyard'"
+                            wharf="event.param2.{1} == 'wharf'"
+                            equipmentdock="event.param2.{1} == 'equipmentdock'"
+                            tradestation="event.param2.{1} == 'tradestation'"
+                            piratebase="event.param2.{1} == 'piratebase'">
+                <match owner="faction.player" negate="true" />
+                <match_relation_to object="player.entity" comparison="ge" relation="dock" />
+              </find_station>
+              <do_if value="$targets.count">
+                <!-- Get all targets that are at the minimal gate distance -->
+                <set_value name="$mindist" exact="1000" />
+                <set_value name="$mindisttargets" exact="[]" />
+                <!-- <debug_text text="'Found %s stations of type \'%s\' in galaxy'.[$targets.count, event.param2.{1}]" /> -->
+                <do_all exact="$targets.count" counter="$i">
+                  <set_value name="$curdist" exact="player.entity.gatedistance.{$targets.{$i}}" />
+                  <!-- <debug_text text="'  Checking %s (%s), gate distance %s'.[$targets.{$i}.knownname, $targets.{$i}, $curdist]" /> -->
+                  <do_if value="$curdist ge 0 and $curdist le $mindist" comment="Note: Negative $curdist is an error">
+                    <do_if value="$curdist != $mindist">
+                      <set_value name="$mindist" exact="$curdist" />
+                      <clear_list list="$mindisttargets" />
+                    </do_if>
+                    <append_to_list name="$mindisttargets" exact="$targets.{$i}" />
+                    <!-- <debug_text text="'    Updated $mindist=%s, $mindisttargets=%s'.[$mindist, $mindisttargets]" /> -->
+                  </do_if>
+                </do_all>
+                <do_if value="$mindisttargets.count">
+                  <!-- In case of multiple candidates, return pseudo-random target that does not change when asking the same NPC again -->
+                  <set_value name="$target" exact="$mindisttargets.{1 + (abs(event.object.seed) % $mindisttargets.count)}" />
+                  <!-- <debug_text text="'Seed=%s, 0-based index=%s, $target: %s (%s) in %s'.[event.object.seed, (abs(event.object.seed) % $mindisttargets.count), $target.knownname, $target, $target.sector.knownname]" /> -->
+                </do_if>
+              </do_if>
+            </do_elseif>
+            <!-- Looking for unknown waypoint to active mission objective? -->
+            <do_elseif value="event.param2.{1} == 'activemissionwaypoint' and event.param2.{2}.exists">
+              <set_value name="$target" exact="'activemissionwaypoint'" />
+            </do_elseif>
+
+            <!-- By now we should have a result -->
+            <do_if value="not $target">
+              <!-- Nothing found -->
+              <add_npc_line line="5026" comment="(NPC gives player directions - NPC doesn't know)" />
+            </do_if>
+            <do_elseif value="$target == event.object">
+              <!-- Found self -->
+              <add_npc_line line="2006" comment="(Greeting - trader / staff)" />
+              <signal_cue_instantly cue="md.Guidance.NewTarget" param="[$target, null]"/>
+              <set_value name="$target" exact="null" />
+            </do_elseif>
+            <do_else>
+              <!-- Found someone/something else -->
+              <add_npc_line line="5021" comment="(NPC asked directions - gives directions)" />
+            </do_else>
+            <!-- Write back the result so it's accessible by event_conversation_finished -->
+            <set_value name="event.param2.{1}" exact="$target" />
+          </do_if>
+        </do_elseif>
+        <do_elseif value="event.param == 'g_askformission'">
+          <do_if value="not $npctemplate and not @event.object.$MissionOfferState">
+            <!-- NPC does not have a mission to offer, but let's determine how friendly the response is (same logic as when asking for directions) -->
+            <do_if value="@event.object.$TradeDone or (event.object.type == entitytype.shadyguy and event.object.tradesvisible)">
+              <set_value name="$helpful" exact="true" />
+            </do_if>
+            <do_elseif value="abs(event.object.seed) % 29 lt 10" comment="modulo odd number to prevent hidden dependencies between pseudo-random values">
+              <set_value name="$helpful" exact="event.object.relationto.{faction.player} ge 0.0" />
+            </do_elseif>
+            <do_else>
+              <set_value name="$requiredrel" exact="(abs(event.object.seed) % 300) / 10 - 20" comment="between -20 and +10, biased to increase chance of helpfulness" />
+              <set_value name="$helpful" exact="faction.player.relation.{event.object.relationto.{faction.player}}.uivalue ge $requiredrel" />
+              <!-- <debug_text text="'Actor relation: %1, required relation: %2'.[faction.player.relation.{event.object.relationto.{faction.player}}.uivalue, $requiredrel]" /> -->
+            </do_else>
+            <do_if value="not $helpful">
+              <do_any>
+                <add_npc_line line="2102" comment="No." />
+                <add_npc_line line="2109" comment="(rejection)Negative." />
+                <add_npc_line line="5025" comment="(refusing to help)I'm not helping you." />
+              </do_any>
+            </do_if>
+            <do_elseif value="event.object.seed % 3 == 0">
+              <add_npc_line line="5027" comment="Sorry, I'm busy right now." />
+            </do_elseif>
+            <do_else>
+              <add_npc_line line="5026" comment="Sorry, I don't know." />
+            </do_else>
+          </do_if>
+        </do_elseif>
+        <do_elseif value="event.param == 'g_canceltransfer'">
+          <release_npc_template_from_crew_exchange object="event.param2.{1}" template="event.param2.{2}" />
+        </do_elseif>
+        <do_elseif value="event.param == 'g_worksomewhere' or event.param == 'g_hireworksomewhere'">
+          <do_if value="not event.object.$MissionOfferState?">
+            <open_conversation_menu menu="MapMenu" param="event.param2" param2="event.param3" />
+          </do_if>
+          <do_else>
+            <add_npc_line line="5027" comment="Sorry, I'm busy right now." />
+          </do_else>
+        </do_elseif>
+        <do_elseif value="event.param == 'g_cancel_backtowork'">
+          <remove_value name="event.object.$casual"/>
+          <do_any>
+            <add_npc_line line="2106" comment="(casual ackowledgement)" weight="5" />
+            <add_npc_line line="2107" comment="(casual ackowledgement)" weight="5" />
+            <add_npc_line line="2108" comment="(casual ackowledgement)" weight="5" />
+            <add_npc_line line="if player.entity.isfemale then 3002 else 3001" recipient="player.entity" comment="Sir / Ma'am" weight="10" />
+          </do_any>
+          <signal_objects object="event.object" param="'npc_state_reinit'"/>
+        </do_elseif>
+        <do_elseif value="event.param == 'g_worksomewhere_positionselected' or event.param == 'g_hire'">
+          <set_value name="$actor" exact="if $npctemplate then [$npctemplateobject, $npctemplate] else event.object"/>
+          <do_if value="event.param == 'g_worksomewhere_positionselected'">
+            <do_any>
+              <add_npc_line line="2103" comment="(formal ackowledgement)" />
+              <add_npc_line line="2104" comment="(formal ackowledgement)" />
+              <add_npc_line line="2105" comment="(formal ackowledgement)" />
+            </do_any>
+          </do_if>
+          <do_else>
+            <add_npc_line line="10201" comment="(NPC hired)" />
+          </do_else>
+          <do_if value="event.param2.{3}" comment="Is post?">
+            <assign_hired_actor actor="$actor" target="event.param2.{1}" post="controlpost.{event.param2.{2}}" />
+          </do_if>
+          <do_else>
+            <assign_hired_actor actor="$actor" target="event.param2.{1}" role="entityrole.{event.param2.{2}}" />
+          </do_else>
+        </do_elseif>
+        <do_elseif value="event.param == 'g_rescueplayersuit'">
+          <do_if value="@player.occupiedship.isclass.spacesuit">
+            <do_if value="not event.object.hasrelation.enemy.{player.entity}">
+              <create_order id="'RescueShip'" object="event.object.assignedcontrolled" immediate="true">
+                <param name="target" value="player.occupiedship"/>
+              </create_order>
+              <add_npc_line line="5019" comment="On the way."/>
+              <set_value name="player.entity.$rescuer" exact="event.object.assignedcontrolled"/>
+            </do_if>
+            <do_else>
+              <add_npc_line line="5025" comment="I'm not helping you."/>
+            </do_else>
+          </do_if>
+          <do_else>
+            <debug_text text="'g_rescueplayersuit triggered while player not in a spacesuit'" filter="error"/>
+          </do_else>
+        </do_elseif>
+        <do_elseif value="event.param == 'g_deliverplayer'">
+          <open_conversation_menu menu="MapMenu" param="[0, 0, true, null, null, 'selectComponent', ['g_deliverplayer_destinationselected', [class.station]]]" param2="null"/>
+        </do_elseif>
+        <do_elseif value="event.param == 'g_deliverplayer_destinationselected'">
+          <debug_text text="'g_deliverplayer_destinationselected. param: %s, param2: %s, param3: %s'.[event.param, event.param2, @event.param3]" chance="0"/>
+          <do_if value="event.param2.{1}.isclass.station and event.param2.{1}.dockingallowed.{event.object.assignedcontrolled}">
+            <create_order id="'DockAndWait'" object="event.object.assignedcontrolled" immediate="true">
+              <param name="destination" value="event.param2.{1}"/>
+              <param name="untilplayerleaves" value="true"/>
+            </create_order>
+            <do_any>
+              <add_npc_line line="2106" comment="(casual acknowledgement)Sure."/>
+              <add_npc_line line="2107" comment="(casual acknowledgement)Got it."/>
+              <add_npc_line line="2108" comment="(casual acknowledgement)Okay."/>
+            </do_any>
+            <remove_value name="event.object.$canplayerredirect"/>
+          </do_if>
+          <do_else>
+            <add_npc_line line="2108" comment="(rejection)Negative."/>
+          </do_else>
+        </do_elseif>
+        <do_elseif value="event.param == 'g_surrender'">
+          <!-- TODO (@Nick): Add check on whether pilot will actually abandon ship - based on strength of ship and morale skill?-->
+          <signal_cue_instantly cue="md.Notifications.PlayerOwnedShipAttacks" param="event.object.controlled"/>
+        </do_elseif>
+        <do_elseif value="event.param == 'g_surrender_nope'">
+          <add_npc_line line="5036" comment="(refusal to surrender - finds it funny)" />
+        </do_elseif>
+        <do_elseif value="event.param == 'g_player_piratedrop'">
+          <!-- TODO (@Nick): Rewrite to be more realistic? -->
+          <!-- response handled in lib.respond.inspected -->
+          <signal_objects object="event.object.controlled" param="'halt'" param2="player.occupiedship" param3="'piratehalt'"/>
+        </do_elseif>
+        <do_elseif value="event.param == 'g_player_policedrop'">
+          <!-- response handled in lib.respond.inspected -->
+          <signal_objects object="event.object.controlled" param="'halt'" param2="player.occupiedship" param3="'policehalt'"/>
+          <signal_objects object="event.object.controlled" param="'proceed'" param2="player.occupiedship" delay="1s"/>
+        </do_elseif>
+        <do_elseif value="event.param == 'g_addtosquad'">
+          <!-- Cancel the orders to join the squad inmediately -->
+          <!-- <cancel_all_orders object="event.object.ship" /> -->
+          <do_if value="player.occupiedship">
+            <create_order object="event.object.ship" id="'AssignCommander'">
+              <param name="commander" value="player.occupiedship" />
+              <param name="assignment" value="assignment.defence"/>
+            </create_order>
+
+            <do_any>
+              <add_npc_line line="2103" comment="(formal ackowledgement)" />
+              <add_npc_line line="2104" comment="(formal ackowledgement)" />
+              <add_npc_line line="2105" comment="(formal ackowledgement)" />
+            </do_any>
+          </do_if>
+        </do_elseif>
+        <do_elseif value="event.param == 'g_playerownedship_proceed'">
+          <signal_objects object="event.object.controlled" param="'playerownedship_proceed'"/>
+        </do_elseif>
+        <do_elseif value="event.param == 'g_removefromsquad'">
+          <!-- See also cue OnRemoveFromSquad -->
+
+          <!-- Cancel the orders to join the squad inmediately -->
+          <!-- <cancel_all_orders object="event.object.ship" /> -->
+          <create_order object="event.object.ship" id="'AssignCommander'">
+            <param name="commander" value="null" />
+          </create_order>
+
+          <!-- <remove_from_player_squad object="event.object.ship" /> -->
+          <do_any>
+            <add_npc_line line="2103" comment="(formal ackowledgement)" />
+            <add_npc_line line="2104" comment="(formal ackowledgement)" />
+            <add_npc_line line="2105" comment="(formal ackowledgement)" />
+          </do_any>
+        </do_elseif>
+        <do_elseif value="event.param == 'g_mainmore'">
+          <!--
+          1: Fire
+          3: Return to normal duties
+	        4: Ship details
+          5: Get up-->
+          <do_if value="typeof event.object == datatype.component">
+            <do_if value="event.object.isplayerowned">
+              <do_if value="event.object.ship.exists and event.object == event.object.ship.pilot">
+                <add_player_choice text="{1002,2035}" section="g_removeorders" position="bottom_left" selectable="@event.object.ship.orders.count and event.object.ship.order.exists and (event.object.ship.order.state != orderstate.critical or event.object.ship.order.canplayercancel)" comment="Return to normal duties"/>
+                <add_player_choice_sub text="{1002,1051}" section="gMain_mapObject" position="top_right" choiceparam="event.object.ship" comment="Show Ship Details" />
+                <do_if value="event.object.ship == player.ship">
+                  <add_player_choice text="{1002,3017}" section="g_leaveseat" position="right" selectable="@event.object.ship.order.state != orderstate.critical or (event.object.ship == player.ship and event.object.ship.order.canplayercancel)" comment="Get up"/>
+                </do_if>
+                <!--currently allow to fire even if in space - @event.object.ship.dock.exists-->
+                <add_player_choice_sub text="{1002,15800}" section="g_pilotleave_confirmation" position="top_left" selectable="@event.object.ship.order.state != orderstate.critical or (event.object.ship == player.ship and event.object.ship.order.canplayercancel)" comment="Fire"/>
+              </do_if>
+              <do_else>
+                <set_value name="$selectable" exact="@event.object.ship.order.state != orderstate.critical or (event.object.ship == player.ship and event.object.ship.order.canplayercancel)"/>
+                <do_if value="$selectable and event.object.controlpost == controlpost.shiptrader">
+                  <set_value name="$assignedcontrolled" exact="event.object.assignedcontrolled"/>
+                  <do_if value="$assignedcontrolled and ($assignedcontrolled.builds.queued.count gt 0 or $assignedcontrolled.builds.inprogress.count gt 0)">
+                    <set_value name="$selectable" exact="false"/>
+                  </do_if>
+                  <remove_value name="$assignedcontrolled"/>
+                </do_if>
+                <add_player_choice_sub text="{1002,15800}" section="g_fire_confirmation" position="top_left" selectable="$selectable" comment="Fire"/>
+              </do_else>
+            </do_if>
+          </do_if>
+          <do_elseif value="$npctemplate">
+            <!--Hired, backroom
+	          1: Fire-->
+            <add_player_choice_sub text="{1002,15800}" section="g_fire_confirmation" position="top_left" selectable="@event.object.ship.order.state != orderstate.critical or (event.object.ship == player.ship and event.object.ship.order.canplayercancel)" comment="Fire"/>
+          </do_elseif>
+          <add_player_choice_return text="{1002,20}" position="bottom_right" comment="Back"/>
+        </do_elseif>
+        <!--<do_elseif value="event.param == 'g_worksomewhere'">
+          <open_conversation_menu menu="MapMenu" param="event.param2" param2="event.param3" />
+        </do_elseif>
+        <do_elseif value="event.param == 'g_pilotworksomewhere_objectselected'">
+          <set_value name="$selectedobject" exact="event.param2.{3}" />
+          <debug_text text="$selectedobject.knownname"/>
+        </do_elseif>-->
+        <do_elseif value="event.param == 'g_removeorders'">
+          <do_if value="@event.object.ship.orders.count and event.object.ship.order.exists and (event.object.ship.order.state != orderstate.critical or event.object.ship.order.canplayercancel)">
+            <cancel_all_orders object="event.object.ship"/>
+          </do_if>
+        </do_elseif>
+        <do_elseif value="event.param == 'g_inventorytransfer'">
+          <set_value name="$NPCInventory" exact="event.object.inventory.list"/>
+          <do_if value="$NPCInventory.count">
+            <set_value name="$InventoryTable" exact="table[]"/>
+            <do_all exact="$NPCInventory.count" counter="$i">
+              <set_value name="$InventoryAmount" exact="event.object.inventory.{$NPCInventory.{$i}}.count"/>
+              <set_value name="$InventoryTable.{$NPCInventory.{$i}}" exact="$InventoryAmount"/>
+              <debug_text text="'Transfering ' + $InventoryAmount + ' of inventory ware: ' + $NPCInventory.{$i} + ' from ' + event.object + ' ' + event.object.knownname + ' to player ' + player.entity"/>
+              <add_inventory entity="player.entity" ware="$NPCInventory.{$i}" exact="$InventoryAmount"/>
+              <remove_inventory entity="event.object" ware="$NPCInventory.{$i}" exact="$InventoryAmount"/>
+            </do_all>
+            <remove_value name="$NPCInventory"/>
+            <remove_value name="$InventoryAmount"/>
+
+            <!--Create the logbook entry-->
+            <do_if value="$InventoryTable.keys.count gt 4">
+              <!--$ENTITYNAME$ handed multiple items to you. Most valuable: $WARENAME$-->
+              <set_value name="$MostValuable" exact="null"/>
+              <do_all exact="$InventoryTable.keys.count" counter="$i">
+                <do_if value="not $MostValuable or $InventoryTable.keys.{$i}.averageprice gt $MostValuable.averageprice">
+                  <set_value name="$MostValuable" exact="$InventoryTable.keys.{$i}"/>
+                </do_if>
+              </do_all>
+              <substitute_text text="$LogbookText" source="{1016,132}">
+                <replace string="'$ENTITYNAME$'" with="event.object.knownname"/>
+                <replace string="'$WARENAME$'" with="$MostValuable.name"/>
+              </substitute_text>
+              <remove_value name="$MostValuable"/>
+            </do_if>
+            <do_else>
+              <do_if value="$InventoryTable.keys.count == 1">
+                <!--$ENTITYNAME$ handed you the following item: -->
+                <substitute_text text="$LogbookText" source="{1016,130}">
+                  <replace string="'$ENTITYNAME$'" with="event.object.knownname"/>
+                </substitute_text>
+              </do_if>
+              <do_else>
+                <!--$ENTITYNAME$ handed you the following items: -->
+                <substitute_text text="$LogbookText" source="{1016,131}">
+                  <replace string="'$ENTITYNAME$'" with="event.object.knownname"/>
+                </substitute_text>
+              </do_else>
+              <do_all exact="$InventoryTable.keys.count" counter="$i">
+                <substitute_text text="$WareText" source="{1016,133}" comment="$WARENAME$ \($AMOUNT$\)">
+                  <replace string="'$WARENAME$'" with="$InventoryTable.keys.{$i}.name"/>
+                  <replace string="'$AMOUNT$'" with="$InventoryTable.{$InventoryTable.keys.{$i}}"/>
+                </substitute_text>
+                <set_value name="$LogbookText" operation="add" exact="$WareText"/>
+                <do_if value="$i == $InventoryTable.keys.count">
+                  <set_value name="$LogbookText" operation="add" exact="'.'"/>
+                </do_if>
+                <do_else>
+                  <set_value name="$LogbookText" operation="add" exact="', '"/>
+                </do_else>
+              </do_all>
+            </do_else>
+            <write_to_logbook category="upkeep" title="$LogbookText" interaction="showonmap" object="event.object"/>
+            <remove_value name="$LogbookText"/>
+            <remove_value name="$WareText"/>
+            <remove_value name="$InventoryTable"/>
+          </do_if>
+        </do_elseif>
+        <do_elseif value="event.param == 'g_leaveseat'">
+          <do_if value="not event.object.ship.order or event.object.ship.order.canplayercancel">
+            <signal_objects object="event.object" param="'npc__leave_post'"/>
+          </do_if>
+        </do_elseif>
+        <do_elseif value="event.param == 'g_returntopost'">
+          <signal_objects object="event.object" param="'npc__return_to_post'"/>
+        </do_elseif>
+        <do_elseif value="event.param == 'g_pilotleave_confirmation'">
+          <add_player_choice text="{1002,3018}" section="g_pilotleave" position="bottom_left" selectable="(@event.object.ship.order.state != orderstate.critical or (event.object.ship == player.ship and event.object.ship.order.canplayercancel))" comment="Fire"/>
+          <add_player_choice_return text="{1002,20}" position="bottom_right" comment="Back" />
+        </do_elseif>
+        <do_elseif value="event.param == 'g_pilotleave'">
+          <do_if value="not event.object.ship.order or event.object.ship.order.canplayercancel">
+            <!--TODO @Owen find despawn slot off of the object-->
+            <signal_objects object="event.object" param="'npc__control_dismissed'"/>
+          </do_if>
+        </do_elseif>
+        <do_elseif value="event.param == 'g_fire_confirmation'">
+          <add_player_choice text="{1002,3018}" section="g_fire" position="bottom_left" comment="Fire"/>
+          <add_player_choice_return text="{1002,20}" position="bottom_right" comment="Back" />
+        </do_elseif>
+        <do_elseif value="event.param == 'g_fire'">
+          <do_if value="$npctemplate">
+            <remove_npc_template object="$npctemplateobject" template="$npctemplate"/>
+          </do_if>
+          <do_else>
+            <!--TODO @Owen find despawn slot off of the object-->
+            <signal_objects object="event.object" param="'npc__control_dismissed'"/>
+          </do_else>
+        </do_elseif>
+        <do_elseif value="(event.param == 'g_seminar') or (event.param == 'g_seminar_piloting') or (event.param == 'g_seminar_management')">
+          <!-- Player just gave the NPC a piloting seminar -->
+          <do_if value="event.param == 'g_seminar_piloting'">
+            <do_if value="not $npctemplate">
+              <set_value name="$oldpilotstars" exact="event.object.potentialskill.{controlpost.aipilot} / 20"/>
+
+              <set_value name="$skillincrease" exact="3"/>
+              <do_if value="event.object.skill.piloting gt 12">
+                <set_value name="$skillincrease" exact="15 - event.object.skill.piloting"/>
+              </do_if>
+              <add_skill entity="event.object" type="skilltype.piloting" exact="$skillincrease"/>
+              <remove_inventory ware="event.param2"/>
+
+              <set_value name="$newpilotstars" exact="event.object.potentialskill.{controlpost.aipilot} / 20"/>
+            </do_if>
+            <do_else>
+              <set_value name="$oldpilotstars" exact="$npctemplateobject.people.{$npctemplate}.potentialskill.{controlpost.aipilot} / 20"/>
+
+              <set_value name="$skillincrease" exact="3"/>
+              <do_if value="$npctemplateobject.people.{$npctemplate}.skill.piloting gt 12">
+                <set_value name="$skillincrease" exact="15 - $npctemplateobject.people.{$npctemplate}.skill.piloting"/>
+              </do_if>
+              <add_skill object="$npctemplateobject" template="$npctemplate" type="skilltype.piloting" exact="$skillincrease"/>
+              <remove_inventory ware="event.param2"/>
+
+              <set_value name="$newpilotstars" exact="$npctemplateobject.people.{$npctemplate}.potentialskill.{controlpost.aipilot} / 20"/>
+            </do_else>
+            <do_if value="$newpilotstars gt $oldpilotstars">
+              <do_if value="$oldpilotstars le 2 and $newpilotstars gt 2">
+                <set_userdata peoplestate="'people_pilot_2star'" value="@userdatasigned.people_pilot_2star + 1"/>
+              </do_if>
+              <do_if value="$oldpilotstars == 3">
+                <set_userdata peoplestate="'people_pilot_3star'" value="@userdatasigned.people_pilot_3star + 1"/>
+              </do_if>
+              <do_if value="$oldpilotstars == 4">
+                <set_userdata peoplestate="'people_pilot_4star'" value="@userdatasigned.people_pilot_4star + 1"/>
+              </do_if>
+            </do_if>
+          </do_if>
+          <!-- Player just gave the NPC a management seminar -->
+          <do_elseif value="event.param == 'g_seminar_management'">
+            <do_if value="not $npctemplate">
+              <set_value name="$oldmanagerstars" exact="event.object.potentialskill.{controlpost.manager} / 20"/>
+
+              <set_value name="$skillincrease" exact="3"/>
+              <do_if value="event.object.skill.management gt 12">
+                <set_value name="$skillincrease" exact="15 - event.object.skill.management"/>
+              </do_if>
+              <add_skill entity="event.object" type="skilltype.management" exact="$skillincrease"/>
+              <remove_inventory ware="event.param2"/>
+
+              <set_value name="$newmanagerstars" exact="event.object.potentialskill.{controlpost.manager} / 20"/>
+              <debug_text text="$newmanagerstars + ' old ' + $oldmanagerstars"/>
+            </do_if>
+            <do_else>
+              <set_value name="$oldmanagerstars" exact="$npctemplateobject.people.{$npctemplate}.potentialskill.{controlpost.manager} / 20"/>
+
+              <set_value name="$skillincrease" exact="3"/>
+              <do_if value="$npctemplateobject.people.{$npctemplate}.skill.management gt 12">
+                <set_value name="$skillincrease" exact="15 - $npctemplateobject.people.{$npctemplate}.skill.management"/>
+              </do_if>
+              <add_skill object="$npctemplateobject" template="$npctemplate" type="skilltype.management" exact="$skillincrease"/>
+              <remove_inventory ware="event.param2"/>
+
+              <set_value name="$newmanagerstars" exact="$npctemplateobject.people.{$npctemplate}.potentialskill.{controlpost.manager} / 20"/>
+              <debug_text text="$newmanagerstars + ' old ' + $oldmanagerstars"/>
+            </do_else>
+            <do_if value="$newmanagerstars gt $oldmanagerstars">
+              <do_if value="$oldmanagerstars le 2 and $newmanagerstars gt 2">
+                <set_userdata peoplestate="'people_manager_2star'" value="@userdatasigned.people_manager_2star + 1"/>
+              </do_if>
+              <do_if value="$oldmanagerstars == 3">
+                <set_userdata peoplestate="'people_manager_3star'" value="@userdatasigned.people_manager_3star + 1"/>
+              </do_if>
+              <do_if value="$oldmanagerstars == 4">
+                <set_userdata peoplestate="'people_manager_4star'" value="@userdatasigned.people_manager_4star + 1"/>
+              </do_if>
+            </do_if>
+          </do_elseif>
+
+          <!-- Evaluate skill levels so we don't have to duplicate the caluclation below for template / non-template -->
+          <do_if value="not $npctemplate">
+            <set_value name="$piloting" exact="event.object.skill.piloting"/>
+            <set_value name="$management" exact="event.object.skill.management"/>
+          </do_if>
+          <do_else>
+            <set_value name="$piloting" exact="$npctemplateobject.people.{$npctemplate}.skill.piloting"/>
+            <set_value name="$management" exact="$npctemplateobject.people.{$npctemplate}.skill.management"/>
+          </do_else>
+            
+          <do_if value="$piloting lt 15">
+            <set_value name="$primarystars" exact="$piloting / 3"/>
+            <do_if value="$primarystars ge 4">
+              <set_value name="$seminarware_piloting" exact="ware.inv_seminar_piloting_4"/>
+            </do_if>
+            <do_elseif value="$primarystars == 3">
+              <set_value name="$seminarware_piloting" exact="ware.inv_seminar_piloting_3"/>
+            </do_elseif>
+            <do_elseif value="$primarystars == 2">
+              <set_value name="$seminarware_piloting" exact="ware.inv_seminar_piloting_2"/>
+            </do_elseif>
+            <do_elseif value="$primarystars == 1">
+              <set_value name="$seminarware_piloting" exact="ware.inv_seminar_piloting_1"/>
+            </do_elseif>
+            <do_else>
+              <set_value name="$seminarware_piloting" exact="ware.inv_seminar_piloting_0"/>
+            </do_else>
+
+            <do_if value="player.entity.inventory.{$seminarware_piloting}.exists">
+              <substitute_text text="$tooltiptext" source="{1026,1908}">
+                <replace string="'$AMOUNT$'" with="player.entity.inventory.{$seminarware_piloting}.count"/>
+              </substitute_text>
+            </do_if>
+            <do_else>
+              <set_value name="$tooltiptext" exact="{1026,1909}"/>
+            </do_else>
+
+            <add_player_choice text="$seminarware_piloting.name" section="g_seminar_piloting" choiceparam="$seminarware_piloting" position="top_left" selectable="player.entity.inventory.{$seminarware_piloting}.exists" tooltip="$tooltiptext"/>
+          </do_if>
+          <do_else>
+            <!-- Unselectable option with tooltip to inform the player that the NPC has reached max rank in this particular skill. -->
+            <add_player_choice text="{1013,501}" section="g_cancel" position="top_left" selectable="false" tooltip="{1026,1910}"/>
+          </do_else>
+          <do_if value="$management lt 15">
+            <set_value name="$primarystars" exact="$management / 3"/>
+            <do_if value="$primarystars ge 4">
+              <set_value name="$seminarware_management" exact="ware.inv_seminar_management_4"/>
+            </do_if>
+            <do_elseif value="$primarystars == 3">
+              <set_value name="$seminarware_management" exact="ware.inv_seminar_management_3"/>
+            </do_elseif>
+            <do_elseif value="$primarystars == 2">
+              <set_value name="$seminarware_management" exact="ware.inv_seminar_management_2"/>
+            </do_elseif>
+            <do_elseif value="$primarystars == 1">
+              <set_value name="$seminarware_management" exact="ware.inv_seminar_management_1"/>
+            </do_elseif>
+            <do_else>
+              <set_value name="$seminarware_management" exact="ware.inv_seminar_management_0"/>
+            </do_else>
+
+            <do_if value="player.entity.inventory.{$seminarware_management}.exists">
+              <substitute_text text="$tooltiptext" source="{1026,1908}">
+                <replace string="'$AMOUNT$'" with="player.entity.inventory.{$seminarware_management}.count"/>
+              </substitute_text>
+            </do_if>
+            <do_else>
+              <set_value name="$tooltiptext" exact="{1026,1909}"/>
+            </do_else>
+
+            <add_player_choice text="$seminarware_management.name" section="g_seminar_management" choiceparam="$seminarware_management" position="left" selectable="player.entity.inventory.{$seminarware_management}.exists" tooltip="$tooltiptext"/>
+          </do_if>
+          <do_else>
+            <!-- Unselectable option with tooltip to inform the player that the NPC has reached max rank in this particular skill. -->
+            <add_player_choice text="{1013,301}" section="g_cancel" position="left" selectable="false" tooltip="{1026,1910}"/>
+          </do_else>
+          <!-- (Back) option that returns to the "default" conversation section. Has to always be in the bottom right. -->
+          <add_player_choice_return text="{1002,20}" position="bottom_right"/>
+        </do_elseif>
+        <do_elseif value="(event.param == 'g_playerownedattacked_attack') or (event.param == 'g_playerownedattacked_flee') or (event.param == 'g_playerownedattacked_ignore')">
+          <do_if value="event.object.isoperational and event.param2.$attacked.isoperational and event.param2.$attacker.isoperational">
+            <debug_text text="'outcome: %s, param: %s'.[event.param, event.param2]" chance="0"/>
+            <set_value name="$attacked" exact="event.param2.$attacked"/>
+            <set_value name="$attacker" exact="event.param2.$attacker"/>
+            <set_value name="$oldorders" exact="[]"/>
+            <do_for_each name="$locorder" in="$attacked.orders">
+              <do_if value="$locorder.isoverride">
+                <do_if value="$locorder.id == 'Attack' or $locorder.id == 'Flee'">
+                  <append_to_list name="$oldorders" exact="$locorder"/>
+                </do_if>
+              </do_if>
+            </do_for_each>
+            <do_if value="event.param == 'g_playerownedattacked_attack'">
+              <create_order name="$addedorder" id="'Attack'" object="$attacked" immediate="true" override="true">
+                <param name="primarytarget" value="$attacker"/>
+                <param name="escort" value="if $attacked.isformationwingman then $attacked.commander else null" comment="no error if there is no commander"/>
+                <param name="pursuetargets" value="false"/>
+                <param name="squad_attack" value="true"/>
+                <param name="internalorder" value="true"/>
+                <param name="allowothertargets" value="false"/>
+              </create_order>
+            </do_if>
+            <do_elseif value="event.param == 'g_playerownedattacked_flee'">
+              <create_order name="$addedorder" id="'Flee'" object="$attacked" immediate="true" override="true">
+                <param name="method" value="event.param2.$fleemethod"/>
+                <param name="attacker" value="$attacker"/>
+              </create_order>
+            </do_elseif>
+            <do_elseif value="event.param == 'g_playerownedattacked_ignore'">
+              <!-- cancel existing override orders -->
+              <set_value name="$ignore"/>
+            </do_elseif>
+            <do_else>
+              <debug_text text="'unhandled outcome: %s'.[event.param]" filter="error"/>
+            </do_else>
+
+            <do_if value="@$addedorder.exists or $ignore?">
+              <debug_text text="'added order: %s %s. ignore: %s'.[@$addedorder.id, @$addedorder, $ignore?]" chance="0"/>
+              <do_for_each name="$locorder" in="$oldorders">
+                <do_if value="$locorder.exists">
+                  <debug_text text="'cancelling order: %s %s'.[$locorder.id, $locorder]"/>
+                  <cancel_order order="$locorder"/>
+                </do_if>
+              </do_for_each>
+            </do_if>
+
+            <add_npc_line line="[2103, 2104, 2105].random" comment="Acknowledged (formal)"/>
+            <do_if value="event.param2.$cue.exists">
+              <cancel_cue cue="event.param2.$cue"/>
+            </do_if>
+          </do_if>
+        </do_elseif>
+        <do_elseif value="event.param != 'g_finish' and event.param != 'g_cancel' and event.param != 'g_interactionresult' and event.param != 'g_interactionmenu'">
+          <debug_text text="'ERROR: Unexpected section \'' + event.param + '\''" filter="general" />
+        </do_elseif>
+      </actions>
+    </cue>
+
+    <cue name="AskForWayFinishedHandler" instantiate="true" namespace="this">
+      <conditions>
+        <event_conversation_finished outcome="g_askforway_finish" />
+      </conditions>
+      <actions>
+        <!-- Looking for a specific object? Set it as guidance target (with showunknownpath=true) -->
+        <do_if value="typeof event.param2.{1} == datatype.component">
+          <signal_cue_instantly cue="md.Guidance.NewTarget" param="[event.param2.{1}, null, null, true]"/>
+        </do_if>
+        <!-- Looking for unknown waypoint to active mission objective? (Make sure that the mission waypoint has not changed since the player asked about it) -->
+        <do_elseif value="event.param2.{1} == 'activemissionwaypoint' and player.activemissionwaypoint == event.param2.{2}">
+          <set_active_mission_waypoint_known />
+        </do_elseif>
+      </actions>
+    </cue>
+
+    <cue name="NPCAssigned" instantiate="true" namespace="this">
+      <conditions>
+        <event_player_assigned_hired_actor />
+      </conditions>
+      <actions>
+        <!-- event.param = $Actor ($NPC or [$OldObject, $NPCTemplate]), event.param2 = $Object, event.param3 = $PostOrRole -->
+        <set_value name="$DebugChance" exact="0"/>
+        <debug_text text="[event.param, event.param2, event.param3]" chance="$DebugChance"/>
+        <do_if value="typeof event.param == datatype.component">
+          <set_value name="$actor" exact="event.param"/>
+          <set_value name="$actortemplate" exact="null"/>
+          <set_value name="$oldroleobject" exact="$actor.roleobject"/>
+        </do_if>
+        <do_else>
+          <set_value name="$actor" exact="null"/>
+          <set_value name="$actortemplate" exact="event.param.{2}"/>
+          <set_value name="$oldroleobject" exact="event.param.{1}"/>
+        </do_else>
+        <set_value name="$selectedobject" exact="event.param2"/>
+        <set_value name="$selectedposition" exact="event.param3"/>
+        <do_if value="$actortemplate">
+          <assert value="$oldroleobject.people.{$actortemplate}.exists" text="'Actor npctemplate ' + $actortemplate + ' does not exist in the person summary of object ' + $oldroleobject + ' ' + $oldroleobject.knownname"/>
+
+          <set_value name="$actor" exact="$oldroleobject.roleentity.{$actortemplate}"/>
+        </do_if>
+
+        <signal_cue_instantly cue="InstancedNPCTransferTimes_ClearEntries"/>
+      </actions>
+      <cues>
+        <cue name="NPCAssigned_NoConversation" onfail="cancel">
+          <conditions>
+            <check_value value="not player.isinconversation"/>
+          </conditions>
+          <actions>
+            <cancel_cue cue="NPCAssigned_ConversationFinished" />
+            <signal_cue cue="NPCAssigned_Transfer"/>
+          </actions>
+        </cue>
+        <cue name="NPCAssigned_ConversationFinished">
+          <conditions>
+            <event_conversation_finished/>
+          </conditions>
+          <actions>
+            <signal_cue cue="NPCAssigned_Transfer"/>
+          </actions>
+        </cue>
+        <cue name="NPCAssigned_Transfer">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <!--TODO @Owen $controllable/room.slotentity.{$slot} ?-->
+            <assert value="typeof $selectedposition == datatype.controlpost or typeof $selectedposition == datatype.entityrole" text="'Selected position ' + $selectedposition + ' is neither a controlpost or entityrole'"/>
+
+            <set_value name="$Perform" exact="true"/>
+            <!--TODO @Owen tidy up and check control post-->
+            <do_if value="($actortemplate or $actor.role) and $selectedobject == $oldroleobject and $selectedposition == (if $actortemplate then $oldroleobject.people.{$actortemplate}.role else $actor.role)">
+              <!-- Self-assignment on same object to same role: Nothing to do -->
+              <!-- TODO @Owen: Check if it's correct that $actortemplate is not set if $actor is instanced (if so: why not?) -->
+              <set_value name="$Perform" exact="false"/>
+            </do_if>
+
+            <do_if value="not $actortemplate and $actor and $actor.controlpost == controlpost.shiptrader">
+              <set_value name="$assignedcontrolled" exact="$actor.assignedcontrolled"/>
+              <do_if value="$assignedcontrolled and ($assignedcontrolled.builds.queued.count gt 0 or $assignedcontrolled.builds.inprogress.count gt 0)">
+                <set_value name="$Perform" exact="false"/>
+                <assert value="$Perform" text="'Attempting to unassign shiptrader ' + $actor + ' ' + $actor.knownname + ' which is assigned to a shipyard which has queued builds. Leaving them as they are. [Owen]'"/>
+              </do_if>
+              <remove_value name="$assignedcontrolled"/>
+            </do_if>
+
+            <do_if value="$Perform">
+              <set_value name="$replacedactor" exact="null" />
+              <set_value name="$replacedactor_newassignment" exact="null" />
+              <set_value name="$replacedactor_newobject" exact="null" />
+
+              <!--Assigning a NPC to a currently filled control post will have the controlling NPC handle the handoff via their state machine-->
+              <do_if value="typeof $selectedposition == datatype.controlpost">
+                <set_value name="$replacedactor" exact="$selectedobject.assignedcontrolentity.{$selectedposition}" />
+                <do_if value="$replacedactor">
+                  <!--If replacing an actor, try to have the replaced actor find the best role on their current object-->
+                  <set_value name="$replacedactor_newobject" exact="$selectedobject" />
+                  <do_if value="$replacedactor.potentialskill.{entityrole.service} gt $replacedactor.potentialskill.{entityrole.marine}">
+                    <set_value name="$replacedactor_newassignment" exact="entityrole.service" />
+                  </do_if>
+                  <do_else>
+                    <set_value name="$replacedactor_newassignment" exact="entityrole.marine" />
+                  </do_else>
+                </do_if>
+              </do_if>
+
+              <do_if value="$actor">
+                <!--Remove some instanced NPC blackboard variables-->
+                <remove_value name="$actor.$station_visitor"/>
+                <remove_value name="$actor.$casual"/>
+                <remove_value name="$actor.$airmarshal_dockingbay"/>
+              </do_if>
+
+              <do_if value="not $actor and $actortemplate">
+                <set_value name="$instantiatingobject" exact="null"/>
+                <do_if value="typeof $selectedposition == datatype.controlpost">
+                  <do_if value="$oldroleobject.attention ge attention.visible and $selectedobject.attention ge attention.visible">
+                    <set_value name="$instantiatingobject" exact="$oldroleobject"/>
+                  </do_if>
+                  <do_else>
+                    <set_value name="$instantiatingobject" exact="$selectedobject"/>
+                  </do_else>
+                  <debug_text text="'Instantiate NPC as a control entity on object ' + $instantiatingobject + ' ' + $instantiatingobject.knownname + ' and prepare to take control of ' + $selectedobject + ' ' + $selectedobject.knownname" chance="$DebugChance"/>
+                </do_if>
+                <do_elseif value="$selectedobject != $oldroleobject and $oldroleobject.attention ge attention.visible and $selectedobject.attention ge attention.visible">
+                  <debug_text text="'Instantiate NPC as a role entity waiting to be active on the selected object'" chance="$DebugChance"/>
+                  <set_value name="$instantiatingobject" exact="$oldroleobject"/>
+                </do_elseif>
+                <!--
+                <do_if value="typeof $selectedposition == datatype.controlpost">
+                  <set_value name="$instantiatingobject" exact="$oldroleobject"/>
+                  <debug_text text="'Instantiate NPC as a control entity on object ' + $instantiatingobject + ' ' + $instantiatingobject.knownname + ' and prepare to take control of ' + $selectedobject + ' ' + $selectedobject.knownname" chance="$DebugChance"/>
+                </do_if>
+                <do_elseif value="$selectedobject != $oldroleobject and $oldroleobject.attention ge attention.visible and $selectedobject.attention ge attention.visible">
+                  <set_value name="$instantiatingobject" exact="$oldroleobject"/>
+                  <debug_text text="'Instantiate NPC on ' + $instantiatingobject + ' ' + $instantiatingobject.knownname + ' as a role entity waiting to be active on the selected object'" chance="$DebugChance"/>
+                </do_elseif>-->
+
+                <do_if value="$instantiatingobject">
+                  <do_if value="typeof $selectedposition == datatype.controlpost">
+                    <set_value name="$CanInstance" exact="true"/>
+                  </do_if>
+                  <do_else>
+                    <run_actions ref="InstancedNPCTransferTimes_RequestInstancing" result="$CanInstance">
+                      <param name="Object" value="$instantiatingobject"/>
+                    </run_actions>
+                  </do_else>
+                  <do_if value="$CanInstance">
+                    <find_npc_waypoint name="$spawnslot" object="$instantiatingobject.controlroom" tags="tag.npctransport"/>
+                    <do_if value="not $spawnslot">
+                      <find_npc_waypoint name="$spawnslot" object="$instantiatingobject" tags="tag.npctransport"/>
+                    </do_if>
+                    <do_if value="$spawnslot">
+                      <create_npc_from_template name="$actor" object="$oldroleobject" template="$actortemplate" slot="$spawnslot" owner="faction.player"/>
+                      <do_if value="$actor">
+                        <set_entity_traits entity="$actor" hidden="true"/>
+                        <debug_text text="'Created instance of template ' + $actortemplate + ' - ' + $actor + ' at ' + $spawnslot" chance="$DebugChance"/>
+                        <run_actions ref="InstancedNPCTransferTimes_RegisterTime">
+                          <param name="Object" value="$instantiatingobject"/>
+                        </run_actions>
+                      </do_if>
+                      <do_else>
+                        <set_value name="$Perform" exact="false"/>
+                        <assert value="false" text="'Unable to create an actor from template ' + $actortemplate + ' on object ' + $instantiatingobject + ' ' + $instantiatingobject.knownname + ' [Owen]'"/>
+                      </do_else>
+                    </do_if>
+                    <do_else>
+                      <debug_text text="'Unable to find a spawn slot for actor ' + $actortemplate + ' on object ' + $instantiatingobject + ' ' + $instantiatingobject.knownname + ' will add directly to controlpost location'"/>
+                    </do_else>
+                  </do_if>
+                </do_if>
+              </do_if>
+
+              <do_if value="$Perform">
+                <!--Make the assignment changes and trigger state machine updates-->
+
+                <!--Unassign the $replacedactor if there is one. Note: Only control entities are supported-->
+                <do_if value="$replacedactor">
+                  <assert value="$replacedactor.controlpost" text="'Replaced actor ' + $replacedactor + ' ' + $replacedactor.knownname + ' does not have a control post [Owen]'"/>
+                  <do_if value="$replacedactor.controlpost">
+                    <debug_text text="'Replaced NPC ' + $replacedactor + ' ' + $replacedactor.knownname + ' with post ' + $replacedactor.controlpost + ' is to be dismissed'" chance="$DebugChance"/>
+                    <dismiss_control_entity actor="$replacedactor" object="$replacedactor.assignedcontrolled"/>
+                  </do_if>
+                </do_if>
+
+                <do_if value="$oldroleobject == $selectedobject and typeof $selectedposition == datatype.entityrole">
+                  <!--Simple case of reassigning a role on the same object-->
+                  <do_if value="$actortemplate">
+                    <!--Reassigned backroom NPC.-->
+                    <set_npc_template_role object="$selectedobject" template="$actortemplate" role="$selectedposition"/>
+                  </do_if>
+                  <do_else>
+                    <!--Reassigned instanced NPC-->
+                    <set_npc_template_role object="$selectedobject" template="$actor.npctemplate" role="$selectedposition"/>
+                  </do_else>
+
+                  <do_if value="$actor">
+                    <!--If instanced, also reassign-->
+                    <set_entity_role entity="$actor" role="$selectedposition"/>
+                    <signal_objects object="$actor" param="'npc_state_reinit'"/>
+                    <!--If the actor has inventory, attempt to transfer it to the control entity of the object-->
+                    <set_value name="$objectcontrolentity" exact="$selectedobject.assignedcontrolentity.default"/>
+                    <do_if value="$objectcontrolentity and $objectcontrolentity.isclass.npc">
+                      <do_for_each name="$NPCInventoryWare" valuename="$NPCInventoryAmount" in="$actor.inventory.table">
+                        <debug_text text="'Transfering ' + $NPCInventoryAmount + ' of inventory ware: ' + $NPCInventoryWare + ' from ' + $actor + ' ' + $actor.knownname + ' to ' + $objectcontrolentity + ' ' + $objectcontrolentity.knownname" chance="$DebugChance"/>
+                        <add_inventory entity="$objectcontrolentity" ware="$NPCInventoryWare" exact="$NPCInventoryAmount"/>
+                        <remove_inventory entity="$actor" ware="$NPCInventoryWare" exact="$NPCInventoryAmount"/>
+                      </do_for_each>
+                    </do_if>
+                  </do_if>
+                </do_if>
+                <do_else>
+                  <assert value="$actor.exists or $actortemplate" text="'Reassignment is not dealing with either an existing NPC or a NPC template [Owen]'"/>
+
+                  <do_if value="$actor">
+                    <!--Actor is either a control entity or an instanced backroom NPC-->
+                    <do_if value="not $actor.isplayerowned">
+                      <set_owner object="$actor" faction="faction.player"/>
+                    </do_if>
+                    <set_value name="$oldassigned" exact="$actor.assignedcontrolled"/>
+                    <do_if value="$oldassigned">
+                      <dismiss_control_entity actor="$actor" object="$oldassigned"/>
+                    </do_if>
+                    <do_if value="($oldassigned and $oldassigned != $selectedobject) or ($oldroleobject and $oldroleobject != $selectedobject)">
+                      <signal_cue_instantly cue="LogAssignedToObject" param="[$actor, $selectedobject]" />
+                    </do_if>
+                    <set_entity_traits entity="$actor" intransit="true" busy="$selectedposition == controlpost.aipilot and $selectedobject.pilot == player.entity"/>
+                    <do_if value="typeof $selectedposition == datatype.controlpost">
+                      <!--$actor.roleobject is cleared when assigning the control entity-->
+                      <do_if value="$oldroleobject">
+                        <!--remove from old role object-->
+                        <debug_text text="'removing ' + $actor + ' ' + $actor.knownname + ' as person on ' + $oldroleobject + ' ' + $oldroleobject.knownname" chance="$DebugChance"/>
+                        <remove_npc_template object="$oldroleobject" template="$actor.npctemplate"/>
+                      </do_if>
+                      <assign_control_entity actor="$actor" object="$selectedobject" post="$selectedposition" init="false" result="$assignresult"/>
+                      <do_if value="$assignresult">
+                        <do_if value="$selectedposition == controlpost.shiptrader">
+                          <signal_cue_instantly cue="md.NPC_Shiptrader.Base" param="$actor"/>
+                        </do_if>
+                      </do_if>
+                      <do_else>
+                        <set_value name="$Perform" exact="false"/>
+                        <assert value="false" text="'Unable to assign actor ' + $actor + ' ' + $actor.knownname + ' as ' + $selectedposition + ' on ' + $selectedobject + ' ' + $selectedobject.knownname + ' - Aborting any further changes [Owen]'"/>
+                      </do_else>
+                    </do_if>
+                    <do_elseif value="typeof $selectedposition == datatype.entityrole">
+                      <debug_text text="'setting ' + $actor + ' to assume role of ' + $selectedposition + ' on ' + $selectedobject + ' ' + $selectedobject.knownname" chance="$DebugChance"/>
+                      <set_entity_role entity="$actor" role="$selectedposition"/>
+                      <set_entity_role_object entity="$actor" object="$selectedobject"/>
+                      <set_entity_traits entity="$actor" temporary="true"/>
+                      <do_if value="$selectedobject.people.{$actor.npctemplate}.exists">
+                        <assert value="false" text="'Reassigned a NPC role on the same object but this should have been caught above already. [Owen]'"/>
+                        <set_npc_template_role object="$selectedobject" template="$actortemplate" role="$selectedposition"/>
+                      </do_if>
+                      <do_else>
+                        <create_npc_template object="$selectedobject" entity="$actor" role="$selectedposition" name="$newtemplate"/>
+                        <do_if value="not $newtemplate">
+                          <set_value name="$Perform" exact="false"/>
+                          <assert value="false" text="'Unable to add npc template for actor ' + $actor + ' ' + $actor.knownname + ' on ' + $selectedobject + ' ' + $selectedobject.knownname + ' - Aborting any further changes [Owen]'"/>
+                        </do_if>
+                      </do_else>
+                      <do_if value="$Perform">
+                        <!--If the actor has inventory, attempt to transfer it to the control entity of the object-->
+                        <set_value name="$objectcontrolentity" exact="$selectedobject.assignedcontrolentity.default"/>
+                        <do_if value="$objectcontrolentity and $objectcontrolentity.isclass.npc">
+                          <do_for_each name="$NPCInventoryWare" valuename="$NPCInventoryAmount" in="$actor.inventory.table">
+                            <debug_text text="'Transfering ' + $NPCInventoryAmount + ' of inventory ware: ' + $NPCInventoryWare + ' from ' + $actor + ' ' + $actor.knownname + ' to ' + $objectcontrolentity + ' ' + $objectcontrolentity.knownname" chance="$DebugChance"/>
+                            <add_inventory entity="$objectcontrolentity" ware="$NPCInventoryWare" exact="$NPCInventoryAmount"/>
+                            <remove_inventory entity="$actor" ware="$NPCInventoryWare" exact="$NPCInventoryAmount"/>
+                          </do_for_each>
+                        </do_if>
+                      </do_if>
+                    </do_elseif>
+                    <!--Reinitialise the state machine even if $Perform == false-->
+                    <remove_value name="$actor.$Stay"/>
+                    <signal_objects object="$actor" param="'npc_state_reinit'"/>
+                  </do_if>
+                  <do_elseif value="typeof $selectedposition == datatype.controlpost">
+                    <debug_text text="'NPC was not yet able to be instanced. Instance them and directly add them to the control post location'"/>
+                    <!--simply place in control room for now as they will be connected to the correct location via assign_control_entity-->
+                    <create_npc_from_template name="$actor" object="$oldroleobject" template="$actortemplate" owner="faction.player" placementobject="$selectedobject.controlroom" required="true"/>
+                    <do_if value="$actor">
+                      <assign_control_entity actor="$actor" object="$selectedobject" post="$selectedposition" init="false" transfer="true"/>
+                    </do_if>
+                    <do_else>
+                      <set_value name="$Perform" exact="false"/>
+                      <assert value="false" text="'Unable to create an actor from template ' + $actortemplate + ' on object ' + $instantiatingobject + ' ' + $instantiatingobject.knownname + ' [Owen]'"/>
+                    </do_else>
+                  </do_elseif>
+                  <do_elseif value="$actortemplate">
+                    <!--NPC template of a non-instanced NPC-->
+                    <create_npc_template object="$selectedobject" template="$actortemplate" otherobject="$oldroleobject" role="$selectedposition" name="$newtemplate"/>
+                    <do_if value="$newtemplate">
+                      <set_npc_template_traits object="$selectedobject" template="$actortemplate" busy="false" hidden="false" temporary="false"/>
+                      <do_if value="$selectedobject.commoncontext.{$oldroleobject}.isclass.space">
+                        <signal_cue_instantly cue="LaunchCrewTransferPod" param="[[$selectedobject, $actortemplate], $oldroleobject, $selectedobject]"/>
+                      </do_if>
+                    </do_if>
+                    <do_else>
+                      <set_value name="$Perform" exact="false"/>
+                      <assert value="false" text="'Unable to add npc template for actor ' + $actor + ' ' + $actor.knownname + ' on ' + $selectedobject + ' ' + $selectedobject.knownname + ' - Aborting any further changes [Owen]'"/>
+                    </do_else>
+                  </do_elseif>
+
+                  <do_if value="$Perform and $oldroleobject">
+                    <!--remove from old role object-->
+                    <do_if value="$actortemplate">
+                      <do_if value="$oldroleobject.people.{$actortemplate}.exists">
+                        <debug_text text="'removing npc template ' + $actortemplate + ' from ' + $oldroleobject" chance="$DebugChance"/>
+                        <remove_npc_template object="$oldroleobject" template="$actortemplate"/>
+                      </do_if>
+                    </do_if>
+                    <do_else>
+                      <do_if value="$oldroleobject.people.{$actor.npctemplate}.exists">
+                        <debug_text text="'removing actors npc template ' + $actor.npctemplate + ' from ' + $oldroleobject" chance="$DebugChance"/>
+                        <remove_npc_template object="$oldroleobject" template="$actor.npctemplate"/>
+                      </do_if>
+                    </do_else>
+                  </do_if>
+                </do_else>
+
+                <!--Even if $Perform is false, try to move the replaced actor to where they should have ended up. They could have been dismissed and left in a broken state.-->
+                <do_if value="$replacedactor">
+                  <debug_text text="'Replaced actor: ' + $replacedactor + ' ' + $replacedactor.knownname + ' is now assigned as ' + $replacedactor_newassignment + ' on ' + $replacedactor_newobject + ' ' + $replacedactor_newobject.knownname" chance="$DebugChance"/>
+                  <do_if value="typeof $replacedactor_newassignment == datatype.entityrole">
+                    <do_if value="$replacedactor_newobject.people.{$replacedactor.npctemplate}.exists">
+                      <set_npc_template_role object="$replacedactor_newobject" template="$replacedactor.npctemplate" role="$replacedactor_newassignment"/>
+                    </do_if>
+                    <do_else>
+                      <create_npc_template object="$replacedactor_newobject" entity="$replacedactor" role="$replacedactor_newassignment" name="$newtemplate"/>
+                      <do_if value="not $newtemplate">
+                        <assert value="false" text="'Unable to add npc template for actor ' + $replacedactor + ' ' + $replacedactor.knownname + ' on ' + $replacedactor_newobject + ' ' + $replacedactor_newobject.knownname + ' - Attempting to force it [Owen]'"/>
+                        <create_npc_template object="$replacedactor_newobject" entity="$replacedactor" role="$replacedactor_newassignment" name="$newtemplate" force="true"/>
+                      </do_if>
+                    </do_else>
+                    <set_entity_role entity="$replacedactor" role="$replacedactor_newassignment"/>
+                    <set_entity_role_object entity="$replacedactor" object="$replacedactor_newobject"/>
+                  </do_if>
+                  <do_else>
+                    <assign_control_entity actor="$replacedactor" object="$replacedactor_newobject" post="$replacedactor_newassignment" result="$assignresult"/>
+                    <assert value="$assignresult" text="'Unable to assign actor ' + $replacedactor + ' ' + $replacedactor.knownname + ' as ' + $replacedactor_newassignment + ' on ' + $replacedactor_newobject + ' ' + $replacedactor_newobject.knownname + ' - Aborting any further changes [Owen]'"/>
+                  </do_else>
+                  <signal_objects object="$replacedactor" param="'npc_state_reinit'"/>
+                </do_if>
+                <raise_lua_event name="'info_updatePeople'"/>
+              </do_if>
+            </do_if>
+
+          </actions>
+        </cue>
+      </cues>
+    </cue>
+
+    <cue name="InstancedNPCTransferTimes_ClearEntries" instantiate="true">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <do_if value="NPCAssigned.$InstanceTimes?">
+          <do_for_each name="$Obj" valuename="$Times" in="NPCAssigned.$InstanceTimes" reverse="true">
+            <remove_from_list name="$Times" max="player.age - param.crewtransfer.instanced_npc_timeframe"/>
+            <do_if value="not $Obj.exists or $Times.count == 0">
+              <remove_value name="NPCAssigned.$InstanceTimes.{$Obj}"/>
+            </do_if>
+          </do_for_each>
+        </do_if>
+      </actions>
+    </cue>
+
+    <!--returns bool whether a NPC is allowed to be instanced on $Object for transfer visualisation-->
+    <library name="InstancedNPCTransferTimes_RequestInstancing" purpose="run_actions">
+      <params>
+        <param name="Object"/>
+      </params>
+      <actions>
+        <do_if value="not @NPCAssigned.$InstanceTimes.{$Object} or NPCAssigned.$InstanceTimes.{$Object}.count lt param.crewtransfer.max_instanced_npcs">
+          <return value="true"/>
+        </do_if>
+        <return value="false"/>
+      </actions>
+    </library>
+
+    <!--register one NPC instantiation for $Object at the current time-->
+    <library name="InstancedNPCTransferTimes_RegisterTime" purpose="run_actions">
+      <params>
+        <param name="Object"/>
+      </params>
+      <actions>
+        <do_if value="not NPCAssigned.$InstanceTimes?">
+          <set_value name="NPCAssigned.$InstanceTimes" exact="table[]"/>
+        </do_if>
+        <do_if value="NPCAssigned.$InstanceTimes.{$Object}?">
+          <append_to_list name="NPCAssigned.$InstanceTimes.{$Object}" exact="player.age"/>
+        </do_if>
+        <do_else>
+          <set_value name="NPCAssigned.$InstanceTimes.{$Object}" exact="[player.age]"/>
+        </do_else>
+      </actions>
+    </library>
+
+    <cue name="LaunchCrewTransferPod" instantiate="true" namespace="this">
+      <conditions>
+        <!-- event.param = [ $actor, $origin, $destination ] -->
+        <event_cue_signalled />
+      </conditions>
+      <actions>
+        <!-- This cue calculates an arrival time for the transferred actor, sets <set_actor_pod_arrival_time> and triggers the launch of a transfer pod.
+        Since this cue may be signalled many times per frame for a bulk crew transfer, multiple actors can be combined into a single pod,
+        the arrival times for the crew members will be distributed over a time interval, and a maximum number of launched pods between two ships is taken into account. -->
+        <set_value name="$actor" exact="event.param.{1}" />
+        <set_value name="$origin" exact="event.param.{2}" />
+        <set_value name="$destination" exact="event.param.{3}" />
+
+        <!-- Schedule launch and retrieve $launchdata with arrival time -->
+        <do_if value="not static.$ScheduledLaunches?">
+          <set_value name="static.$ScheduledLaunches" exact="[]" />
+        </do_if>
+        <run_actions ref="LaunchCrewTransferPod_CreateLaunchData" result="$launchdata">
+          <param name="ScheduledLaunches" value="static.$ScheduledLaunches" />
+          <param name="Origin" value="$origin" />
+          <param name="Destination" value="$destination" />
+        </run_actions>
+
+        <!-- $launchdata always provides a valid arrival time -->
+        <!-- <debug_text text="'Arrival time: ' + $launchdata.$ArrivalTime" /> -->
+        <set_actor_pod_arrival_time actor="$actor" time="$launchdata.$ArrivalTime" />
+
+        <do_if value="$launchdata.$IsValid and not $launchdata.$IsScheduled">
+          <!-- We are now in charge of this launch! -->
+          <set_value name="$launchdata.$IsScheduled" />
+          <append_to_list name="static.$ScheduledLaunches" exact="$launchdata" />
+        </do_if>
+        <do_else>
+          <!-- Launch is invalid or already handled by another instance -->
+          <cancel_cue cue="this" />
+        </do_else>
+      </actions>
+      <cues>
+        <cue name="LaunchCrewTransferPod_HandleLaunch" checktime="$launchdata.$LaunchTime" onfail="cancel">
+          <actions>
+            <!-- Remove $launchdata from schedule (but keep using the variable) -->
+            <remove_from_list name="parent.static.$ScheduledLaunches" exact="$launchdata" multiple="false" />
+
+            <do_if value="$launchdata.$Destination.isoperational">
+              <do_if value="$launchdata.$Origin.isclass.ship and $launchdata.$Origin.isoperational">
+                <set_value name="$launcher" exact="$launchdata.$Origin"/>
+                <do_if value="$launchdata.$Origin.dock">
+                  <do_while value="$launcher.container">
+                    <set_value name="$launcher" exact="$launcher.container"/>
+                  </do_while>
+                  <debug_text text="'origin: %s %s %s is docked. launcher changed to %s %s %s.'.[@$launchdata.$Origin.idcode, @$launchdata.$Origin.knownname, @$launchdata.$Origin, @$launcher.idcode, @$launcher.knownname, $launcher]" chance="0"/>
+                </do_if>
+                <find_dockingbay name="$storage" object="$launcher">
+                  <match_dock size="param.crewtransfer.podmacro.docksize" storage="true"/>
+                </find_dockingbay>
+                <find_dockingbay name="$dock" object="$launcher">
+                  <match_dock size="param.crewtransfer.podmacro.docksize" storage="false"/>
+                </find_dockingbay>
+              </do_if>
+
+              <do_if value="@$launcher.isoperational and @$dock.isoperational and @$storage.isoperational">
+                <launch_crew_transfer_pod name="$pod" object="$launcher" destination="$launchdata.$Destination" macro="param.crewtransfer.podmacro" arrivaltime="$launchdata.$ArrivalTime"/>
+              </do_if>
+              <do_else>
+                <create_ship name="$pod" macro="param.crewtransfer.podmacro" sector="$launchdata.$OriginSector">
+                  <owner exact="$launchdata.$Destination.trueowner" overridenpc="true"/>
+                  <pilot>
+                    <select race="race.drone" tags="tag.aipilot"/>
+                  </pilot>
+                  <safepos value="$launchdata.$OriginSectorOffset" space="$launchdata.$OriginSector"/>
+                </create_ship>
+                <do_if value="$pod.exists">
+                  <start_script name="'move.crewtransferpod'" object="$pod.pilot">
+                    <param name="target" value="$launchdata.$Destination"/>
+                    <param name="origin" value="$launchdata.$Origin"/>
+                    <param name="arrivaltime" value="$launchdata.$ArrivalTime"/>
+                  </start_script>
+                </do_if>
+              </do_else>
+
+              <do_if value="@$pod.exists">
+                <set_object_radar_visible object="$pod" visible="false"/>
+                <debug_text text="'sending crew transfer pod %s %s %s\nfrom %s %s %s\nto %s %s %s,\n%s clusters away.\nETA: %s seconds'.[@$pod.idcode, @$pod.knownname, $pod, @$launchdata.$Origin.idcode, @$launchdata.$Origin.knownname, @$launchdata.$Origin, @$launchdata.$Destination.idcode, @$launchdata.$Destination.knownname, $launchdata.$Destination, @$launchdata.$Origin.gatedistance.{$launchdata.$Destination}, $launchdata.$ArrivalTime - player.age]" chance="0"/>
+              </do_if>
+              <do_else>
+                <debug_text text="'crew transfer pod launch failed. origin: %s %s %s, launcher: %s %s %s, destination: %s %s %s'.[@$launchdata.$Origin.idcode, @$launchdata.$Origin.knownname, $launchdata.$Origin, @$launcher.idcode, @$launcher.knownname, @$launcher, @$launchdata.$Destination.idcode, @$launchdata.$Destination.knownname, $launchdata.$Destination]" filter="error"/>
+              </do_else>
+            </do_if>
+          </actions>
+        </cue>
+
+        <!-- Helper for LaunchCrewTransferPod. Find a launchdata entry that is already scheduled but has a "free seat", or create a new launchdata entry. -->
+        <library name="LaunchCrewTransferPod_CreateLaunchData" purpose="run_actions">
+          <params>
+            <param name="ScheduledLaunches" comment="Used as read-only" />
+            <param name="Origin" />
+            <param name="Destination" />
+          </params>
+          <actions>
+            <!-- Set $fallbacklaunchdata default value just in case, which should actually never be returned (unless param.crewtransfer.max_pods is 0) -->
+            <set_value name="$fallbacklaunchdata" exact="table[
+                       $IsValid = false,
+                       $ArrivalTime = player.age + param.crewtransfer.max_pod_launch_delay + param.crewtransfer.max_travel_time ]" />
+            <!-- Set $delaybetweenlaunches so that in case of max_pods launches, the last one will occur at max_pod_launch_delay after the first one -->
+            <set_value name="$delaybetweenlaunches" exact="param.crewtransfer.max_pod_launch_delay / [1, param.crewtransfer.max_pods - 1].max" />
+            <!-- $nextlaunchtime will be the next suitable time after the previous matching launch -->
+            <set_value name="$nextlaunchtime" exact="player.age + 1ms" />
+
+            <!-- Step 1: Check if there is already a scheduled launch from $Origin to $Destination. Look for a free seat. -->
+            <set_value name="$randomlaunchcount" min="1" max="param.crewtransfer.max_pods" />
+            <set_value name="$numlaunches" exact="0" />
+            <do_for_each name="$launchdata" in="$ScheduledLaunches">
+              <do_if value="$launchdata.$Origin == $Origin and $launchdata.$Destination == $Destination">
+                <set_value name="$numlaunches" operation="add" />
+                <!-- If there is a free seat on a scheduled launch, use it! -->
+                <do_if value="$launchdata.$FreeSeats gt 0">
+                  <set_value name="$launchdata.$FreeSeats" operation="subtract" />
+                  <return value="$launchdata" />
+                </do_if>
+                <!-- When $randomlaunchcount is reached, remember current $launchdata as fallback -->
+                <do_if value="$numlaunches == $randomlaunchcount">
+                  <set_value name="$fallbacklaunchdata" exact="$launchdata" />
+                </do_if>
+                <do_if value="$launchdata.$LaunchTime ge $nextlaunchtime">
+                  <set_value name="$nextlaunchtime" exact="$launchdata.$LaunchTime + $delaybetweenlaunches" />
+                </do_if>
+              </do_if>
+            </do_for_each>
+
+            <!-- Step 2: There are no free seats on existing scheduled launches. If we can add a new launch to the schedule, do so. -->
+            <do_if value="$numlaunches lt param.crewtransfer.max_pods">
+              <!-- Calculate arrival time -->
+              <estimate_travel_time result="$podtraveltime" macro="param.crewtransfer.podmacro" start="$Origin" target="$Destination" />
+              <set_value name="$podtraveltime" exact="$podtraveltime * param.crewtransfer.travel_estimation_factor" />
+              <!-- Bullet-proofing $podtraveltime -->
+              <do_if value="$podtraveltime le 0s or $podtraveltime gt param.crewtransfer.max_travel_time">
+                <set_value name="$podtraveltime" exact="param.crewtransfer.max_travel_time" />
+              </do_if>
+              <do_elseif value="$podtraveltime gt 10s">
+                <set_value name="$podtraveltime" exact="10s" />
+              </do_elseif>
+              <debug_text text="'Estimated crew transfer pod travel time from %s (%s) to %s (%s): %s'.[$Origin.knownname, $Origin, $Destination.knownname, $Destination, $podtraveltime.formatted.default]" />
+
+              <!-- Remember location just in case $Origin is killed before the pod is launched -->
+              <set_value name="$locationobject" exact="if @$Origin.zone.issuperhighway then $Origin.zone.exit else $Origin" />
+              <set_value name="$sector" exact="$locationobject.sector" />
+              <create_position name="$sectorpos" space="$sector" object="$locationobject" />
+              <!-- Set launch data (NOTE: Will be added to the schedule by caller) -->
+              <set_value name="$launchdata" exact="table[
+                         $IsValid = true,
+                         $IsScheduled = false,
+                         $LaunchTime = $nextlaunchtime,
+                         $FreeSeats = param.crewtransfer.max_npcs_per_pod - 1,
+                         $Origin = $Origin,
+                         $OriginSector = $sector,
+                         $OriginSectorOffset = $sectorpos,
+                         $Destination = $Destination,
+                         $ArrivalTime = $nextlaunchtime + $podtraveltime ]" />
+              <return value="$launchdata" />
+            </do_if>
+
+            <!-- Step 3: There are no free seats and we cannot add a launch. Take a random launchdata with matching origin and destination (chosen above) and use it anyway. -->
+            <return value="$fallbacklaunchdata" />
+          </actions>
+        </library>
+
+      </cues>
+    </cue>
+
+    <cue name="InteractiveEventContinued" instantiate="true">
+      <conditions>
+        <event_conversation_started conversation="InteractiveEventContinued" />
+        <!-- object = entity requesting the conversation, param = conversation name, param2 = convparam -->
+      </conditions>
+      <actions>
+        <!-- <debug_text text="'%1, %2'.[event.param, event.param2]" /> -->
+        <do_if value="event.param2 == 'g_trade_fail_buyamount'">
+          <do_any>
+            <add_npc_line line="2005" comment="(Greeting - over comms)" weight="not event.object.isinspeakrange" />
+            <add_npc_line line="2006" comment="(Greeting - trader / staff)" weight="1" />
+          </do_any>
+          <add_player_choice text="{1002,2058}" section="g_interactionresult" choiceparam="null" comment="Buy as much as you can"/>
+          <add_player_choice text="{1002,2014}" section="g_interactionresult" choiceparam="'wait'" comment="Wait for new orders"/>
+        </do_if>
+        <do_if value="event.param2 == 'g_trade_fail_buyware'">
+          <do_any>
+            <add_npc_line line="2005" comment="(Greeting - over comms)" weight="not event.object.isinspeakrange" />
+            <add_npc_line line="2006" comment="(Greeting - trader / staff)" weight="1" />
+          </do_any>
+          <add_player_choice text="{1002,2060}" section="g_interactionresult" choiceparam="null" comment="Skip this trade"/>
+          <add_player_choice text="{1002,2014}" section="g_interactionresult" choiceparam="'wait'" comment="Wait for new orders"/>
+        </do_if>
+        <do_elseif value="event.param2 == 'g_trade_fail_sellamount'">
+          <do_any>
+            <add_npc_line line="2005" comment="(Greeting - over comms)" weight="not event.object.isinspeakrange" />
+            <add_npc_line line="2006" comment="(Greeting - trader / staff)" weight="1" />
+          </do_any>
+          <add_player_choice text="{1002,2059}" section="g_interactionresult" choiceparam="null" comment="Sell as much as you can"/>
+          <add_player_choice text="{1002,2014}" section="g_interactionresult" choiceparam="'wait'" comment="Wait for new orders"/>
+        </do_elseif>
+        <do_elseif value="event.param2 == 'g_trade_fail_sellware'">
+          <do_any>
+            <add_npc_line line="2005" comment="(Greeting - over comms)" weight="not event.object.isinspeakrange" />
+            <add_npc_line line="2006" comment="(Greeting - trader / staff)" weight="1" />
+          </do_any>
+          <add_player_choice text="{1002,2060}" section="g_interactionresult" choiceparam="null" comment="Skip this trade"/>
+          <add_player_choice text="{1002,2014}" section="g_interactionresult" choiceparam="'wait'" comment="Wait for new orders"/>
+        </do_elseif>
+        <do_elseif value="event.param2 == 'g_playership_illegalcargo' or event.param2 == 'g_playership_illegalinventory'">
+          <!-- Review. Since 10403 is repeated, it's very redundant if you trigger the interaction shortly after or while the line is said. But if you trigger it a while after the line is first said, might not be clear what the interaction was about anymore. -->
+          <add_npc_line>
+            <text line="11205" comment="(ship scan result - something found)We've detected contraband."/>
+            <text line="6013" comment="(order to release cargo)Drop the cargo!"/>
+          </add_npc_line>
+          <!-- menu is opened via player.interaction. -->
+          <do_if value="event.param2 == 'g_playership_illegalcargo'">
+            <add_player_choice text="{1002, 15901}" section="g_interactionmenu" choiceparam="['comply', 'MapMenu', [ 0, 0, true, player.occupiedship, null, 'infomode', [ 'info', player.occupiedship, ['Storage']] ]]" comment="Cooperate. (drop what they want.)"/>
+          </do_if>
+          <do_else>
+            <add_player_choice text="{1002, 15901}" section="g_interactionmenu" choiceparam="['comply', 'PlayerInfoMenu', [ 0, 0, 'inventory' ]]" comment="Cooperate. (drop what they want.)"/>
+          </do_else>
+          <add_player_choice text="{1002, 15902}" section="g_interactionresult" choiceparam="'notcomply'" comment="nope"/>
+        </do_elseif>
+        <do_elseif value="event.param2 == 'g_playership_plundered'">
+          <add_npc_line line="6013" comment="(order to release cargo)Drop the cargo!"/>
+          <add_player_choice text="{1002, 15901}" section="g_interactionmenu" choiceparam="['comply', 'MapMenu', [ 0, 0, true, player.occupiedship, null, 'infomode', [ 'info', player.occupiedship, ['Storage']] ]]" comment="Cooperate. (drop what they want.)"/>
+          <add_player_choice text="{1002, 15902}" section="g_interactionresult" choiceparam="'notcomply'" comment="nope"/>
+        </do_elseif>
+        <do_elseif value="event.param2 == 'g_playerownedship_inspected'">
+          <add_npc_line line="10304" comment="(NPC awaiting orders)"/>
+          <!-- if we would rather have the player drop stuff from player-owned ships manually in this case, activate below. will need additional handling in order.move.recon to verify that everything was dropped. -->
+          <!--<do_if value="event.object.assignedcontrolled.signal.{$mode}.shouldaskplayer">
+            <set_value name="$locship" exact="event.object.assignedcontrolled"/>
+            <add_player_choice text="{1002, 15101}" section="g_interactionmenu" choiceparam="[['comply', {1036, 211}], 'MapMenu', [ 0, 0, true, $locship, null, 'infomode', [ 'info', $locship, ['Storage']] ]]" comment="Cooperate. (if police, stop to be inspected; if pirate, drop what they want.)"/>
+            <remove_value name="$locship"/>
+          </do_if>
+          <do_else>
+            <add_player_choice text="{1002, 15101}" section="g_interactionresult" choiceparam="['comply', {1036, 211}]" comment="Cooperate. (if police, stop to be inspected; if pirate, drop what they want.)"/>
+          </do_else>-->
+          <add_player_choice text="{1002, 15101}" section="g_interactionresult" choiceparam="['comply', {1036, 211}]" comment="Cooperate. (if police, stop to be inspected; if pirate, drop what they want.)"/>
+          <add_player_choice text="{1002, 15103}" section="g_interactionresult" choiceparam="['attack', {1036, 201}]" comment="Attack the inspecting ship."/>
+          <add_player_choice text="{1002, 15102}" section="g_interactionresult" choiceparam="['flee', {1036, 221}]" comment="Try to get away."/>
+          <do_if value="player.canteleportto.{event.object.assignedcontrolled}">
+            <add_player_choice text="{1002, 15105}" section="g_interactionresult" choiceparam="['wait', {1036, 231}]" comment="Wait for the player to take control."/>
+          </do_if>
+        </do_elseif>
+        <do_elseif value="event.param2 == 'g_playerownedship_foundcontraband'">
+          <add_npc_line line="10304" comment="(NPC awaiting orders)"/>
+          <add_player_choice text="{1036, 342}" section="g_interactionresult" choiceparam="['destroy', {1036, 341}]" comment="Destroy the dropped crates containing contraband."/>
+          <add_player_choice text="{1036, 352}" section="g_interactionresult" choiceparam="['collect', {1036, 351}]" comment="Collect the dropped crates containing contraband."/>
+          <add_player_choice text="{1036, 362}" section="g_interactionresult" choiceparam="['ignore', {1036, 361}]" comment="Ignore the dropped crates containing contraband."/>
+        </do_elseif>
+        <do_elseif value="event.param2 == 'g_playerownedship_dockedtotrade'">
+          <add_player_choice text="{1002, 2034}" section="g_interactionmenu" choiceparam="['trade', 'MapMenu', [ 0, 0, true, null, null, 'tradecontext', [ event.object.assignedcontrolled.container, event.object.assignedcontrolled, false ] ]]" comment="Initiate trade, access trade context menu"/>
+          <add_player_choice text="{1002, 2060}" section="g_interactionresult" choiceparam="null" comment="Skip this trade"/>
+        </do_elseif>
+        <do_elseif value="event.param2 == 'g_playerownedship_foundabandonedship'">
+          <add_player_choice text="{1002, 2062}" section="g_interactionresult" choiceparam="['claim', {1036, 241}]" selectable="event.object.assignedcontrolled.people.{entityrole.marine}.count" tooltip="if not event.object.assignedcontrolled.people.{entityrole.marine}.count then {1026, 20038} else ''" comment="Claim the ship for our faction"/>
+          <!-- "mark" not yet implemented. functionally identical to ignore as far as the AI is concerned. -->
+          <!--<add_player_choice text="{1002, 2063}" section="g_interactionresult" choiceparam="['mark', {1036, 251}]" comment="Mark the ship on the map"/>-->
+          <add_player_choice text="{1002, 2064}" section="g_interactionresult" choiceparam="['protect', {1036, 261}]" comment="Protect the ship"/>
+          <add_player_choice text="{1002, 15902}" section="g_interactionresult" choiceparam="['ignore', {1036, 271}]" comment="Ignore"/>
+        </do_elseif>
+        <do_elseif value="event.param2 == 'g_playerownedship_foundlockbox'">
+          <add_player_choice text="{1002, 2065}" section="g_interactionresult" choiceparam="['collect', {1036, 281}]" selectable="not event.object.assignedcontrolled.iscapitalship and event.object.assignedcontrolled.dps.lasers.all" tooltip="if event.object.assignedcontrolled.iscapitalship then {1026, 20039} else if not event.object.assignedcontrolled.dps.lasers.all then {1026, 20040} else ''" comment="Collect the lockbox"/>
+          <add_player_choice text="{1002, 15902}" section="g_interactionresult" choiceparam="['ignore', {1036, 291}]" comment="Ignore"/>
+          <add_player_choice text="{1002, 15105}" section="g_interactionresult" choiceparam="['wait', {1036, 231}]" comment="Wait for the player to take control."/>
+        </do_elseif>
+        <do_elseif value="event.param2 == 'g_playerownedship_attacking_outofammo'">
+          <set_value name="$locequipmentdock" exact="null"/>
+          <set_value name="$foundequipmentdock" exact="false"/>
+          <do_if value="event.object.sector">
+            <find_cluster_in_range distances="$localclusters" object="event.object.sector" maxdistance="5" multiple="true"/>
+            <set_value name="$localclusters" exact="$localclusters.keys.sorted"/>
+            <do_all exact="$localclusters.count" counter="$i">
+              <find_station name="$locequipmentdock" space="$localclusters.{$i}" equipmentdock="true" known="true">
+                <match_content class="class.buildmodule" checkoperational="true"/>
+                <match_relation_to object="event.object.assignedcontrolled" relation="enemy" comparison="not"/>
+              </find_station>
+              <do_if value="$locequipmentdock">
+                <debug_text text="'found equipment dock %s %s %s, %s gates away.'.[$locequipmentdock.idcode, $locequipmentdock.knownname, $locequipmentdock, event.object.gatedistance.{$locequipmentdock}]" chance="100"/>
+                <set_value name="$foundequipmentdock" exact="true"/>
+                <break/>
+              </do_if>
+            </do_all>
+          </do_if>
+          <add_player_choice text="{1002, 2032}" section="g_interactionmenu" selectable="$foundequipmentdock" choiceparam="['getammo', 'ShipConfigurationMenu', [ 0, 0, $locequipmentdock, 'upgrade', [event.object.assignedcontrolled], true ]]" comment="Get some ammo (will trigger ship configuration menu)"/>
+          <add_player_choice text="{1002, 2033}" section="g_interactionresult" choiceparam="'proceed'" comment="Proceed with current orders"/>
+          <remove_value name="$localclusters"/>
+          <remove_value name="$locequipmentdock"/>
+          <remove_value name="$foundequipmentdock"/>
+        </do_elseif>
+        <do_else>
+          <debug_text text="'unhandled section ' + event.param2" />
+        </do_else>
+      </actions>
+    </cue>
+
+    <!-- Usage: <start_conversation actor="$actor" conversation="Speak[_foo]" [type="unqueued"] convparam="$line" /> -->
+    <cue name="Speak" instantiate="true" namespace="this">
+      <conditions>
+        <check_any>
+          <event_conversation_started conversation="Speak" />
+          <event_conversation_started convprefix="Speak_" />
+        </check_any>
+      </conditions>
+      <actions>
+        <debug_text text="'Speak conversation: ' + event.param + ', actor=' + event.object + ', ' + event.object.knownname + ', textref: ' + event.param2" />
+        <do_if value="typeof event.param2 == datatype.list">
+          <add_npc_line speaker="event.object" page="event.param2.{1}" line="event.param2.{2}" />
+        </do_if>
+        <do_else>
+          <add_npc_line speaker="event.object" line="event.param2" />
+        </do_else>
+      </actions>
+    </cue>
+
+    <!-- Tradeoffer Interact event -->
+    <cue name="OnTradeOfferEMInteraction" instantiate="true">
+      <conditions>
+        <event_player_interaction param="'tradeoffer interaction'" />
+      </conditions>
+      <actions>
+        <start_conversation conversation="gTradeAction_start" actor="player.computer" convparam="[0, 0, event.param2.{2}, null, null, event.param2.{1}]" type="unqueued" />
+      </actions>
+    </cue>
+
+    <!-- Object Interact event -->
+    <cue name="OnObjectEMInteraction" instantiate="true">
+      <conditions>
+        <event_player_interaction param="'object interaction'" />
+      </conditions>
+      <actions>
+        <open_menu menu="MapMenu" param="[0, 0, true, null, null, 'infomode', [ 'info', event.param2 ]]" />
+      </actions>
+    </cue>
+
+    <!-- Missionoffer Interact event -->
+    <cue name="OnMissionOfferEMInteraction" instantiate="true">
+      <conditions>
+        <event_player_interaction param="'missionoffer interaction'" />
+      </conditions>
+      <actions>
+        <accept_offer cue="event.param2" />
+      </actions>
+    </cue>
+
+    <!-- Encyclopedia Interact event -->
+    <cue name="OnEncyclopediaEMInteraction" instantiate="true" namespace="this">
+      <conditions>
+        <event_player_interaction param="'encyclopedia interaction'" />
+      </conditions>
+      <actions>
+        <set_value name="$category" exact="null"/>
+        <set_value name="$libraryid" exact="event.param2.{2}"/>
+        <do_if value="event.param2.{1} == 'weapons_turrets'">
+          <set_value name="$category" exact="'Weapons'"/>
+          <set_value name="$libraryid" exact="event.param2.{2}.macro.id"/>
+        </do_if>
+        <do_elseif value="event.param2.{1} == 'shieldgentypes'">
+          <set_value name="$category" exact="'Equipment'"/>
+          <set_value name="$libraryid" exact="event.param2.{2}.macro.id"/>
+        </do_elseif>
+        <do_elseif value="event.param2.{1} == 'wares' or event.param2.{1} == 'inventory_wares'">
+          <set_value name="$category" exact="'Wares'"/>
+        </do_elseif>
+        <open_menu menu="EncyclopediaMenu" param="[0, 0, $category, event.param2.{1}, $libraryid]"/>
+      </actions>
+    </cue>
+
+    <cue name="MovieMenuStarted" instantiate="true" namespace="this">
+      <conditions>
+        <check_any>
+          <event_conversation_started conversation="moviemenu" />
+        </check_any>
+      </conditions>
+      <actions>
+        <open_conversation_menu menu="MovieMenu" param="event.param2" param2="event.param3" />
+      </actions>
+    </cue>
+
+    <cue name="PlayerOwnedAttacked_Conv" instantiate="true" namespace="this">
+      <conditions>
+        <!-- triggered in md.Notifications.PlayerOwnedAttacked_Interact -->
+        <event_conversation_started conversation="PlayerOwnedAttacked"/>
+      </conditions>
+      <actions>
+        <do_if value="event.param2.$attacked.isoperational and event.param2.$attacker.isoperational">
+          <!-- handling in md.Conversations.SectionHandler -->
+          <add_player_choice position="top_left" text="{1002, 15104}" choiceparam="event.param2" section="g_playerownedattacked_attack" comment="Resist"/>
+          <add_player_choice position="left" text="{1002, 15102}" choiceparam="event.param2" section="g_playerownedattacked_flee" selectable="event.param2.$fleemethod" comment="Escape"/>
+          <!-- removed the ignore option. ship can decide to flee or attack with the very next attack which could appear to be the ship ignoring the player's instructions to ignore the attack. -->
+          <!--<add_player_choice position="bottom_left" text="{1002, 15902}" choiceparam="event.param2" section="g_playerownedattacked_ignore" comment="Ignore"/>-->
+        </do_if>
+        <do_elseif value="event.param2.$cue.exists">
+          <cancel_cue cue="event.param2.$cue"/>
+        </do_elseif>
+      </actions>
+    </cue>
+
+    <!--Message Logs-->
+
+    <cue name="LogHired" instantiate="true" namespace="this">
+      <conditions>
+        <event_cue_signalled />
+      </conditions>
+      <actions>
+        <!-- event.param == $actor -->
+        <set_value name="$actor" exact="event.param" />
+        <set_value name="stat.staff_hired" operation="add" />
+        <substitute_text text="$logtext" source="{1016,75}">
+          <replace string="'$ENTITYTYPE$'" with="$actor.typename" />
+          <replace string="'$ENTITYNAME$'" with="$actor.name" />
+          <replace string="'$STATION$'" with="$actor.container.name" />
+          <replace string="'$SECTOR$'" with="$actor.sector.name" />
+        </substitute_text>
+        <write_to_logbook category="upkeep" title="$logtext" interaction="showonmap" object="$actor.container"/>
+      </actions>
+    </cue>
+
+    <cue name="LogAssignedToObject" instantiate="true" namespace="this">
+      <conditions>
+        <event_cue_signalled />
+      </conditions>
+      <actions>
+        <!-- event.param == [ $actor, $object ] -->
+        <set_value name="$actor" exact="event.param.{1}" />
+        <set_value name="$object" exact="event.param.{2}" />
+        <do_if value="$object.isclass.ship">
+          <set_value name="$logtext" exact="{1016,72}" comment="Assigned to ship" />
+        </do_if>
+        <do_else>
+          <set_value name="$logtext" exact="{1016,76}" comment="Assigned to station" />
+        </do_else>
+        <substitute_text text="$logtext">
+          <replace string="'$ENTITYTYPE$'" with="$actor.typename" />
+          <replace string="'$ENTITYNAME$'" with="$actor.name" />
+          <replace string="'$OBJECT$'" with="$object.name" />
+          <replace string="'$SECTOR$'" with="$object.sector.name" />
+        </substitute_text>
+        <debug_text text="$logtext" />
+        <write_to_logbook category="upkeep" title="$logtext" interaction="showonmap" object="$object"/>
+      </actions>
+    </cue>
+
+    <cue name="LogFired" instantiate="true" namespace="this">
+      <conditions>
+        <event_cue_signalled />
+      </conditions>
+      <actions>
+        <!-- event.param == $actor -->
+        <set_value name="$actor" exact="event.param" />
+        <substitute_text text="$logtext" source="{1016,74}" comment="Fired">
+          <replace string="'$ENTITYTYPE$'" with="$actor.typename" />
+          <replace string="'$ENTITYNAME$'" with="$actor.name" />
+        </substitute_text>
+        <write_to_logbook category="upkeep" title="$logtext" />
+        <remove_value name="$logtext" />
+      </actions>
+    </cue>
+
+  </cues>
+
+</mdscript>

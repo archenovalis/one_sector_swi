@@ -1,0 +1,266 @@
+<?xml version="1.0" encoding="iso-8859-1" ?>
+
+<!--
+
+this script should be able to perform the cleanup of a ship spawned in a mission
+
+-->
+
+<aiscript name="order.move.die" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" version="7">
+  <order id="MoveDie" name="{1041, 331}" description="{1041, 332}" category="internal" allowinloop="false">
+    <params>
+      <param name="mintime" default="0s" type="internal" text="{1041, 10073}" comment="Minimum time"/>
+      <param name="atstation" default="null" type="object" advanced="true" text="At station" comment="Ship tries to dock at specified station before self-destructing">
+        <input_param name="class" value="[class.station]"/>
+        <patch value="null" sinceversion="2"/>
+      </param>
+      <param name="byhighway" default="false" type="bool" advanced="true" text="{1041, 10018}" comment="By highway"/>
+      <param name="byhostile" default="false" type="bool" advanced="true" text="{1041, 10019}" comment="By hostile"/>
+      <param name="byidle" default="true" type="bool" advanced="true" text="{1041, 10020}" comment="By idle"/>
+      <param name="debugchance" type="bool" default="0" advanced="true" text="{1041, 10086}" comment="Print debug output">
+        <input_param name="truevalue" value="100"/>
+      </param>
+    </params>
+    <requires>
+      <match shiptype="shiptype.lasertower" negate="true"/>
+    </requires>
+  </order>
+  <interrupts>
+    <handler>
+      <conditions>
+        <event_object_changed_attention object="this.ship" />
+        <check_value value="event.param lt attention.visible" />
+      </conditions>
+      <actions>
+        <abort_called_scripts resume="start" />
+      </actions>
+    </handler>
+  </interrupts>
+  <init>
+    <set_command command="command.explore" />
+    <set_value name="$StartTime" exact="player.age"/>
+  </init>
+  <patch sinceversion="4">
+    <do_if value="player.entity.hascontext.{this.assignedcontrolled} and (@this.assignedcontrolled.order.id == 'MoveDie')">
+      <find_dockingbay name="$ship_docks" object="this.assignedcontrolled" multiple="true"/>
+      <do_for_each name="$locdock" in="$ship_docks">
+        <set_room_locked room="$locdock" locked="false"/>
+      </do_for_each>
+      <remove_value name="$ship_docks" />
+      <debug_text text="'PATCH: player locked in dying ship %s %s %s. unlocking doors to let player out.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled]" filter="savegame"/>
+      <!-- restart script to wait for player to get out before locking the docks and proceeding. -->
+      <edit_order_param order="this.assignedcontrolled.order" param="'mintime'" value="$mintime"/>
+    </do_if>
+  </patch>
+  <patch sinceversion="7">
+    <do_if value="this.assignedcontrolled.orders.count">
+      <do_for_each name="$locorder" in="this.assignedcontrolled.orders">
+        <do_if value="$locorder == this.assignedcontrolled.order">
+          <continue/>
+        </do_if>
+        <do_if value="$locorder.id == 'MoveDie'">
+          <cancel_order order="$locorder"/>
+        </do_if>
+      </do_for_each>
+    </do_if>
+  </patch>
+  <attention min="visible">
+    <actions>
+      <debug_text text="'visible'" chance="$debugchance"/>
+
+      <!-- Safety check for player-owned ships -->
+      <do_if value="this.ship.isplayerowned">
+        <debug_text text="'This player-owned ship is trying to auto-destroy itself!'" filter="error" />
+        <return/>
+      </do_if>
+
+      <!-- don't allow the ship to die if the player is on that ship! -->
+      <do_while value="player.entity.hascontext.{this.assignedcontrolled}">
+        <wait exact="10s" sinceversion="4"/>
+      </do_while>
+
+      <!-- Block all dockslots to prevent the player from docking at this ship -->
+      <find_dockingbay name="$ship_docks" object="this.ship" multiple="true"/>
+      <do_all exact="$ship_docks.count" counter="$Count">
+        <set_room_locked room="$ship_docks.{$Count}" locked="true"/>
+      </do_all>
+      <remove_value name="$ship_docks" />
+
+      <!-- Label to allow us to repeat indefinitely -->
+      <label name="start" />
+
+      <set_value name="$Attempt" exact="false" />
+
+      <!-- don't allow the ship to die if the player is on that ship! -->
+      <do_while value="player.entity.hascontext.{this.assignedcontrolled}">
+        <wait exact="10s" />
+      </do_while>
+
+      <!--If in a highway, be sure to get out first. Just to be safe if the ship was spawned in a highway and nothing told it what to do yet-->
+      <do_if value="this.zone.isclass.highway">
+        <run_script name="'move.generic'" result="$movesuccess">
+          <param name="destination" value="this.zone.destination"/>
+        </run_script>
+        <do_if value="not $movesuccess">
+          <debug_text text="'Unable to reach end of highway. Waiting until exit.'" chance="$debugchance"/>
+          <wait sinceversion="5">
+            <interrupt>
+              <conditions>
+                <event_object_changed_zone object="this.assignedcontrolled"/>
+                <check_value value="not event.param.isclass.highway"/>
+              </conditions>
+            </interrupt>
+          </wait>
+        </do_if>
+      </do_if>
+
+      <do_if value="$atstation.isoperational">
+        <do_if value="this.assignedcontrolled.iscapitalship">
+          <debug_text text="'WARNING: %s %s %s is a capital ship and was ordered to die on dock, but this will not be hidden when docked.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled]" filter="error"/>
+        </do_if>
+        <do_if value="not this.assignedcontrolled.hascontext.{$atstation}">
+          <debug_text text="'MoveDie bydock %s %s %s'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled]" chance="$debugchance"/>
+          <set_value name="$Attempt"/>
+          <run_script name="'order.dock'" result="$docksuccess" sinceversion="1">
+            <param name="destination" value="$atstation"/>
+            <param name="trading" value="true"/>
+            <param name="abouttofinish" value="true"/>
+            <param name="store" value="true"/>
+            <param name="debugchance" value="$debugchance"/>
+          </run_script>
+          <do_if value="not $docksuccess">
+            <debug_text text="'%s %s %s unable to dock at %s %s %s.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, @$atstation.idcode, @$atstation.knownname, $atstation]"/>
+          </do_if>
+          <remove_value name="$docksuccess"/>
+        </do_if>
+        <do_if value="@this.assignedcontrolled.dock.isstorage">
+          <do_if value="@$mintime">
+            <do_if value="typeof $mintime == datatype.time and $mintime gt 0s">
+              <do_if value="(player.age - $StartTime) lt $mintime">
+                <wait exact="$mintime - player.age + $StartTime" sinceversion="6"/>
+              </do_if>
+            </do_if>
+          </do_if>
+          <debug_text text="'%s %s %s is stored at %s %s %s. self-destructing.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, @this.assignedcontrolled.container.idcode, @this.assignedcontrolled.container.knownname, @this.assignedcontrolled.container]" chance="$debugchance"/>
+          <destroy_object object="this.assignedcontrolled" explosion="false"/>
+        </do_if>
+        <!-- indefinite duration wait until attention change -->
+        <wait sinceversion="3"/>
+      </do_if>
+
+      <do_if value="this.assignedcontrolled.dock">
+        <run_script name="'move.undock'" sinceversion="3"/>
+      </do_if>
+
+      <do_if value="$byhighway">
+        <do_if value="this.ship.isclass.ship_xl or this.ship.isclass.ship_l" negate="true">
+          <debug_text text="'MoveDie byhighway ' + this.ship" chance="$debugchance"/>
+          <set_value name="$Attempt" exact="true" />
+          
+          <do_if value="player.zone.isclass.highway">
+            <set_value name="$Targetspace" exact="player.zone.destination.sector" />
+          </do_if>
+          <do_elseif value="player.sector">
+            <set_value name="$Targetspace" exact="player.sector" />
+          </do_elseif>
+          <do_else>
+            <set_value name="$Targetspace" exact="this.sector" />
+          </do_else>
+          <find_zone name="$Targetzone" space="$Targetspace" normalzone="true"/>
+          <remove_value name="$Targetspace" />
+          <create_position name="$Pos" space="$Targetzone" max="5km" />
+          <do_if value="$Targetzone.exists and ($Targetzone != player.zone)">
+            <!-- handling for nopath unnecessary -->
+            <run_script name="'move.generic'">
+              <param name="destination" value="$Targetzone" />
+              <param name="position" value="$Pos" />
+            </run_script>
+          </do_if>
+        </do_if>
+        <do_else>
+          <debug_text text="'MoveDie Ship would not fit into highway ' + this.ship" chance="$debugchance"/>
+        </do_else>
+      </do_if>
+
+      <do_if value="$byhostile">
+        <debug_text text="'MoveDie byhostile ' + this.ship" chance="$debugchance"/>
+        <set_value name="$Attempt" exact="true" />
+        <run_script name="'order.fight.patrol'"/>
+      </do_if>
+
+      <do_if value="$byidle">
+        <debug_text text="'MoveDie byidle ' + this.ship" chance="$debugchance"/>
+        <set_value name="$Attempt" exact="true" />
+        <run_script name="'move.random'" >
+          <param name="TimeOut" value="30s" />
+        </run_script>
+      </do_if>
+
+      <do_if value="not $Attempt">
+        <debug_text text="'There was not a working MoveDie attempt ' + this.ship" chance="$debugchance"/>
+      </do_if>
+      <wait exact="5s" />
+      <resume label="start" />
+    </actions>
+  </attention>
+  <attention min="unknown">
+    <actions>
+      <!-- Safety check for player-owned ships -->
+      <do_if value="this.ship.isplayerowned">
+        <debug_text text="'This player-owned ship is trying to auto-destroy itself!'" filter="error" />
+        <return/>
+      </do_if>
+
+      <!-- Block all dockslots to prevent the player from docking at this ship -->
+      <find_dockingbay name="$ship_docks" object="this.ship" multiple="true"/>
+      <do_all exact="$ship_docks.count" counter="$Count">
+        <set_room_locked room="$ship_docks.{$Count}" locked="true"/>
+      </do_all>
+      <remove_value name="$ship_docks" />
+
+      <label name="start" />
+
+      <!-- atstation done in low attention upon request of mission team. -->
+      <do_if value="$atstation.isoperational and not this.assignedcontrolled.hascontext.{$atstation}">
+        <do_if value="this.assignedcontrolled.iscapitalship">
+          <debug_text text="'WARNING: %s %s %s is a capital ship and was ordered to die on dock, but this will not be hidden when docked.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled]" filter="error"/>
+        </do_if>
+        <debug_text text="'MoveDie bydock %s %s %s'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled]" chance="$debugchance"/>
+        <set_value name="$Attempt"/>
+        <run_script name="'order.dock'" result="$docksuccess" sinceversion="1">
+          <param name="destination" value="$atstation"/>
+          <param name="trading" value="true"/>
+          <param name="abouttofinish" value="true"/>
+          <param name="store" value="true"/>
+          <param name="debugchance" value="$debugchance"/>
+        </run_script>
+        <do_if value="not $docksuccess">
+          <debug_text text="'%s %s %s unable to dock at %s %s %s.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, @$atstation.idcode, @$atstation.knownname, $atstation]"/>
+        </do_if>
+        <remove_value name="$docksuccess"/>
+      </do_if>
+
+      <do_if value="@$mintime">
+        <do_if value="typeof $mintime == datatype.time and $mintime gt 0s">
+          <do_if value="(player.age - $StartTime) lt $mintime">
+            <wait exact="$mintime - player.age + $StartTime"/>
+            <resume label="start"/>
+          </do_if>
+        </do_if>
+      </do_if>
+
+      <debug_text text="'MoveDie just killed ' + this.ship" chance="$debugchance"/>
+      <destroy_object object="this.ship" explosion="false" />
+      <!-- infinite wait to stop any actions in calling scripts from running in the same frame -->
+      <wait />
+    </actions>
+  </attention>
+  <on_abort>
+    <!-- Unblock all dockslots again in case this script gets aborted -->
+    <find_dockingbay name="$ship_docks" object="this.ship" multiple="true"/>
+    <do_all exact="$ship_docks.count" counter="$Count">
+      <set_room_locked room="$ship_docks.{$Count}" locked="false"/>
+    </do_all>
+  </on_abort>
+</aiscript>
+

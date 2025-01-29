@@ -1,0 +1,1237 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<aiscript name="fight.attack.object.station" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" version="16">
+  <!--
+  Station defence manager script
+  by Matthias
+  Actively detect and attack enemies if:
+	- is under attack
+	- someone attack a nearby ship (max radar range)
+	- blackboard: $enemies, $criminals $hackerfound, $scannerfound
+	- L class or XL class is detected (if $config_attackenemies)
+  -->
+  <params>
+    <param name="debugchance" default="0"/>
+    <param name="stationmodules" default="[]"/>
+  </params>
+  <interrupts>
+    <library>
+      <actions name="GetActiveWeaponModes">
+        <do_if value="this.assignedcontrolled.turrets.operational.count">
+          <set_value name="$weapons_all" exact="this.assignedcontrolled.turrets.operational.list"/>
+          <create_list name="$turretmodes"/>
+          <debug_text text="'%s %s %s updating weapon modes:'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled]" chance="$debugchance"/>
+          <do_all exact="$weapons_all.count" counter="$i">
+            <do_if value="not $turretmodes.indexof.{$weapons_all.{$i}.mode}">
+              <append_to_list name="$turretmodes" exact="$weapons_all.{$i}.mode"/>
+              <debug_text text="$weapons_all.{$i}.mode" chance="$debugchance"/>
+            </do_if>
+          </do_all>
+          <remove_value name="$weapons_all"/>
+        </do_if>
+        <do_else>
+          <debug_text text="'currently no operational turrets. wrecked: %s, under construction: %s'.[this.assignedcontrolled.turrets.wreck.count, this.assignedcontrolled.turrets.construction.count]" chance="$debugchance"/>
+        </do_else>
+      </actions>
+    </library>
+    <handler>
+      <conditions>
+        <event_object_changed_owner object="this.station" />
+      </conditions>
+      <actions>
+        <do_all exact="@this.$watchdogs.count" counter="$i">
+          <set_owner object="this.$watchdogs.{$i}" faction="event.param" />
+        </do_all>
+      </actions>
+    </handler>
+    <handler>
+      <conditions>
+        <check_any>
+          <event_object_changed_true_owner group="$enemies"/>
+          <event_object_relation_range_changed group="$enemies" faction="this.trueowner"/>
+        </check_any>
+        <check_value value="not this.assignedcontrolled.mayattack.{event.object}"/>
+      </conditions>
+      <actions>
+        <set_value name="$evaltarget" exact="event.object"/>
+        <debug_text text="'target ownership changed. ceasing fire against %s %s %s.'.[@$evaltarget.idcode, @$evaltarget.knownname, $evaltarget]" chance="$debugchance"/>
+        <remove_from_group group="$attackers" object="$evaltarget"/>
+        <remove_from_group group="$targets_capships" object="$evaltarget"/>
+        <remove_from_group group="$targets_fighters" object="$evaltarget"/>
+        <remove_from_group group="$enemies" object="$evaltarget"/>
+        <remove_value name="$evaltarget"/>
+        <cease_fire object="this.assignedcontrolled"/>
+        <abort_called_scripts resume="start"/>
+      </actions>
+    </handler>
+    <handler>
+      <conditions>
+        <event_object_signalled object="this" param="'reset'"/>
+      </conditions>
+      <actions>
+        <debug_text text="'resetting defence control of %s %s %s'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled]" chance="$debugchance"/>
+        <cease_fire object="this.assignedcontrolled"/>
+        <clear_group group="$enemies"/>
+        <clear_group group="$attackers"/>
+        <clear_group group="$targets_capships"/>
+        <clear_group group="$targets_fighters"/>
+        <abort_called_scripts resume="start"/>
+      </actions>
+    </handler>
+    <handler comment="Watchdogs hacked">
+      <conditions>
+        <event_object_signalled object="this.station" param="'watchdogs_hacked'" />
+      </conditions>
+      <actions>
+        <debug_text text="'watchdogs_hacked'" chance="$debugchance" />
+        <set_value name="this.$hacked" exact="player.age + event.param2" comment="hard coded 10 min hacked"/>
+      </actions>
+    </handler>
+    <handler comment="Hack detected">
+      <conditions>
+        <check_any>
+          <event_object_signalled object="this.station" param="'failed_hack_detected'" comment="param2 = hacker drone, param3 = drone's position at the time the signal was created" />
+          <event_object_signalled object="this.station" param="'successful_hack_detected'" comment="param2 = hacker drone, param3 = drone's position at the time the signal was created" />
+        </check_any>
+      </conditions>
+      <actions>
+        <debug_text text="'event %1, param %2, param2 %3'.[event.name, event.param, event.param2]" chance="$debugchance" />
+
+        <set_value name="$sendpolice1" exact="0" />
+        <set_value name="$sendpolice2" exact="0" />
+
+        <!-- Different values on failed and succesful -->
+        <do_if value="event.param" exact="'failed_hack_detected'">
+          <set_value name="$sendpolice1" exact="[2, @this.$watchdogs.count].min" />
+        </do_if>
+        <do_elseif value="event.param" exact="'successful_hack_detected'">
+          <set_value name="$sendpolice1" exact="[4, @this.$watchdogs.count].min" />
+        </do_elseif>
+
+        <!-- Hacker drone position at that time -->
+        <set_value name="$pos" exact="event.param3" />
+        <!-- Get the closest watchdogs-->
+        <create_list name="$watchdogsdist1" />
+        <create_list name="$watchdogsdist2" />
+        <do_all exact="@this.$watchdogs.count" counter="$i">
+          <do_if value="$sendpolice1">
+            <append_to_list name="$watchdogsdist1" exact="this.$watchdogs.{$i}.distanceto.[this.zone, $pos]" />
+          </do_if>
+          <do_if value="$sendpolice2">
+            <append_to_list name="$watchdogsdist2" exact="this.$watchdogs.{$i}.distanceto.[this.zone, this.$hackerfound.{1}.position]" />
+          </do_if>
+        </do_all>
+
+        <!-- Tell to watchdogs police to patrol and search for the hacker -->
+        <do_all exact="$sendpolice1">
+          <set_value name="$closestindex" exact="$watchdogsdist1.indexof.{$watchdogsdist1.min}" />
+          <set_value name="$closest" exact="this.$watchdogs.{$closestindex}" />
+          <set_value name="$watchdogsdist1.{$closestindex}" exact="5000m" />
+          <!-- police to patrol -->
+          <signal_objects object="$closest" param="'patrol'" param2="$pos" />
+          <add_to_group groupname="this.$policepatrol" object="$closest" comment="counter with current patrolling ships"/>
+        </do_all>
+        <!-- Tell to watchdogs police to patrol and search for the hacker's commander -->
+        <do_all exact="$sendpolice2">
+          <set_value name="$closestindex" exact="$watchdogsdist2.indexof.{$watchdogsdist2.min}" />
+          <set_value name="$closest" exact="this.$watchdogs.{$closestindex}" />
+          <set_value name="$watchdogsdist2.{$closestindex}" exact="5000m" />
+          <!-- signal police to patrol -->
+          <signal_objects object="$closest" param="'patrol'" param2="this.$hackerfound.{1}.position" delay="40s" />
+          <add_to_group groupname="this.$policepatrol" object="$closest" comment="counter with current patrolling ships"/>
+        </do_all>
+
+        <!-- remove variables -->
+        <remove_value name="$pos" />
+        <remove_value name="$watchdogsdist1" />
+        <remove_value name="$watchdogsdist2" />
+        <remove_value name="$sendpolice1" />
+        <remove_value name="$sendpolice2" />
+        <remove_value name="$closestindex" />
+
+      </actions>
+    </handler>
+    <handler comment="Illegal cargo tracking hacked">
+      <conditions>
+        <event_object_signalled object="this.station" param="'cargotracking_hacked'"/>
+      </conditions>
+      <actions>
+        <clear_group group="$droppedcontainers"/>
+        <debug_text text="'cargo tracking hacked. num tracked containers: %s'.[$droppedcontainers.count]" chance="$debugchance"/>
+      </actions>
+    </handler>
+    <handler comment="Illegal cargo collection by collector drone">
+      <conditions>
+        <event_object_destroyed group="$droppedcontainers" method="killmethod.collected"/>
+        <check_value value="event.param and event.param.owner != this.owner"/>
+      </conditions>
+      <actions>
+        <do_if value="not event.param.isclass.object">
+          <set_value name="$collector" exact="event.param.object"/>
+        </do_if>
+        <do_else>
+          <set_value name="$collector" exact="event.param"/>
+        </do_else>
+        <debug_text text="player.age + ': Illegal cargo collection detected. Collected object: %2  by (%3) CONDITION 2'.[event.object.knownname, $collector.knownname]" chance="$debugchance"/>
+        <debug_text text="'thief: %1 (%2) present order of thief: %3, thief orders: %4, owner: %5, true owner: %6 CONDITION 2'.[$collector.knownname, $collector, $collector.order.id, $collector.orders, $collector.owner, $collector.trueowner]" chance="$debugchance"/>
+
+        <do_if value="$collector">
+          <do_if value="$collector.coverowner">
+            <signal_objects object="$collector" param="'LoseCover'" param2="true"/>
+          </do_if>
+
+          <do_if value="not this.station.mayattack.{$collector}">
+            <do_if value="this.station.isplayerowned">
+              <set_relation_boost object="$collector" otherobject="this.station" value="this.station.owner.relation.kill.min" decay="1" delay="30min"/>
+            </do_if>
+            <do_else>
+              <set_relation_boost object="this.station" otherobject="$collector" value="this.station.owner.relation.kill.min" decay="1" delay="30min"/>
+            </do_else>
+          </do_if>
+          <add_to_group groupname="$enemies" object="$collector"/>
+        </do_if>
+      </actions>
+    </handler>
+    <handler comment="Dropped cargo">
+      <conditions>
+        <check_any>
+          <event_object_dropped_objects object="this.assignedcontrolled"/>
+          <event_object_dropped_objects object="this.assignedcontrolled.buildstorage" check="false"/>
+        </check_any>
+      </conditions>
+      <actions>
+        <debug_text text="'event_object_dropped_objects: %1'.[event.param]" chance="$debugchance"/>
+        <add_to_group groupname="$droppedcontainers" list="event.param" />
+      </actions>
+    </handler>
+    <handler comment="Station relations changed">
+      <conditions>
+        <event_object_relation_range_changed object="this.assignedcontrolled"/>
+        <check_any>
+          <check_value value="$nearbyships.count"/>
+          <check_value value="$attackers.count"/>
+          <check_value value="$enemies.count"/>
+        </check_any>
+      </conditions>
+      <actions>
+        <!-- evaluate relations with everything nearby -->
+        <do_for_each name="$_loccontact" in="$enemies" reverse="true">
+          <do_if value="not this.assignedcontrolled.mayattack.{$_loccontact}">
+            <remove_from_group group="$enemies" object="$_loccontact"/>
+            <remove_from_group group="$attackers" object="$_loccontact"/>
+            <remove_from_group group="$targets_capships" object="$_loccontact"/>
+            <remove_from_group group="$targets_fighters" object="$_loccontact"/>
+          </do_if>
+        </do_for_each>
+        <do_for_each name="$_loccontact" in="$nearbyships">
+          <do_if value="not $enemies.indexof.{$_loccontact} and this.assignedcontrolled.mayattack.{$_loccontact}">
+            <add_to_group groupname="$enemies" object="$_loccontact"/>
+          </do_if>
+        </do_for_each>
+        <abort_called_scripts resume="findenemies"/>
+      </actions>
+    </handler>
+    <handler comment="Station Attacked">
+      <conditions>
+        <check_any>
+          <check_all>
+            <event_gravidar_has_scanned object="this.assignedcontrolled"/>
+            <check_value value="this.sector"/>
+            <check_value value="@$turretmodes and (@$turretmodes.indexof.{weaponmode.attackenemies} or @$turretmodes.indexof.{weaponmode.attackcapital} or @$turretmodes.indexof.{weaponmode.attackfighters} or @$turretmodes.indexof.{weaponmode.prefercapital} or @$turretmodes.indexof.{weaponmode.preferfighters} or @$turretmodes.indexof.{weaponmode.prefermissiles})"/>
+            <count_gravidar_contacts object="this.assignedcontrolled" result="$tempenemies" class="class.defensible" excluded="$enemies" docked="false" min="1">
+              <match_context macro="this.sector.macro"/>
+              <match_any>
+                <match maybeattackedby="this.assignedcontrolled" class="[class.ship_l,class.ship_xl]" comment="only select l/xl objects"/>
+                <match>
+                  <match_relation_of faction="this.owner" relation="kill"/>
+                  <match class="class.ship_xs" negate="true"/>
+                </match>
+              </match_any>
+              <match class="class.buildstorage" negate="true"/>
+            </count_gravidar_contacts>
+            <debug_text text="'interrupt: %s %s %s detected hostiles.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled]" debugchance="$debugchance"/>
+          </check_all>
+          <check_all>
+            <check_any>
+              <check_all>
+                <event_object_attacked group="$nearbyships" />
+                <check_value value="@$turretmodes and (@$turretmodes.indexof.{weaponmode.attackenemies} or @$turretmodes.indexof.{weaponmode.attackcapital} or @$turretmodes.indexof.{weaponmode.attackfighters} or @$turretmodes.indexof.{weaponmode.prefercapital} or @$turretmodes.indexof.{weaponmode.preferfighters} or @$turretmodes.indexof.{weaponmode.prefermissiles})"/>
+                <check_value value="(this.station.trueowner != faction.player) or this.assignedcontrolled.mayattack.{event.param} or event.object.isplayerowned"/>
+                <check_value value="not this.station.mayattack.{event.object}"/>
+                <check_value value="this.assignedcontrolled.relationto.{event.object} gt this.assignedcontrolled.relationto.{event.param}"/>
+                <check_any>
+                  <check_value value="not event.object.isvisitor"/>
+                  <check_value value="not event.param.isplayerowned"/>
+                  <check_value value="event.object.owner.iscoalitionally.{faction.player}"/>
+                </check_any>
+                <debug_text text="'interrupt: %s %s %s detected nearby ship attacked. attacked: %s %s %s %s, attacker: %s %s %s %s'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, @event.object.class, @event.object.idcode, @event.object.knownname, event.object, @event.param.class, @event.param.idcode, @event.param.knownname, event.param]" debugchance="$debugchance"/>
+              </check_all>
+              <event_object_attacked object="this.station" />
+              <event_object_attacked object="this.assignedcontrolled.buildstorage" check="false"/>
+              <check_all>
+                <event_contained_object_relation_range_changed space="this.sector" faction="faction.player"/>
+                <check_value value="this.isplayerowned"/>
+                <check_value value="not faction.player.mayattack.{event.param.owner}"/>
+                <check_value value="this.assignedcontrolled.cansee.{event.param}"/>
+                <debug_text text="'target acquired.\was already hostile: %s\nfaction match: %s\n%s %s %s\nengaging %s %s %s'.[this.assignedcontrolled.trueowner.mayattack.{event.param.owner}, event.param2 == this.assignedcontrolled.trueowner, this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, event.param.idcode, event.param.knownname, event.param]" debugchance="0"/>
+              </check_all>
+            </check_any>
+            <check_value value="event.param != this.station" />
+            <check_value value="event.param.canbeattacked" />
+            <check_value value="not $attackers.indexof.{event.param}" />
+            <check_any>
+              <!-- police allowed to investigate reports of bombs although mayattack is false. -->
+              <check_value value="event.param2 == killmethod.hitbybomb"/>
+              <check_value value="this.assignedcontrolled.mayattack.{event.param}"/>
+            </check_any>
+          </check_all>
+          <check_all>
+            <event_object_relation_range_changed group="$nearbyships" faction="this.trueowner"/>
+            <check_value value="not $attackers.indexof.{event.object}"/>
+            <check_value value="event.object.canbeattacked"/>
+            <check_value value="this.assignedcontrolled.cansee.{event.object}"/>
+            <check_value value="this.assignedcontrolled.mayattack.{event.object}"/>
+          </check_all>
+        </check_any>
+      </conditions>
+      <actions>
+        <do_if value="(event.name == 'event_object_attacked') or (event.name == 'event_contained_object_relation_range_changed') or (event.name == 'event_object_relation_range_changed')">
+          <do_if value="@event.param2 != killmethod.hitbybomb">
+            <do_if value="event.name == 'event_object_relation_range_changed'">
+              <set_value name="$_locenemy" exact="event.object"/>
+            </do_if>
+            <do_else>
+              <set_value name="$_locenemy" exact="event.param"/>
+            </do_else>
+            <!-- Add the attackers -->
+            <add_to_group groupname="$attackers" object="$_locenemy"/>
+            <debug_text text="event.name + ' enemy ' + $_locenemy.knownname + '('+ $_locenemy.owner.knownname +'), relation us to them: '+ this.station.relationto.{$_locenemy} + ', relation them to us: '+ $_locenemy.relationto.{this.station}" chance="$debugchance" />
+
+            <do_if value="not $distresscalls?">
+              <set_value name="$distresscalls" exact="table[]"/>
+            </do_if>
+            <do_if value="not $distresscalls.{$_locenemy}? or player.age gt $distresscalls.{$_locenemy} + 10s">
+              <set_value name="$distresscalls.{$_locenemy}" exact="player.age"/>
+              <signal_objects object="player.galaxy" param="'station_under_attack'" param2="this.station" param3="$_locenemy"/>
+              <signal_objects object="this.sector" param="'station_under_attack'" param2="this.station" param3="$_locenemy"/>
+              <debug_text text="'%1 %2 under attack. Calling for help. Attacker: %3 %4 %5 Method: %6 Comp: %7 %8'.[player.age, this.station.knownname, @$_locenemy.idcode, @$_locenemy.knownname, $_locenemy, event.param2, event.param3, @event.param3.knownname]" chance="$debugchance"/>
+            </do_if>
+
+            <do_if value="this.station.bboxdistanceto.{$_locenemy} le (if $stationfirerange? then $stationfirerange else this.station.maxcombatrange.all)">
+              <remove_value name="$_locenemy"/>
+              <abort_called_scripts resume="findenemies"/>
+            </do_if>
+            <do_else>
+              <remove_value name="$_locenemy"/>
+            </do_else>
+          </do_if>
+          <do_elseif value="event.object == this.station">
+            <!-- event.param == attacker, event.param3 == affected component -->
+            <!--<debug_text text="'event.param: ' + event.param + ', event.param3: ' + event.param3"/>-->
+            <do_if value="event.param3.parent == this.station">
+              <find_object_surface posname="$locbombpos" object="this.station" component="event.param3" height="10m">
+                <position object="event.param"/>
+              </find_object_surface>
+            </do_if>
+            <do_else>
+              <find_object_surface posname="$locbombpos" object="this.station" height="10m">
+                <position object="event.param"/>
+              </find_object_surface>
+            </do_else>
+            <do_if value="$locbombpos">
+              <do_if value="not this.$bombpositions?">
+                <create_list name="this.$bombpositions"/>
+              </do_if>
+              <append_to_list name="this.$bombpositions" exact="$locbombpos"/>
+              <do_if value="true" chance="$debugchance">
+                <create_position name="$locattackerpos" space="this.station" object="event.param"/>
+                <create_position name="$loccomponentpos" space="this.station" object="event.param3"/>
+                <debug_text text="'bomb explosion registered at %s rel to station.\n affected component: %s %s at %s.\n distance between attacker and bomb position: %sm.\n distance between component and bomb position: %sm\n number of uninvestigated positions: %s'.[$locbombpos, event.param3.knownname, event.param3, $loccomponentpos, $locattackerpos.distanceto.{$locbombpos}, $loccomponentpos.distanceto.{$locbombpos}, this.$bombpositions.count]"/>
+                <remove_value name="$locattackerpos"/>
+                <remove_value name="$loccomponentpos"/>
+              </do_if>
+              <signal_objects object="this.sector" param="'station_bombed'" param2="event.param" param3="this.station"/>
+            </do_if>
+            <remove_value name="$locbombpos"/>
+          </do_elseif>
+        </do_if>
+        <do_else>
+          <abort_called_scripts resume="findenemies"/>
+        </do_else>
+      </actions>
+    </handler>
+    <handler comment="Number of Modules Changed">
+      <conditions>
+        <check_any>
+          <check_all>
+            <event_build_finished object="this.station"/>
+            <check_value value="@event.param3.buildobject == this.station"/>
+          </check_all>
+          <event_object_destroyed group="$stationmodules"/>
+        </check_any>
+      </conditions>
+      <actions>
+        <add_to_group groupname="$stationmodules" list="this.station.modules.operational.list"/>
+        <debug_text text="'num modules updated. registered %s modules on %s %s %s'.[$stationmodules.count, this.station.idcode, this.station.knownname, this.station]" chance="$debugchance"/>
+
+        <set_value name="$num_launchtubes" exact="0"/>
+        <find_dockingbay name="$docks" object="this.station" checkoperational="true" multiple="true">
+          <match_dock size="tag.dock_s" storage="false"/>
+        </find_dockingbay>
+        <do_all exact="$docks.count" counter="$i">
+          <do_if value="$docks.{$i}.islaunchtube">
+            <set_value name="$num_launchtubes" exact="@$num_launchtubes + 1"/>
+          </do_if>
+        </do_all>
+        <do_if value="not $num_launchtubes">
+          <set_value name="$num_launchtubes" exact="$docks.count"/>
+        </do_if>
+        <remove_value name="$docks"/>
+
+        <debug_text text="'new module built. updating weapon modes.'" chance="$debugchance"/>
+        <include_interrupt_actions ref="GetActiveWeaponModes"/>
+      </actions>
+    </handler>
+    <handler>
+      <conditions>
+        <event_object_subordinate_added object="this.station"/>
+        <check_value value="event.param.isoperational"/>
+        <check_value value="event.param.isunit or (@event.param.defaultorder.id == 'Escort')"/>
+        <check_value value="not event.param.ismasstraffic"/>
+        <check_value value="event.param.order"/>
+        <check_value value="((@event.param.order.id != 'DockAndWait') and (@event.param.order.id != 'DockAt')) or (@event.param.order.$destination != this.station)"/>
+        <check_value value="((@event.param.defaultorder.id != 'DockAndWait') and (@event.param.defaultorder.id != 'DockAt')) or (@event.param.defaultorder.$destination != this.station)"/>
+      </conditions>
+      <actions>
+        <debug_text text="'Invalid subordinate assigned to station. Unit? %s, Ordered to Escort? %s'.[event.param.isunit, @event.param.defaultorder.id == 'Escort']" chance="$debugchance"/>
+        <do_if value="event.param.isoperational">
+          <create_order id="'DockAndWait'" object="event.param">
+            <param name="destination" value="this.station"/>
+          </create_order>
+        </do_if>
+      </actions>
+    </handler>
+    <handler comment="weaponmode changed">
+      <conditions>
+        <event_object_weaponmode_changed object="this.assignedcontrolled"/>
+      </conditions>
+      <actions>
+        <debug_text text="'event_object_weaponmode_changed %1, %2. updating weapon modes.'.[@event.param, @event.param2]" chance="$debugchance"/>
+        <!-- Update turret modes again -->
+        <include_interrupt_actions ref="GetActiveWeaponModes"/>
+
+        <abort_called_scripts resume="start"/>
+      </actions>
+    </handler>
+    <handler comment="Missile defense">
+      <conditions>
+        <event_object_incoming_missile object="this.assignedcontrolled"/>
+        <check_value value="this.assignedcontrolled.mayattack.{event.param3}" comment="check relation of station (not defense NPC)"/>
+        <check_value value="not @$incomingmissiles.indexof.{event.param2}" comment="Is not in the incomingmissiles group"/>
+        <check_value value="event.param2.isoperational"/>
+      </conditions>
+      <actions>
+        <do_if value="event.param2.isoperational">
+          <add_to_group groupname="$incomingmissiles" object="event.param2" comment="missile"/>
+          <do_if value="event.param2.isformationleader">
+            <do_for_each name="$locmissile" in ="event.param2.currentformationwingmen">
+              <add_to_group groupname="$incomingmissiles" object="$locmissile" comment="missile"/>
+            </do_for_each>
+          </do_if>
+
+          <do_if value="event.param3.canbeattacked">
+            <set_value name="$evaltarget" exact="event.param3" comment="missile source"/>
+            <include_interrupt_actions ref="SelectTargets_High"/>
+            <do_if value="@$resulttargets.count">
+              <add_to_group groupname="$attackers" group="$resulttargets"/>
+            </do_if>
+            <remove_value name="$resulttargets"/>
+            <remove_value name="$evaltarget"/>
+          </do_if>
+          <debug_text text="'Missile defense. new incoming missile: %s %s. attacker %s %s %s %s'.[@event.param2.knownname, event.param2, @event.param3.class, @event.param3.idcode, @event.param3.knownname, event.param3]" chance="$debugchance"/>
+          <abort_called_scripts resume="findenemies"/>
+        </do_if>
+      </actions>
+    </handler>
+  </interrupts>
+  <init>
+    <!-- Command on defense officer-->
+    <set_command command="command.attackenemies" />
+    <!-- Init values -->
+    <create_group groupname="$enemies" />
+    <create_group groupname="$attackers" />
+    <create_group groupname="$targets_capships"/>
+    <create_group groupname="$targets_fighters"/>
+    <create_group groupname="$incomingmissiles"/>
+    <create_group groupname="$nearbyships" />
+    <create_group groupname="$droppedcontainers"/>
+
+    <add_to_group groupname="$stationmodules" list="this.station.modules.operational.list"/>
+    <debug_text text="'init. registered %s modules on %s %s %s'.[$stationmodules.count, this.station.idcode, this.station.knownname, this.station]" chance="$debugchance"/>
+
+    <set_value name="$num_launchtubes" exact="0"/>
+    <find_dockingbay name="$docks" object="this.station" checkoperational="true" multiple="true">
+      <match_dock size="tag.dock_s" storage="false" walkable="false"/>
+    </find_dockingbay>
+    <do_all exact="$docks.count" counter="$i">
+      <do_if value="$docks.{$i}.islaunchtube">
+        <set_value name="$num_launchtubes" exact="@$num_launchtubes + 1"/>
+      </do_if>
+    </do_all>
+    <do_if value="not $num_launchtubes">
+      <set_value name="$num_launchtubes" exact="$docks.count"/>
+    </do_if>
+    <remove_value name="$docks"/>
+
+    <create_group groupname="$group_launcheddefencedrones"/>
+    <!-- hard cap. performance. -->
+    <set_value name="$maxlauncheddefencedrones" exact="100"/>
+    <!--<set_value name="$maxlauncheddefencedrones" exact="[this.assignedcontrolled.combinedskill, 30].max"/>-->
+
+    <debug_text text="'init. retrieving active weapon modes.'" chance="$debugchance"/>
+    <include_interrupt_actions ref="GetActiveWeaponModes"/>
+  </init>
+  <patch sinceversion="1">
+    <set_value name="$loccount" exact="0"/>
+    <do_all exact="this.station.subordinates.count" counter="$i">
+      <set_value name="$locsubordinate" exact="this.station.subordinates.{$i}"/>
+      <do_if value="$locsubordinate.isunit or ($locsubordinate.defaultorder.id == 'Escort')">
+        <do_if value="((@$locsubordinate.order.id != 'DockAndWait') and (@$locsubordinate.order.id != 'DockAt')) or (@$locsubordinate.order.$destination != this.station)">
+          <set_value name="$loccount" exact="$loccount + 1"/>
+          <create_order id="'DockAndWait'" object="$locsubordinate">
+            <param name="destination" value="this.station"/>
+          </create_order>
+        </do_if>
+      </do_if>
+      <remove_value name="$locsubordinate"/>
+    </do_all>
+    <debug_text text="'PATCH: %s invalid subordinates found around %s %s %s. ordered to dock.'.[$loccount, this.station.idcode, this.station.knownname, this.station]" chance="($loccount gt 0) * 100" filter="savegame"/>
+  </patch>
+  <patch sinceversion="2" early="true">
+    <clear_group group="$stationmodules"/>
+    <find_object_component groupname="$stationmodules" object="this.station" checkoperational="true" class="class.module" multiple="true"/>
+  </patch>
+  <patch sinceversion="3">
+    <do_if value="this.assignedcontrolled.units.{unitcategory.defence}.count gt this.assignedcontrolled.availableunits.{unitcategory.defence}.count">
+      <debug_text text="'station %s %s %s has %s defence drones currently deployed. ordering them to dock when done.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, this.assignedcontrolled.units.{unitcategory.defence}.count - this.assignedcontrolled.availableunits.{unitcategory.defence}.count]" filter="savegame"/>
+      <do_all exact="this.assignedcontrolled.subordinates.count" counter="$_i">
+        <set_value name="$locsub" exact="this.assignedcontrolled.subordinates.{$_i}"/>
+        <do_if value="$locsub.isunit and (not $locsub.defaultorder.exists or ($locsub.defaultorder.id != 'DockAndWait'))">
+          <debug_text text="'ordering %s %s %s with %s subordinates to dock when done.'.[@$locsub.idcode, @$locsub.knownname, $locsub, $locsub.subordinates.count]" chance="$debugchance" filter="savegame"/>
+          <create_order object="$locsub" id="'DockAndWait'" default="true">
+            <param name="destination" value="this.assignedcontrolled"/>
+            <param name="dockfollowers" value="true" />
+            <param name="debugchance" value="$debugchance"/>
+          </create_order>
+        </do_if>
+      </do_all>
+      <remove_value name="$locsub"/>
+    </do_if>
+  </patch>
+  <patch sinceversion="4">
+    <set_value name="$num_launchtubes" exact="0"/>
+    <find_dockingbay name="$docks" object="this.station" checkoperational="true" multiple="true">
+      <match_dock size="tag.dock_s" storage="false" walkable="false"/>
+    </find_dockingbay>
+    <do_all exact="$docks.count" counter="$i">
+      <do_if value="$docks.{$i}.islaunchtube">
+        <set_value name="$num_launchtubes" exact="@$num_launchtubes + 1"/>
+      </do_if>
+    </do_all>
+    <do_if value="not $num_launchtubes">
+      <set_value name="$num_launchtubes" exact="$docks.count"/>
+    </do_if>
+    <remove_value name="$docks"/>
+  </patch>
+  <patch sinceversion="5">
+    <set_value name="$locstation" exact="this.assignedcontrolled"/>
+    <set_value name="$locnum_deployedunits" exact="0"/>
+    <set_value name="$locnum_unavailableunits" exact="$locstation.units.{unitcategory.defence}.count - $locstation.availableunits.{unitcategory.defence}.count"/>
+    <do_all exact="$locstation.subordinates.count" counter="$_i">
+      <do_if value="$locstation.subordinates.{$_i}.isunit">
+        <set_value name="$locnum_deployedunits" exact="$locnum_deployedunits + 1"/>
+      </do_if>
+    </do_all>
+
+    <set_value name="$locnum_destroyedunits" exact="0"/>
+    <set_value name="$locnum_reassignedunits" exact="0"/>
+    <find_object_component name="$localldockedunits" object="$locstation" unit="true" recursive="true" multiple="true"/>
+    <do_all exact="$localldockedunits.count" counter="$_i" reverse="true">
+      <set_value name="$loccommander" exact="$localldockedunits.{$_i}.commander"/>
+      <do_if value="@$loccommander.isunit and (not $loccommander.commander or ($loccommander.commander == $locstation))">
+        <set_value name="$loccommander" exact="null"/>
+      </do_if>
+      <do_if value="not $loccommander.isoperational">
+        <do_if value="$locnum_unavailableunits gt $locnum_deployedunits">
+          <set_object_commander object="$localldockedunits.{$_i}" commander="$locstation"/>
+          <set_value name="$locnum_deployedunits" exact="$locnum_deployedunits + 1"/>
+          <set_value name="$locnum_reassignedunits" exact="$locnum_reassignedunits + 1"/>
+        </do_if>
+        <do_else>
+          <destroy_object object="$localldockedunits.{$_i}" explosion="false"/>
+          <set_value name="$locnum_destroyedunits" exact="$locnum_destroyedunits + 1"/>
+        </do_else>
+      </do_if>
+    </do_all>
+    <debug_text text="'PATCH: found %s docked units that have no commander.\n reassigned: %s\n destroyed: %s\n deployed: %s'.[$locnum_reassignedunits + $locnum_destroyedunits, $locnum_reassignedunits, $locnum_destroyedunits, $locnum_deployedunits]" filter="savegame" chance="(($locnum_destroyedunits gt 0) or ($locnum_reassignedunits gt 0)) * 100"/>
+
+    <set_value name="$locnum_collected" exact="0"/>
+    <set_value name="$locnum_destroyedunits" exact="0"/>
+    <do_all exact="$locstation.subordinates.count" counter="$_i" reverse="true">
+      <set_value name="$locsub" exact="$locstation.subordinates.{$_i}"/>
+      <do_if value="$locsub.isunit and $locsub.dock and (@$locsub.order.id == 'DockAndWait' or @$locsub.order.id == 'DockAt')">
+        <do_if value="$locstation.units.{unitcategory.defence}.count gt $locstation.availableunits.{unitcategory.defence}.count">
+          <collect_unit object="$locstation" unit="$locsub"/>
+          <set_value name="$locnum_collected" exact="$locnum_collected + 1"/>
+        </do_if>
+        <do_else>
+          <destroy_object object="$locsub" explosion="false"/>
+          <set_value name="$locnum_destroyedunits" exact="$locnum_destroyedunits + 1"/>
+        </do_else>
+      </do_if>
+    </do_all>
+    <debug_text text="'PATCH: %s %s %s found %s defence drones that were docked but uncollected.\n collected: %s\n destroyed: %s'.[@$locstation.idcode, @$locstation.knownname, $locstation, $locnum_collected + $locnum_destroyedunits, $locnum_collected, $locnum_destroyedunits]" filter="savegame" chance="($locnum_collected gt 0) * 100"/>
+
+    <remove_value name="$locnum_unavailableunits"/>
+    <remove_value name="$locnum_deployedunits"/>
+    <remove_value name="$locnum_reassignedunits"/>
+    <remove_value name="$locnum_destroyedunits"/>
+    <remove_value name="$loccommander"/>
+    <remove_value name="$localldockedunits"/>
+    <remove_value name="$locnum_collected"/>
+    <remove_value name="$locsub"/>
+    <remove_value name="$locstation"/>
+  </patch>
+  <patch sinceversion="6">
+    <set_value name="$weapons_all" exact="this.assignedcontrolled.turrets.operational.list"/>
+    <do_all exact="$weapons_all.count" counter="$_i">
+      <do_if value="$weapons_all.{$_i}.mode == weaponmode.defend">
+        <!-- change turrets previously set to defend to use attackcapital. no change in resulting behavior, but more explicit and enables us to use defend-mode turrets to only respond to attacks. -->
+        <set_weapon_mode weapon="$weapons_all.{$_i}" weaponmode="weaponmode.attackcapital"/>
+      </do_if>
+    </do_all>
+    <remove_value name="$weapons_all"/>
+
+    <include_interrupt_actions ref="GetActiveWeaponModes"/>
+    <create_group groupname="$targets_capships"/>
+    <create_group groupname="$targets_fighters"/>
+    <create_group groupname="$incomingmissiles"/>
+    <do_if value="@$missileturrettargets.count">
+      <add_to_group groupname="$targets_capital" group="$missileturrettargets"/>
+    </do_if>
+    <do_all exact="$enemies.count" counter="$_i">
+      <do_if value="@$enemies.{$_i}.iscapitalship">
+        <add_to_group groupname="$targets_capital" object="$enemies.{$_i}"/>
+      </do_if>
+      <do_elseif value="$enemies.{$_i}.isclass.ship">
+        <add_to_group groupname="$targets_fighters" object="$enemies.{$_i}"/>
+      </do_elseif>
+    </do_all>
+    <remove_value name="$missileturrettargets"/>
+  </patch>
+  <patch sinceversion="7">
+    <!--removed for version 15-->
+  </patch>
+  <patch sinceversion="8">
+    <set_value name="$locnum_unaccountedfor" exact="this.assignedcontrolled.units.{unitcategory.defence}.count - this.assignedcontrolled.availableunits.{unitcategory.defence}.count"/>
+    <do_for_each name="$locsub" in="this.assignedcontrolled.allsubordinates">
+      <do_if value="($locnum_unaccountedfor gt 0) and $locsub.isunit">
+        <set_value name="$locnum_unaccountedfor" exact="$locnum_unaccountedfor - 1"/>
+      </do_if>
+    </do_for_each>
+
+    <do_if value="$locnum_unaccountedfor">
+      <debug_text text="'%s %s %s has %s units unaccounted for.'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, $locnum_unaccountedfor]" filter="savegame"/>
+      <find_ship_by_true_owner name="$locunits" space="this.sector" faction="this.trueowner" unit="true" docked="false" multiple="true"/>
+      <do_for_each name="$locunit" in="$locunits">
+        <do_if value="$locnum_unaccountedfor gt 0">
+          <do_if value="($locunit.defaultorder != 'DockAndWait') and not $locunit.commander and (not $locunit.subordinates.count or ($locnum_unaccountedfor ge ($locunit.subordinates.count + 1)))">
+            <debug_text text="'ordering %s %s %s with %s subordinates to dock when done.'.[@$locunit.idcode, @$locunit.knownname, $locunit, $locunit.subordinates.count]" filter="savegame"/>
+            <set_object_commander object="$locunit" commander="this.assignedcontrolled"/>
+            <create_order object="$locunit" id="'DockAndWait'" default="true">
+              <param name="destination" value="this.assignedcontrolled"/>
+              <param name="dockfollowers" value="true" />
+              <param name="debugchance" value="$debugchance"/>
+            </create_order>
+            <set_value name="$locnum_unaccountedfor" exact="$locnum_unaccountedfor - 1"/>
+            <do_if value="$locunit.subordinates.count">
+              <set_value name="$locnum_unaccountedfor" exact="$locnum_unaccountedfor - $locunit.subordinates.count"/>
+            </do_if>
+          </do_if>
+        </do_if>
+        <do_else>
+          <break/>
+        </do_else>
+      </do_for_each>
+    </do_if>
+
+    <debug_text text="'%s %s %s still has %s units unaccounted for.'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, $locnum_unaccountedfor]" filter="savegame" chance="($locnum_unaccountedfor gt 0) * 100"/>
+    <remove_value name="$locnum_unaccountedfor"/>
+  </patch>
+  <patch sinceversion="9">
+    <!--removed for version 15-->
+  </patch>
+  <patch sinceversion="11">
+    <do_for_each name="$locenemy" in="$enemies">
+      <do_if value="$locenemy.isoperational and this.trueowner.relationto.{$locenemy.trueowner} gt -0.01">
+        <debug_text text="'PATCH: %s %s %s was attacking %s %s %s which belongs to a non-hostile faction. resetting relations and re-evaluating.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, @$locenemy.idcode, @$locenemy.knownname, $locenemy]" filter="savegame"/>
+        <reset_relation_boost object="this.assignedcontrolled" otherobject="$locenemy"/>
+        <set_value name="$locreset"/>
+      </do_if>
+    </do_for_each>
+    <do_if value="$locreset?">
+      <signal_objects object="this" param="'reset'"/>
+    </do_if>
+    <remove_value name="$locreset"/>
+  </patch>
+  <patch sinceversion="12">
+    <create_group groupname="$group_launcheddefencedrones"/>
+    <set_value name="$maxlauncheddefencedrones" exact="100"/>
+    <do_for_each name="$locsub" in="this.assignedcontrolled.allsubordinates">
+      <do_if value="$locsub.isoperational and $locsub.isunit and this.assignedcontrolled.hasunitdrone.{$locsub} and ($locsub.unitcategory == unitcategory.defence)">
+        <add_to_group groupname="$group_launcheddefencedrones" object="$locsub"/>
+      </do_if>
+    </do_for_each>
+  </patch>
+  <patch sinceversion="13">
+    <do_if value="this.$bombpositions and not this.$bombpositions.count">
+      <remove_value name="this.$bombpositions"/>
+    </do_if>
+  </patch>
+  <patch sinceversion="15">
+    <remove_value name="$table_ammousage"/>
+  </patch>
+  <patch sinceversion="16">
+    <do_if value="$enemies.count gt 0">
+      <set_value name="$hadenemies"/>
+    </do_if>
+  </patch>
+  <attention min="visible">
+    <actions>
+      <label name="start" />
+
+      <!-- Simulate the stand by -->
+      <set_command_action commandaction="commandaction.standingby" />
+
+      <!-- Forget hacker after 30 min (1800s) -->
+      <do_if value="this.$hackerfound?">
+        <do_if value="player.age gt (this.$hackerfound.{2} + 1800s)">
+          <remove_from_group group="this.$criminals" object="this.$hackerfound.{1}" />
+          <remove_value name="this.$hackerfound" />
+        </do_if>
+      </do_if>
+      <!-- Forget Scanner after 20 min (1200) -->
+      <do_if value="this.$scannerfound?">
+        <do_if value="player.age gt (this.$scannerfound.{2} + 1200s)">
+          <remove_from_group group="this.$criminals" object="this.$scannerfound.{1}" />
+          <remove_value name="this.$scannerfound" />
+        </do_if>
+      </do_if>
+
+      <!-- wait for attacks -->
+      <wait min="60s" max="120s"/>
+
+      <do_if value="not $turretmodes? or $turretmodes.count == 0">
+        <!-- make sure we update $turretmodes if something has changed our turret loadout or turrets got repaired without module destruction or build events (e.g. patch code) -->
+        <include_interrupt_actions ref="GetActiveWeaponModes"/>
+      </do_if>
+
+      <label name="findenemies"/>
+
+      <!--Occasionally prune the distress call table (this section can happen very often due to interrupts, so do it by chance)-->
+      <do_if value="$distresscalls?" chance="20">
+        <do_for_each name="$distresscallobj" valuename="$distresscalltime" in="$distresscalls" reverse="true">
+          <do_if value="player.age gt $distresscalltime + 10s">
+            <remove_value name="$distresscalls.{$distresscallobj}"/>
+          </do_if>
+        </do_for_each>
+        <do_if value="$distresscalls.keys.count == 0">
+          <remove_value name="$distresscalls"/>
+        </do_if>
+      </do_if>
+
+      <!-- If no enemies, update nearbyships -->
+      <do_if value="player.age gt @$nextnearbyscan and not $enemies.count and this.sector">
+        <clear_group group="$nearbyships"/>
+        <set_value name="$nextnearbyscan" exact="player.age + 5s"/>
+        <find_gravidar_contact groupname="$nearbyships" object="this.station" class="class.defensible" docked="false" functional="true" multiple="true">
+          <match_context macro="this.sector.macro"/>
+          <match_distance object="this.station" max="this.station.currentradarrange + this.station.size/2.0" />
+          <match maybeattackedby="this.assignedcontrolled" class="class.buildstorage" negate="true"/>
+        </find_gravidar_contact>
+      </do_if>
+
+      <!-- add attackers to enemies -->
+      <do_if value="$attackers.count" >
+        <debug_text text="'Station defence manager adds ' + $attackers.count + ' enemies from attackers ' + $enemies.count + ' enemies'" chance="$debugchance" />
+        <add_to_group groupname="$enemies" group="$attackers"/>
+      </do_if>
+
+      <!-- Internal list of enemies -->
+      <do_if value="@this.$enemies.count" >
+        <debug_text text="'Station defence manager adds ' + this.$enemies.count + ' enemies from watchdogs to group'" chance="$debugchance" />
+        <do_all exact="this.$enemies.count" counter="$i" reverse="true">
+          <do_if value="this.$enemies.{$i}.mayattack.{this.station}">
+            <add_to_group groupname="$enemies" object="this.$enemies.{$i}" />
+          </do_if>
+          <do_else>
+            <debug_text text="'this %1, is no enemy: %2'.[this.$enemies.{$i}, this.$enemies.{$i}.knownname]" chance="$debugchance" />
+            <remove_from_group group="this.$enemies" object="this.$enemies.{$i}"/>
+          </do_else>
+        </do_all>
+      </do_if>
+
+      <!-- new gravidar enemies-->
+      <do_if value="@$turretmodes and this.sector and (@$turretmodes.indexof.{weaponmode.attackenemies} or @$turretmodes.indexof.{weaponmode.attackcapital} or @$turretmodes.indexof.{weaponmode.attackfighters} or @$turretmodes.indexof.{weaponmode.prefercapital} or @$turretmodes.indexof.{weaponmode.preferfighters} or @$turretmodes.indexof.{weaponmode.prefermissiles})">
+        <do_if value="$tempenemies?">
+          <add_to_group groupname="$enemies" list="$tempenemies"/>
+        </do_if>
+        <do_else>
+          <find_gravidar_contact groupname="$enemies" object="this.station" class="class.defensible" docked="false" functional="true" multiple="true" append="true">
+            <match_context macro="this.sector.macro"/>
+            <match_any>
+              <match maybeattackedby="this.station" class="[class.ship_l,class.ship_xl]" comment="only select l/xl objects" />
+              <match>
+                <match_relation_of faction="this.station.owner" relation="kill" comment="if they factions are enemies, select that object too" />
+                <match class="class.ship_xs" negate="true" />
+              </match>
+            </match_any>
+            <match class="class.buildstorage" negate="true"/>
+          </find_gravidar_contact>
+        </do_else>
+        <do_for_each name="$locenemy" in="$enemies" reverse="true">
+          <do_if value="$locenemy.sector != this.sector">
+            <remove_from_group group="$enemies" object="$locenemy"/>
+          </do_if>
+        </do_for_each>
+        <debug_text text="'visible: %s %s %s found %s targets.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, $enemies.count]" chance="($enemies.count gt 0) * $debugchance"/>
+      </do_if>
+      <remove_value name="$tempenemies"/>
+
+      <do_if value="$enemies.count == 0">
+        <debug_text text="'no enemies detected'" chance="$debugchance"/>
+        <do_if value="$hadenemies?">
+          <remove_value name="$hadenemies"/>
+          <cease_fire object="this.station"/>
+        </do_if>
+        <resume label="start"/>
+      </do_if>
+
+      <label name="fight" />
+
+      <set_value name="$hadenemies"/>
+      <set_value name="$stationfirerange"  exact="this.station.maxcombatrange.all"/>
+      <set_value name="$droneengagementrange"  exact="$stationfirerange * (0.7f + ((@this.assignedcontrolled.combinedskill)f / 200.0f))"/>
+
+      <do_if value="$enemies.count" min="1">
+        <!-- Iterate in reverse and remove if neccesary -->
+        <do_all exact="$enemies.count" counter="$i" reverse="true">
+          <!-- Check objects distance and attack relation -->
+          <!-- Check if the object can be attacked and is in radar range -->
+          <do_if value="$enemies.{$i}.canbeattacked and not @$enemies.{$i}.dock and this.station.bboxdistanceto.{$enemies.{$i}} le $stationfirerange and this.station.mayattack.{$enemies.{$i}}">
+            <debug_text text="'shoot at ' + $enemies.{$i}.knownname + ' ('+ $enemies.{$i}.owner.knownname +', '+ $enemies.{$i} +')'" chance="$debugchance"/>
+            <!-- Within drone engagement range -->
+            <do_if value="this.station.bboxdistanceto.{$enemies.{$i}} le ($droneengagementrange)">
+              <add_to_group groupname="$dronetargets" object="$enemies.{$i}" />
+              <debug_text text="'%s %s %s acquired target. setting drones to attack %s %s %s.'.[this.object.idcode, this.object.knownname, this.object, @$dronetargets.{$dronetargets.count}.idcode, $dronetargets.{$dronetargets.count}.knownname, $dronetargets.{$dronetargets.count}]" chance="$debugchance"/>
+            </do_if>
+
+            <do_if value="@$enemies.{$i}.iscapitalship">
+              <add_to_group groupname="$targets_capships" object="$enemies.{$i}" />
+            </do_if>
+            <do_elseif value="$enemies.{$i}.isclass.ship">
+              <add_to_group groupname="$targets_fighters" object="$enemies.{$i}" />
+            </do_elseif>
+          </do_if>
+          <do_else>
+            <debug_text text="'%s %s %s not in range.'.[@$enemies.{$i}.idcode, @$enemies.{$i}.knownname, $enemies.{$i}]" chance="$debugchance"/>
+            <do_if value="$attackers.indexof.{$enemies.{$i}}">
+              <remove_from_group group="$attackers" object="$enemies.{$i}" />
+            </do_if>
+            <do_if value="$targets_capships.indexof.{$enemies.{$i}}">
+              <remove_from_group group="$targets_capships" object="$enemies.{$i}" />
+            </do_if>
+            <do_if value="$targets_fighters.indexof.{$enemies.{$i}}">
+              <remove_from_group group="$targets_fighters" object="$enemies.{$i}" />
+            </do_if>
+            <remove_from_group group="$enemies" object="$enemies.{$i}" />
+          </do_else>
+        </do_all>
+
+        <!-- Set the attack -->
+        <set_command_action commandaction="commandaction.attacking" />
+
+        <debug_text text="'num enemies: %s, num attackers: %s, num targets_capships: %s, num targets_fighters: %s, num incomingmissiles: %s'.[$enemies.count, $attackers.count, $targets_capships.count, $targets_fighters.count, $incomingmissiles.count]" chance="0"/>
+        <!-- NB: all hostile targets EXCEPT incoming missiles are in $enemies.
+              $attackers, $targets_capships, and $targets_fighters are subsets of $enemies.
+              $incomingmissiles is a separate set. -->
+        <!-- The default weapon mode for REGULAR turrets on station is 'attackenemies' -->
+        <do_if value="$enemies.count">
+          <do_if value="@$turretmodes.indexof.{weaponmode.attackenemies}">
+            <set_turret_targets object="this.assignedcontrolled" target="$enemies.list" weaponmode="weaponmode.attackenemies"/>
+          </do_if>
+          <do_if value="@$turretmodes.indexof.{weaponmode.prefercapital}">
+            <create_list name="$loctargets"/>
+            <append_list_elements name="$loctargets" group="$targets_capships"/>
+            <append_list_elements name="$loctargets" group="$incomingmissiles"/>
+            <append_list_elements name="$loctargets" group="$targets_fighters"/>
+            <set_turret_targets object="this.assignedcontrolled" target="$loctargets" weaponmode="weaponmode.prefercapital"/>
+            <remove_value name="$loctargets"/>
+          </do_if>
+          <do_if value="@$turretmodes.indexof.{weaponmode.preferfighters}">
+            <create_list name="$loctargets"/>
+            <append_list_elements name="$loctargets" group="$targets_fighters"/>
+            <append_list_elements name="$loctargets" group="$incomingmissiles"/>
+            <append_list_elements name="$loctargets" group="$targets_capships"/>
+            <set_turret_targets object="this.assignedcontrolled" target="$loctargets" weaponmode="weaponmode.prefercapital"/>
+            <remove_value name="$loctargets"/>
+          </do_if>
+          <do_if value="@$turretmodes.indexof.{weaponmode.prefermissiles}">
+            <create_list name="$loctargets"/>
+            <append_list_elements name="$loctargets" group="$incomingmissiles"/>
+            <append_list_elements name="$loctargets" group="$targets_fighters"/>
+            <append_list_elements name="$loctargets" group="$targets_capships"/>
+            <set_turret_targets object="this.assignedcontrolled" target="$loctargets" weaponmode="weaponmode.prefercapital"/>
+            <remove_value name="$loctargets"/>
+          </do_if>
+        </do_if>
+        <do_if value="@$turretmodes.indexof.{weaponmode.defend} and $attackers.count">
+          <set_turret_targets object="this.assignedcontrolled" target="$attackers.list" weaponmode="weaponmode.defend"/>
+        </do_if>
+        <!-- The default weapon mode for MISSILE turrets on station is 'attackcapital' -->
+        <do_if value="@$turretmodes.indexof.{weaponmode.attackcapital} and $targets_capships.count">
+          <set_turret_targets object="this.assignedcontrolled" target="$targets_capships.list" weaponmode="weaponmode.attackcapital"/>
+        </do_if>
+        <do_if value="@$turretmodes.indexof.{weaponmode.attackfighters} and $targets_fighters.count">
+          <set_turret_targets object="this.assignedcontrolled" target="$targets_fighters.list" weaponmode="weaponmode.attackfighters"/>
+        </do_if>
+        <do_if value="@$turretmodes.indexof.{weaponmode.missiledefence} and $incomingmissiles.count">
+          <set_turret_targets object="this.assignedcontrolled" target="$incomingmissiles.list" weaponmode="weaponmode.missiledefence"/>
+        </do_if>
+
+        <debug_text text="'%s %s %s should be launching drones right about now. checks:\ndrone count: %s\ndrone target count: %s'.[this.object.idcode, this.object.knownname, this.object, this.object.availableunits.{unitcategory.defence}.count, @$dronetargets.count]" chance="0"/>
+        <!-- Launch drones -->
+        <!-- check to make sure that the station has something to shoot at and something to shoot it with. 
+              wait until there are multiple targets within range so that drones don't dock after killing the first target. -->
+        <do_if value="this.object.availableunits.{unitcategory.defence}.count and ($group_launcheddefencedrones.count lt $maxlauncheddefencedrones) and (@$dronetargets.count or (player.ship.exists and @$dronetargets.indexof.{player.ship}))">
+          <set_value name="$combatskill" exact="@this.station.tradenpc.skill.management"/>
+          <!-- The better the crew, less time delay -->
+          <do_if value="player.age" min="@$lastdronelaunch + 500ms + ((1.0 - ($combatskill / 15.0)) * 60s)">
+            <set_value name="$lastdronelaunch" exact="player.age"/>
+            <!-- number of drones launched depends on control entity's combat skill. $maxnum_dronespersquad coming out to zero is VALID. -->
+            <set_value name="$maxnum_dronespersquad" exact="$num_launchtubes * [($combatskill / 15.0), 0.1].max"/>
+            <do_if value="$maxnum_dronespersquad ge 1">
+              <set_value name="$locnumdrones" min="([$maxnum_dronespersquad * 0.8, [$num_launchtubes, 3].min].max)i" max="([$maxnum_dronespersquad, [$num_launchtubes, 3].min].max)i"/>
+              <do_if value="($group_launcheddefencedrones.count + $locnumdrones) gt $maxlauncheddefencedrones">
+                <set_value name="$locnumdrones" exact="[$maxlauncheddefencedrones - $group_launcheddefencedrones.count, 0].max"/>
+              </do_if>
+              <do_if value="$locnumdrones gt 0">
+                <launch_drone name="$drone" object="this.object" exact="$locnumdrones" category="unitcategory.defence"/>
+                <do_if value="$drone">
+                  <!-- NB: $group_launcheddefencedrones should be self-maintaining. should not require handlers for drones being destroyed or docking. -->
+                  <add_to_group groupname="$group_launcheddefencedrones" object="$drone"/>
+                  <do_for_each name="$locsub" in="$drone.allsubordinates">
+                    <do_if value="$locsub.isoperational and $locsub.isunit and this.assignedcontrolled.hasunitdrone.{$locsub} and ($locsub.unitcategory == unitcategory.defence)">
+                      <add_to_group groupname="$group_launcheddefencedrones" object="$locsub"/>
+                    </do_if>
+                    <do_else>
+                      <debug_text text="'defence drone: %s %s %s, subordinate of %s %s %s, has invalid subordinate: %s %s %s\noperational: %s\nisunit: %s\nbelongs to station: %s\nunitcategory: %s'.[$drone.idcode, $drone.knownname, $drone, this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, $locsub.idcode, $locsub.knownname, $locsub, $locsub.isoperational, $locsub.isunit, this.assignedcontrolled.hasunitdrone.{$locsub}, $locsub.unitcategory]" filter="error"/>
+                    </do_else>
+                  </do_for_each>
+                  <debug_text text="player.age + ': launched %s drones. total num launched: %s, alt: %s'.[$locnumdrones, $group_launcheddefencedrones.count, this.assignedcontrolled.units.{unitcategory.defence}.count - this.assignedcontrolled.availableunits.{unitcategory.defence}.count]" chance="0"/>
+                  <do_if value="$group_launcheddefencedrones.count != (this.assignedcontrolled.units.{unitcategory.defence}.count - this.assignedcontrolled.availableunits.{unitcategory.defence}.count)">
+                    <debug_text text="'mismatch between tracked launched drones and available drone count.\ntracked: %s\nunavailable: %s'.[$group_launcheddefencedrones.count, this.assignedcontrolled.units.{unitcategory.defence}.count - this.assignedcontrolled.availableunits.{unitcategory.defence}.count]" filter="error"/>
+                  </do_if>
+                  <set_value name="$dronetarget" exact="$dronetargets.random"/>
+                  <debug_text text="'launching %s to %s defence drones to attack %s.\n%s drone targets acquired.\nnext shoal will be launched in %s seconds. manager combat skill: %s'.[([$maxnum_dronespersquad * 0.8, [$num_launchtubes, 3].min].max)i, ([$maxnum_dronespersquad, [$num_launchtubes, 3].min].max)i, $dronetarget.knownname, $dronetargets.count, (500ms + ((1.0 - ($combatskill / 15.0)) * 60s))s, $combatskill]" chance="$debugchance"/>
+                  <!-- Set them to our relation -->
+                  <do_if value="not $drone.mayattack.{$dronetarget} and not this.object.isplayerowned">
+                    <do_if value="$dronetarget.coverowner">
+                      <set_value name="$coveredtarget" exact="$dronetarget"/>
+                      <do_if value="not $dronetarget.isclass.object and $dronetarget.object">
+                        <set_value name="$coveredtarget" exact="$dronetarget.object"/>
+                      </do_if>
+                      <signal_objects object="$coveredtarget" param="'LoseCover'" param2="true"/>
+                      <remove_value name="$coveredtarget"/>
+                    </do_if>
+                    <set_relation_boost object="$drone" otherobject="$dronetarget" value="this.object.relationto.{$dronetarget}" silent="true" />
+                  </do_if>
+                  <!-- Attack order! -->
+                  <create_order object="$drone" id="'Attack'">
+                    <param name="primarytarget" value="$dronetarget" />
+                    <param name="secondarytargets" value="$dronetargets" />
+                    <param name="escort" value="this.object" />
+                    <param name="allowothertargets" value="true"/>
+                    <param name="pursuetargets" value="false"/>
+                    <param name="pursuedistance" value="this.station.maxradarrange" />
+                    <param name="internalorder" value="true"/>
+                    <param name="debugchance" value="$debugchance"/>
+                  </create_order>
+                  <!-- Dock order for after finishing -->
+                  <create_order object="$drone" id="'DockAndWait'" default="true">
+                    <param name="destination" value="this.assignedcontrolled"/>
+                    <param name="dockfollowers" value="true" />
+                    <param name="debugchance" value="$debugchance"/>
+                  </create_order>
+
+                  <remove_value name="$dronetarget" />
+                  <remove_value name="$drone" />
+                </do_if>
+                <do_else>
+                  <debug_text text="'%1 \n in %2, %3, %4 \n tried to launch drones but was unable to. \n %5 combat drones equipped.'.[this.station.knownname, this.station.zone.knownname, this.station.sector.knownname, this.station.cluster.knownname, this.station.availableunits.{unitcategory.defence}.count]" chance="$debugchance"/>
+                </do_else>
+              </do_if>
+              <remove_value name="$locnumdrones"/>
+            </do_if>
+          </do_if>
+          <!-- clear drone targets -->
+          <remove_value name="$dronetargets"/>
+        </do_if>
+      </do_if>
+      <do_else>
+        <cease_fire object="this.station"/>
+      </do_else>
+
+      <resume label="start" />
+    </actions>
+  </attention>
+  <attention min="unknown">
+    <actions>
+      <label name="start" />
+
+      <!-- Simulate the attack -->
+      <set_command_action commandaction="commandaction.attacking" />
+
+      <label name="findenemies"/>
+
+      <!--Occasionally prune the distress call table (this section can happen very often due to interrupts, so do it by chance)-->
+      <do_if value="$distresscalls?" chance="20">
+        <do_for_each name="$distresscallobj" valuename="$distresscalltime" in="$distresscalls" reverse="true">
+          <do_if value="player.age gt $distresscalltime + 10s">
+            <remove_value name="$distresscalls.{$distresscallobj}"/>
+          </do_if>
+        </do_for_each>
+        <do_if value="$distresscalls.keys.count == 0">
+          <remove_value name="$distresscalls"/>
+        </do_if>
+      </do_if>
+
+      <!-- add attackers to enemies -->
+      <do_if value="$attackers.count" >
+        <add_to_group groupname="$enemies" group="$attackers"/>
+        <debug_text text="'Station defence manager adds ' + $attackers.count + ' enemies from attackers. ' + $enemies.count + ' enemies'" chance="$debugchance" />
+      </do_if>
+
+      <!-- Internal list of enemies -->
+      <do_if value="@this.$enemies.count" >
+        <debug_text text="'Station defence manager adds ' + this.$enemies.count + ' enemies from watchdogs to group'" chance="$debugchance" />
+        <do_all exact="this.$enemies.count" counter="$i" reverse="true">
+          <do_if value="this.$enemies.{$i}.mayattack.{this.station}">
+            <add_to_group groupname="$enemies" object="this.$enemies.{$i}" />
+          </do_if>
+          <do_else>
+            <debug_text text="'this %1, is no enemy: %2'.[this.$enemies.{$i}, this.$enemies.{$i}.knownname]" chance="$debugchance" />
+            <remove_from_group group="this.$enemies" object="this.$enemies.{$i}"/>
+          </do_else>
+        </do_all>
+      </do_if>
+
+      <!-- new gravidar enemies-->
+      <do_if value="@$turretmodes and this.sector and (@$turretmodes.indexof.{weaponmode.attackenemies} or @$turretmodes.indexof.{weaponmode.attackcapital} or @$turretmodes.indexof.{weaponmode.attackfighters} or @$turretmodes.indexof.{weaponmode.prefercapital} or @$turretmodes.indexof.{weaponmode.preferfighters} or @$turretmodes.indexof.{weaponmode.prefermissiles})">
+        <do_for_each name="$locenemy" in="$enemies" reverse="true">
+          <do_if value="$locenemy.sector != this.sector">
+            <remove_from_group group="$enemies" object="$locenemy"/>
+          </do_if>
+        </do_for_each>
+
+        <do_if value="$tempenemies?">
+          <add_to_group groupname="$enemies" list="$tempenemies"/>
+        </do_if>
+        <do_else>
+          <find_gravidar_contact groupname="$enemies" object="this.station" class="class.defensible" docked="false" functional="true" multiple="true" append="true">
+            <match_context macro="this.sector.macro"/>
+            <match_any>
+              <match maybeattackedby="this.station" class="[class.ship_l,class.ship_xl]" comment="only select l/xl objects" />
+              <match>
+                <match_relation_of faction="this.station.owner" relation="kill" comment="if they factions are enemies, select that object too" />
+                <match class="class.ship_xs" negate="true" />
+              </match>
+            </match_any>
+            <match class="class.buildstorage" negate="true"/>
+          </find_gravidar_contact>
+        </do_else>
+        <do_if value="true" chance="$debugchance">
+          <debug_text text="'unknown: %s %s %s found %s targets.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, $enemies.count]"/>
+          <do_for_each name="$loccontact" in="$enemies">
+            <debug_text text="'%s %s %s %s'.[$loccontact.class, @$loccontact.idcode, @$loccontact.knownname, $loccontact]"/>
+          </do_for_each>
+        </do_if>
+      </do_if>
+      <remove_value name="$tempenemies"/>
+
+      <do_if value="$enemies.count == 0">
+        <debug_text text="'no enemies detected'" chance="$debugchance"/>
+        <do_if value="$hadenemies?">
+          <remove_value name="$hadenemies"/>
+          <cease_fire object="this.station"/>
+        </do_if>
+        <wait min="10s" max="20s" sinceversion="16"/>
+        <resume label="start"/>
+      </do_if>
+
+      <label name="fight" />
+
+      <set_value name="$hadenemies"/>
+      <set_value name="$attacktime" exact="player.age + 1min" />
+
+      <set_value name="$waittime" exact="1s" />
+      <!-- Attack while there are enemies.  -->
+      <do_if value="$enemies.count">
+        <set_turret_targets object="this.station"/>
+      </do_if>
+      <do_while value="$enemies.count" >
+        <set_value name="$target" exact="$enemies.random"/>
+        <do_if value="$target.canbeattacked">
+          <do_if value="not @$MaxEnemies">
+            <set_value name="$waittime" min="1s" max="5s"/>
+            <!--The maximum amount of enemies to be hit in this volley, based on the number of operational turrets-->
+            <set_value name="$MaxEnemies" exact="[this.assignedcontrolled.turrets.operational.count, $enemies.count, [this.assignedcontrolled.combinedskill / 5, 3].max].min"/>
+            <do_if value="true" chance="10">
+              <set_value name="$MaxEnemies" min="1" max="$MaxEnemies"/>
+            </do_if>
+          </do_if>
+
+          <!-- If is enemy and is in range -->
+          <do_if value="not $stationfirerange?">
+            <set_value name="$stationfirerange" exact="this.station.maxcombatrange.all" />
+          </do_if>
+          <do_if value="not @$target.dock and not $target.zone.isclass.highway and (this.station.bboxdistanceto.{$target} le $stationfirerange) and this.station.mayattack.{$target}">
+            <!-- exclude the player ship in OOS case, this scenario wouldn't make any sense anyway -->
+            <do_if value="$target != player.ship">
+              <!-- Get and apply strengths-->
+              <get_attackstrength object="this.assignedcontrolled" target="$target" usedrones="true" useforwardweapons="false">
+                <result hullshield="$result_hullshield" hullonly="$result_hullonly" shieldonly="$result_shieldonly" hullnoshield="$result_hullnoshield"/>
+                <missileresult ammo="$spentammotable" hullshield="$result_missilehullshield" hullonly="$result_missilehullonly" shieldonly="$result_missileshieldonly" hullnoshield="$result_missilehullnoshield"/>
+              </get_attackstrength>
+
+              <!--Check if a guided missile was fired. If so, attempt to launch a countermeasure from the target-->
+              <set_value name="$guidedmissilelaunched" exact="false"/>
+              <do_for_each name="$missilemacro" valuename="$missileamount" in="$spentammotable">
+                <do_if value="not $guidedmissilelaunched and $missilemacro.isguided">
+                  <set_value name="$guidedmissilelaunched" exact="true"/>
+                </do_if>
+                <remove_ammo object="this.assignedcontrolled" macro="$missilemacro" amount="$missileamount"/>
+              </do_for_each>
+              <do_if value="$guidedmissilelaunched and $target.isclass.defensible">
+                <launch_countermeasures object="$target" virtual="true"/>
+              </do_if>
+              <remove_value name="$guidedmissilelaunched"/>
+              <remove_value name="$spentammotable"/>
+
+              <do_if value="not @$module.isoperational or not $enemies.indexof.{$module.defensible}">
+                <set_value name="$module" exact="null"/>
+                <do_if value="$target.isclass.defensible and $target.modules.all.count" comment="checking .modules first is an optimisation">
+                  <find_object_component name="$module" class="class.module" object="$target" sortbydistanceto="this.assignedcontrolled">
+                    <match state="componentstate.wreck" negate="true"/>
+                  </find_object_component>
+                </do_if>
+              </do_if>
+              <!-- Apply the regular dps attack strength, multiplied by time -->
+              <apply_attackstrength object="$target" attacker="this.assignedcontrolled" hullshield="$result_hullshield * ($waittime)f" hullonly="$result_hullonly * ($waittime)f" shieldonly="$result_shieldonly * ($waittime)f" hullnoshield="$result_hullnoshield * ($waittime)f" module="@$module">
+                <result killed="$isdead" module="$module"/>
+              </apply_attackstrength>
+              <debug_text text="'%s OOS. Apply strength of %s against %s %s is:\n hullshield: %s\n hull only: %s\n shield only: %s\n hullnoshield: %s\n target status: (%s|%s).\n Is killed: %s\n waittime: %ss'.[player.age, this.station.knownname, $target.knownname, $target, $result_hullshield * ($waittime)f, $result_hullonly * ($waittime)f, $result_shieldonly * ($waittime)f, $result_hullnoshield * ($waittime)f, $target.hull, $target.shield, $isdead, $waittime]" chance="$debugchance" />
+              <do_if value="$result_missilehullshield? and not $isdead">
+                <!-- Apply the missile explosive damage, not multiplied by time -->
+                <apply_attackstrength object="$target" attacker="this.assignedcontrolled" explosion="true" hullshield="$result_missilehullshield" hullonly="$result_missilehullonly" shieldonly="$result_missileshieldonly" hullnoshield="$result_missilehullnoshield" module="if @$module.defensible == $target then $module else null">
+                  <result killed="$isdead" module="$module"/>
+                </apply_attackstrength>
+                <debug_text text="'%1 OOS. Apply explosive damage of %2 against %3 is: %4(%5|%6). Is killed: %7'.[player.age,this.assignedcontrolled.knownname,$target.knownname,$result_missilehullshield+$result_missilehullonly+$result_missileshieldonly+$result_missilehullnoshield,$target.hull,$target.shield,$isdead]" chance="$debugchance" />
+              </do_if>
+              <!--Wait so that attack/killed events are processed-->
+              <wait exact="1ms" />
+            </do_if>
+          </do_if>
+          <do_else>
+            <!-- Remove from enemy list -->
+            <remove_from_group group="$enemies" object="$target" />
+            <do_if value="$attackers.indexof.{$target}">
+              <remove_from_group group="$attackers" object="$target" />
+            </do_if>
+          </do_else>
+        </do_if>
+
+        <do_if value="@$MaxEnemies gt 0">
+          <set_value name="$MaxEnemies" operation="subtract"/>
+        </do_if>
+        <do_if value="not @$MaxEnemies">
+          <!-- Search/Attacking waiting time -->
+          <wait exact="$waittime"/>
+        </do_if>
+        <!-- Avoid an infite loop-->
+        <do_if value="player.age" min="$attacktime">
+          <debug_text text="' unknown. break attack loop because attacktime is more than ' + $attacktime" chance="$debugchance" />
+          <break/>
+        </do_if>
+        <do_if value="$attackers.count">
+          <add_to_group groupname="$enemies" group="$attackers"/>
+          <debug_text text="'Station defence manager adds ' + $attackers.count + ' enemies from attackers ' + $enemies.count + ' enemies'" chance="$debugchance" />
+        </do_if>
+      </do_while>
+      <remove_value name="$stationfirerange"/>
+
+      <do_if value="$enemies.count" exact="0">
+        <!-- Simulate the stand by -->
+        <set_command_action commandaction="commandaction.standingby" />
+        <remove_value name="$hadenemies"/>
+        <cease_fire object="this.station"/>
+      </do_if>
+
+      <!-- Wait for enemies-->
+      <wait min="10s" max="20s"/>
+
+      <do_if value="not $turretmodes? or $turretmodes.count == 0">
+        <!-- make sure we update $turretmodes if something has changed our turret loadout or turrets got repaired without module destruction or build events (e.g. patch code) -->
+        <include_interrupt_actions ref="GetActiveWeaponModes"/>
+      </do_if>
+
+      <!-- If no enemies, update nearbyships -->
+      <do_if value="player.age gt @$nextnearbyscan and not $enemies.count and this.sector">
+        <clear_group group="$nearbyships"/>
+        <set_value name="$nextnearbyscan" exact="player.age + 5s"/>
+        <find_gravidar_contact groupname="$nearbyships" object="this.station" class="class.defensible" docked="false" functional="true" multiple="true">
+          <match_context macro="this.sector.macro"/>
+          <match_distance object="this.station" max="this.station.currentradarrange + this.station.size/2.0" />
+          <match maybeattackedby="this.assignedcontrolled" class="class.buildstorage" negate="true"/>
+        </find_gravidar_contact>
+      </do_if>
+
+      <!-- Forget hacker after 30 min (1800s) -->
+      <do_if value="this.$hackerfound?">
+        <do_if value="player.age gt (this.$hackerfound.{2} + 1800s)">
+          <remove_from_group group="this.$criminals" object="this.$hackerfound.{1}" />
+          <remove_value name="this.$hackerfound" />
+        </do_if>
+      </do_if>
+      <!-- Forget Scanner after 20 min (1200) -->
+      <do_if value="this.$scannerfound?">
+        <do_if value="player.age gt (this.$scannerfound.{2} + 1200s)">
+          <remove_from_group group="this.$criminals" object="this.$scannerfound.{1}" />
+          <remove_value name="this.$scannerfound" />
+        </do_if>
+      </do_if>
+
+      <resume label="start" />
+
+    </actions>
+  </attention>
+  <on_abort killed="true">
+    <!--Cleanup any ammo trades-->
+    <do_if value="this.container.isoperational">
+      <find_buy_offer result="$ammotrades" buyer="this.container" unbundle="true" multiple="true"/>
+      <do_all exact="$ammotrades.count" counter="$i">
+        <debug_text text="'Removing ammo trade ' + $ammotrades.{$i}"/>
+        <remove_trade_offer object="this.container" tradeoffer="$ammotrades.{$i}"/>
+      </do_all>
+    </do_if>
+  </on_abort>
+</aiscript>

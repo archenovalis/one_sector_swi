@@ -1,0 +1,994 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<aiscript name="masstraffic.watchdog" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd">
+  <!--
+
+  "Watchdog" Mass Traffic Agent Script
+  by Matthias
+
+  -->
+  <params>
+    <param name="target" />
+    <param name="debugchance" default="0"/>
+  </params>
+  <interrupts>
+    <handler ref="MassTrafficAttackHandler" />
+    <handler ref="TargetInvalidHandler" />
+    <handler comment="Homebase destroyed">
+      <conditions>
+        <!-- $homebase is set in init unless it's already non-operational at the start of the script in which case  -->
+        <event_object_destroyed object="$homebase" check="false"/>
+      </conditions>
+      <actions>
+        <abort_called_scripts resume="postend"/>
+      </actions>
+    </handler>
+    <handler comment="Failed Hack detected">
+      <conditions>
+        <event_object_signalled object="this.ship" param="'patrol'" comment="param2 = position to patrol"/>
+      </conditions>
+      <actions>
+        <set_value name="$pos" exact="event.param2" />
+        <debug_text text="'station inform that a hack has been detected: go to patrol at position %1'.[event.param2]" chance="$debugchance" />
+
+        <set_value name="$patrolwaittime" min="30s" max="50s" />
+        <abort_called_scripts resume="patrol" />
+      </actions>
+    </handler>
+  </interrupts>
+  <init>
+    <set_command command="command.police" />
+
+    <do_if value="@this.ship.commander.isoperational">
+      <!-- Init values -->
+      <set_value name="$homebase" exact="this.ship.commander" />
+    </do_if>
+    <do_else>
+      <set_value name="$homebase" exact="null"/>
+      <set_value name="$endimmediately"/>
+    </do_else>
+
+    <do_if value="@$homebase.defencenpc.exists">
+      <add_to_group groupname="$homebase.defencenpc.$watchdogs" object="this.ship"/>
+    </do_if>
+
+    <set_value name="$seekrange" exact="300m" />
+    <set_value name="$abortseekrange" exact="1800m" />
+    <set_value name="$observerange" exact="160m" />
+    <set_value name="$noviewaborttime" exact="15s" />
+    <set_value name="$viewaborttime" exact="25s" />
+    <set_value name="$patrolwaittime" min="10s" max="40s" />
+  </init>
+  <attention min="nearby">
+    <actions>
+      <do_if value="$endimmediately?">
+        <resume label="end"/>
+      </do_if>
+
+      <debug_text text="'Watchdog ' + this.ship + ' script started (nearby)'" chance="$debugchance" />
+
+      <label name="start" />
+
+      <set_command command="command.wait" />
+      <set_object_active object="this.ship" activate="false" />
+
+      <wait exact="$patrolwaittime" >
+        <interrupt>
+          <conditions>
+            <event_object_collided object="this.ship" comment="wake up on a collision" />
+            <check_value value="event.param.owner != this.ship.owner" />
+            <check_value value="event.param.size le 200m" />
+          </conditions>
+          <actions>
+            <debug_text text="'Detected collision with ' + event.param.knownname" chance="$debugchance" />
+            <set_value name="$target" exact="event.param" />
+            <resume label="scancargo" />
+          </actions>
+        </interrupt>
+      </wait>
+      <set_value name="$patrolwaittime" min="10s" max="40s" />
+
+      <resume label="startpatrol" chance="5" />
+      <resume label="startscan" chance="45" />
+      <resume label="start" />
+
+      <!-- Start patrol: set a position to fly -->
+      <label name="startpatrol" />
+
+      <debug_text text="'Watchdog ' + this.ship + ' starting patrol'" chance="$debugchance" />
+
+      <find_closest_station_part refobject="this.ship" station="$homebase" name="$stationpart" />
+      <create_random_position_in_boundingbox component="$stationpart" name="$pos" />
+      <create_position name="$pos" object="$stationpart" space="this.zone" value="$pos" comment="transform to zone coordinates" />
+
+      <!-- Patrol: fly to a position and detect targets -->
+      <label name="patrol" />
+
+      <do_if value="not $startpatroltime?">
+        <wait min="1s" max="4s"  />
+        <set_value name="$startpatroltime" exact="player.age" />
+      </do_if>
+
+      <create_position name="$pos" value="$pos" max="500m" />
+
+      <move_to object="this.ship" destination="this.zone" flightbehaviour="flightbehaviour.closetoobject" forcesteering="true"  >
+        <position value="$pos" />
+        <interrupt>
+          <conditions>
+            <event_gravidar_has_scanned object="this.ship" />
+            <check_value value="this.sector"/>
+          </conditions>
+          <actions>
+
+            <find_gravidar_contact name="$targets" object="this.ship" class="class.defensible" docked="false" functional="true" multiple="true">
+              <match_context macro="this.sector.macro"/>
+              <match_is_in_view_of object="this.ship" vertical="90deg" horizontal="120deg" />
+              <match_distance object="this.ship" max="1000m"/>
+            </find_gravidar_contact>
+
+            <!-- For the found objects, check if is enemy, suspicious or illegal -->
+            <do_all exact="$targets.count" counter="$i">
+              <do_if value="($targets.{$i}.sector != this.sector) or not this.assignedcontrolled.cansee.{$targets.{$i}}">
+                <continue/>
+              </do_if>
+              <do_if value="$targets.{$i}.hasrelation.kill.{$homebase} or $targets.{$i}.hasrelation.kill.{this.ship} or $targets.{$i}.suspicious">
+                <set_value name="$target" exact="$targets.{$i}" />
+                <resume label="scancargo" />
+              </do_if>
+              <do_elseif value="@$homebase.defencenpc.$criminals.indexof.{$targets.{$i}}">
+                <set_value name="$target" exact="$targets.{$i}" />
+                <resume label="scancargo" />
+              </do_elseif>
+            </do_all>
+          </actions>
+        </interrupt>
+      </move_to>
+
+      <!-- Break the loop after some time -->
+      <do_if value="player.age gt @$startpatroltime + $patrolwaittime">
+        <remove_value name="$startpatroltime" />
+        <resume label="returntomasstraffic" />
+      </do_if>
+
+      <resume label="patrol" />
+
+      <!-- Observe the target for a while (possible illegal activity). Give some time to hide -->
+      <label name="startobserve" />
+
+      <!-- Safety check -->
+      <do_if value="not $target.isoperational or $target.assigneddock">
+        <resume label="returntomasstraffic" />
+      </do_if>
+
+      <set_value name="$lastscantime" exact="player.age"/>
+
+      <start_observation object="this.ship" target="$target" range="$observerange" />
+      <move_to object="this.ship" destination="$target" flightbehaviour="flightbehaviour.observe" forcesteering="true">
+        <interrupt_after_time time="1s" />
+      </move_to>
+      <set_value name="$lastviewtime" exact="player.age" />
+
+      <!-- observe illegal stuff -->
+      <set_value name="$initscanpos" exact="$target.position" />
+      <do_while value="@$observeillegal">
+        <!-- Target not operational -->
+        <do_if value="not $target.isoperational or $target.assigneddock">
+          <stop_observation object="this.ship" target="$target" />
+          <resume label="returntomasstraffic" />
+        </do_if>
+        <!-- Wait the drops -->
+        <wait min="0.5s" max="0.75s"  >
+          <interrupt>
+            <conditions>
+              <event_object_dropped_objects object="$target" />
+            </conditions>
+            <actions>
+              <!-- Illegal cargo dropped -->
+              <do_if value="@event.param.count gt 0">
+                <do_all exact="event.param.count" counter="$i">
+                  <debug_text text="'item: ' + event.param.{$i}.knownname" />
+                  <do_if value="@event.param.{$i}.wares.illegalto.{$homebase.zone.policefaction}">
+                    <debug_text text="'destroy illegal items: ' + event.param.{$i}" chance="$debugchance"  />
+                    <add_to_group groupname="$illegalcargo" object="event.param.{$i}" />
+                  </do_if>
+                </do_all>
+              </do_if>
+            </actions>
+          </interrupt>
+        </wait>
+
+        <!-- Special case to destroy illegal cargo -->
+        <do_if value="$illegalcargo?">
+          <wait min="1s" max="3s"  />
+          <!-- Destroy the illegal cargo -->
+          <do_if value="$illegalcargo.count">
+            <!-- Shoot the illegal cargo -->
+            <shoot_at object="this.ship" additional_targets="$illegalcargo.list" target="$illegalcargo.{1}" />
+            <move_to object="this.ship" destination="$illegalcargo.{1}" flightbehaviour="flightbehaviour.observe" >
+              <interrupt>
+                <conditions>
+                  <check_any>
+                    <event_object_destroyed group="$illegalcargo" />
+                  </check_any>
+                </conditions>
+              </interrupt>
+              <interrupt_after_time time="2min" />
+            </move_to>
+          </do_if>
+          <do_else>
+            <remove_value name="$illegalcargo" />
+          </do_else>
+          <set_value name="$lastviewtime" exact="player.age" />
+
+          <!-- Continue observing -->
+          <move_to object="this.ship" destination="$target" flightbehaviour="flightbehaviour.observe" forcesteering="true" >
+            <interrupt_after_time time="0s" />
+          </move_to>
+        </do_if>
+        <do_else>
+          <!-- Re scan illegal cargo -->
+          <set_value name="$observeillegal" exact="false"/>
+          <set_value name="$observeillegal" exact="@$target.pilot.inventory.illegalto.{$homebase.zone.policefaction} or @$target.cargo.illegalto.{$homebase.zone.policefaction}" chance="100 - @$target.hidecargochance"/>
+        </do_else>
+
+        <!-- Reaction -->
+        <do_if value="$observeillegal">
+          <!-- raise alarm -->
+          <do_if value="($target.distanceto.{$initscanpos} gt 500m) or (player.age gt $lastviewtime + $viewaborttime)">
+            <stop_observation object="this.ship" target="$target" />
+            <remove_value name="$observeillegal" />
+            <remove_value name="$initscanpos" />
+            <resume label="raisealarm" />
+          </do_if>
+        </do_if>
+        <do_else>
+          <!-- everything is clear -->
+          <do_if value="$target" exact="player.occupiedship">
+            <run_script name="'player.interaction'">
+              <param name="Line" value="11204" comment="(ship scan result - nothing found)"/>
+              <param name="MaxQueueDelay" value="10s"/>
+              <param name="caption" value="{1015, 264} + ' - ' + {1016,6}.[this.assignedcontrolled.knownname, this.assignedcontrolled.idcode]" comment="Inspected by police"/>
+              <param name="interactive" value="false"/>
+              <param name="debugchance" value="$debugchance"/>
+            </run_script>
+          </do_if>
+          <stop_observation object="this.ship" target="$target" />
+          <remove_value name="$observeillegal" />
+          <remove_value name="$initscanpos" />
+          <resume label="returntomasstraffic" />
+        </do_else>
+      </do_while>
+
+      <!-- Standar observe behaviour -->
+      <label name="observe" />
+
+      <do_while value="true">
+        <set_object_active object="this.ship" activate="true" />
+
+        <wait min="0.5s" max="0.75s" />
+
+        <!-- Target not operational -->
+        <do_if value="not $target.isoperational or $target.assigneddock">
+          <stop_observation object="this.ship" target="$target" />
+          <set_object_active object="this.ship" activate="false" />
+          <resume label="returntomasstraffic" />
+        </do_if>
+
+        <do_if value="$target.distanceto.{this.ship}" min="$abortseekrange">
+          <debug_text text="'Watchdog ' + this.ship + ' lost target it was observing (distance check), return to mass traffic'" chance="$debugchance" />
+          <stop_observation object="this.ship" target="$target" />
+          <set_object_active object="this.ship" activate="false" />
+          <!-- Call more police ships -->
+          <signal_objects object="$homebase.defencenpc.$watchdogs.random" param="'patrol'" param2="$target.position" />
+          <resume label="startpatrol" />
+        </do_if>
+
+        <set_value name="$hadview" exact="@$hasview" />
+        <check_line_of_sight object="this.ship" target="$target" name="$hasview" />
+
+        <!-- Target has been seen -->
+        <do_if value="$hasview">
+          <set_value name="$lastviewtime" exact="player.age" />
+          <do_if value="player.age gt $lastscantime + $viewaborttime">
+            <stop_observation object="this.ship" target="$target" />
+            <set_object_active object="this.ship" activate="false" />
+            <resume label="raisealarm" />
+          </do_if>
+          <do_elseif value="not $hadview">
+            <move_to object="this.ship" destination="$target" flightbehaviour="flightbehaviour.observe" forcesteering="true">
+              <interrupt_after_time time="0s" />
+            </move_to>
+          </do_elseif>
+        </do_if>
+        <!-- Target lost -->
+        <do_else>
+          <do_if value="player.age gt $lastviewtime + $noviewaborttime">
+            <debug_text text="'Watchdog ' + this.ship + ' lost target it was observing (line of sight check), return to mass traffic'" chance="$debugchance" />
+            <stop_observation object="this.ship" target="$target" />
+            <set_object_active object="this.ship" activate="false" />
+            <!-- Call more police ships -->
+            <signal_objects object="$homebase.defencenpc.$watchdogs.random" param="'patrol'" param2="$target.position" />
+            <resume label="startpatrol" />
+          </do_if>
+          <do_elseif value="$hadview">
+            <move_to object="this.ship" destination="$target.zone" flightbehaviour="flightbehaviour.observe" forcesteering="true">
+              <position value="$target.position" />
+              <interrupt_after_time time="0s" />
+            </move_to>
+          </do_elseif>
+        </do_else>
+      </do_while>
+
+      <!-- Find ships and set a valid target -->
+      <label name="startscan" />
+
+      <set_command command="command.scan" />
+      <debug_text text="'Watchdog ' + this.ship + ' starting to scan'" chance="$debugchance" />
+
+      <!-- Find ships nearby -->
+      <find_ship name="$surroundingships" space="this.ship.zone" multiple="true" >
+        <match_size max="200m" />
+        <match_is_in_view_of object="this.ship" vertical="90deg" horizontal="120deg" />
+        <match_distance object="this.ship" max="1000m" />
+        <match owner="this.ship.owner" negate="true" />
+      </find_ship>
+
+      <do_if value="$surroundingships.count" >
+        <debug_text text="'Watchdog ' + this.ship + ' found '+ $surroundingships.count + ' surrounding ships.'" chance="$debugchance" />
+        <set_value name="$target" exact="null" />
+
+        <do_all exact="$surroundingships.count" counter="$i">
+          <do_if value="not @$scannedships.indexof.{$surroundingships.{$i}}">
+            <set_value name="$target" exact="$surroundingships.{$i}" />
+            <!-- Set selection if is enemy or suspicious. Otherwise is unknown, so scan it -->
+            <do_if value="$target.suspicious or $target.hasrelation.kill.{$homebase} or $target.hasrelation.kill.{this.ship}">
+              <break />
+            </do_if>
+            <!-- Set selection if target is player ship (with a small chance) -->
+            <do_if value="$target == player.occupiedship" chance="20">
+              <break />
+            </do_if>
+          </do_if>
+        </do_all>
+
+        <!-- Move to the target -->
+        <do_if value="$target.isoperational and not $target.assigneddock">
+          <add_to_group groupname="$scannedships" object="$target" />
+          <resume label="scancargo" />
+        </do_if>
+      </do_if>
+
+      <debug_text text="'Watchdog ' + this.ship + ' found nothing to scan'" chance="$debugchance" />
+      <wait min="2s" max="5s" />
+
+      <resume label="returntomasstraffic" />
+
+      <!-- Scan Cargo: observe some seconds and react to -->
+      <label name="scancargo" />
+
+      <!-- Safety check -->
+      <do_if value="not $target.isoperational or $target.assigneddock">
+        <resume label="returntomasstraffic" />
+      </do_if>
+
+      <!-- Scan effect -->
+      <set_object_active object="this.ship" activate="true" />
+
+      <debug_text text="'Watchdog ' + this.ship + ' moving to scan '+ $target.knownname + ' ('+ $target +')'" chance="$debugchance" />
+      <move_to object="this.ship" destination="$target" flightbehaviour="flightbehaviour.generic" finishonapproach="true" forcesteering="true"  />
+
+      <!-- Safety check -->
+      <do_if value="not $target.isoperational or $target.assigneddock">
+        <resume label="returntomasstraffic" />
+      </do_if>
+
+      <!-- notify that is going to scan -->
+      <do_if value="$target" exact="player.occupiedship">
+        <do_if value="not $target.hasrelation.enemy.{$homebase}">
+          <do_if value="@$target.pilot.inventory.illegalto.{$homebase.zone.policefaction}">
+            <set_value name="$speakline" exact="11203" comment="(ship scan warning - inventory)Please halt. We will be scanning your inventory."/>
+          </do_if>
+          <do_else>
+            <set_value name="$speakline" exact="11202" comment="(ship scan warning - cargo)Please halt. We will be scanning your cargo hold."/>
+          </do_else>
+          <run_script name="'player.interaction'">
+            <param name="Line" value="$speakline"/>
+            <param name="MaxQueueDelay" value="10s"/>
+            <param name="caption" value="{1015, 264} + ' - ' + {1016,6}.[this.assignedcontrolled.knownname, this.assignedcontrolled.idcode]" comment="Inspected by police"/>
+            <param name="interactive" value="false"/>
+            <param name="debugchance" value="$debugchance"/>
+          </run_script>
+        </do_if>
+        <do_elseif value="not $target.hasrelation.kill.{$homebase}">
+          <run_script name="'player.interaction'">
+            <param name="Line" value="11202" comment="(ship scan warning)"/>
+            <param name="MaxQueueDelay" value="10s"/>
+            <param name="caption" value="{1015, 264} + ' - ' + {1016,6}.[this.assignedcontrolled.knownname, this.assignedcontrolled.idcode]" comment="Inspected by police"/>
+            <param name="interactive" value="false"/>
+            <param name="debugchance" value="$debugchance"/>
+          </run_script>
+        </do_elseif>
+        <!--TODO @Owen @Lorraine #Voice New line for Betty when scanned by a hostile-->
+        <!--<do_elseif value="$target.hasrelation.kill.{$homebase} and player.computer.exists">
+          <start_conversation actor="player.computer" conversation="Speak" type="unqueued" convparam="xxx" />
+        </do_elseif>-->
+      </do_if>
+
+      <move_to object="this.ship" destination="$target" flightbehaviour="flightbehaviour.observe" forcesteering="true" >
+        <interrupt_after_time time="4s" />
+      </move_to>
+      <set_object_active object="this.ship" activate="false" />
+      <wait exact="1s" />
+
+      <!-- Reactions. Also check the hacked time for the station (if it is hacked) -->
+      <!-- Safety check -->
+      <do_if value="not $target.isoperational or $target.assigneddock">
+        <resume label="returntomasstraffic" />
+      </do_if>
+      <!-- Fisrt check if is enemy -->
+      <do_if value="$target.hasrelation.kill.{$homebase} or $target.hasrelation.kill.{this.ship}">
+        <resume label="raisealarm" />
+      </do_if>
+      <!-- Second check for suspicious or in criminal list (hackers/scanners) -->
+      <do_elseif value="$target.suspicious">
+        <debug_text text="'Watchdog ' + this.ship + ' has detected suspicious and starts observing offender'" chance="$debugchance" />
+        <set_value name="$viewaborttime" exact="25s" comment="some more time for drones" />
+        <resume label="startobserve" />
+      </do_elseif>
+      <do_elseif value="@$homebase.defencenpc.$criminals.indexof.{$target}">
+        <debug_text text="'Watchdog ' + this.ship + ' has detected a criminal and starts observing offender'" chance="$debugchance" />
+        <set_value name="$viewaborttime" exact="5s" comment="less time for criminal" />
+        <resume label="startobserve" />
+      </do_elseif>
+      <!-- Second check for illegal cargo -->
+      <do_elseif value="@$target.pilot.inventory.illegalto.{$homebase.zone.policefaction} or @$target.cargo.illegalto.{$homebase.zone.policefaction}" chance="100 - @$target.hidecargochance">
+        <!-- notify that scan has revealed illegal cargo, observe to give some time -->
+        <set_value name="$viewaborttime" exact="20min" comment="more time for drop the cargo" />
+        <set_value name="$observeillegal" exact="true"  />
+        <do_if value="$target" exact="player.occupiedship">
+          <do_if value="player.isinconversation">
+            <set_value name="$viewaborttime" exact="3s" operation="subtract"  />
+            <wait exact="3s" comment="wait for the voice to finish"/>
+          </do_if>
+          <run_script name="'player.interaction'">
+            <param name="Line" value="11206" comment="(ordering to drop cargo/contraband)Release your contraband immediately."/>
+            <param name="MaxQueueDelay" value="10s"/>
+            <param name="caption" value="{1015, 264} + ' - ' + {1016,6}.[this.assignedcontrolled.knownname, this.assignedcontrolled.idcode]" comment="Inspected by police"/>
+            <param name="interactive" value="false"/>
+            <param name="debugchance" value="$debugchance"/>
+          </run_script>
+        </do_if>
+        <debug_text text="'Watchdog ' + this.ship + ' has detected illegal cargo/inventory and starts observing offender'" chance="$debugchance" />
+        <resume label="startobserve" />
+      </do_elseif>
+
+
+      <!-- Last return, everything is ok -->
+      <do_if value="$target" exact="player.occupiedship">
+        <do_if value="not $target.hasrelation.enemy.{$homebase}">
+          <run_script name="'player.interaction'">
+            <param name="Line" value="11204" comment="(ship scan result - nothing found)You're clean. Move along."/>
+            <param name="MaxQueueDelay" value="10s"/>
+            <param name="caption" value="{1015, 264} + ' - ' + {1016,6}.[this.assignedcontrolled.knownname, this.assignedcontrolled.idcode]" comment="Inspected by police"/>
+            <param name="interactive" value="false"/>
+            <param name="debugchance" value="$debugchance"/>
+          </run_script>
+        </do_if>
+        <do_elseif value="not $target.hasrelation.kill.{$homebase}">
+          <run_script name="'player.interaction'">
+            <param name="Line" value="11302" comment="(ship scan result - nothing found)Pfft. Empty! What use is that?"/>
+            <param name="MaxQueueDelay" value="10s"/>
+            <param name="caption" value="{1015, 264} + ' - ' + {1016,6}.[this.assignedcontrolled.knownname, this.assignedcontrolled.idcode]" comment="Inspected by police"/>
+            <param name="interactive" value="false"/>
+            <param name="debugchance" value="$debugchance"/>
+          </run_script>
+        </do_elseif>
+      </do_if>
+      <remove_value name="$lastscantime"/>
+      <resume label="returntomasstraffic" />
+
+      <label name="raisealarm" />
+
+      <!-- Safety check -->
+      <do_if value="not $target.isoperational or $target.assigneddock">
+        <resume label="returntomasstraffic" />
+      </do_if>
+
+      <!-- Speak lines and final checks -->
+      <!-- Check that the station is not hacked -->
+      <do_if value="player.age le @$homebase.defencenpc.$hacked">
+        <resume label="returntomasstraffic" />
+      </do_if>
+      <!-- Suspicious -->
+      <do_elseif value="$target.suspicious or @$homebase.defencenpc.$criminals.indexof.{$target}">
+        <debug_text text="'target %1 is suspicious or a wanted criminal'.[$target.knownname]" chance="$debugchance"  />
+
+        <!-- Set enemy to homebase (station) -->
+        <set_relation_boost object="$homebase" otherobject="$target" value="$target.owner.relation.kill.min" delay="10min" decay="1" />
+        <add_to_group groupname="$homebase.defencenpc.$enemies" object="$target"/>
+
+        <!-- Hacker/Scanner drone -->
+        <do_if value="$target" exact="player.controlled">
+          <do_if value="$target == @$homebase.defencenpc.$hackerfound.{1}">
+            <add_faction_relation faction="faction.player" otherfaction="this.owner" value="$homebase.relationchange.attackfaction.hack" reason="relationchangereason.hackingdiscovered" />
+            <set_value name="$relchange" exact="$homebase.relationchange.policefaction.hack" />
+          </do_if>
+          <do_elseif value="$target == @$homebase.defencenpc.$scannerfound.{1}">
+            <add_faction_relation faction="faction.player" otherfaction="this.owner" value="$homebase.relationchange.attackfaction.scan" reason="relationchangereason.scanningdiscovered" />
+            <set_value name="$relchange" exact="$homebase.relationchange.policefaction.scan" />
+          </do_elseif>
+          <set_value name="$responderdata" exact="[
+                            this.ship, null, null, null,
+                            0s, 0s,
+                            false, false, null, 0,
+                            null, null, @$relchange, 0s ]" />
+          <set_value name="$lawnpc" exact="@this.zone.policefaction.representative" />
+          <!-- Illegal activity feedback, assuming "cover" if player is not on the criminals list (which also prevents police report) -->
+          <!-- convparam = [ responderdata, victimdata, is_3rd_party_victim, lawnpc, relchange ] -->
+          <!-- NB: has to stay a conversation. handler in md.Notifications.IllegalActivityRetaliateConv -->
+          <start_conversation actor="this" conversation="IllegalActivityRetaliate" type="unqueued"
+                              convparam="[$responderdata, $responderdata, true, $lawnpc, @$relchange, not @$homebase.defencenpc.$criminals.indexof.{$target}]"
+                              comment="responderdata, victimdata, is_3rd_party_victim, lawnpc, relchange, has_cover"/>
+          <remove_value name="$relchange" />
+          <remove_value name="$responderdata" />
+          <remove_value name="$lawnpc" />
+        </do_if>
+
+        <!-- If the target was on the wanted criminal list, remove it because is already identified -->
+        <do_if value="@$homebase.defencenpc.$criminals.indexof.{$target}">
+          <remove_from_group group="$homebase.defencenpc.$criminals" object="$target" />
+        </do_if>
+
+      </do_elseif>
+      <!-- Enemy -->
+      <do_elseif value="$target.hasrelation.kill.{$homebase} or $target.hasrelation.kill.{this.ship}">
+        <debug_text text="'target %1 is enemy'.[$target.knownname]" chance="$debugchance"  />
+        <add_to_group groupname="$homebase.defencenpc.$enemies" object="$target"/>
+      </do_elseif>
+      <!-- Illegal -->
+      <do_elseif value="@$target.pilot.inventory.illegalto.{$homebase.zone.policefaction} or @$target.cargo.illegalto.{$homebase.zone.policefaction}" chance="100 - @$target.hidecargochance">
+        <debug_text text="'target %1 has illegal cargo/inventory'.[$target.knownname]" chance="$debugchance"  />
+        <do_if value="$target" exact="player.occupiedship">
+          <run_script name="'player.interaction'">
+            <param name="Line" value="11206" comment="(ordering to drop cargo/contraband)Release your contraband immediately."/>
+            <param name="MaxQueueDelay" value="10s"/>
+            <param name="caption" value="{1015, 264} + ' - ' + {1016,6}.[this.assignedcontrolled.knownname, this.assignedcontrolled.idcode]" comment="Inspected by police"/>
+            <param name="interactive" value="false"/>
+            <param name="debugchance" value="$debugchance"/>
+          </run_script>
+        </do_if>
+        <!-- Set enemy to homebase (station) -->
+        <set_relation_boost object="$homebase" otherobject="$target" value="$target.owner.relation.kill.min" delay="10min" decay="1" />
+        <add_to_group groupname="$homebase.defencenpc.$enemies" object="$target"/>
+      </do_elseif>
+      <do_else>
+        <!-- False alarm -->
+        <debug_text text="'target %1 was almost detected'.[$target.knownname]" chance="$debugchance"  />
+        <do_if value="$target" exact="player.occupiedship">
+          <run_script name="'player.interaction'">
+            <param name="Line" value="11204" comment="(ship scan result - nothing found)You're clean. Move along."/>
+            <param name="MaxQueueDelay" value="10s"/>
+            <param name="caption" value="{1015, 264} + ' - ' + {1016,6}.[this.assignedcontrolled.knownname, this.assignedcontrolled.idcode]" comment="Inspected by police"/>
+            <param name="interactive" value="false"/>
+            <param name="debugchance" value="$debugchance"/>
+          </run_script>
+        </do_if>
+        <resume label="returntomasstraffic" />
+      </do_else>
+
+      <debug_text text="'Watchdog ' + this.ship + ' raises alarm and starts attacking offender'" chance="$debugchance" />
+      <report_illegal_activity object="$target" target="$homebase" />
+
+
+      <!-- Only Attack Target -->
+      <label name="attack" />
+
+      <!-- Safety check -->
+      <do_if value="not $target.isoperational or $target.assigneddock">
+        <resume label="returntomasstraffic" />
+      </do_if>
+      <set_object_active object="this.ship" activate="false" />
+
+      <do_if value="not $target.hasrelation.kill.{this.ship}">
+        <set_relation_boost object="this.ship" otherobject="$target" value="$target.owner.relation.kill.min" delay="10min" decay="1" />
+      </do_if>
+      <debug_text text="'%1(%2) attacks and adds %5 to enemy list of %3(%4)'.[this.ship.knownname, this.ship, $homebase.knownname, $homebase, $target.knownname]" chance="$debugchance" />
+      <start_attack object="this.ship" target="$target" />
+
+      <run_script name="'order.fight.attack.object'">
+        <param name="primarytarget" value="$target" />
+        <param name="escort" value="$homebase" />
+        <param name="pursuedistance" value="$homebase.size/2" />
+        <param name="allowothertargets" value="false" />
+      </run_script>
+
+      <do_if value="$target.exists">
+        <stop_attack object="this.ship" target="$target" />
+      </do_if>
+
+      <!-- Return to Patrol (more enemies?) -->
+      <resume label="startpatrol" />
+
+      <!-- Final step, return to masstraffic -->
+      <label name="returntomasstraffic"/>
+
+      <do_if value="this.ship.ismasstraffic">
+        <set_object_active object="this.ship" activate="false" />
+        <stop_moving object="this.ship" />
+        <debug_text text="'Watchdog ' + this.ship + ' returns to mass traffic'" chance="$debugchance" />
+        <set_flight_behaviour object="this.ship" flightbehaviour="flightbehaviour.closetoobject" />
+
+        <!-- Reduce/remove the patrolling-police counter -->
+        <do_if value="@$homebase.defencenpc.$policepatrol.count">
+          <remove_from_group group="$homebase.defencenpc.$policepatrol" object="this.ship" />
+          <do_if value="$homebase.defencenpc.$policepatrol.count" exact="0">
+            <!-- No more ships patrolling, send signal -->
+            <remove_value name="$homebase.defencenpc.$policepatrol" />
+            <signal_objects object="$homebase" param="'police_patrol_stopped'" />
+          </do_if>
+        </do_if>
+
+        <return_to_masstraffic object="this.ship" />
+        <resume label="start" />
+      </do_if>
+
+      <label name="end"/>
+
+      <debug_text text="'Watchdog ' + this.ship + ' self-destructs'" chance="$debugchance" />
+      <destroy_object object="this.ship" explosion="true" />
+
+      <!-- we should only get in here if our home base gets destroyed.
+        simply wait to get cleaned up.
+        cleanup was already set the moment our home base was destroyed so we're getting cleaned up regardless of what we do at this point. -->
+      <label name="postend"/>
+
+      <!-- simply wait for this to get cleaned up. -->
+      <wait exact="5min"/>
+      <debug_text text="'homebase was destroyed but we were not cleaned up.'" filter="error"/>
+
+    </actions>
+  </attention>
+  <attention min="visible">
+    <actions>
+      <do_if value="$endimmediately?">
+        <resume label="end"/>
+      </do_if>
+
+      <debug_text text="'Watchdog ' + this.ship + ' script started (visible)'" chance="$debugchance" />
+
+      <label name="start" />
+
+      <set_object_active object="this.ship" activate="false" />
+
+      <wait />
+
+      <resume label="start" />
+
+      <label name="startpatrol" />
+
+      <create_position name="$pos" object="this.ship" space="this.zone" max="500m"/>
+
+      <label name="patrol" />
+
+      <do_if value="not $startpatroltime?">
+        <wait min="1s" max="4s"  />
+        <set_value name="$startpatroltime" exact="player.age" />
+      </do_if>
+
+      <do_if value="not $pos?" comment="create an initial position if does not exists">
+        <create_position name="$pos" object="this.ship" space="this.zone" max="500m"/>
+      </do_if>
+
+      <create_position name="$pos" value="$pos" max="500m" />
+      <move_to object="this.ship" destination="this.zone" flightbehaviour="flightbehaviour.closetoobject" forcesteering="true"  >
+        <position value="$pos" />
+        <interrupt>
+          <conditions>
+            <event_gravidar_has_scanned object="this.ship" />
+            <check_value value="this.sector"/>
+          </conditions>
+          <actions>
+            <do_if value="event.name == 'event_gravidar_has_scanned'">
+              <find_gravidar_contact name="$targets" object="this.ship" class="class.defensible" docked="false" functional="true" multiple="true">
+                <match_context macro="this.sector.macro"/>
+                <match_is_in_view_of object="this.ship" vertical="90deg" horizontal="120deg" />
+                <match_distance object="this.ship" max="1000m"/>
+              </find_gravidar_contact>
+
+              <do_all exact="$targets.count" counter="$i">
+                <do_if value="(this.sector != $targets.{$i}.sector) or not this.assignedcontrolled.cansee.{$targets.{$i}}">
+                  <continue/>
+                </do_if>
+                <do_if value="$targets.{$i}.hasrelation.kill.{$homebase} or $targets.{$i}.hasrelation.kill.{this.ship} or $targets.{$i}.suspicious or @$homebase.defencenpc.$criminals.indexof.{$targets.{$i}}">
+                  <set_value name="$target" exact="$targets.{$i}" />
+                  <debug_text text="'%1 detected patrolling by %2(%3) after gravidar scan '.[$target.knownname, this.ship.knownname, this.ship]" chance="$debugchance" />
+                  <resume label="scancargo" />
+                </do_if>
+              </do_all>
+            </do_if>
+          </actions>
+        </interrupt>
+      </move_to>
+
+      <!-- Break the loop -->
+      <do_if value="player.age gt @$startpatroltime + $patrolwaittime">
+        <remove_value name="$startpatroltime" />
+        <resume label="returntomasstraffic" />
+      </do_if>
+
+      <resume label="patrol" />
+
+
+      <label name="startobserve" />
+
+      <!-- Reduced version of observe case -->
+      <label name="observe" />
+
+      <do_while value="true">
+        <set_object_active object="this.ship" activate="true" />
+
+        <wait min="0.5s" max="0.75s"  />
+        <!-- Target not operational -->
+        <do_if value="not $target.isoperational or $target.assigneddock">
+          <stop_observation object="this.ship" target="$target" />
+          <set_object_active object="this.ship" activate="false" />
+          <resume label="returntomasstraffic" />
+        </do_if>
+
+        <do_if value="$target.distanceto.{this.ship}" min="$abortseekrange">
+          <debug_text text="'Watchdog ' + this.ship + ' lost target it was observing (distance check), return to mass traffic'" chance="$debugchance" />
+          <stop_observation object="this.ship" target="$target" />
+          <set_object_active object="this.ship" activate="false" />
+          <!-- Call more police ships -->
+          <signal_objects object="$homebase.defencenpc.$watchdogs.random" param="'patrol'" param2="$target.position" />
+          <resume label="startpatrol" />
+        </do_if>
+
+        <set_value name="$hadview" exact="@$hasview" />
+        <check_line_of_sight object="this.ship" target="$target" name="$hasview" />
+
+        <!-- Target has been seen -->
+        <do_if value="$hasview">
+          <set_value name="$lastviewtime" exact="player.age" />
+          <do_if value="player.age gt $lastscantime + $viewaborttime">
+            <stop_observation object="this.ship" target="$target" />
+            <set_object_active object="this.ship" activate="false" />
+            <resume label="raisealarm" />
+          </do_if>
+          <do_elseif value="not $hadview">
+            <move_to object="this.ship" destination="$target" flightbehaviour="flightbehaviour.observe" forcesteering="true"  >
+              <interrupt_after_time time="0s" />
+            </move_to>
+          </do_elseif>
+        </do_if>
+        <!-- Target lost -->
+        <do_else>
+          <do_if value="player.age gt $lastviewtime + $noviewaborttime">
+            <debug_text text="'Watchdog ' + this.ship + ' lost target it was observing (line of sight check), return to mass traffic'" chance="$debugchance" />
+            <stop_observation object="this.ship" target="$target" />
+            <set_object_active object="this.ship" activate="false" />
+            <!-- Call more police ships -->
+            <signal_objects object="$homebase.defencenpc.$watchdogs.random" param="'patrol'" param2="$target.position" />
+            <resume label="startpatrol" />
+          </do_if>
+          <do_elseif value="$hadview">
+            <move_to object="this.ship" destination="$target.zone" flightbehaviour="flightbehaviour.observe" forcesteering="true"  >
+              <position value="$target.position" />
+              <interrupt_after_time time="0s" />
+            </move_to>
+          </do_elseif>
+        </do_else>
+      </do_while>
+
+      <label name="startscan" />
+
+      <wait max="2s" />
+
+      <label name="scancargo" />
+
+      <resume label="returntomasstraffic" />
+
+      <label name="raisealarm" />
+
+      <!-- Safety check -->
+      <do_if value="not $target.isoperational or $target.assigneddock">
+        <resume label="returntomasstraffic" />
+      </do_if>
+
+      <!-- Speak lines and final checks -->
+      <!-- Check that the station is not hacked -->
+      <do_if value="player.age le @$homebase.defencenpc.$hacked">
+        <resume label="returntomasstraffic" />
+      </do_if>
+      <!-- Suspicious -->
+      <do_elseif value="$target.suspicious or @$homebase.defencenpc.$criminals.indexof.{$target}">
+        <debug_text text="'target %1 is suspicious or a wanted criminal'.[$target.knownname]" chance="$debugchance"  />
+
+        <!-- Set enemy to homebase (station) -->
+        <set_relation_boost object="$homebase" otherobject="$target" value="$target.owner.relation.kill.min" delay="10min" decay="1" />
+        <add_to_group groupname="$homebase.defencenpc.$enemies" object="$target"/>
+
+        <!-- Hacker/Scanner drone -->
+        <do_if value="$target" exact="player.controlled">
+          <do_if value="$target == @$homebase.defencenpc.$hackerfound.{1}">
+            <add_faction_relation faction="faction.player" otherfaction="this.owner" value="$homebase.relationchange.attackfaction.hack" reason="relationchangereason.hackingdiscovered" />
+            <set_value name="$relchange" exact="$homebase.relationchange.policefaction.hack" />
+          </do_if>
+          <do_elseif value="$target == @$homebase.defencenpc.$scannerfound.{1}">
+            <add_faction_relation faction="faction.player" otherfaction="this.owner" value="$homebase.relationchange.attackfaction.scan" reason="relationchangereason.scanningdiscovered" />
+            <set_value name="$relchange" exact="$homebase.relationchange.policefaction.scan" />
+          </do_elseif>
+          <set_value name="$responderdata" exact="[
+                            this.ship, null, null, null,
+                            0s, 0s,
+                            false, false, null, 0,
+                            null, null, @$relchange, 0s ]" />
+          <set_value name="$lawnpc" exact="@this.zone.policefaction.representative" />
+          <!-- Illegal activity feedback, assuming "cover" if player is not on the criminals list (which also prevents police report) -->
+          <!-- convparam = [ responderdata, victimdata, is_3rd_party_victim, lawnpc, relchange ] -->
+          <!-- NB: has to stay a conversation. handler in md.Notifications.IllegalActivityRetaliateConv -->
+          <start_conversation actor="this" conversation="IllegalActivityRetaliate" type="unqueued"
+                              convparam="[$responderdata, $responderdata, true, $lawnpc, @$relchange, not @$homebase.defencenpc.$criminals.indexof.{$target}]"
+                              comment="responderdata, victimdata, is_3rd_party_victim, lawnpc, relchange, has_cover"/>
+          <remove_value name="$relchange" />
+          <remove_value name="$responderdata" />
+          <remove_value name="$lawnpc" />
+        </do_if>
+
+        <!-- If the target was on the wanted criminal list, remove it because is already identified -->
+        <do_if value="@$homebase.defencenpc.$criminals.indexof.{$target}">
+          <remove_from_group group="$homebase.defencenpc.$criminals" object="$target" />
+        </do_if>
+
+      </do_elseif>
+      <!-- Enemy -->
+      <do_elseif value="$target.hasrelation.kill.{$homebase} or $target.hasrelation.kill.{this.ship}">
+        <debug_text text="'target %1 is enemy'.[$target.knownname]" chance="$debugchance"  />
+        <add_to_group groupname="$homebase.defencenpc.$enemies" object="$target"/>
+      </do_elseif>
+      <!-- Illegal -->
+      <do_elseif value="@$target.pilot.inventory.illegalto.{$homebase.zone.policefaction} or @$target.cargo.illegalto.{$homebase.zone.policefaction}" chance="100 - @$target.hidecargochance">
+        <debug_text text="'target %1 has illegal cargo/inventory'.[$target.knownname]" chance="$debugchance"  />
+        <do_if value="$target" exact="player.occupiedship">
+          <run_script name="'player.interaction'">
+            <param name="Line" value="11206" comment="(ordering to drop cargo/contraband)Release your contraband immediately."/>
+            <param name="MaxQueueDelay" value="10s"/>
+            <param name="caption" value="{1015, 264} + ' - ' + {1016,6}.[this.assignedcontrolled.knownname, this.assignedcontrolled.idcode]" comment="Inspected by police"/>
+            <param name="interactive" value="false"/>
+            <param name="debugchance" value="$debugchance"/>
+          </run_script>
+        </do_if>
+        <add_to_group groupname="$homebase.defencenpc.$criminals" object="$target"/>
+      </do_elseif>
+      <do_else>
+        <!-- False alarm -->
+        <debug_text text="'target %1 was almost detected'.[$target.knownname]" chance="$debugchance"  />
+        <do_if value="$target" exact="player.occupiedship">
+          <run_script name="'player.interaction'">
+            <param name="Line" value="11204" comment="(ship scan result - nothing found)You're clean. Move along."/>
+            <param name="MaxQueueDelay" value="10s"/>
+            <param name="caption" value="{1015, 264} + ' - ' + {1016,6}.[this.assignedcontrolled.knownname, this.assignedcontrolled.idcode]" comment="Inspected by police"/>
+            <param name="interactive" value="false"/>
+            <param name="debugchance" value="$debugchance"/>
+          </run_script>
+        </do_if>
+        <resume label="returntomasstraffic" />
+      </do_else>
+
+      <debug_text text="'Watchdog ' + this.ship + ' raises alarm and starts attacking offender'" chance="$debugchance" />
+      <report_illegal_activity object="$target" target="$homebase" />
+
+
+      <!-- Only Attack Target -->
+      <label name="attack" />
+
+      <!-- Safety check -->
+      <do_if value="not $target.isoperational or $target.assigneddock">
+        <resume label="returntomasstraffic" />
+      </do_if>
+      <set_object_active object="this.ship" activate="false" />
+
+      <do_if value="not $target.hasrelation.kill.{this.ship}">
+        <set_relation_boost object="this.ship" otherobject="$target" value="$target.owner.relation.kill.min" delay="10min" decay="1" />
+      </do_if>
+      <debug_text text="'%1(%2) attacks and adds %5 to enemy list of %3(%4)'.[this.ship.knownname, this.ship, $homebase.knownname, $homebase, $target.knownname]" chance="$debugchance" />
+      <start_attack object="this.ship" target="$target" />
+
+      <run_script name="'order.fight.attack.object'">
+        <param name="primarytarget" value="$target" />
+        <param name="escort" value="$homebase" />
+        <param name="pursuedistance" value="$homebase.size/2" />
+        <param name="allowothertargets" value="false" />
+      </run_script>
+
+      <do_if value="$target.exists">
+        <stop_attack object="this.ship" target="$target" />
+      </do_if>
+
+      <!-- Return to Patrol (more enemies?) -->
+      <resume label="startpatrol" />
+
+      <!-- Final step, return to masstraffic -->
+      <label name="returntomasstraffic"/>
+
+      <do_if value="this.ship.ismasstraffic">
+        <set_object_active object="this.ship" activate="false" />
+        <stop_moving object="this.ship" />
+        <debug_text text="'Watchdog ' + this.ship + ' returns to mass traffic'" chance="$debugchance" />
+        <set_flight_behaviour object="this.ship" flightbehaviour="flightbehaviour.closetoobject" />
+
+        <!-- Reduce/remove the patrolling-police counter -->
+        <do_if value="@$homebase.defencenpc.$policepatrol.count">
+          <remove_from_group group="$homebase.defencenpc.$policepatrol" object="this.ship" />
+          <do_if value="$homebase.defencenpc.$policepatrol.count" exact="0">
+            <!-- No more ships patrolling, send signal -->
+            <remove_value name="$homebase.defencenpc.$policepatrol" />
+            <signal_objects object="$homebase" param="'police_patrol_stopped'" />
+          </do_if>
+        </do_if>
+
+        <return_to_masstraffic object="this.ship" />
+        <resume label="start" />
+      </do_if>
+
+      <label name="end"/>
+
+      <debug_text text="'Watchdog ' + this.ship + ' self-destructs'" chance="$debugchance" />
+      <destroy_object object="this.ship" explosion="true" />
+
+      <!-- we should only get in here if our home base gets destroyed.
+        simply wait to get cleaned up.
+        cleanup was already set the moment our home base was destroyed so we're getting cleaned up regardless of what we do at this point. -->
+      <label name="postend"/>
+
+      <!-- simply wait for this to get cleaned up. -->
+      <wait exact="5min"/>
+      <debug_text text="'homebase was destroyed but we were not cleaned up.'" filter="error"/>
+
+    </actions>
+  </attention>
+  <attention min="unknown">
+    <actions>
+      <do_if value="$endimmediately?">
+        <resume label="end"/>
+      </do_if>
+
+      <label name="start" />
+      <label name="startpatrol" />
+      <label name="patrol" />
+      <label name="startobserve" />
+      <label name="observe" />
+      <label name="startscan" />
+      <label name="scancargo" />
+      <label name="raisealarm" />
+      <label name="attack" />
+      <label name="returntomasstraffic"/>
+      <label name="end"/>
+      <!-- UI icon: target attacked -->
+      <do_if value="@$target.exists">
+        <stop_attack object="this.ship" target="$target" />
+      </do_if>
+      <wait min="5s" max="10s"  />
+
+      <!-- Reduce/remove the patrolling-police counter -->
+      <do_if value="@$homebase.defencenpc.$policepatrol.count">
+        <remove_value name="$homebase.defencenpc.$policepatrol" />
+        <signal_objects object="$homebase" param="'police_patrol_stopped'" />
+      </do_if>
+
+      <do_if value="this.ship.exists">
+        <debug_text text="'Watchdog ' + this.ship + ' self-destructs (OOS)'" chance="$debugchance" />
+        <destroy_object object="this.ship" explosion="false" />
+      </do_if>
+
+      <!-- we should only get in here if our home base gets destroyed.
+        simply wait to get cleaned up.
+        cleanup was already set the moment our home base was destroyed so we're getting cleaned up regardless of what we do at this point. -->
+      <label name="postend"/>
+
+      <!-- simply wait for this to get cleaned up. -->
+      <wait exact="5min"/>
+      <debug_text text="'homebase was destroyed but we were not cleaned up.'" filter="error"/>
+
+    </actions>
+  </attention>
+</aiscript>

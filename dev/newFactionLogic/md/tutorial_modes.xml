@@ -1,0 +1,727 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="Tutorial_modes" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+    <cue name="Start" namespace="this">
+      <conditions>
+        <event_cue_signalled cue="md.Setup.Start" />
+      </conditions>
+      <actions>
+        <do_if value="not md.$TutorialRegister?">
+          <set_value name="md.$TutorialRegister" exact="[]" />
+        </do_if>
+        <append_to_list name="md.$TutorialRegister" exact="Start" />
+      </actions>
+      <cues>
+        <cue name="PlayerDied">
+          <conditions>
+            <event_object_destroyed object="player.entity" />
+          </conditions>
+          <actions>
+            <cancel_cue cue="Start" />
+          </actions>
+        </cue>
+
+        <cue name="Trigger" checkinterval="5s" version="2">
+          <conditions>
+            <check_value value="not md.$SurpressTutorials?" />
+            <check_value value="player.computer" />
+          </conditions>
+          <actions>
+            <set_value name="$DebugChance" exact="0"/>
+            <set_value name="$MissionName" exact="' 3) ' + readtext.{30196}.{1}" />
+            <set_value name="$Guide" exact="player.computer" />
+            <create_offer cue="Start" actor="$Guide" name="$MissionName" description="readtext.{30196}.{2}" difficulty="level.trivial" faction="faction.player" type="missiontype.tutorial">
+              <briefing>
+                <objective step="1" action="objective.custom" customaction="{30196,15}"/>
+                <objective step="2" action="objective.custom" customaction="{30196,16}"/>
+                <objective step="3" action="objective.custom" customaction="{30196,17}"/>
+              </briefing>
+            </create_offer>
+          </actions>
+          <patch sinceversion="2">
+            <do_if value="Start.hasmissionoffer">
+              <set_value name="$MissionName" exact="' 3) ' + readtext.{30196}.{1}" />
+              <update_offer cue="Start" name="$MissionName"/>
+            </do_if>
+          </patch>
+          <cues>
+            <cue name="Offer">
+              <cues>
+                <cue name="ConversationStarted" instantiate="true">
+                  <conditions>
+                    <event_conversation_started actor="$Guide" conversation="mission" convparam="Start" />
+                  </conditions>
+                  <actions>
+                    <remove_help all="true" />
+                    <open_conversation_menu menu="MissionBriefingMenu" param="[0, 0, Start, true]" />
+                  </actions>
+                  <cues>
+                    <cue name="ConversationNextSection" instantiate="true">
+                      <conditions>
+                        <event_conversation_next_section actor="$Guide" choiceparam="Start" />
+                      </conditions>
+                      <actions>
+                        <!-- Accept case -->
+                        <do_if value="event.param == 'c_mission_accept'">
+                          <signal_cue cue="Tutorial" />
+                        </do_if>
+                      </actions>
+                    </cue>
+
+                    <cue name="ConversationFinished">
+                      <conditions>
+                        <event_conversation_finished actor="$Guide" />
+                      </conditions>
+                      <actions>
+                        <cancel_cue cue="ConversationStarted" />
+                      </actions>
+                    </cue>
+
+                    <cue name="AcceptMission">
+                      <conditions>
+                        <event_object_signalled object="$Guide" param="'accept'" />
+                      </conditions>
+                      <actions>
+                        <signal_cue cue="Tutorial" />
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="Tutorial">
+              <conditions>
+                <check_any>
+                  <event_cue_signalled />
+                  <event_object_signalled object="player.entity" param="'start'" param2="Start" />
+                </check_any>
+              </conditions>
+              <actions>
+                <debug_text text="'Tutorial can begin'" chance="$DebugChance" />
+                <cancel_cue cue="Offer" />
+                <signal_cue_instantly cue="md.Tutorials.NewTutorialTriggered" param="Start" />
+                <set_value name="$TutorialStartTime" exact="player.age" />
+                <create_mission cue="Start" offercue="Start" />
+                <cancel_conversation actor="$Guide" />
+                <remove_offer cue="Start" />
+                <remove_help all="true" />
+                <set_value name="$StartDelay" exact="2s"/>
+
+                <!-- setup for this tutorial -->
+                <find_station name="$FriendlyStations" space="player.sector" multiple="true">
+                  <match owner="[faction.xenon, faction.ownerless]" negate="true"/>
+                  <match_relation_to faction="faction.player" comparison="ge" relation="neutral" />
+                  <match_distance object="player.entity" max="40km"/>
+                </find_station>
+
+                <do_if value="($FriendlyStations.count == 0) or (not player.ship)">
+                  <show_help line="1020" duration="7s" position="1" force="true" comment="For this tutorial you should be in space near a station."/>
+                  <do_if value="($FriendlyStations.count == 0)">
+                    <show_notification text="{1015,403}" sound="notification_warning" />
+                  </do_if>
+                  <do_else>
+                    <show_notification text="{1015,406}" sound="notification_warning" />
+                  </do_else>
+                  <remove_mission cue="Start" type="aborted" />
+                  <signal_cue cue="Cleanup" />
+                </do_if>
+                <do_else>
+                  <set_value name="$SelectedStation" exact="$FriendlyStations.{1}"/>
+                  <do_all exact="$FriendlyStations.count" counter="$i">
+                    <!--debug_text text="'dist ' + player.entity.distanceto.{$FriendlyStations.{$i}} + ' i: ' + $i"/-->
+                    <do_if value="player.entity.distanceto.{$FriendlyStations.{$i}} lt player.entity.distanceto.{$SelectedStation}">
+                      <set_value name="$SelectedStation" exact="$FriendlyStations.{$i}"/>
+                    </do_if>
+                  </do_all>
+                  <show_help line="1001" duration="7s" position="1" force="true" comment="You can abort this tutorial in the Active Missions menu " />
+                </do_else>
+
+              </actions>
+              <cues>
+
+                <cue name="Abort">
+                  <conditions>
+                    <event_mission_aborted cue="Start" />
+                  </conditions>
+                  <actions>
+                    <remove_help all="true"/>
+                    <remove_mission cue="Start" type="aborted" />
+                    <signal_cue cue="Cleanup" />
+                  </actions>
+                </cue>
+
+                <cue name="Abort_OtherTutorialStarted">
+                  <conditions>
+                    <event_cue_signalled cue="md.Tutorials.NewTutorialTriggered" />
+                    <check_value value="event.param != Start" />
+                  </conditions>
+                  <actions>
+                    <remove_help all="true"/>
+                    <show_notification text="{1015,400}" sound="notification_warning" comment="Tutorial aborted" />
+                    <remove_mission cue="Start" type="aborted"/>
+                    <signal_cue cue="Cleanup" />
+                  </actions>
+                </cue>
+
+                <cue name="Tutorial_Init">
+                  <delay exact="$StartDelay"/>
+                  <actions>
+                    <!--Create a list of tutorial cues to trigger in what order, and what briefing step they point to-->
+                    <set_value name="$SignalList" exact="[
+                                [Tutorial_Spacesuit, 1],
+                                [Tutorial_ReturnToShip, 1],
+                                [Tutorial_Scan, 1],
+                                [Tutorial_LRS, 2],
+                                [Tutorial_TravelDrive, 3],
+                    ]"/>
+
+                    <set_value name="$Index" exact="0"/>
+                    <signal_cue cue="Tutorial_TriggerNext"/>
+
+                  </actions>
+                </cue>
+
+                <cue name="Tutorial_TriggerNext" instantiate="true">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <set_value name="$Index" operation="add"/>
+                    <do_if value="$Index gt $SignalList.count">
+                      <remove_help all="true"/>
+                      <debug_text text="'Modes tutorial has been completed'" chance="$DebugChance" />
+                      <show_help line="1002" position="1" force="true" comment="Tutorial Completed!" />
+                      <show_help line="1003" position="1" force="true" comment="Press $INPUT_ACTION_HELP$ to try other tutorials."/>
+                      <remove_mission cue="Start" type="tutorialcompleted" />
+                      <signal_cue cue="Cleanup" />
+                    </do_if>
+                    <do_else>
+                      <signal_cue cue="$SignalList.{$Index}.{1}"/>
+                      <set_value name="$CurrentStep" exact="$SignalList.{$Index}.{2}"/>
+                      <set_objective_from_briefing cue="Start" step="$CurrentStep"/>
+                    </do_else>
+                  </actions>
+                </cue>
+
+                <cue name="Tutorial_Spacesuit" instantiate="true">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <do_if value="player.controlled.isclass.spacesuit">
+                      <show_help_multi log="false" position="1" force="true" width="180" allowclose="false">
+                        <text line="7500" comment="Target your own ship and request docking permission."/>
+                        <text line="7510" comment="Press $INPUT_ACTION_DOCK$ or use the ship menu \($INPUT_ACTION_OPEN_COCKPIT_MENU$\) to request docking permission"/>
+                      </show_help_multi>
+                      <show_help line="7520" comment="Carefully steer into the XS dock of your ship." allowclose="false" timeout="false"/>
+                    </do_if>
+                  </actions>
+                  <cues>
+                    <cue name="Tutorial_EnterShip_Wait" checkinterval="1s">
+                      <conditions>
+                        <check_value value="player.ship"/>
+                        <check_value value="not player.ship.isclass.spacesuit"/>
+                      </conditions>
+                      <actions>
+                        <remove_help all="true" />
+                        <signal_cue cue="Tutorial_TriggerNext"/>
+                        <cancel_cue cue="Tutorial_Spacesuit"/>
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="Tutorial_ReturnToShip">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <do_if value="player.ship and not player.ship.dock and player.occupiedship" comment="skip this part of the tutorial">
+                      <signal_cue cue="Tutorial_TriggerNext"/>
+                      <cancel_cue cue="Tutorial_ReturnToShip"/>
+                    </do_if>
+                    <do_else>
+                      <set_value name="$NextHint1" exact="player.age"/>
+                      <set_value name="$NextHint2" exact="player.age"/>
+                      <set_value name="$NextHint3" exact="player.age"/>
+                    </do_else>
+                  </actions>
+                  <cues>
+
+                    <cue name="Tutorial_ReturnToShip_SitDown" checkinterval="1s" instantiate="true">
+                      <conditions>
+                        <check_value value="(player.ship) and (not player.occupiedship) and (player.ship.isplayerowned)"/>
+                      </conditions>
+                      <actions>
+                        <set_value name="$NextHint1" exact="player.age"/>
+                        <set_value name="$NextHint3" exact="player.age"/>
+                        <do_if value="$NextHint2 lt player.age" comment="don't spam hints">
+                          <show_help line="if player.input.controller or player.input.joystick then 1042 else 1040" duration="10s" position="1" force="true" comment="To sit down in your chair"/>
+                          <set_value name="$NextHint2" exact="player.age + 25s"/>
+                        </do_if>
+                      </actions>
+                    </cue>
+
+                    <cue name="Tutorial_ReturnToShip_Wait" checkinterval="1s">
+                      <conditions>
+                        <check_value value="player.ship"/>
+                        <check_value value="player.occupiedship"/>
+                        <check_value value="not player.ship.dock"/>
+                        <check_value value="player.ship.isplayerowned" comment="avoid hitchhiking"/>
+                      </conditions>
+                      <actions>
+                        <remove_help all="true" />
+                        <signal_cue cue="Tutorial_TriggerNext"/>
+                        <cancel_cue cue="Tutorial_ReturnToShip"/>
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="Tutorial_Scan">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <delay exact="6s"/>
+                  <actions>
+                    <show_help_multi position="1" force="true" allowclose="false">
+                      <text line="992" log="false" comment="These yellow-framed boxes are tips. Click the arrow after you have read them to proceed to the next one."/>
+                    </show_help_multi>
+                    <show_help line="4010" log="true" position="1" width="250" force="true" comment="Press $INPUT_ACTION_OPEN_COCKPIT_MENU$ to open the ship menu" allowclose="false" timeout="false"/>
+                  </actions>
+                  <cues>
+
+                    <cue name="Tutorial_Scan_MenuOpen">
+                      <conditions>
+                        <event_ui_triggered screen="'DockedMenu'" control="''"/>
+                        <check_value value="event.param2 == ''"/>
+                      </conditions>
+                      <actions>
+                        <set_value name="$ShipMenuOpen" exact="true"/>
+                        <remove_help all="true"/>
+
+                        <show_help_overlay id="'docked_modes'" highlightonly="true"/>
+
+                        <do_if value="player.input.controller">
+                          <show_help_multi log="false" position="4" force="true" width="180" allowclose="false">
+                            <text line="4011" comment="The default pre-selected button in the center allows selection of 4 modes"/>
+                            <text line="4013" comment="Activate the mode selection with $INPUT_ACTION_DIALOG_MENU_SELECT$."/>
+                          </show_help_multi>
+                        </do_if>
+                        <do_else>
+                          <show_help_multi log="false" position="4" force="true" width="180" allowclose="false">
+                            <text line="4011" comment="The default pre-selected button in the center allows selection of 4 modes"/>
+                            <text line="4012" comment="Activate the mode selection with {1019,1}."/>
+                          </show_help_multi>
+                        </do_else>
+                      </actions>
+                      <cues>
+
+                        <cue name="Tutorial_Scan_ReHint" checkinterval="20s" instantiate="true">
+                          <conditions>
+                            <check_all>
+                              <check_value value="player.activity != activity.scan"/>
+                            </check_all>
+                          </conditions>
+                          <actions>
+                            <remove_help all="true"/>
+                            <show_help line="4014" position="4" duration="20s" force="true" comment="Select the SCAN MODE" allowclose="false" timeout="false"/>
+                          </actions>
+                        </cue>
+
+                        <cue name="Tutorial_Scan_Selection" instantiate="true" comment="activating via menu?">
+                          <conditions>
+                            <event_ui_triggered screen="'DockedMenu'" control="'startmode'"/>
+                          </conditions>
+                          <actions>
+                            <remove_help all="true"/>
+                            <remove_help_overlay id="'docked_modes'"/>
+                            <do_if value="event.param3 == 'scan'">
+                              <show_help line="4015" log="true" duration="4s" position="4" force="true" comment="You can also turn this mode on with $INPUT_ACTION_TOGGLE_SCAN_MODE$."/>
+                              <show_help line="1010"            duration="4s" position="4" force="true" comment="Close the menu by pressing..." allowclose="false" timeout="false"/>
+                            </do_if>
+                            <do_else>
+                              <show_help line="4014" position="4" force="true" comment="rehint, player selected the wrong mode" allowclose="false" timeout="false"/>
+                            </do_else>
+                          </actions>
+                        </cue>
+
+                        <cue name="Tutorial_Scan_MenuClose">
+                          <conditions>
+                            <event_ui_triggered screen="'DockedMenu'" control="'menu_close'"/>
+                          </conditions>
+                          <actions>
+                            <do_if value="player.activity == activity.scan">
+                              <signal_cue cue="Tutorial_Scan_Wait"/>
+                            </do_if>
+                          </actions>
+                        </cue>
+
+                        <cue name="Tutorial_Scan_ModeActivated" comment="activated via hotkey?">
+                          <conditions>
+                            <event_player_changed_activity activity="activity.scan" />
+                          </conditions>
+                          <actions>
+                            <do_if value="not $ShipMenuOpen?" comment="menu is closed, continue (otherwise Tutorial_Scan_MenuClose will handle it)">
+                              <signal_cue cue="Tutorial_Scan_Wait"/>
+                            </do_if>
+                          </actions>
+                        </cue>
+
+                        <cue name="Tutorial_Scan_Wait" version="2">
+                          <conditions>
+                            <event_cue_signalled/>
+                          </conditions>
+                          <delay exact="1s"/>
+                          <actions>
+                            <cancel_cue cue="Tutorial_Scan_ReHint"/>
+                            <remove_help all="true"/>
+                            <!-- trigger signal-leak hints -->
+                            <show_help_multi log="false" position="1" force="true" width="180" allowclose="false">
+                              <text line="4100" comment="Flying around a station with this mode active, helps FINDING SIGNALS."/>
+                              <text line="4101" comment="."/>
+                              <text line="4102" comment="."/>
+                            </show_help_multi>
+                            <set_value name="$MoreHelpSignalled" exact="false"/>
+                            <set_value name="$ScanMoreHelp" exact="false"/>
+                            <set_value name="$IsNearStation" exact="true"/>
+                            <set_value name="$IsNearLeak" exact="false"/>
+                            <set_value name="$ScanDone" exact="false"/>
+                            <set_value name="$ScanStarted" exact="false"/>
+                          </actions>
+                          <patch sinceversion="2">
+                            <set_value name="$MoreHelpSignalled" exact="false"/>
+                          </patch>
+                          <cues>
+
+                            <cue name="Tutorial_Scan_StationObjective" checkinterval="2s" instantiate="true">
+                              <conditions>
+                                <check_value value="Tutorial_Scan_Wait.state == cuestate.complete"/>
+                                <check_value value="not $ScanMoreHelp" comment="If already showing the 'more-help' objective, don't overwrite that"/>
+                              </conditions>
+                              <actions>
+                                <set_value name="$OldNearStation" exact="$IsNearStation"/>
+                                <do_if value="player.entity.distanceto.{$SelectedStation} le 7km">
+                                  <set_value name="$IsNearStation" exact="true"/>
+                                  <do_if value="not $MoreHelpSignalled">
+                                    <signal_cue cue="Tutorial_Scan_MoreHelp"/>
+                                    <set_value name="$MoreHelpSignalled" exact="true"/>
+                                  </do_if>
+                                </do_if>
+                                <do_else>
+                                  <set_value name="$IsNearStation" exact="false"/>
+                                </do_else>
+
+                                <!-- only on state-change (otherwise objective keeps updating and blinking every few seconds) -->
+                                <do_if value="$OldNearStation != $IsNearStation">
+                                  <do_if value="$IsNearStation">
+                                    <!-- player is close enough, remove guidance to station -->
+                                    <set_objective cue="Start" action="objective.find" text="{30196,20}"/>
+                                  </do_if>
+                                  <do_else>
+                                    <!-- guide player to the nearby station we selected -->
+                                    <set_objective cue="Start" action="objective.flyto" object="$SelectedStation"/>
+                                  </do_else>
+                                </do_if>
+                              </actions>
+                            </cue>
+
+                            <cue name="Tutorial_Scan_NearLeak" checkinterval="2s" instantiate="true">
+                              <conditions>
+                                <check_value value="Tutorial_Scan_Wait.state == cuestate.complete"/>
+                                <check_value value="not $ScanMoreHelp"/>
+                                <check_value value="not $ScanDone"/>
+                              </conditions>
+                              <actions>
+                                <find_object_component name="$SignalLeaks" object="$SelectedStation" class="class.signalleak" multiple="true"/>
+                                <do_if value="$SignalLeaks.count">
+                                  <do_all exact="$SignalLeaks.count" counter="$i" >
+                                    <set_value name="$OldNearLeak" exact="$IsNearLeak"/>
+                                    <do_if value="player.entity.distanceto.{$SignalLeaks.{$i}} lt 350m">
+                                      <set_value name="$IsNearLeak" exact="true"/>
+                                    </do_if>
+                                    <do_else>
+                                      <set_value name="$IsNearLeak" exact="false"/>
+                                    </do_else>
+                                    <do_if value="$OldNearLeak != $IsNearLeak">
+                                      <do_if value="$IsNearLeak">
+                                        <show_help_multi log="false" position="18" force="true" allowclose="false">
+                                          <text line="4104" comment="The signal will then be decrypted on your EVENT MONITOR."/>
+                                        </show_help_multi>
+                                        <show_help line="4103" duration="10s" position="18" force="true" comment="." allowclose="false" timeout="false"/>
+                                        <set_value name="$ScanMoreHelp" exact="true"/>
+                                      </do_if>
+                                    </do_if>
+                                  </do_all>
+                                </do_if>
+                              </actions>
+                            </cue>
+
+                            <cue name="Tutorial_Scan_MoreHelp">
+                              <conditions>
+                                <event_cue_signalled/>
+                              </conditions>
+                              <delay exact="20s" comment="Just point to it, so players can easily find it the first time"/>
+                              <actions>
+                                <do_if value="not $ScanDone and not $ScanStarted">
+                                  <find_object_component name="$SignalLeaks" object="$SelectedStation" class="class.signalleak" sortbydistanceto="player.entity" multiple="true"/>
+                                  <do_if value="$SignalLeaks.count">
+                                    <set_value name="$SelectedSignalLeak" exact="$SignalLeaks.{1}"/>
+                                    <set_objective cue="Start" action="objective.scan" object="$SelectedSignalLeak"/>
+                                    <show_help line="4103" duration="10s" position="18" force="true" comment="."/>
+                                  </do_if>
+                                </do_if>
+                              </actions>
+                            </cue>
+
+                            <cue name="Tutorial_Scan_UnlockStarted">
+                              <conditions>
+                                <event_player_signal_unlock_started/>
+                              </conditions>
+                              <actions>
+                                <set_value name="$ScanStarted" exact="true" comment="The moment you tried scanning for the first time"/>
+                              </actions>
+                            </cue>
+
+                            <cue name="Tutorial_Scan_UnlockFailed" instantiate="true">
+                              <conditions>
+                                <event_player_signal_unlock_failed/>
+                              </conditions>
+                              <actions>
+                                <show_help_multi log="false" position="1" force="true" width="180" allowclose="false">
+                                  <text line="4120" comment="Signal Decryption failed."/>
+                                </show_help_multi>
+                                <show_help line="4121" position="1" comment="Make sure the SCAN MODE is active and look directly towards the SIGNAL SOURCE from very closeby." allowclose="false" timeout="false"/>
+                              </actions>
+                            </cue>
+
+                            <cue name="Tutorial_Scan_Unlocked" instantiate="true">
+                              <conditions>
+                                <event_player_signal_unlock_finished/>
+                              </conditions>
+                              <actions>
+                                <set_value name="$ScanDone" exact="true" comment="The moment you unlock the leak, it won't be found anymore by "/>
+                                <remove_help all="true" />
+                              </actions>
+                              <delay exact="0.5s"/>
+                              <actions>
+                                <do_if value="md.Signal_Leaks.Manager.$SuppressSignalLeakGeneration">
+                                  <show_help_multi log="false" position="1" force="true" allowclose="false">
+                                    <text line="4105" comment="readtext.{1012}.{4105}"/>
+                                    <text line="4106" comment="readtext.{1012}.{4106}"/>
+                                    <text line="4109" comment="readtext.{1012}.{4109}"/>
+                                    <text line="4107" comment="readtext.{1012}.{4107}"/>
+                                  </show_help_multi>
+                                </do_if>
+                                <do_else>
+                                  <show_help_multi log="false" position="1" force="true" allowclose="false">
+                                    <text line="4105" comment="readtext.{1012}.{4105}"/>
+                                    <text line="4106" comment="readtext.{1012}.{4106}"/>
+                                    <text line="4108" comment="readtext.{1012}.{4108}"/>
+                                    <text line="4107" comment="readtext.{1012}.{4107}"/>
+                                  </show_help_multi>
+                                </do_else>
+                              </actions>
+                            </cue>
+
+                            <cue name="Tutorial_Scan_DoneDelayed">
+                              <conditions>
+                                <event_ui_triggered screen="'hintclosed'" control="'4105'"/>
+                              </conditions>
+                              <actions>
+                                <signal_cue cue="Tutorial_TriggerNext"/>
+                                <cancel_cue cue="Tutorial_Scan"/>
+                              </actions>
+                            </cue>
+
+                          </cues>
+                        </cue>
+                      </cues>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="Tutorial_LRS">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <set_objective cue="Start" action="objective.custom" customaction="{30196,21}" comment="Use the Long Range Scan"/>
+                    <show_help line="4200" position="1" force="true" comment="Open SHIP MENU..." allowclose="false" timeout="false"/>
+                  </actions>
+                  <cues>
+
+                    <cue name="Tutorial_LRS_Activated">
+                      <conditions>
+                        <event_player_changed_activity activity="activity.scan_longrange" />
+                      </conditions>
+                      <delay exact="1s"/>
+                      <actions>
+                        <remove_help all="true"/>
+                        <show_help_multi log="true" position="1" force="true" allowclose="false">
+                          <text line="4201" comment="The long range scan mode can help you to navigate in unknown sectors."/>
+                          <text line="4202" comment="You scan objects up to 200km away in the direction your ship is facing."/>
+                          <text line="4210" comment="The scan direction is important for some objects."/>
+                        </show_help_multi>
+
+                        <show_help_multi log="false" position="1" force="true" allowclose="false">
+                          <text line="4204" comment="The signal will emit when releasing the fire button."/>
+                          <text line="4205" comment="Holding the button too long will cause the scan to FAIL."/>
+                          <text line="4206" comment="Holding it for a shorter time will scan a smaller range."/>
+                        </show_help_multi>
+                        <show_help line="4203" duration="7s" position="1" force="true" width="250" comment="Hold down the launch secondary button $INPUT_STATE_FIRE_SECONDARY_WEAPON$ for up to THREE SECONDS." allowclose="false" timeout="false"/>
+                      </actions>
+                      <cues>
+
+                        <cue name="Tutorial_LRS_Wait">
+                          <conditions>
+                            <event_long_range_scan_sent object="player.entity"/>
+                          </conditions>
+                          <actions>
+                            <remove_help all="true"/>
+                            <set_value name="$TravelledAtMax" exact="false"/>
+                            <set_value name="$TravelEnabledTime" exact="0"/>
+                            <signal_cue cue="Tutorial_TriggerNext"/>
+                            <cancel_cue cue="Tutorial_LRS"/>
+                          </actions>
+                        </cue>
+
+                      </cues>
+
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="Tutorial_TravelDrive">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <delay exact="1s"/>
+                  <actions>
+                    <show_help_multi position="1" force="true" allowclose="false">
+                      <text line="4300" log="false" comment="Turn your ship in a direction you can accelerate towards"/>
+                      <text line="4302" log="true" comment=""/>
+                      <text line="4303" log="true" comment=""/>
+                      <text line="4304" log="true" comment=""/>
+                      <text line="4305" log="true" comment=""/>
+                      <text line="4306" log="true" comment=""/>
+                    </show_help_multi>
+                    <show_help line="4301" position="13" log="false" comment="Press $INPUT_ACTION_TOGGLE_TRAVEL_MODE$ or activate TRAVEL MODE..." allowclose="false" width="250" timeout="false"/>
+                  </actions>
+
+                  <cues>
+                    <cue name="Tutorial_TravelDrive_HintClose">
+                      <conditions>
+                        <event_ui_triggered screen="'hintclosed'" control="'4300'"/>
+                      </conditions>
+                      <actions>
+                        <set_objective cue="Start" action="objective.custom" customaction="{30196,22}" comment="Activate the Travel Mode"/>
+                      </actions>
+                    </cue>
+
+                    <cue name="Tutorial_TravelDrive_Active" instantiate="true">
+                      <conditions>
+                        <event_player_changed_activity activity="activity.travel" />
+                      </conditions>
+                      <actions>
+                        <remove_help all="true"/>
+                        <do_if value="not $TravelledAtMax">
+                          <set_value name="$TravelEnabledTime" exact="player.age"/>
+                        </do_if>
+                        <show_help line="4320" position="18" log="false" comment="ACCELERATE your ship to top travel mode speed" allowclose="false" timeout="false"/>
+                      </actions>
+                    </cue>
+
+                    <cue name="Tutorial_TravelDrive_Inactive" instantiate="true">
+                      <conditions>
+                        <event_player_changed_activity oldactivity="activity.travel"/>
+                        <check_value value="not $TravelledAtMax"/>
+                      </conditions>
+                      <delay exact="1s"/>
+                      <actions>
+                        <remove_help all="true"/>
+                        <set_value name="$TravelEnabledTime" exact="0"/>
+                        <do_if value="not $TravelledAtMax">
+                          <show_help line="4320" position="18" force="true" comment="ACCELERATE your ship to top travel mode speed"/>
+                        </do_if>
+                      </actions>
+                    </cue>
+
+                    <cue name="Tutorial_TravelDrive_Speeding" checkinterval="4s" instantiate="true">
+                      <conditions>
+                        <check_value value="($TravelEnabledTime + 10s) gt player.age" comment="can't check actual speed, so test for 10 seconds in travel-mode"/>
+                      </conditions>
+                      <actions>
+                        <set_value name="$TravelledAtMax" exact="true"/>
+                        <signal_cue cue="Tutorial_TravelDrive_Done"/>
+                      </actions>
+                    </cue>
+
+                    <cue name="Tutorial_TravelDrive_Done">
+                      <conditions>
+                        <event_cue_signalled/>
+                      </conditions>
+                      <delay exact="3s"/>
+                      <actions>
+                        <cancel_cue cue="Tutorial_TravelDrive_Speeding"/>
+                        <remove_help all="true" />
+                        <do_if value="player.input.controller">
+                          <show_help_multi log="true" position="18" force="true" allowclose="false">
+                            <text line="4309" comment="You can quickly leave travel mode by pressing $INPUT_STATE_FULLREVERSE$."/>
+                            <text line="4340" comment="You can craft a SETA time acceleration upgrade which unlocks another mode."/>
+                          </show_help_multi>
+                        </do_if>
+                        <do_else>
+                          <show_help_multi log="true" position="18" force="true" allowclose="false" >
+                            <text line="4331" comment="Brake \($INPUT_ACTION_STOP$\) to drop out of TRAVEL MODE"/>
+                            <text line="4340" comment="You can craft a SETA time acceleration upgrade which unlocks another mode."/>
+                          </show_help_multi>
+                        </do_else>
+                      </actions>
+                    </cue>
+
+                    <cue name="Tutorial_TravelDrive_DoneDelayed">
+                      <conditions>
+                        <check_any>
+                          <event_ui_triggered screen="'hintclosed'" control="'4309'"/>
+                          <event_ui_triggered screen="'hintclosed'" control="'4331'"/>
+                        </check_any>
+                      </conditions>
+                      <actions>
+                        <signal_cue cue="Tutorial_TriggerNext"/>
+                        <cancel_cue cue="Tutorial_TravelDrive"/>
+                      </actions>
+                    </cue>
+
+                  </cues>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="Cleanup">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <remove_help_overlay all="true"/>
+                <debug_text text="'cleanup'" chance="$DebugChance"/>
+                <do_if value="$BriefingCutsceneStarted?">
+                  <stop_cutscene key="$CutsceneKey"/>
+                </do_if>
+                <do_if value="$Beacons?">
+                  <destroy_group group="$Beacons"/>
+                </do_if>
+                <remove_offer cue="Start"/>
+                <remove_mission cue="Start" />
+                <reset_cue cue="Trigger"/>
+              </actions>
+            </cue>
+
+          </cues>
+        </cue>
+
+      </cues>
+    </cue>
+  </cues>
+</mdscript>

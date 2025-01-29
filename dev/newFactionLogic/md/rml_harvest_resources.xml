@@ -1,0 +1,297 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_Harvest_Resources" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--
+    $feedbackvalue:
+    -103: EndSignalCue or MissionCue not defined
+    -102: Ware does not exist
+    -101: Space does not exist
+    -100: Undefined failure. Defaulted to -100
+    1: Collected resources succesfully-->
+
+    <library name="HarvestResources">
+      <params>
+        <param name="EndSignalCue"/>
+        <param name="MissionCue"/>
+        <param name="StartStep"         default="1"     comment="Briefing step to start the mission on"/>
+        <param name="UpdateBriefing"    default="true"  comment="Update the briefing objective step when the objective is updated"/>
+
+        <!-- RML-specific parameters -->
+        <param name="CollectorObjects"  default="null"  comment="Container objects which need to be collecting the resources (null = any player owned object can collect)"/>
+        <param name="HarvestSpace"                      comment="The space where the player must mine"/>
+        <param name="HarvestWaresTable"                 comment="Table of wares to be harvested from a zone"/>
+
+        <!-- FlyTo parameters -->
+        <param name="PlayerFlyTo"       default="true"  comment="Must the player fly to the Space?"/>
+        <param name="HarvestOffset"     default="null"/>
+        <param name="HarvestRadius"     default="null"/>
+
+        <param name="DebugChance"       default="0"/>
+      </params>
+      <actions>
+        <debug_text text="'HarvestResources mission'" chance="$DebugChance"/>
+        <set_value name="$feedbackvalue" exact="0"/>
+        <create_list name="$ErrorList"/>
+
+        <do_if value="not $HarvestSpace.exists">
+          <append_to_list name="$ErrorList" exact="-101"/>
+        </do_if>
+        <do_if value="not $HarvestWaresTable">
+          <append_to_list name="$ErrorList" exact="-102"/>
+        </do_if>
+        <do_if value="not $EndSignalCue or not $MissionCue">
+          <append_to_list name="$ErrorList" exact="-103"/>
+        </do_if>
+
+        <!-- enable checking for specific collector objects, change datatype to group -->
+        <do_if value="$CollectorObjects">
+          <set_value name="$UseCollectorObjects" exact="true"/>
+
+          <do_if value="typeof $CollectorObjects == datatype.group">
+            <add_to_group groupname="$CollectorObjectsGroup" group="$CollectorObjects"/>
+          </do_if>
+
+          <do_elseif value="typeof $CollectorObjects == datatype.list">
+            <add_to_group groupname="$CollectorObjectsGroup" list="$CollectorObjects"/>
+          </do_elseif>
+
+          <do_elseif value="typeof $CollectorObjects == datatype.component">
+            <add_to_group groupname="$CollectorObjectsGroup" object="$CollectorObjects"/>
+          </do_elseif>
+
+          <do_else>
+            <do_if value="CollectorObjects != null">
+              <debug_text text="'$CollectorObjects is not of handled datatypes component, list or group: ' + $CollectorObjects"/>
+            </do_if>
+            <set_value name="$UseCollectorObjects" exact="false"/>
+          </do_else>
+        </do_if>
+
+        <!-- eliminate harvest amounts less equal 0 -->
+        <do_all exact="$HarvestWaresTable.keys.count" counter="$i">
+          <do_if value="$HarvestWaresTable.{$HarvestWaresTable.keys.{$i}}" max="0">
+            <debug_text text="'Amount was: ' + $HarvestWaresTable.{$HarvestWaresTable.keys.{$i}} + ' . Defaulting to 5'" chance="$DebugChance"/>
+            <set_value name="$HarvestWaresTable.{$HarvestWaresTable.keys.{$i}}" exact="5"/>
+          </do_if>
+        </do_all>
+
+      </actions>
+      <cues>
+
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="1"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup"/>
+          </actions>
+        </cue>
+
+        <cue name="StartMission" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" exact="0"/>
+          </conditions>
+          <actions>
+            <set_value name="$CollectedWaresTable" exact="$HarvestWaresTable.clone"/>
+            <do_all exact="$CollectedWaresTable.keys.count" counter="$ec">
+              <set_value name="$CollectedWaresTable.{$CollectedWaresTable.keys.{$ec}}" exact="0"/>
+            </do_all>
+            <set_value name="$Collected" exact="0"/>
+          </actions>
+          <cues>
+            <cue name="FlyTo" onfail="cancel">
+              <conditions>
+                <check_value value="$PlayerFlyTo"/>
+              </conditions>
+              <cues>
+                <cue name="FlyToTest_Ref" ref="md.RML_FlyTo.FlyTo">
+                  <param name="MissionCue"              value="$MissionCue"/>
+                  <param name="StartStep"               value="$StartStep"        comment="Briefing step to start the mission on"/>
+                  <param name="UpdateBriefing"          value="$UpdateBriefing"/>
+
+                  <!-- FlyTo displays a sphere to hint the player in the right direction. The collection cue only checks if they're in the right sector -->
+                  <param name="Target"                  value="$HarvestSpace"/>
+                  <param name="Offset"                  value="$HarvestOffset"/>
+                  <param name="Radius"                  value="$HarvestRadius"    comment="Visual representation on map"/>
+                  <param name="Distance"                value="$HarvestRadius"    comment="Actual distance the player has to have to the target offset"/>
+                  <param name="EndOnCompletion"         value="false"             comment="End this RML when the player has reached the destination. WARNING: If false, the caller must end the library."/>
+                  <param name="ReachedTargetSignalCue"  value="SetObjective"      comment="Cue to be signalled when player reaches the destination"/>
+
+                  <param name="DebugChance" value="$DebugChance"/>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="DoNotFlyTo" onfail="cancel">
+              <conditions>
+                <check_value value="$PlayerFlyTo" negate="true"/>
+              </conditions>
+              <actions>
+                <signal_cue cue="SetObjective"/>
+              </actions>
+            </cue>
+            
+            <cue name="SetObjective" instantiate="true">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+
+                <do_all exact="$CollectedWaresTable.keys.count" counter="$oc">
+                  <do_if value="$CollectedWaresTable.{$CollectedWaresTable.keys.{$oc}} lt $HarvestWaresTable.{$CollectedWaresTable.keys.{$oc}}">
+                    <set_value name="$Ware" exact="$CollectedWaresTable.keys.{$oc}"/>
+                    <set_value name="$Amount" exact="$HarvestWaresTable.{$CollectedWaresTable.keys.{$oc}}"/>
+                    <set_value name="$Collected" exact="$CollectedWaresTable.{$CollectedWaresTable.keys.{$oc}}"/>
+                    <break/>
+                  </do_if>
+                </do_all>
+
+                <substitute_text text="$ObjectiveText" source="{1004,1007}">
+                  <replace string="'$AMOUNT$'" with="$Amount"/>
+                  <replace string="'$WARE$'" with="$Ware"/>
+                </substitute_text>
+
+                <do_if value="$UpdateBriefing">
+                  <update_mission cue="$MissionCue">
+                    <briefing>
+                      <objective step="$StartStep" action="objective.pickup" text="$ObjectiveText"/>
+                    </briefing>
+                  </update_mission>
+                </do_if>
+
+                <set_objective cue="$MissionCue" step="$StartStep" action="objective.pickup" text="$ObjectiveText">
+                  <progress progress="$Collected" max="$Amount" text="{30004,3003}"/>
+                </set_objective>
+                <remove_value name="$ObjectiveText"/>
+              </actions>
+            </cue>
+
+            <cue name="CollectorObjects" onfail="cancel">
+              <conditions>
+                <check_value value="$UseCollectorObjects?"/>
+              </conditions>
+              <cues>
+                <cue name="CollectorObjects_CollectedResource" instantiate="true">
+                  <conditions>
+                    <event_object_collected_ware group="$CollectorObjectsGroup"/>
+                    <check_value value="event.object.hascontext.{$HarvestSpace}"/>
+                    <check_value value="$HarvestWaresTable.{event.param}?"/>
+                  </conditions>
+                  <actions>
+                    <include_actions ref="CollectedResourceHandler"/>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="PlayerOwned" onfail="cancel">
+              <conditions>
+                <check_value value="$UseCollectorObjects?" negate="true"/>
+              </conditions>
+              <cues>
+                <cue name="PlayerOwned_CollectedResource" instantiate="true">
+                  <conditions>
+                    <event_object_collected_ware object="player.ship"/>
+                    <check_value value="event.object.hascontext.{$HarvestSpace}"/>
+                    <check_value value="$HarvestWaresTable.{event.param}?"/>
+                  </conditions>
+                  <actions>
+                    <include_actions ref="CollectedResourceHandler"/>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <!--This library is used by the two event cues waiting for collected resources. As the two events have the same parameters this is fine.-->
+            <library name="CollectedResourceHandler">
+              <actions>
+                <set_value name="$Completed" exact="true"/>
+                <set_value name="$CollectedWaresTable.{event.param}" operation="add" exact="event.param2"/>
+                <!-- Check whether all wares have been collected -->
+                <do_all exact="$CollectedWaresTable.keys.count" counter="$cc">
+                  <do_if value="$CollectedWaresTable.{$CollectedWaresTable.keys.{$cc}} lt $HarvestWaresTable.{$CollectedWaresTable.keys.{$cc}}">
+                    <set_value name="$Completed" exact="false"/>
+                    <break/>
+                  </do_if>
+                </do_all>
+                <do_if value="$Completed == true">
+                  <set_value name="$feedbackvalue" exact="1"/>
+                  <signal_cue cue="Cleanup"/>
+                </do_if>
+                <do_else>
+                  <signal_cue cue="SetObjective"/>
+                </do_else>
+              </actions>
+            </library>
+          </cues>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <!--TODO remove_objective-->
+
+            <do_if value="$feedbackvalue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'ERROR: Feedback value is 0 and no error values were set. Defaulting to -100'"/>
+                <set_value name="$feedbackvalue" exact="-100"/>
+              </do_if>
+              <do_else>
+                <set_value name="$feedbackvalue" exact="$ErrorList.{1}"/>
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+                    <do_if value="$ErrorList.{$Counter}" exact="-103">
+                      <set_value name="$FeedbackText" exact="'EndSignalCue or MissionCue not defined'"/>
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-102">
+                      <set_value name="$FeedbackText" exact="'HarvestWaresTable does not exist'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'HarvestSpace does not exist at start'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-100">
+                      <set_value name="$FeedbackText" exact="'Undefined failure. Defaulted to -100'"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                    </do_else>
+
+                    <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+
+              <do_if value="$feedbackvalue" exact="1">
+                <set_value name="$FeedbackText" exact="'Collected resources succesfully'"/>
+              </do_if>
+
+              <do_if value="$feedbackvalue" min="1">
+                <debug_text text="'Mission Successful. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_if>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission Failed. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+            <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$feedbackvalue"/>
+            <cancel_cue cue="FlyToTest_Ref"/>
+            <signal_cue cue="$EndSignalCue"/>
+            <cancel_cue cue="HarvestResources"/>
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

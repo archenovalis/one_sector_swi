@@ -1,0 +1,274 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_FindObject" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--
+    This RML is intended for use in Master-Missions. 
+    It handles checking if the player transported (any) ware to the specified station
+    
+    $feedbackvalue:
+    -103 $TargetObjects and $DroppedObjects are empty.
+    -102 $TargetObjects is incorrectly defined.
+    -101 Cue parameters not defined
+    -100: Undefined failure. Defaulted to -100
+    -1: (some) objects were destroyed (can't complete objectives)
+    1: supplies partially delivered 
+    2: object repaired to specified percentage -->
+
+    <library name="FindObject" version="2">
+      <params>
+        <param name="EndSignalCue"/>
+        <param name="MissionCue"/>
+        <param name="StartStep"       default="1"     comment="Briefing step to start the mission on"/>
+        <param name="UpdateBriefing"  default="true"  comment="Update the briefing objective step when the objective is updated"/>
+        <param name="DebugChance"     default="0" />
+
+        <param name="Text_Objective_Find"             comment="Objective text during 'Find: ' objective"/>
+        <param name="Text_Objective_Pickup"           comment="Objective text during 'Pickup: ' objective"/>
+        <param name="ShowProgress"    default="true"  comment="Show the objective progress bar"/>
+        <param name="TargetSector"                    comment=""/>
+        <param name="TargetOffset"                    comment=""/>
+        <param name="TargetRadius"                    comment="radius"/>
+        <param name="TargetObjects"                   comment="Crates to find"/>
+        <param name="DroppedObjects"                  comment="Group of dropped objects populated by the RML"/>
+
+        <param name="SignalCue_ObjectsDropped"  default="null" comment="Cue to be signalled when a $TargetObjects object drops objects"/>
+        <param name="SignalCue_ObjectCollected" default="null" comment="Cue to be signalled when a drop was collected by something player owned"/>
+      </params>
+      <actions>
+        <set_value name="$feedbackvalue" exact="0"/>
+        <create_list name="$ErrorList"/>
+
+        <do_if value="not $EndSignalCue or not $MissionCue">
+          <append_to_list name="$ErrorList" exact="-101"/>
+        </do_if>
+        <do_if value="not $TargetObjects">
+          <append_to_list name="$ErrorList" exact="-102"/>
+        </do_if>
+        <do_elseif value="$TargetObjects.count == 0 and $DroppedObjects.count == 0">
+          <append_to_list name="$ErrorList" exact="-103"/>
+        </do_elseif>
+
+      </actions>
+      <patch sinceversion="2" state="complete">
+        <set_value name="$ShowProgress" exact="true"/>
+        <set_value name="$SignalCue_ObjectsDropped" exact="null"/>
+        <set_value name="$SignalCue_ObjectCollected" exact="null"/>
+      </patch>
+      <cues>
+
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="1"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup"/>
+          </actions>
+        </cue>
+
+        <cue name="StartMission" onfail="cancel" version="2">
+          <conditions>
+            <check_value value="$ErrorList.count" min="0"/>
+          </conditions>
+          <actions>
+            <set_value name="$maxprogress" exact="$TargetObjects.count"/>
+            <create_group groupname="$TargetObjectsPing"/>
+            <signal_cue cue="UpdateBriefing"/>
+          </actions>
+          <patch sinceversion="2">
+            <create_group groupname="$TargetObjectsPing"/>
+          </patch>
+          <cues>
+
+            <cue name="HandleScanPing" instantiate="true">
+              <conditions>
+                <event_long_range_scan_ping group="$TargetObjects"/>
+              </conditions>
+              <actions>
+                <debug_text text="'Found on LRS'" chance="$DebugChance"/>
+                <add_to_group groupname="$TargetObjectsPing" object="event.object"/>
+                <signal_cue cue="UpdateBriefing"/>
+              </actions>
+            </cue>
+
+            <cue name="CheckContainerLocation" checkinterval="61s" instantiate="true">
+              <actions>
+                <do_all exact="$TargetObjects.count" counter="$i">
+                  <do_if value="$TargetObjects.{$i}.distanceto.[$TargetSector, $TargetOffset] gt $TargetRadius">
+                    <!-- container got pushed outside targetarea, put it back where it's supposed to be -->
+                    <debug_text text="'Relocating container ' + $i + ' outside targetarea: dist=' + $TargetObjects.{$i}.distanceto.[$TargetSector, $TargetOffset] + ' radius=' + $TargetRadius" chance="$DebugChance"/>
+                    <warp object="$TargetObjects.{$i}" sector="$TargetSector">
+                      <safepos value="$TargetOffset" min="0" max="$TargetRadius" allowyaxis="false" />
+                    </warp>
+                  </do_if>
+                </do_all>
+              </actions>
+            </cue>
+
+            <cue name="CheckMissionStatus" instantiate="true">
+              <conditions>
+                <event_object_dropped_objects group="$TargetObjects" />
+              </conditions>
+              <actions>
+                <do_if value="$SignalCue_ObjectsDropped">
+                  <signal_cue_instantly cue="$SignalCue_ObjectsDropped"/>
+                </do_if>
+                <do_all exact="event.param.count" counter="$i">
+                  <add_to_group groupname="$DroppedObjects" object="event.param.{$i}"/>
+                  <set_drop_persistence object="event.param.{$i}" persistent="true" comment="don't auto-despawn"/>
+                </do_all>
+                <remove_from_group group="$TargetObjects" object="event.object" />
+                <remove_from_group group="$TargetObjectsPing" object="event.object" />
+                <signal_cue cue="UpdateBriefing"/>
+              </actions>
+            </cue>
+
+            <cue name="CheckMissionStatus_pickup_v2" instantiate="true">
+              <conditions>
+                <event_object_destroyed group="$DroppedObjects" />
+              </conditions>
+              <actions>
+                <do_if value="event.param2 != killmethod.collected">
+                  <!-- Really destroyed, not collected: Failure -->
+                  <set_value name="$feedbackvalue" exact="-1" comment="container was destroyed" />
+                  <signal_cue cue="Cleanup" />
+                </do_if>
+                <do_elseif value="not event.param.isplayerowned">
+                  <!-- Collected by non-player-owned ship: Failure -->
+                  <set_value name="$feedbackvalue" exact="-4" comment="collected by a non-player-owned ship" />
+                  <signal_cue cue="Cleanup" />
+                </do_elseif>
+                <do_else>
+                  <do_if value="$SignalCue_ObjectCollected">
+                    <signal_cue_instantly cue="$SignalCue_ObjectCollected"/>
+                  </do_if>
+                  <!-- Win or back to collecting more crates? -->
+                  <do_if value="$DroppedObjects.count le 1" comment="dropped items remaining? object removed from group *after* action-block, check for 1->0 !">
+                    <do_if value="$TargetObjects.count le 0" comment="crates remaining? note: object was already removed from the group, so check 0 !">
+                      <set_value name="$feedbackvalue" exact="1" comment="success"/>
+                      <signal_cue cue="Cleanup"/>
+                    </do_if>
+                  </do_if>
+                </do_else>
+                <signal_cue cue="UpdateBriefing"/>
+              </actions>
+            </cue>
+
+            <cue name="CheckMissionFailure" instantiate="true">
+              <conditions>
+                <event_object_destroyed group="$TargetObjects"/>
+              </conditions>
+              <actions>
+                <!-- fail mission-targets got destroyed by some means, failure -->
+                <set_value name="$feedbackvalue" exact="-1" comment="fail"/>
+                <signal_cue cue="Cleanup"/>
+              </actions>
+            </cue>
+
+          </cues>
+        </cue>
+
+        <cue name="UpdateBriefing" instantiate="true" comment="Called each time a briefing-update is needed">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <do_if value="$UpdateBriefing">
+              <update_mission cue="$MissionCue">
+                <briefing>
+                  <objective step="$StartStep" action="objective.find" text="$Text_Objective_Find" group="$DroppedObjects"/>
+                </briefing>
+              </update_mission>
+
+              <!-- If we have entries in the DroppedObject-list, the objective changes to 'collect' -->
+              <do_if value="$DroppedObjects.count">
+                <set_objective cue="$MissionCue" step="$StartStep + 1" action="objective.collect" text="{1001,96}" group="$DroppedObjects" updatebriefing="true"/>
+              </do_if>
+              <do_else>
+                <do_if value="$TargetObjectsPing.count">
+                  <set_objective cue="$MissionCue" step="$StartStep" action="objective.unlock" group="$TargetObjectsPing" updatebriefing="true" comment="Added group Target"/>
+                </do_if>
+                <do_elseif value="$maxprogress == 1 or not $ShowProgress">
+                  <set_objective cue="$MissionCue" step="$StartStep" action="objective.find" text="$Text_Objective_Find" object="$TargetSector" offset="$TargetOffset" radius="$TargetRadius"/>
+                </do_elseif>
+                <do_else>
+                  <set_objective cue="$MissionCue" step="$StartStep" action="objective.find" text="$Text_Objective_Find" object="$TargetSector" offset="$TargetOffset" radius="$TargetRadius">
+                    <progress progress="$maxprogress - $TargetObjects.count" max="$maxprogress" text="{30004,3002}"/>
+                  </set_objective>
+                </do_else>
+              </do_else>
+
+            </do_if>
+          </actions>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <!--TODO remove_objective-->
+
+            <do_if value="$feedbackvalue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'ERROR: Feedback value is 0 and no error values were set. Defaulting to -100'"/>
+                <set_value name="$feedbackvalue" exact="-100"/>
+              </do_if>
+              <do_else>
+                <set_value name="$feedbackvalue" exact="$ErrorList.{1}"/>
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+                    <do_if value="$ErrorList.{$Counter}" exact="-103">
+                      <set_value name="$FeedbackText" exact="'$TargetObjects and $DroppedObjects are empty.'"/>
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-102">
+                      <set_value name="$FeedbackText" exact="'$TargetObjects parameter left undefined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'Cue parameters not defined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-100">
+                      <set_value name="$FeedbackText" exact="'Undefined failure. Defaulted to -100'"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                    </do_else>
+
+                    <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+
+              <do_if value="$feedbackvalue" exact="-1">
+                <set_value name="$FeedbackText" exact="{30004,6080}" comment="'failed - container(s) were destroyed'"/>
+              </do_if>
+              <do_elseif value="$feedbackvalue" exact="1">
+                <set_value name="$FeedbackText" exact="'success - objects collected'"/>
+              </do_elseif>
+
+              <do_if value="$feedbackvalue" min="1">
+                <debug_text text="'Mission Successful. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_if>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission Failed. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+            <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$feedbackvalue"/>
+            <signal_cue cue="$EndSignalCue"/>
+            <cancel_cue cue="FindObject"/>
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

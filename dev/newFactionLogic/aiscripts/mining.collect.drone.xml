@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="iso-8859-1" ?>
+<aiscript name="mining.collect.drone" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd">
+  <!--
+  This script can be either used with a target or a ware. If a target is provided,
+  the drone tries to collect the target and returns to its homebase with the pickup.
+  If instead the ware parameter is set, the drone flys to some random locations and
+  returns to the homebase afterwards. The corresponding ware is then added via script.
+  by Michael and Benedikt
+  -->
+  <params>
+    <param name="homebase" default="this.ship.commander" comment="the homebase for this drone"/>
+    <param name="target" default="null" comment="the target pickup (if there is one for the corresponding resource)"/>
+    <param name="ware" default="null" comment="the resource this drone should collect (if there is no target)"/>
+    <param name="debugchance" default="0"/>
+  </params>
+  <interrupts>
+    <handler ref="TargetInvalidHandler" />
+  </interrupts>
+  <init>
+    <set_command command="command.mining" param="$homebase.zone" />
+  </init>
+  <attention min="visible">
+    <actions>
+
+      <set_value name="$gatherlocations" exact="3" comment="the number of locations required to gather a resource (no target)"/>
+      <set_value name="$gatherdistance" exact="2km" comment="the distance between the homebase and the first gather location (no target)"/>
+      <set_value name="$gatheroffset" exact="1km" comment="the distance between each gather location after the first one (no target)"/>
+
+      <label name="start" />
+      <!-- undock -->
+      <debug_text text="player.age+' undocking'" chance="$debugchance" />
+      <run_script name="'move.undock'">
+        <param name="debugchance" value="$debugchance"/>
+      </run_script>
+
+      <debug_text text="player.age+' successfully undocked'" chance="$debugchance" />
+      <clear_collision_filter object="this.ship" />
+
+      <label name="collect" />
+      <!-- collect -->
+      <do_if value="$target" exact="null">
+        <!-- there is no pickup, fly to random positions instead -->
+        <set_value name="$currentlocation" exact="0"/>
+        <create_position name="$nextlocation" object="this.ship" min="$gatherdistance - 0.5km" max="$gatherdistance + 0.5km"/>
+        <do_while value="$currentlocation lt $gatherlocations">
+          <!-- repeatedly move to random locations -->
+          <set_value name="$currentlocation" operation="add" exact="1"/>
+          <debug_text text="player.age+' moving to gather location #'+$currentlocation" chance="$debugchance" />
+          <move_to destination="this.ship.zone" object="this.ship" flightbehaviour="flightbehaviour.generic" finishonapproach="true" forcesteering="true">
+            <position value="$nextlocation"/>
+          </move_to>
+          <create_position name="$nextlocation" object="this.ship" min="$gatheroffset - 0.5km" max="$gatheroffset - 0.5km"/>
+        </do_while>
+        <!-- dock again -->
+        <!-- at the moment, this is started via start_script, so an immediate order in this case will not return to this. -->
+        <!--<create_order object="this.ship" id="'DockAndWait'" immediate="true">
+          <param name="destination" value="$homebase"/>
+        </create_order>-->
+        <run_script name="'order.dock'" result="$result">
+          <param name="destination" value="$homebase"/>
+          <param name="abouttofinish" value="true"/>
+        </run_script>
+        <!-- successfully docked -->
+        <do_if value="$result">
+          <debug_text text="'successfully docked'" chance="$debugchance"/>
+          <wait />
+        </do_if>
+        <assert value="false" text="'\'order.dock\' returned to visible-block of \'mining.collect.drone\' for drone %1 [%2] [ Michael ]'.[this.ship.knownname, this.ship]" />
+      </do_if>
+      <do_else>
+        <!-- there is a pickup, go and get it -->
+        <run_script name="'move.collect.drone'">
+          <param name="target" value="$target" />
+          <param name="homebase" value="$homebase" />
+          <param name="stayactive" value="false" />
+          <param name="launching" value="false" />
+          <param name="debugchance" value="$debugchance" />
+        </run_script>
+        <!-- move.collect.drone also handles docking -->
+      </do_else>
+
+      <!-- we are only down here if docking didn't work, most likely because the homebase is dead, we just wait until the low-attention case cleans up -->
+      <stop_moving object="this.ship" />
+      <wait max="5s" />
+
+      <resume label="collect"/>
+
+    </actions>
+  </attention>
+  <attention min="unknown">
+    <actions>
+      <!-- cleanup -->
+      <label name="start" />
+      <label name="collect" />
+
+      <do_if value="this.ship.commander.isoperational">
+        <!-- at the moment, this is started via start_script, so an immediate order in this case will not return to this. -->
+        <!--<create_order object="this.ship" id="'DockAndWait'" immediate="true">
+          <param name="destination" value="this.ship.commander"/>
+        </create_order>-->
+        <run_script name="'order.dock'" result="$result">
+          <param name="destination" value="this.ship.commander"/>
+          <param name="abouttofinish" value="true"/>
+        </run_script>
+        <assert value="$result" text="'\'order.dock\' returned to unknown-block of \'mining.collect.drone\' for drone %1 [%2] [ Michael ]'.[this.ship.knownname, this.ship]" />
+      </do_if>
+      <do_else>
+        <destroy_object object="this.ship" explosion="false" />
+      </do_else>
+
+      <!-- drone no longer exists if the drone docked successfully -->
+      <debug_text text="player.age+' drone docked.'" chance="@$debugchance"/>
+    </actions>
+  </attention>
+  <on_abort>
+    <!-- in this case, make the non-persistent again -->
+    <do_if value="$target.exists">
+      <do_if value="$target.owner == this.trueowner and not @$target.hascontext.{this.assignedcontrolled}">
+        <set_owner object="$target" faction="null"/>
+      </do_if>
+      <set_region_object_persistence object="$target" persistent="false" />
+    </do_if>
+  </on_abort>
+</aiscript>

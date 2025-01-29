@@ -1,0 +1,298 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_Collect_Crates" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--
+    $feedbackvalue:
+    Mission Errors <=-100
+    -104: PositionObject and Range must be provided together
+    -103: Provided group Targets was empty and no position parameters passed to find more
+    -102: EndSignalCue or MissionCue not defined
+    -101: $Targets is not of type group
+    -100: Undefined failure. Defaulted to -100
+    
+    Player Fails
+    -2: Object Destroyed by non-Player Object
+    -1: Player did not collect any objects
+    
+    Player Success
+    1: Player collected at least 1 object
+    3: Player collected all objects
+    4: There were never any targets-->
+
+    <!--$PickupTargets variable may be accessed from outside-->
+
+    <library name="CollectCrates">
+      <params>
+        <param name="EndSignalCue"/>
+        <param name="MissionCue"/>
+        <param name="StartStep" default="1" comment="Briefing step to start the mission on"/>
+        <param name="UpdateBriefing" default="true" comment="Update the briefing objective step when the objective is updated"/>
+
+        <param name="Targets" default="null" comment="Target crates to collect"/>
+
+        <param name="PositionObject" default="null" comment="Object, zone or sector which to find crates around"/>
+        <param name="PositionValue" default="null" comment="Position relative to PositionObject"/>
+        <param name="Range" default="null" comment="Range around PositionObject in which to find crates"/>
+        <param name="Ware" default="null" comment="Ware or list of wares to find in crates"/>
+        <param name="TriggerEndCue" default="null" comment="Trigger the end of the RML from the caller. Allows the RML to continue if there is no target in the group. WARNING: If set, the mission must be cancelled from caller"/>
+
+        <param name="DebugChance" default="0"/>
+      </params>
+      <actions>
+        <set_value name="$feedbackvalue" exact="0"/>
+        <create_list name="$ErrorList"/>
+
+        <do_if value="not $EndSignalCue or not $MissionCue">
+          <append_to_list name="$ErrorList" exact="-102"/>
+        </do_if>
+
+        <set_value name="$FindCrates" exact="false"/>
+        <do_if value="$PositionObject.exists and $Range">
+          <set_value name="$FindCrates" exact="true"/>
+        </do_if>
+        <do_elseif value="($PositionObject and not $Range) or ($Range and not $PositionObject)">
+          <append_to_list name="$ErrorList" exact="-104"/>
+        </do_elseif>
+
+        <do_elseif value="$Targets">
+          <do_if value="typeof $Targets != datatype.group">
+            <append_to_list name="$ErrorList" exact="-101"/>
+          </do_if>
+          <do_elseif value="$Targets.count == 0 and not $PositionObject">
+            <append_to_list name="$ErrorList" exact="-103"/>
+          </do_elseif>
+        </do_elseif>
+
+      </actions>
+      <cues>
+
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="1"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup"/>
+          </actions>
+        </cue>
+
+        <cue name="StartMission" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" exact="0"/>
+          </conditions>
+          <actions>
+            <create_group groupname="$PickupTargets"/>
+            <do_if value="$Targets">
+              <!--$PickupTargets variable may be accessed from outside. If renamed, change callers-->
+              <add_to_group groupname="$PickupTargets" group="$Targets"/>
+            </do_if>
+            <include_actions ref="FindCrates"/>
+            <set_value name="$ObjectiveText" exact="null"/>
+            <do_if value="typeof $Ware == datatype.ware">
+              <set_value name="$ObjectiveText" exact="$Ware.name"/>
+            </do_if>
+            <set_value name="$AutoEndPhase" exact="not $TriggerEndCue and not $FindCrates"/>
+          </actions>
+          <cues>
+            <cue name="DestroyComponents_Ref" ref="md.RML_Destroy_Components.DestroyComponents">
+              <param name="EndSignalCue" value="DestroyComponents_End"/>
+              <param name="MissionCue" value="$MissionCue"/>
+              <param name="StartStep" value="$StartStep" comment="Briefing step to start the mission on"/>
+              <param name="UpdateBriefing" value="$UpdateBriefing" comment="Update the briefing objective step when the objective is updated"/>
+
+              <param name="Targets_Param" value="$PickupTargets" comment="Target components to destroy. This group will be copied to '$Targets'"/>
+              <param name="TargetUpdateCue" value="TargetUpdateCue"/>
+              <param name="Objective" value="objective.pickup"  comment="Objective used, e.g objective.pickup / objective.destroy"/>
+              <param name="KillMethod" value="killmethod.collected"/>
+              <param name="ObjectiveIsGroup" value="true" comment="(true) Have the objective point to the group or (false) have the guidance point to one object"/>
+              <param name="ObjectiveText" value="$ObjectiveText" comment="Override text for objectives"/>
+              <param name="TriggerEndCue" value="if $AutoEndPhase then null else TriggerEnd"/>
+
+              <param name="DebugChance" value="$DebugChance"/>
+            </cue>
+
+            <cue name="TriggerEndCue_Check" onfail="cancel">
+              <conditions>
+                <check_value value="$TriggerEndCue"/>
+              </conditions>
+              <cues>
+                <cue name="TriggerEndCue_Triggered">
+                  <conditions>
+                    <event_cue_signalled cue="$TriggerEndCue"/>
+                  </conditions>
+                  <actions>
+                    <signal_cue cue="TriggerEnd"/>
+                  </actions>
+                </cue>
+
+                <cue name="Find_New_Targets" checkinterval="1s" instantiate="true">
+                  <actions>
+                    <include_actions ref="FindCrates"/>
+                    <signal_cue_instantly cue="TargetUpdateCue" param="[$PickupTargets]"/>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="TargetUpdateCue" instantiate="true">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+            </cue>
+
+            <cue name="TriggerEnd">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+            </cue>
+
+            <cue name="DestroyComponents_End">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <do_if value="DestroyComponents_End.$EndFeedbackValue == 1">
+                  <!--Player collected at least 1 object-->
+                  <set_value name="$feedbackvalue" exact="1"/>
+                </do_if>
+                <do_elseif value="DestroyComponents_End.$EndFeedbackValue == 2">
+                  <!--Partial damage is a fail-->
+                  <set_value name="$feedbackvalue" exact="-1"/>
+                </do_elseif>
+                <do_elseif value="DestroyComponents_End.$EndFeedbackValue == 3">
+                  <!--Player collected all objects-->
+                  <set_value name="$feedbackvalue" exact="3"/>
+                </do_elseif>
+                <do_elseif value="DestroyComponents_End.$EndFeedbackValue == 4">
+                  <!--There were never any targets-->
+                  <set_value name="$feedbackvalue" exact="4"/>
+                </do_elseif>
+                <do_elseif value="DestroyComponents_End.$EndFeedbackValue == -1">
+                  <!--Player did not collect any objects-->
+                  <set_value name="$feedbackvalue" exact="-1"/>
+                </do_elseif>
+                <do_elseif value="DestroyComponents_End.$EndFeedbackValue == -2">
+                  <!--Object collected by non-Player Object-->
+                  <set_value name="$feedbackvalue" exact="-2"/>
+                </do_elseif>
+                <do_elseif value="DestroyComponents_End.$EndFeedbackValue gt 0">
+                  <!--Unknown success case: Handle as if there were no targets-->
+                  <set_value name="$feedbackvalue" exact="4"/>
+                </do_elseif>
+                <do_elseif value="DestroyComponents_End.$EndFeedbackValue le 0">
+                  <!--Unknown failure case: Handle as if there were no targets-->
+                  <set_value name="$feedbackvalue" exact="4"/>
+                </do_elseif>
+                <do_else>
+                  <set_value name="$feedbackvalue" exact="DestroyComponents_End.$EndFeedbackValue"/>
+                </do_else>
+                <signal_cue cue="Cleanup"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <library name="FindCrates">
+          <actions>
+            <do_if value="$PositionObject.exists">
+              <do_if value="not $PositionValue">
+                <set_value name="$PositionValue" exact="position.[0m, 0m, 0m]"/>
+              </do_if>
+              <do_if value="$PositionObject.isclass.space">
+                <find_object groupname="$PickupTargets" class="class.collectable" space="$PositionObject" multiple="true">
+                  <match_any_wares wares="$Ware"/>
+                  <match_distance value="$PositionValue" space="$PositionObject" max="$Range"/>
+                </find_object>
+              </do_if>
+              <do_elseif value="$PositionObject.isclass.object">
+                <find_object groupname="$PickupTargets" class="class.collectable" space="$PositionObject.zone" multiple="true">
+                  <match_any_wares wares="$Ware"/>
+                  <match_distance object="$PositionObject" value="$PositionValue" max="$Range"/>
+                </find_object>
+              </do_elseif>
+            </do_if>
+          </actions>
+        </library>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <!--TODO remove_objective-->
+
+            <do_if value="$feedbackvalue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'ERROR: - Feedback value is 0 and no error values were set. Defaulting to -100'"/>
+                <set_value name="$feedbackvalue" exact="-100"/>
+              </do_if>
+              <do_else>
+                <set_value name="$feedbackvalue" exact="$ErrorList.{1}"/>
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+                    <do_if value="$ErrorList.{$Counter}" exact="-103">
+                      <set_value name="$FeedbackText" exact="'Provided group Targets was empty'"/>
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-102">
+                      <set_value name="$FeedbackText" exact="'EndSignalCue or MissionCue not defined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'$Targets is not of type group'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-100">
+                      <set_value name="$FeedbackText" exact="'Undefined failure. Defaulted to -100'"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                    </do_else>
+
+                    <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+
+              <do_if value="$feedbackvalue" exact="-2">
+                <set_value name="$FeedbackText" exact="{30004,6086}" comment="'Object collected by non-Player Object'"/>
+              </do_if>
+              <do_elseif value="$feedbackvalue" exact="-1">
+                <set_value name="$FeedbackText" exact="{30004,6031}" comment="'Player did not collect any objects'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="1">
+                <set_value name="$FeedbackText" exact="'Player collected at least 1 object'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="2">
+                <set_value name="$FeedbackText" exact="'This should not be possible'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="3">
+                <set_value name="$FeedbackText" exact="'Player collected all objects'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="4">
+                <set_value name="$FeedbackText" exact="'There were never any targets'"/>
+              </do_elseif>
+
+              <do_if value="$feedbackvalue" min="1">
+                <debug_text text="'Mission Successful. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText"  chance="md.$RML_Debugging * $DebugChance"/>
+              </do_if>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission Failed. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText"  chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+            <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$feedbackvalue"/>
+            <signal_cue cue="$EndSignalCue"/>
+            <cancel_cue cue="CollectCrates"/>
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

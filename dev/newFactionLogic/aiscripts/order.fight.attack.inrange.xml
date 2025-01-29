@@ -1,0 +1,172 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<aiscript name="order.fight.attack.inrange" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" version="1">
+  <order id="AttackInRange" name="{1041, 631}" description="{1041, 632}" category="combat">
+    <params>
+      <param name="destination" type="position" text="{1041, 10158}" comment="Center of area in which targets will be attacked. Position">
+        <input_param name="class" value="class.sector"/>
+      </param>
+      <param name="radius" type="length" default="this.ship.maxradarrange" text="{1041, 10093}" comment="Radius">
+        <input_param name="min" value="1km"/>
+        <input_param name="max" value="[this.ship.maxradarrange, 1km].max"/>
+        <input_param name="step" value="1km"/>
+      </param>
+      <param name="pursuetargets" default="false" type="bool" text="{1041, 10091}" advanced="true" comment="Pursue targets"/>
+      <param name="enforceradius" default="if this.ship.isplayerowned then true else false" type="internal" comment="Disengages hostile targets outside radius.">
+        <patch value="if this.ship.isplayerowned then true else false" sinceversion="1"/>
+      </param>
+      <param name="debugchance" type="bool" default="0" advanced="true" text="{1041, 10086}" comment="Print debug output">
+        <input_param name="truevalue" value="100"/>
+      </param>
+    </params>
+    <requires>
+      <match shiptype="shiptype.lasertower" negate="true"/>
+      <match class="class.spacesuit" negate="true"/>
+    </requires>
+    <location object="$destination.{1}" position="$destination.{2}" radius="$radius"/>
+  </order>
+  <interrupts>
+    <handler ref="SectorChangeHandler"/>
+    <handler ref="ScannedHandler"/>
+    <handler ref="InspectedHandler"/>
+    <handler ref="TargetInvalidHandler"/>
+    <handler ref="ResupplyHandler"/>
+    <handler ref="TideHandler"/>
+  </interrupts>
+  <init>
+    <do_if value="$destination.{1}.isclass.sector">
+      <set_value name="$targetsector" exact="$destination.{1}"/>
+    </do_if>
+    <do_elseif value="$destination.{1}.isclass.zone">
+      <do_if value="$destination.{1}.isclass.highway">
+        <debug_text text="'%1 (%2) was sent to attack everything inside a highway. This is not supported. Destination Space: %3 (%4), Position: %5'.[this.assignedcontrolled.knownname, this.assignedcontrolled, $destination.{1}.knownname, $destination.{1}, $destination.{2}]" filter="error"/>
+        <cancel_order order="this.assignedcontrolled.order"/>
+      </do_if>
+      <do_elseif value="$destination.{1}.sector">
+        <set_value name="$targetsector" exact="$destination.{1}.sector"/>
+        <create_position name="$position" space="$targetsector" value="$destination.{2}" object="$destination.{1}"/>
+      </do_elseif>
+      <do_else>
+        <debug_text text="'Zone is not in a sector and is not a highway. Destination Space: %1 (%2), Position: %3'.[$destination.{1}.knownname, $destination.{1}, $destination.{2}]" filter="error"/>
+        <cancel_order order="this.assignedcontrolled.order"/>
+      </do_else>
+    </do_elseif>
+    <do_else>
+      <debug_text text="'Input destination is not in a valid space. Destination Space: %1 (%2), Position: %3'.[$destination.{1}.knownname, $destination.{1}, $destination.{2}]" filter="error"/>
+      <cancel_order order="this.assignedcontrolled.order"/>
+    </do_else>
+    <set_value name="$position" exact="$destination.{2}"/>
+  </init>
+  <patch sinceversion="1">
+    <set_value name="$enforceradius" exact="this.isplayerowned"/>
+  </patch>
+  <attention min="unknown">
+    <actions>
+      <label name="start"/>
+
+      <!-- check for resupply before attacking or upon restarting. -->
+      <do_if value="player.age gt @$next_resupply_check" chance="30">
+        <debug_text text="'%1 (%2) ready to resupply.'.[this.assignedcontrolled.knownname, this.assignedcontrolled]" chance="$debugchance"/>
+        <signal_objects object="this.assignedcontrolled" param="'resupply'" param2="[false]" param3="$debugchance" comment="param2 = [$urgent?, $param_station], param3 = $debugchance"/>
+        <set_value name="$next_resupply_check" exact="player.age + 30min"/>
+      </do_if>
+
+      <!-- if not in area, go there -->
+      <do_if value="(this.sector != $targetsector) or (this.assignedcontrolled.distanceto.[$targetsector, $position] gt $radius)">
+        <run_script name="'move.generic'" result="$movesuccess">
+          <param name="destination" value="$targetsector"/>
+          <param name="position" value="$position"/>
+          <param name="endintargetzone" value="true"/>
+          <param name="activepatrol" value="true"/>
+          <param name="radius" value="$radius"/>
+          <param name="radiusanchorpos" value="$position"/>
+          <param name="radiusanchorspace" value="$targetsector"/>
+          <param name="enforceradius" value="$enforceradius"/>
+          <param name="debugchance" value="$debugchance"/>
+        </run_script>
+        <do_if value="not $movesuccess">
+          <do_if value="@this.assignedcontrolled.order.isrunning">
+            <set_order_failed order="this.assignedcontrolled.order" text="{1045, 101}" comment="Unable to reach destination."/>
+          </do_if>
+          <debug_text text="'Unable to reach destination. Aborting.'" chance="$debugchance"/>
+          <resume label="finish"/>
+        </do_if>
+      </do_if>
+
+      <label name="acquiretarget"/>
+
+      <find_gravidar_contact groupname="$targets" object="this.assignedcontrolled" docked="false" class="class.defensible" maybeattackedby="this.assignedcontrolled" multiple="true">
+        <match_context macro="$targetsector.macro"/>
+        <match class="class.buildstorage" negate="true"/>
+        <match_distance max="$radius" value="$position" space="$targetsector"/>
+      </find_gravidar_contact>
+      <do_for_each name="$loctarget" in="$targets" reverse="true">
+        <do_if value="($targetsector != $loctarget.sector) or not this.assignedcontrolled.cansee.{$loctarget}">
+          <debug_text text="'target not in sector or too far away. removing.'" chance="$debugchance"/>
+          <remove_from_group group="$targets" object="$loctarget"/>
+        </do_if>
+      </do_for_each>
+      <debug_text text="'%s %s %s found %s targets.'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, $targets.count]" chance="$debugchance"/>
+      <do_if value="not @$targets.count">
+        <resume label="finish"/>
+      </do_if>
+
+      <!-- Select the best target. -->
+      <run_script name="'lib.target.selection'">
+        <param name="primarytarget" value="null"/>
+        <param name="secondarytargets" value="$targets"/>
+        <param name="escort" value="null"/>
+        <param name="pursuedistance" value="this.assignedcontrolled.maxradarrange"/>
+        <param name="pursuetargets" value="false"/>
+        <param name="allowothertargets" value="false"/>
+        <param name="checkrelation" value="true"/>
+        <param name="radius" value="$radius"/>
+        <param name="radiusanchorpos" value="$position"/>
+        <param name="radiusanchorspace" value="$targetsector"/>
+        <param name="debugchance" value="$debugchance"/>
+        <!-- The selected target as return value -->
+        <save_retval name="target" variable="$target"/>
+      </run_script>
+      <do_if value="not @$target.canbeattacked">
+        <debug_text text="'no target found. ending.'" chance="$debugchance"/>
+        <resume label="finish"/>
+      </do_if>
+      <debug_text text="'target out of range! target distance to center: %sm. radius: %sm'.[$target.distanceto.[$targetsector, $position], $radius]" filter="error" chance="($target.distanceto.[$targetsector, $position] gt $radius) * 100"/>
+
+      <label name="attack"/>
+
+      <debug_text text="'%s %s %s attacking %s %s %s %sm away from area center. radius: %sm'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, @$target.idcode, $target.knownname, $target, $target.distanceto.[$targetsector, $position], $radius]" chance="$debugchance"/>
+      <set_value name="$targetlist" exact="$targets.list"/>
+
+      <!-- this order stays in the order queue to acquire a new target after the attack order ends. -->
+      <create_order id="'Attack'" object="this.assignedcontrolled" immediate="true">
+        <param name="primarytarget" value="$target"/>
+        <param name="secondarytargets" value="$targetlist"/>
+        <param name="pursuetargets" value="false"/>
+        <param name="allowothertargets" value="false"/>
+        <param name="checkrelation" value="true"/>
+        <param name="radius" value="$radius"/>
+        <param name="radiusanchorspace" value="$targetsector"/>
+        <param name="radiusanchorpos" value="$position"/>
+        <param name="enforceradius" value="$enforceradius"/>
+        <param name="debugchance" value="$debugchance"/>
+      </create_order>
+
+      <label name="finish"/>
+
+      <wait exact="1s" comment="short wait to allow orders.base to start the Attack order and prevent this order from completing."/>
+
+      <do_if value="this.isplayerowned and not this.isclass.computer and not this.assignedcontrolled.nextorder and (not this.assignedcontrolled.commander or (this.assignedcontrolled.commander == player.occupiedship)) and notification.npc_await_orders.active">
+        <!-- Player notification -->
+        <set_value name="$speakline" exact="10304" comment="Awaiting orders."/>
+        <run_script name="'player.interaction'">
+          <param name="Line" value="$speakline"/>
+          <param name="MaxQueueDelay" value="10s"/>
+          <param name="caption" value="{1016,6}.[this.assignedcontrolled.knownname, this.assignedcontrolled.idcode]"/>
+          <param name="interactive" value="false"/>
+          <param name="debugchance" value="$debugchance"/>
+        </run_script>
+      </do_if>
+
+    </actions>
+  </attention>
+</aiscript>

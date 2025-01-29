@@ -1,0 +1,2099 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="Story_Research_Welfare_1" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <cue name="Check_Research_Unlocked" onfail="cancel">
+      <conditions>
+        <cue_is_complete cue="md.X4Ep1_Mentor_Subscriptions.UnlockResearch"/>
+      </conditions>
+    </cue>
+
+    <cue name="Start" namespace="this" version="4">
+      <conditions>
+        <check_any>
+          <event_cue_completed cue="md.X4Ep1_Mentor_Subscriptions.UnlockResearch"/>
+          <event_cue_completed cue="Check_Research_Unlocked"/>
+        </check_any>
+      </conditions>
+      <actions>
+        <set_value name="$CharacterMacroTable" exact="table[
+                   {race.argon} = macro.character_argon_female_plot_welfare_supervisor_macro,
+                   {race.split} = macro.character_split_female_plot_welfare_supervisor_macro,
+                   {race.teladi} = macro.character_teladi_female_plot_welfare_supervisor_macro,
+                   {race.paranid} = macro.character_paranid_plot_welfare_supervisor_macro]"/>
+        <set_value name="$CharacterCutsceneTable" exact="table[]"/>
+
+        <set_value name="$ResearchWare" exact="ware.research_module_welfare_1"/>
+        <set_value name="$AlreadyResearched" exact="$ResearchWare.research.unlocked"/>
+        <do_if value="not $AlreadyResearched">
+          <do_for_each name="$Precursor" in="$ResearchWare.research.precursors.list">
+            <do_if value="$Precursor.research.unlocked">
+              <set_value name="$AlreadyResearched" exact="true"/>
+              <break/>
+            </do_if>
+          </do_for_each>
+        </do_if>
+
+        <do_if value="$AlreadyResearched">
+          <add_blueprints wares="ware.module_gen_welfare_gamblinghall_01"/>
+        </do_if>
+        <!--Default values. Will be reevaluated when research is selected-->
+        <set_value name="$Supervisor_Race" exact="null"/>
+        <set_value name="$Supervisor_Male" exact="null"/>
+        <set_value name="$LastResearchDescriptionTime" exact="0"/>
+      </actions>
+      <patch sinceversion="2">
+        <do_if value="not $AlreadyResearched">
+          <set_value name="$AlreadyResearched" exact="$ResearchWare.research.unlocked"/>
+          <do_if value="$AlreadyResearched">
+            <add_blueprints wares="ware.module_gen_welfare_gamblinghall_01"/>
+            <debug_text text="'Research was already unlocked. Cancelling precursor mission for ' + $ResearchWare.name" filter="savegame"/>
+            <!--This is safe as the player could not interact with the research mission in the menu-->
+            <reset_cue cue="Setup"/>
+          </do_if>
+        </do_if>
+      </patch>
+      <patch sinceversion="3">
+        <do_if value="@$CasinoInterior.exists">
+          <set_object_name object="$CasinoInterior" name="'{20007,3091}'"/>
+          <debug_text text="'Renaming casino to ' + $CasinoInterior.knownname" filter="savegame"/>
+        </do_if>
+      </patch>
+      <patch sinceversion="4">
+        <set_value name="$ResearchWasAnnounced" exact="$Supervisor?"/>
+        <do_if value="@$CasinoStation.exists and Intro_TalkTo.state == cuestate.waiting">
+          <debug_text text="'Making selected casino station ' + $CasinoStation + ' ' + $CasinoStation.knownname + ' vulnerable before the mission starts.'" filter="savegame"/>
+          <run_actions ref="md.LIB_Generic.RequestObjectVulnerability">
+            <param name="Object" value="$CasinoStation"/>
+            <param name="RequesterCue" value="Start"/>
+            <param name="DebugChance" value="$DebugChance"/>
+          </run_actions>
+
+          <check_object result="$CasinoIsValid" object="$CasinoStation">
+            <match owner="faction.player" negate="true"/>
+            <match_relation_to faction="faction.player" relation="dock" comparison="ge"/>
+            <match_dock walkable="true"/>
+          </check_object>
+          <do_if value="not $CasinoIsValid">
+            <debug_text text="'Casino station ' + $CasinoStation + ' ' + $CasinoStation.knownname + ' is no longer valid before the mission has been started. Forget it.'" filter="savegame"/>
+            <set_value name="$PatchedCasinoStation" exact="$CasinoStation"/>
+            <set_value name="$CasinoStation" exact="null"/>
+            <clear_group group="$CasinoStationGroup"/>
+          </do_if>
+        </do_if>
+      </patch>
+      <cues>
+        <cue name="Setup" onfail="cancel">
+          <conditions>
+            <check_value value="not $AlreadyResearched"/>
+          </conditions>
+          <actions>
+            <set_value name="$MissionCue" exact="namespace"/>
+            <set_value name="$HQ" exact="player.headquarters"/>
+            <set_value name="$Boso" exact="md.$PersistentCharacters.$BosoTa"/>
+            <set_value name="$CharacterCutsceneTable.{$Boso}" exact="table[$key = 'ShowCharacterBoron']"/>
+            <create_group groupname="$CasinoStationGroup"/>
+            <set_value name="$ResearchWasAnnounced" exact="false"/>
+            <set_value name="$DebugChance" exact="0"/>
+          </actions>
+          <cues>
+            <!--Add the research item when the player has a non-hq factory with workforce not at max-->
+            <cue name="Find_Mission_Stations" checkinterval="10s">
+              <conditions>
+                <check_value value="player.age gt Setup.time + 15min"/>
+              </conditions>
+              <actions>
+                <set_value name="$ForceCasino" exact="Intro_TalkTo.state != cuestate.waiting"/>
+
+                <find_station_by_true_owner name="$PlayerStations" faction="faction.player" space="player.galaxy" multiple="true"/>
+                <set_value name="$SelectedPlayerStation" exact="null"/>
+                <set_value name="$CasinoStation" exact="null"/>
+                <clear_group group="$CasinoStationGroup"/>
+                <shuffle_list list="$PlayerStations"/>
+                <do_for_each name="$PlayerStation" in="$PlayerStations">
+                  <do_if value="$PlayerStation != player.headquarters and $PlayerStation.products.count and $PlayerStation.workforce.capacity and $PlayerStation.workforce.amount lt $PlayerStation.workforce.capacity">
+                    <set_value name="$SelectedPlayerStation" exact="$PlayerStation"/>
+                    <break/>
+                  </do_if>
+                </do_for_each>
+
+                <do_if value="$SelectedPlayerStation and not $Supervisor_Race">
+                  <set_value name="$WorkforceAmounts" exact="$SelectedPlayerStation.workforce.amounts"/>
+                  <do_for_each name="$WorkforceRace" valuename="$WorkforceAmount" in="$WorkforceAmounts" reverse="true">
+                    <do_if value="$WorkforceAmount and $CharacterMacroTable.{$WorkforceRace}?">
+                      <set_value name="$Supervisor_Race" exact="$WorkforceRace"/>
+                      <break/>
+                    </do_if>
+                  </do_for_each>
+                  <do_if value="not $Supervisor_Race">
+                    <!--Do it again but without checking current workforce amount-->
+                    <do_for_each name="$WorkforceRace" in="$WorkforceAmounts" reverse="true">
+                      <do_if value="$CharacterMacroTable.{$WorkforceRace}?">
+                        <set_value name="$Supervisor_Race" exact="$WorkforceRace"/>
+                        <break/>
+                      </do_if>
+                    </do_for_each>
+                  </do_if>
+                  <do_if value="not $Supervisor_Race">
+                    <!--Fallback to a random character race in the table-->
+                    <set_value name="$Supervisor_Race" exact="$CharacterMacroTable.keys.{1}"/>
+                  </do_if>
+
+                </do_if>
+
+                <do_if value="$SelectedPlayerStation and $Supervisor_Race">
+
+                  <!--Find a NPC station nearby to add a welfare module to-->
+                  <find_sector_in_range name="$NearbySectors" mindistance="1" maxdistance="if $ForceCasino then 10 else 3" object="$SelectedPlayerStation" multiple="true"/>
+                  <do_for_each name="$NearbySector" in="$NearbySectors">
+                    <find_station name="$PotentialNPCStations" space="$NearbySector" multiple="true">
+                      <match owner="faction.player" negate="true"/>
+                      <match_relation_to faction="faction.player" relation="dock" comparison="ge"/>
+                      <match_dock walkable="true"/>
+                    </find_station>
+
+                    <shuffle_list list="$PotentialNPCStations"/>
+                    <do_for_each name="$PotentialNPCStation" in="$PotentialNPCStations">
+                      <do_if value="$PotentialNPCStation.isgodproductionentry and $PotentialNPCStation.modulesets.{1} == 'factory' and $PotentialNPCStation.products.count and not $PotentialNPCStation.build">
+                        <add_to_group groupname="$CasinoStationGroup" object="$PotentialNPCStation"/>
+                        <debug_text text="'Selected player station ' + $SelectedPlayerStation + ' ' + $SelectedPlayerStation.knownname + ' in ' + $SelectedPlayerStation.sector.knownname" chance="$DebugChance"/>
+                        <debug_text text="'Selected station as casino: ' + $PotentialNPCStation + ' ' + $PotentialNPCStation.knownname + ' in ' + $PotentialNPCStation.sector.knownname" chance="$DebugChance"/>
+                        <get_module_definition macro="$ViableConnectionModules" faction="$PotentialNPCStation.owner" tags="[tag.connection, tag.module]" set="'factory'" multiple="true" />
+                        <create_construction_sequence station="$PotentialNPCStation" base="$PotentialNPCStation.plannedconstruction.sequence" macros="[macro.welfare_gen_gamblinghall_01_macro]" connectors="$ViableConnectionModules" />
+                        <break/>
+                      </do_if>
+                    </do_for_each>
+                    <do_if value="$CasinoStationGroup.count">
+                      <break/>
+                    </do_if>
+                  </do_for_each>
+                </do_if>
+
+                <!--If no suitable station is found and a casino is required at this moment, spawn a factory with the welfare module-->
+                <set_value name="$SpawnedFactory" exact="null"/>
+                <do_if value="$CasinoStationGroup.count == 0 and $ForceCasino">
+                  <do_for_each name="$PotentialFaction" in="lookup.faction.list">
+                    <do_if value="$PotentialFaction.iseconomic and $PotentialFaction.isactive and $PotentialFaction != faction.player and $PotentialFaction.hasrelation.dock.{faction.player}">
+                      <set_value name="$ProductionWare" exact="ware.energycells"/>
+                      <get_module_definition reference="$ResultRef" faction="$PotentialFaction" ware="$ProductionWare"/>
+                      <do_if value="$ResultRef">
+                        <find_sector_in_range name="$PlacementSector" mindistance="1" maxdistance="3" object="$HQ"/>
+                        <create_factory name="$SpawnedFactory" modules="$Modules" resultbasesequence="$BaseSequence" sector="$PlacementSector" race="$PotentialFaction.primaryrace" owner="$PotentialFaction" originalproduct="$ProductionWare" state="componentstate.operational">
+                          <compatibilities>
+                            <limits production="2"/>
+                          </compatibilities>
+                          <select ware="$ProductionWare" faction="$PotentialFaction"/>
+                          <safepos x="100km" z="-150km" max="10km" includeplotbox="true"/>
+                        </create_factory>
+                        <append_to_list name="$Modules" exact="macro.welfare_gen_gamblinghall_01_macro"/>
+                        <debug_text text="player.age + ' Was unable to find a suitable NPC station to use as the casino. Spawning one instead. Station: ' + $SpawnedFactory.knownname + ' ' + $SpawnedFactory + ' in sector ' + $PlacementSector.knownname" filter="error"/>
+                        <signal_cue_instantly cue="md.FinaliseStations.NewStation_GenerateFactory_Signal" param="table[
+                                                $station = $SpawnedFactory,
+                                                $plannedmodules = $Modules,
+                                                $moduleset = $SpawnedFactory.modulesets.{1},
+                                                $addbuild = false,
+                                                $debugoutput = if $DebugChance == 100 then true else false
+                                                ]"/>
+                        <add_to_group groupname="$CasinoStationGroup" object="$SpawnedFactory"/>
+                        <break/>
+                      </do_if>
+                    </do_if>
+                  </do_for_each>
+                </do_if>
+              </actions>
+              <delay exact="15min"/>
+              <actions>
+                <do_if value="$CasinoStationGroup.count == 0">
+                  <reset_cue cue="Find_Mission_Stations"/>
+                </do_if>
+              </actions>
+              <cues>
+                <cue name="Casino_Station_Generated">
+                  <conditions>
+                    <event_object_construction_sequence_created group="$CasinoStationGroup"/>
+                  </conditions>
+                  <!--Delay so any other cues waiting for event_object_construction_sequence_created can work, notably in FinaliseStations if we created a new factory-->
+                  <delay exact="1ms"/>
+                  <actions>
+                    <do_if value="event.param and event.param2">
+                      <!--Success-->
+                      <set_value name="$CasinoStation" exact="event.object"/>
+                      <set_value name="$CasinoStationSector" exact="$CasinoStation.sector"/>
+                      <do_if value="$SpawnedFactory">
+                        <debug_text text="player.age + ' Init spawned station'" chance="$DebugChance"/>
+                        <signal_objects object="player.galaxy" param="'init station'" param2="$CasinoStation" param3="false"/>
+                      </do_if>
+                      <do_else>
+                        <apply_construction_sequence station="$CasinoStation" sequence="event.param"/>
+                      </do_else>
+
+                      <do_if value="not @$Supervisor">
+                        <add_encyclopedia_entry item="'research_module_welfare_1_pre'" type="researchables"/>
+                        <add_encyclopedia_entry item="'research_module_welfare_1'" type="researchables"/>
+
+                        <create_cue_actor name="$Supervisor" cue="$MissionCue" macro="$CharacterMacroTable.{$Supervisor_Race}">
+                          <owner exact="faction.player"/>
+                          <skills>
+                            <skill type="management"  exact="11"/>
+                            <skill type="morale"      exact="4"/>
+                            <skill type="piloting"    exact="3"/>
+                            <skill type="engineering" exact="5"/>
+                            <skill type="boarding"    exact="3"/>
+                          </skills>
+                        </create_cue_actor>
+                        <set_entity_traits entity="$Supervisor" missionactor="true" customhandler="true" subtitlename="true"/>
+                        <set_entity_overrides entity="$Supervisor" title="'{30222,1740}'" icon="'manager'"/>
+                      </do_if>
+                    </do_if>
+                    <do_else>
+                      <!--Failure. The reset_cue in the above actions will cause the search to happen again.-->
+                      <clear_group group="$CasinoStationGroup"/>
+                      <cancel_cue cue="Casino_Station_Generated"/>
+                    </do_else>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="Research_Announcement" checkinterval="10s">
+              <conditions>
+                <check_value value="not $ResearchWasAnnounced and @$Supervisor"/>
+              </conditions>
+              <cues>
+                <cue name="Research_Announcement_Dialog" ref="md.LIB_Dialog.Speak_Actor">
+                  <param name="Actor"             value="$Boso"/>
+                  <param name="CutsceneKey"       value="$CharacterCutsceneTable.{$Boso}"/>
+                  <param name="DelayInitial"      value="0.5s"/>
+                  <param name="Lines"             value="[[30222137], [30222138]]" comment="{10201,30222137} {10201,30222138}"/>
+                  <param name="EndSignalCue"      value="Research_Announcement_Dialog_End"/>
+                </cue>
+
+                <cue name="Research_Announcement_Dialog_End">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <substitute_text text="$NotificationText" source="{1015,1100}">
+                      <replace string="'$WARE$'" with="$ResearchWare.name"/>
+                    </substitute_text>
+                    <show_notification text="$NotificationText" sound="notification_generic"/>
+                    <set_value name="$ResearchWasAnnounced" exact="true"/>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="Research_Entry_Selected" instantiate="true">
+              <conditions>
+                <event_object_signalled object="player.entity" param="'research_selected_no_speak'"/>
+                <check_value value="player.age gt $LastResearchDescriptionTime + 30s"/>
+                <check_any>
+                  <check_value value="event.param2 == $ResearchWare"/>
+                </check_any>
+              </conditions>
+              <actions>
+                <set_value name="$LastResearchDescriptionTime" exact="player.age"/>
+                <!--A concerned supervisor has brought an issue to our attention regarding the morale and motivation of several of your skilled workers. Perhaps a meeting is in order.-->
+                <!--TODO @Owen analyse player stations to select suitable workforce race/gender-->
+                <set_value name="$Supervisor_Race" exact="race.argon"/>
+                <do_if value="[race.argon, race.teladi, race.terran].indexof.{$Supervisor_Race}">
+                  <set_value name="$Supervisor_Male" exact=" false"/>
+                </do_if>
+                <do_else>
+                  <set_value name="$Supervisor_Male" exact=" true"/>
+                </do_else>
+
+                <!--$Line + followup line-->
+                <speak actor="$Boso" line="if $Supervisor_Male then 30222101 else 30222102" priority="85" recipient="player.entity" comment="{10201,30222101}"/>
+              </actions>
+            </cue>
+
+            <cue name="Research_Started">
+              <conditions>
+                <event_player_production_started research="true"/>
+                <check_value value="$ResearchWare == event.param2"/>
+              </conditions>
+              <actions>
+                <debug_text text="'Started production for ware ' + $ResearchWare" chance="$DebugChance"/>
+              </actions>
+              <delay exact="0.5s"/>
+              <actions>
+                <!--Very well. I will contact the supervisor and have him/her meet with us.-->
+                <speak actor="$Boso" line="[if $Supervisor_Male then 30222103 else 30222104]" priority="100" caninterrupt="false"/>
+                <debug_text text="player.age + ' intro dialogue to mission'" chance="$DebugChance"/>
+              </actions>
+            </cue>
+
+            <cue name="ResearchStarted_SpeakEnd" instantiate="true">
+              <conditions>
+                <event_speak_finished actor="$Boso"/>
+                <check_value value="event.param2 == 30222103 or event.param2 == 30222104"/>
+              </conditions>
+              <actions>
+                <signal_cue cue="Start_Mission"/>
+              </actions>
+            </cue>
+
+            <cue name="Start_Mission" instantiate="true">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <debug_text text="player.age + ' Start mission'" chance="$DebugChance"/>
+
+                <do_if value="player.entity.hascontext.{$Boso.room.parent}">
+                  <signal_cue cue="Intro_Near"/>
+                </do_if>
+                <do_else>
+                  <signal_cue cue="Intro_Distant"/>
+                </do_else>
+              </actions>
+            </cue>
+
+            <library name="Place_Supervisor">
+              <actions>
+                <signal_cue_instantly cue="md.NPC_Instantiation.NPC_Placement_Manager" param="['add_definition', $Supervisor,
+                                            table[
+                                            $requestercue = namespace,
+                                            $location = $Boso.room,
+                                            $priority = 100,
+                                            $position = position.[-0.45m, 0.05m, -2.9m],
+                                            $rotation = rotation.[155deg, 0deg, 0deg],
+                                            $debugchance = 0,
+                                            $debugcaller = if $DebugChance == 100 then this else null]
+                                            ]"/>
+              </actions>
+            </library>
+
+            <cue name="Intro_Near">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <fade_screen color="black" fadeout="2s" fadein="2s"/>
+              </actions>
+              <delay exact="2s"/>
+              <actions>
+                <add_actor_to_room actor="player.entity" object="$Boso.room">
+                  <position x="2.1m" y="1.808m" z="-4.4m"/>
+                  <rotation yaw="-70deg"/>
+                </add_actor_to_room>
+                <add_actor_to_room actor="$Supervisor" object="$Boso.room">
+                  <position x="0.06m" y="0.05m" z="1.5m"/>
+                  <rotation yaw="175deg"/>
+                </add_actor_to_room>
+
+                <include_actions ref="Place_Supervisor"/>
+              </actions>
+              <delay exact="1s"/>
+              <actions>
+                <signal_cue cue="Intro_TalkTo"/>
+              </actions>
+            </cue>
+
+            <cue name="Intro_Distant">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <include_actions ref="Place_Supervisor"/>
+              </actions>
+              <delay exact="1s"/>
+              <actions>
+                <signal_cue cue="Intro_TalkTo"/>
+              </actions>
+            </cue>
+
+            <cue name="Intro_TalkTo">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <create_mission cue="$MissionCue" name="{30222,1701}" description="{30222,1702}" type="missiontype.plot" faction="faction.civilian" difficulty="level.medium" abortable="false" icon="'briefing_boso_ta_01'" iconcaption="{30201,2}">
+                  <briefing>
+                    <objective step="1" action="objective.talkto" object="$Supervisor"/>
+                  </briefing>
+                </create_mission>
+                <set_objective_from_briefing cue="$MissionCue" step="1"/>
+              </actions>
+              <cues>
+                <cue name="Check_Casino">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <delay exact="1ms"/>
+                  <actions>
+                    <set_value name="$CasinoIsValid" exact="false"/>
+                    <do_if value="$CasinoStation.exists">
+                      <check_object result="$CasinoIsValid" object="$CasinoStation">
+                        <match owner="faction.player" negate="true"/>
+                        <match_relation_to faction="faction.player" relation="dock" comparison="ge"/>
+                        <match_dock walkable="true"/>
+                      </check_object>
+                    </do_if>
+
+                    <do_if value="not $CasinoIsValid">
+                      <reset_cue cue="Find_Mission_Stations"/>
+                    </do_if>
+                  </actions>
+                  <cues>
+                    <cue name="Setup_Casino">
+                      <conditions>
+                        <check_any>
+                          <check_all>
+                            <event_cue_completed cue="Check_Casino"/>
+                            <check_value value="$CasinoIsValid"/>
+                          </check_all>
+                          <event_cue_completed cue="Casino_Station_Generated"/>
+                        </check_any>
+                      </conditions>
+                      <actions>
+                        <run_actions ref="md.LIB_Generic.RequestObjectInvincibility">
+                          <param name="Object" value="$CasinoStation"/>
+                          <param name="RequesterCue" value="Start"/>
+                          <param name="DebugChance" value="$DebugChance"/>
+                        </run_actions>
+
+                        <set_value name="$CasinoOwner" exact="$CasinoStation.owner"/>
+                        <find_object_component name="$CasinoModule" macro="macro.welfare_gen_gamblinghall_01_macro" object="$CasinoStation"/>
+                        <get_room_definition macro="$CorridorMacro" doors="$CorridorDoors" race="$CasinoOwner.primaryrace" tags="tag.corridor"/>
+                        <get_room_definition macro="$RoomMacro" tags="tag.bar"/>
+                        <create_dynamic_interior object="$CasinoStation" corridor="$CorridorMacro" room="$RoomMacro" door="$CorridorDoors.{1}" name="'{20007,3091}'" interiorname="$CasinoInterior" corridorname="$CasinoCorridor" roomname="$CasinoRoom" persistent="true" private="true"/>
+
+                        <create_cue_actor name="$Drek" cue="$MissionCue" macro="macro.character_argon_male_plot_drek_wadda_macro">
+                          <owner exact="$CasinoOwner"/>
+                          <page exact="10173"/>
+                          <skills>
+                            <skill type="management"  exact="12"/>
+                            <skill type="morale"      exact="5"/>
+                            <skill type="piloting"    exact="6"/>
+                            <skill type="engineering" exact="7"/>
+                            <skill type="boarding"    exact="2"/>
+                          </skills>
+                        </create_cue_actor>
+                        <set_entity_traits entity="$Drek" missionactor="true" customhandler="true" subtitlename="true"/>
+                        <set_entity_overrides entity="$Drek" title="'{30222,1741}'" icon="'manager'"/>
+                        <set_value name="$CharacterCutsceneTable.{$Drek}" exact="table[ $key = 'ShowNPCFace']"/>
+
+                        <create_cue_actor name="$RaceAnnouncer" cue="$MissionCue" group="argon.pilot.male">
+                          <owner exact="$CasinoOwner"/>
+                          <page exact="10174"/>
+                          <skills>
+                            <skill type="management"  exact="10"/>
+                            <skill type="morale"      exact="9"/>
+                            <skill type="piloting"    exact="10"/>
+                            <skill type="engineering" exact="7"/>
+                            <skill type="boarding"    exact="2"/>
+                          </skills>
+                        </create_cue_actor>
+                        <set_entity_overrides entity="$RaceAnnouncer" icon="'manager'"/>
+                        <set_value name="$RaceAnnouncer.$Stay" exact="true"/>
+                        <set_entity_traits entity="$RaceAnnouncer" hidden="true"/>
+
+                        <signal_cue_instantly cue="md.NPC_Instantiation.NPC_Placement_Manager" param="['add_definition', $Drek,
+                                            table[
+                                            $requestercue = namespace,
+                                            $location = $CasinoRoom,
+                                            $priority = 100,
+                                            $position = position.[0.5m, 0.05m, -7.7m],
+                                            $rotation = rotation.[320deg, 0deg, 0deg],
+                                            $debugchance = 0,
+                                            $debugcaller = if $DebugChance == 100 then this else null]
+                                            ]"/>
+
+                        <set_value name="$AlliedFactionList" exact="[$CasinoOwner]"/>
+                        <do_for_each name="$PotentialFaction" in="lookup.faction.list">
+                          <do_if value="$PotentialFaction.iseconomic and $PotentialFaction.isactive and $PotentialFaction != faction.player and $PotentialFaction != $CasinoOwner and ($PotentialFaction.hasrelation.neutral.{$CasinoOwner} or $PotentialFaction.hasrelation.friend.{$CasinoOwner})">
+                            <append_to_list name="$AlliedFactionList" exact="$PotentialFaction"/>
+                          </do_if>
+                        </do_for_each>
+                        <create_group groupname="$Patrons"/>
+                        <do_if value="$AlliedFactionList.count">
+                          <find_npc_slot name="$LeanSlots" object="$CasinoRoom" tags="tag.stand_leanrail_f" multiple="true"/>
+                          <shuffle_list list="$LeanSlots"/>
+                          <set_value name="$SlotCount" exact="0"/>
+                          <do_for_each name="$LeanSlot" in="$LeanSlots">
+                            <set_value name="$PatronFaction" exact="$AlliedFactionList.random"/>
+                            <do_any>
+                              <get_character_definition reference="$CharDef" faction="$PatronFaction" tags="tag.casual"/>
+                              <get_character_definition reference="$CharDef" faction="$PatronFaction" tags="entityrole.service.tag"/>
+                            </do_any>
+                            <do_if value="$CharDef">
+                              <create_cue_actor name="$Patron" cue="$MissionCue" ref="$CharDef">
+                                <owner exact="$PatronFaction"/>
+                              </create_cue_actor>
+                              <add_to_group groupname="$Patrons" object="$Patron"/>
+                              <set_entity_traits entity="$Patron" missionactor="true"/>
+                              <set_entity_overrides entity="$Patron" title="'{30222,1742}'" icon="'engineer'"/>
+                              <add_actor_to_room actor="$Patron" slot="$LeanSlot"/>
+                            </do_if>
+
+                            <set_value name="$SlotCount" operation="add"/>
+                            <do_if value="$SlotCount gt 8">
+                              <break/>
+                            </do_if>
+                          </do_for_each>
+                          <remove_value name="$LeanSlots"/>
+                        </do_if>
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="Intro_Conv">
+                  <conditions>
+                    <event_conversation_started actor="$Supervisor"/>
+                  </conditions>
+                  <actions>
+                    <signal_cue cue="Check_Casino"/>
+                    <set_value name="$Dal" exact="@md.$PersistentCharacters.$DalBusta"/>
+                    <do_if value="$Dal">
+                      <set_value name="$CharacterCutsceneTable.{$Dal}" exact="'ShowNPCFace'"/>
+                    </do_if>
+
+                    <add_npc_line speaker="$Supervisor" line="30222001" comment="{10172,30222001} / {10355,30222001}"/>
+                    <add_npc_line speaker="$Supervisor" line="30222002" comment="{10172,30222002} / {10355,30222002}"/>
+                    <add_npc_line speaker="$Supervisor" line="30222003" comment="{10172,30222003} / {10355,30222003}"/>
+                    <add_npc_line speaker="$Boso" line="30222105"       comment="{10201,30222105}"/>
+                    <add_npc_line speaker="$Supervisor" line="30222004" comment="{10172,30222004} / {10355,30222004}"/>
+                    <do_if value="$Dal.room == player.room">
+                      <!--TODO @Owen check this selects the correct line variant-->
+                      <add_npc_line speaker="$Dal" line="30222101" recipient="$Supervisor" comment="{10111,30222101}"/>
+                    </do_if>
+                    <add_npc_line speaker="$Boso" line="30222106"       comment="{10201,30222106}"/>
+                    <add_npc_line speaker="$Supervisor" line="30222005" comment="{10172,30222005} / {10355,30222005}" delay="1s"/>
+                    <add_npc_line speaker="$Boso" line="30222107"       comment="{10201,30222107}" delay="0.5s"/>
+                    <add_npc_line speaker="$Supervisor" line="30222006" comment="{10172,30222006} / {10355,30222006}"/>
+                    <add_npc_line speaker="$Supervisor" line="30222007" comment="{10172,30222007} / {10355,30222007}"/>
+                    <add_npc_line speaker="$Boso" line="30222108"       comment="{10201,30222108}"/>
+                    <add_npc_line speaker="$Supervisor" line="30222008" comment="{10172,30222008} / {10355,30222008}"/>
+
+                    <!--
+                        <t id="30222001">Thanks for meeting with me.</t>
+                        <t id="30222002">I'm a shift supervisor for one of your factories. After speaking to my manager about an issue, we felt it best to approach you.</t>
+                        <t id="30222003">A number of our workers are going AWOL and overall productivity is down. Rumour has it that they're frequenting an entertainment centre that recently opened in a nearby sector.</t>
+                        <t id="30222004">Actually, just the opposite. We think it would be a great idea to incorporate a similar facility on our station. It would be more convinient for our workers as well as make us more attractive to the skilled workforce market.</t>
+                        <t id="30222005">...I wouldn't quite put it that way.</t>
+                        <t id="30222006">No, but I can get you in contact with the guy in charge of that entertainment centre. He seemed rather excited at the prospect of competition.</t>
+                        <t id="30222007">Maybe take a look around and see if it's something you'd want to invest time in.</t>
+                        <t id="30222008">I better be getting back. Thank you for your time.</t>-->
+
+                    <!--
+                        <t id="30222105">So, you wish to punish these delinquents and are seeking our permission?</t>
+                        <t id="30222106">If punishment is off the table then I suppose creating an environment to enact more control is desirable.</t>
+                        <t id="30222107">How do you expect us to proceede? Do you happen to have a blueprint for this module?</t>
+                        <t id="30222108">I am curious on how this can improve productivity. Perhaps it is worth your attention.</t>-->
+                  </actions>
+                </cue>
+
+                <cue name="Intro_Conv_End">
+                  <conditions>
+                    <event_conversation_finished actor="$Supervisor"/>
+                  </conditions>
+                  <actions>
+                    <signal_cue_instantly cue="md.NPC_Instantiation.NPC_Placement_Manager" param="['add_definition', $Supervisor, 
+                                              table[
+                                              $requestercue = namespace,
+                                              $location = 'disconnect',
+                                              $priority = 100,
+                                              $debugchance = 0,
+                                              $debugcaller = if $DebugChance == 100 then this else null]
+                                              ]"/>
+
+                    <update_mission cue="$MissionCue">
+                      <briefing>
+                        <objective step="1" action="objective.talkto" object="$Supervisor"/>
+                        <objective step="2" action="objective.talkto" object="$Drek" text="{30222,1741}"/>
+                      </briefing>
+                    </update_mission>
+                    <set_objective_from_briefing cue="$MissionCue" step="2"/>
+                    <set_value name="$DrekMet" exact="false"/>
+                    <set_value name="$DrekDeclineCounter" exact="0"/>
+                  </actions>
+                  <cues>
+                    <cue name="Supervisor_Conv_Handler" instantiate="true">
+                      <conditions>
+                        <event_conversation_started actor="$Supervisor"/>
+                      </conditions>
+                      <actions>
+                        <set_value name="this.$PossibleLines" exact="[30222001,30222008]" comment="Thanks for meeting with me./I better be getting back. Thank you for your time."/>
+                        <do_if value="readtext.{$Supervisor.page}.{3002}?">
+                          <!--One of the characters does not have the Sir/Ma'am lines-->
+                          <append_to_list name="this.$PossibleLines" exact="if player.entity.isfemale then 3002 else 3001" comment="Sir / Ma'am"/>
+                        </do_if>
+                        <add_npc_line speaker="$Supervisor" line="this.$PossibleLines.random"/>
+                      </actions>
+                    </cue>
+                    <cue name="Drek_Conv_1_Start" instantiate="true">
+                      <conditions>
+                        <event_conversation_started actor="$Drek"/>
+                      </conditions>
+                      <actions>
+                        <allow_conversation_escape enabled="false"/>
+                        <do_if value="$DrekMet">
+                          <do_if value="not $StartDeliverMission">
+                            <!--Hey there.-->
+                            <add_npc_line speaker="$Drek" line="30222021"/>
+                            <add_player_choice text="{30222,1762}" section="no_time"/>
+                            <add_player_choice text="{30222,1763}" section="drek_accept"/>
+                          </do_if>
+                        </do_if>
+                        <do_else>
+                          <set_value name="$DrekMet" exact="true"/>
+                          <!--Ah, you're not one of my usual patrons. I assume you're here to keep tabs on your workers.-->
+                          <add_npc_line speaker="$Drek" line="30222001" hidechoices="true"/>
+                          <add_player_choice text="{30222,1761}" section="you_know"/>
+                        </do_else>
+                      </actions>
+                    </cue>
+
+                    <cue name="Drek_Conv_1_Next" instantiate="true">
+                      <conditions>
+                        <event_conversation_next_section actor="$Drek"/>
+                      </conditions>
+                      <actions>
+                        <do_if value="event.param == 'you_know'">
+
+                          <!--#CreativeSolution #hack Add the race announcer in the room but out of sight so they don't appear in the monitor-->
+                          <add_actor_to_room actor="$RaceAnnouncer" object="$CasinoRoom">
+                            <position object="$Drek" y="-2m" z="2m"/>
+                          </add_actor_to_room>
+
+                          <!--Oh, of course I do. I have the utmost respect for fellow enterpeneurs but I have to view them as potential competition. Perhaps even partners.-->
+                          <add_npc_line speaker="$Drek" line="30222003" hidechoices="true"/>
+                          <!--So, like what you see here? You've joined us during one of the most important races of the season. Unfortunately you're a bit to late to place a wager.-->
+                          <add_npc_line speaker="$Drek" line="30222004" hidechoices="true"/>
+                          <!--The odds-on favorite is in the lead with a sizable gap. Hardly the excitment we were hoping for, but they can't all be classics.-->
+                          <add_npc_line speaker="$Drek" line="30222006" hidechoices="true" delay="1s"/>
+                          <!--We're waiting for Lasonnis to clear the nebula and make the run to the finish.-->
+                          <add_npc_line speaker="$RaceAnnouncer" line="30222002" hidechoices="true"/>
+                          <!--Wait, who's this?-->
+                          <add_npc_line speaker="$RaceAnnouncer" line="30222003" hidechoices="true" delay="1s"/>
+                          <!--The ship of Raamankits has emerged first, coming out of absolutely nowhere to take the lead of this race!-->
+                          <add_npc_line speaker="$RaceAnnouncer" line="30222004" hidechoices="true" delay="3s"/>
+                          <!--Hmpf. Yet another miraculous comeback that defies all logic. Such outcomes only serve to test my patience.-->
+                          <add_npc_line speaker="$Drek" line="30222007" hidechoices="true" delay="4s"/>
+                          <add_npc_line speaker="$Drek" line="30222008" hidechoices="true"/>
+                          <add_npc_line speaker="$Drek" line="30222010" hidechoices="true" delay="1s"/>
+                          <add_npc_line speaker="$Drek" line="30222011" hidechoices="true"/>
+                          <add_player_choice text="{30222,1762}" section="no_time"/>
+                          <add_player_choice text="{30222,1763}" section="drek_accept"/>
+                        </do_if>
+                        <do_elseif value="event.param == 'no_time'">
+                          <set_value name="$DrekDeclineCounter" operation="add"/>
+                          <!--You're busy, I get that. No matter. I'll be here if you change your mind, if I'm still in business that is.-->
+                          <add_npc_line speaker="$Drek" line="30222013" hidechoices="true"/>
+                        </do_elseif>
+                        <do_elseif value="event.param == 'drek_accept'">
+                          <add_npc_line speaker="$Drek" line="30222015" hidechoices="true"/>
+                          <add_npc_line speaker="$Drek" line="30222017" hidechoices="true"/>
+                          <add_npc_line speaker="$Drek" line="30222019" hidechoices="true"/>
+                          <set_value name="$StartDeliverMission" exact="true"/>
+                        </do_elseif>
+                      </actions>
+                    </cue>
+
+                    <cue name="Drek_Conv_1_End_Trigger_Mission">
+                      <conditions>
+                        <event_conversation_finished actor="$Drek"/>
+                        <check_value value="@$StartDeliverMission"/>
+                      </conditions>
+                      <actions>
+                        <cancel_cue cue="Drek_Conv_1_Start"/>
+                        <cancel_cue cue="Drek_Conv_1_Next"/>
+                        <signal_cue cue="Get_Race_Ship"/>
+                      </actions>
+                    </cue>
+
+                    <cue name="Race_Cutscene_1">
+                      <conditions>
+                        <event_speak_finished actor="$Drek" line="30222004" comment="{10173,30222004}"/>
+                      </conditions>
+                      <actions>
+                        <find_sector name="$CutsceneSector" macro="macro.cluster_50_sector001_macro"/>
+
+                        <!--TODO @Owen better ship definition-->
+                        <!--Create the ship but out of sight so it can be moved into the scene later-->
+                        <create_ship name="$CutsceneShip_1" sector="$CutsceneSector">
+                          <select size="class.ship_s" faction="faction.paranid" tags="tag.fighter"/>
+                          <owner exact="faction.civilian"/>
+                          <safepos x="-150km" y="500m" z="50km"/>
+                        </create_ship>
+                        <set_object_min_hull object="$CutsceneShip_1" exact="5"/>
+                        <create_position name="$CutsceneShip_1_Start_Pos" object="$CutsceneShip_1" space="$CutsceneShip_1.zone"/>
+                        <create_position name="$CutsceneShip_1_Flyto_Pos" object="$CutsceneShip_1" z="50km" space="$CutsceneSector"/>
+
+                        <create_position name="$CamPos" object="$CutsceneShip_1" x="140m" y="80m" z="4000m" space="$CutsceneShip_1.zone"/>
+                        <create_position name="$CamPos2" object="$CutsceneShip_1" x="1400m" y="80m" z="6500m" space="$CutsceneShip_1.zone"/>
+                        <play_cutscene result="$Cutscene" key="'Story_welfare_1'" abortable="true">
+                          <param name="room" object="$CasinoRoom"/>
+                          <param name="ship" object="$CutsceneShip_1"/>
+                          <param name="ship_x" number="$CamPos.x"/>
+                          <param name="ship_y" number="$CamPos.y"/>
+                          <param name="ship_z" number="$CamPos.z"/>
+                          <param name="ship_x2" number="$CamPos2.x"/>
+                          <param name="ship_y2" number="$CamPos2.y"/>
+                          <param name="ship_z2" number="$CamPos2.z"/>
+                        </play_cutscene>
+                      </actions>
+                      <delay exact="1s"/>
+                      <actions>
+                        <warp object="$CutsceneShip_1" zone="$CutsceneShip_1.zone">
+                          <position x="20km" y="20km"/>
+                        </warp>
+                      </actions>
+                      <cues>
+                        <cue name="Race_Cutscene_1_Event_1">
+                          <conditions>
+                            <event_speak_finished actor="$Drek" line="30222006"/>
+                          </conditions>
+                          <actions>
+                            <cutscene_event key="'Story_welfare_1'" event="'DrekChatEnd'"/>
+                            <cutscene_event key="'Story_welfare_1'" event="'ShipShot1'"/>
+                          </actions>
+                        </cue>
+
+                        <cue name="Race_Cutscene_1_Event_2">
+                          <conditions>
+                            <event_speak_finished actor="$RaceAnnouncer" line="30222002"/>
+                          </conditions>
+                          <actions>
+                            <warp object="$CutsceneShip_1" zone="$CutsceneShip_1.zone">
+                              <safepos value="$CutsceneShip_1_Start_Pos"/>
+                            </warp>
+                          </actions>
+                          <delay exact="50ms"/>
+                          <actions>
+                            <create_order id="'MoveWait'" immediate="true" object="$CutsceneShip_1" name="$WaitOrder">
+                              <param name="destination" value="[$CutsceneSector, $CutsceneShip_1_Flyto_Pos]"/>
+                            </create_order>
+                          </actions>
+                          <delay exact="1s"/>
+                          <actions>
+                            <cutscene_event key="'Story_welfare_1'" event="'ShipShot1End'"/>
+                            <cutscene_event key="'Story_welfare_1'" event="'ShipShot2'"/>
+                          </actions>
+                          <cues>
+                            <cue name="Race_Cutscene_1_Facepalm">
+                              <conditions>
+                                <event_speak_finished actor="$RaceAnnouncer" line="30222003" comment="Wait, who's this"/>
+                              </conditions>
+                              <delay exact="8s"/>
+                              <actions>
+                                <fade_screen color="black" fadeout="500ms" fadein="1400ms"/>
+                              </actions>
+                              <delay exact="500ms"/>
+                              <actions>
+                                <cutscene_event key="'Story_welfare_1'" event="'ShipShot2END'"/>
+                              </actions>
+                              <delay exact="200ms"/>
+                              <actions>
+                                <start_actor_sequence actor="$Drek" type="'facepalm01'" behavior="'stand'" transition="true" immediate="false"/>
+                              </actions>
+                              <delay exact="200ms"/>
+                              <actions>
+                                <do_if value="$Patrons.count">
+                                  <speak actor="$Patrons.random" line="1010"/>
+                                </do_if>
+                              </actions>
+                            </cue>
+                          </cues>
+                        </cue>
+                      </cues>
+                    </cue>
+
+                    <cue name="Get_Race_Ship">
+                      <conditions>
+                        <event_cue_signalled/>
+                      </conditions>
+                      <actions>
+                        <!--TODO @Owen Drek icon for update_mission-->
+                        <cancel_cue cue="Drek_Conv_1_Start"/>
+                        <cancel_cue cue="Drek_Conv_1_Next"/>
+
+                        <set_value name="$DeliverShipVoiceTable" exact="table[$CustomNotification = [30222025,30222026]]"/>
+                        <set_value name="$MinSpeed" exact="380m"/>
+                        <set_value name="$MinTravelSpeed" exact="4200m"/>
+                        <set_value name="$MinYaw" exact="60deg"/>
+                        <set_value name="$MinPitch" exact="60deg"/>
+                        <set_value name="$Fleet" exact="[
+                            table[
+                              $class = class.ship_s,
+                              $amount = 1
+                            ],
+                           ]"/>
+
+                        <run_actions ref="md.GM_GetExactFleet.ConstructFleetRequirementsText" result="$FleetText">
+                          <param name="Fleet" value="$Fleet"/>
+                        </run_actions>
+                        <substitute_text text="$MinSpeedText" source="{30222,1781}">
+                          <replace string="'$VAL$'" with="$MinSpeed"/>
+                        </substitute_text>
+                        <substitute_text text="$MinTravelSpeedText" source="{30222,1782}">
+                          <replace string="'$VAL$'" with="$MinTravelSpeed"/>
+                        </substitute_text>
+                        <substitute_text text="$MinYawText" source="{30222,1783}">
+                          <replace string="'$VAL$'" with="$MinYaw * (180/pi)"/>
+                        </substitute_text>
+                        <substitute_text text="$MinPitchText" source="{30222,1784}">
+                          <replace string="'$VAL$'" with="$MinPitch * (180/pi)"/>
+                        </substitute_text>
+                        <set_value name="$FleetText" exact="$FleetText + '\n' + $MinSpeedText + '\n' + $MinTravelSpeedText + '\n' + $MinYawText + '\n' + $MinPitchText"/>
+                        <update_mission cue="$MissionCue" description="$FleetText"/>
+
+                        <get_safe_pos result="$DeliveryPosition" object="$CasinoStation" sector="$CasinoStationSector" radius="2km" x="3km"/>
+                        <set_value name="$DeliveryRadius" exact="1500m"/>
+
+                        <create_group groupname="$TrialRings"/>
+                      </actions>
+                      <cues>
+                        <cue name="Get_Race_Ship_Conv_Start" instantiate="true">
+                          <conditions>
+                            <event_conversation_started actor="$Drek"/>
+                          </conditions>
+                          <actions>
+                            <!--How's the plan coming along?-->
+                            <add_npc_line speaker="$Drek" line="[30222021, 30222022].random" comment="{10173,30222021} {10173,30222022}"/>
+                          </actions>
+                        </cue>
+
+                        <cue name="Get_Race_Ship_RML" ref="md.RML_Deliver_Fleet.DeliverFleet">
+                          <param name="EndSignalCue"      value="Get_Race_Ship_End"/>
+                          <param name="MissionCue"        value="$MissionCue"/>
+                          <param name="StartStep"         value="3" comment="Briefing step to start the mission on"/>
+                          <param name="DebugChance"       value="$DebugChance" />
+
+                          <param name="Text_MissionName"    value="{30222,1701}"/>
+                          <param name="Text_Objective_Get"  value="{30222,1780}"/>
+                          <param name="Text_Objective_Transfer"  value="{30201,2002}"/>
+                          <param name="Text_AcceptTransfer"      value="{30201,2003}"/>
+                          <param name="Text_RejectTransfer"      value="{30201,2004}"/>
+                          <param name="Fleet"           value="$Fleet"/>
+                          <param name="Transfer"        value="false"/>
+                          <param name="Faction"         value="faction.civilian"/>
+                          <param name="Client"          value="$Drek"/>
+                          <param name="TargetSector"    value="$CasinoStationSector"/>
+                          <param name="TargetOffset"    value="$DeliveryPosition"/>
+                          <param name="TargetRadius"    value="$DeliveryRadius"/>
+                          <param name="AdditionCheckCue" value="Get_Race_Ship_Additional_Checks" comment="Cue to signal instantly to run additional checks on the object. event.param = [namespace, $ship]. Result saved to namespace.$CheckCueResult"/>
+                        </cue>
+
+                        <!--event.param = [namespace, $ship]. Result saved to namespace.$CheckCueResult-->
+                        <cue name="Get_Race_Ship_Additional_Checks" instantiate="true">
+                          <conditions>
+                            <event_cue_signalled/>
+                          </conditions>
+                          <actions>
+                            <set_value name="$PotentialShip" exact="event.param.{2}"/>
+                            <set_value name="event.param.{1}.$CheckCueResult" exact="
+                                     $PotentialShip.isoperational and
+                                     $PotentialShip.maxspeed ge $MinSpeed and
+                                     $PotentialShip.maxyawspeed ge $MinYaw and
+                                     $PotentialShip.maxpitchspeed ge $MinPitch and
+                                     $PotentialShip.travel.maxspeed ge $MinTravelSpeed"/>
+                          </actions>
+                        </cue>
+
+                        <cue name="Get_Race_Ship_End">
+                          <conditions>
+                            <event_cue_signalled/>
+                          </conditions>
+                          <actions>
+                            <set_value name="$RaceShip" exact="Get_Race_Ship_End.$FleetShips.{1}"/>
+                            <do_if value="$RaceShip">
+                              <debug_text text="'Race ship is ' + $RaceShip + ' ' + $RaceShip.knownname" chance="$DebugChance"/>
+
+                            </do_if>
+                            <do_else>
+                              <reset_cue cue="Get_Race_Ship_RML"/>
+                              <reset_cue cue="Get_Race_Ship_End"/>
+                            </do_else>
+                          </actions>
+                          <cues>
+                            <cue name="Get_Race_Ship_End_Dialogue" ref="md.LIB_Dialog.Speak_Actor">
+                              <param name="Actor"             value="$Drek"/>
+                              <param name="CutsceneKey"       value="$CharacterCutsceneTable.{$Drek}"/>
+                              <param name="DelayInitial"      value="2s"/>
+                              <param name="Lines"             value="[[30222026], [30222032]]"/>
+                              <param name="EndSignalCue"      value="Time_Trial_Speak_To_Drek"/>
+                            </cue>
+
+                            <cue name="Check_Race_Ship_Status" checkinterval="1s">
+                              <conditions>
+                                <check_any>
+                                  <check_value value="$RaceShip.sector != $CasinoStationSector"/>
+                                  <check_object object="$RaceShip">
+                                    <match_distance object="$CasinoStationSector" value="$DeliveryPosition" min="$DeliveryRadius * 3"/>
+                                  </check_object>
+                                </check_any>
+                              </conditions>
+                              <actions>
+                                <debug_text text="'Race ship ' + $RaceShip + ' ' + $RaceShip.knownname + ' no longer is in correct position. Correct sector: ' + $RaceShip.sector == $CasinoStationSector" chance="$DebugChance"/>
+                                <reset_cue cue="Get_Race_Ship_RML"/>
+                                <reset_cue cue="Get_Race_Ship_End"/>
+                              </actions>
+                            </cue>
+
+                            <cue name="Race_Ship_Lost">
+                              <conditions>
+                                <check_any>
+                                  <event_object_destroyed object="$RaceShip"/>
+                                  <event_object_changed_true_owner object="$RaceShip"/>
+                                </check_any>
+                              </conditions>
+                              <actions>
+                                <debug_text text="'Race ship ' + $RaceShip + ' ' + $RaceShip.knownname + ' lost'" chance="$DebugChance"/>
+                                <reset_cue cue="Get_Race_Ship_RML"/>
+                                <reset_cue cue="Get_Race_Ship_End"/>
+                              </actions>
+                            </cue>
+
+                            <cue name="Time_Trial_Speak_To_Drek">
+                              <conditions>
+                                <event_cue_signalled/>
+                              </conditions>
+                              <actions>
+                                <cancel_cue cue="Check_Race_Ship_Status"/>
+                                <cancel_cue cue="Race_Ship_Lost"/>
+                                <update_mission cue="$MissionCue">
+                                  <briefing>
+                                    <objective step="3" action="objective.talkto" object="$Drek"/>
+                                  </briefing>
+                                </update_mission>
+                                <set_objective_from_briefing cue="$MissionCue" step="3"/>
+                              </actions>
+                              <cues>
+                                <cue name="Time_Trial_Conv_Start">
+                                  <conditions>
+                                    <event_conversation_started actor="$Drek"/>
+                                  </conditions>
+                                  <actions>
+                                    <cancel_all_orders object="$RaceShip"/>
+                                    <create_order id="'MoveWait'" immediate="true" object="$RaceShip" name="$RaceShipWaitOrder">
+                                      <param name="destination" value="[$RaceShip.sector, $RaceShip.relativeposition.{$RaceShip.sector}]"/>
+                                    </create_order>
+                                    <allow_conversation_escape enabled="false"/>
+                                    <!--Hey there.-->
+                                    <add_npc_line speaker="$Drek" line="30222021" hidechoices="true"/>
+                                    <!--That ship is our ticket into the league, at least, one of the lower ones. Don't worry, we're not aiming to enter you into some crazy death race.-->
+                                    <add_npc_line speaker="$Drek" line="30222034" hidechoices="true"/>
+                                    <add_player_choice text="{30222,1764}" section="what_do_you_mean"/>
+                                  </actions>
+                                </cue>
+
+                                <cue name="Time_Trial_Conv_Next_Section">
+                                  <conditions>
+                                    <event_conversation_next_section actor="$Drek" section="what_do_you_mean"/>
+                                  </conditions>
+                                  <actions>
+                                    <!--The less people involved the better, so that means you're going to have to show off some of your piloting skills.-->
+                                    <add_npc_line speaker="$Drek" line="30222036" hidechoices="true" comment="{10173,30222036}"/>
+                                    <do_if value="@md.X4Ep1_Mentor_Subscriptions.RM_EngineMod.$TimeTrialDone">
+                                      <!--If the player has done the engine research mission-->
+                                      <add_npc_line speaker="$Drek" line="30222038" hidechoices="true" comment="{10173,30222038}"/>
+                                      <add_npc_line speaker="$Drek" line="30222040" hidechoices="true" comment="{10173,30222040}"/>
+                                    </do_if>
+                                    <do_else>
+                                      <add_npc_line speaker="$Drek" line="30222041" hidechoices="true" comment="{10173,30222041}"/>
+                                    </do_else>
+                                    <add_npc_line speaker="$Drek" line="30222043" hidechoices="true" comment="{10173,30222043}"/>
+                                    <add_npc_line speaker="$Drek" line="30222045" hidechoices="true" comment="{10173,30222045}"/>
+                                  </actions>
+                                </cue>
+
+                                <cue name="Time_Trial_Conv_End">
+                                  <conditions>
+                                    <event_conversation_finished actor="$Drek"/>
+                                  </conditions>
+                                  <actions>
+                                    <set_value name="$FadeoutTime" exact="2s"/>
+                                    <do_if value="$RaceShip.isoperational and $RaceShip.isplayerowned">
+                                      <fade_screen color="black" fadeout="$FadeoutTime" fadein="1.5s"/>
+                                      <do_if value="$RaceShip.aipilot">
+                                        <signal_objects object="$RaceShip.aipilot" param="'npc__leave_post'"/>
+                                      </do_if>
+
+                                      <do_if value="$TrialRings.count == 0">
+                                        <!--Construct the time trail course-->
+                                        <set_value name="$TrialSector" exact="player.sector"/>
+                                        <get_safe_pos result="$TrialAnchorPos" sector="$TrialSector" radius="10km" x="$TrialSector.coreposition.x + 100km" y="$TrialSector.coreposition.y + 5km"/>
+
+                                        <set_value name="$TrackMultiplier" exact="3"/>
+                                        <set_value name="$RingOffsets" exact="[
+                                              [position.[-3.6km, 0km, 0km],         rotation.[5deg, 0deg, 0deg]],
+                                              [position.[-3.3km, 0km, 1.5km],       rotation.[30deg, 0deg, 0deg]],
+                                              [position.[-2.8km, 0km, 2km],         rotation.[100deg, 0deg, 0deg]],
+                                              [position.[0km, -0.5km, 1km],         rotation.[90deg, -30deg, 0deg]],
+                                              [position.[1km, -1km, 1.5km],         rotation.[40deg, -20deg, 0deg]],
+                                              [position.[2.6km, -1.7km, 2km],       rotation.[90deg, -15deg, 0deg]],
+                                              [position.[4km, -2km, 0.5km],         rotation.[180deg, 0deg, 0deg]],
+                                              [position.[3.5km, -2km, -1km],        rotation.[250deg, 0deg, 0deg]],
+                                              [position.[3km, -2.2km, -1.5km],      rotation.[210deg, -25deg, 0deg]],
+                                              [position.[0km, -2.5km, -3km],        rotation.[250deg, -5deg, 0deg]],
+                                              [position.[-3km, -2.2km, -3.5km],     rotation.[270deg, 5deg, 0deg]],
+                                              [position.[-4.5km, -1.8km, -3.3km],   rotation.[300deg, 20deg, 0deg]],
+                                              [position.[-5km, -1.2km, -2.5km],     rotation.[330deg, 20deg, 0deg]],
+                                              [position.[-4.7km, -0.5km, -1.3km],   rotation.[80deg, 20deg, 0deg]],
+                                              [position.[-3.8km, -0.01km, -0.7km],   rotation.[10deg, 0deg, 0deg]],]"/>
+
+                                        <do_for_each name="$RingOffset" in="$RingOffsets">
+                                          <create_object groupname="$Rings" macro="macro.triggerobject_race_checkpoint_01_macro" sector="$TrialSector">
+                                            <safepos x="$TrialAnchorPos.x + ($RingOffset.{1}.x * $TrackMultiplier)" y="$TrialAnchorPos.y + ($RingOffset.{1}.y * $TrackMultiplier)" z="$TrialAnchorPos.z + ($RingOffset.{1}.z * $TrackMultiplier)"/>
+                                            <rotation yaw="$RingOffset.{2}.yaw" pitch="$RingOffset.{2}.pitch" roll="$RingOffset.{2}.roll"/>
+                                          </create_object>
+                                        </do_for_each>
+
+                                      </do_if>
+                                      <create_position name="$StartPos" object="$Rings.{1}" space="$TrialSector" z="-1km"/>
+                                      <warp object="$RaceShip" sector="$TrialSector">
+                                        <safepos value="$StartPos"/>
+                                      </warp>
+                                    </do_if>
+                                    <do_else>
+                                      <reset_cue cue="Get_Race_Ship_RML"/>
+                                      <reset_cue cue="Get_Race_Ship_End"/>
+                                    </do_else>
+                                  </actions>
+                                  <delay exact="$FadeoutTime"/>
+                                  <actions>
+                                    <set_value name="$CutsceneObj1" exact="$Rings.{3}"/>
+                                    <create_position name="$CutsceneObj1_StartPos" object="$CutsceneObj1" space="$CutsceneObj1.zone" x="-100m" y="0m" z="-1km"/>
+                                    <create_position name="$CutsceneObj1_EndPos" object="$CutsceneObj1" space="$CutsceneObj1.zone" x="-1200m" y="1km" z="-4km"/>
+
+                                    <set_value name="$CutsceneObj2" exact="$Rings.{10}"/>
+                                    <create_position name="$CutsceneObj2_StartPos" object="$CutsceneObj2" space="$CutsceneObj2.zone" x="-300m" y="-1km" z="-5km"/>
+                                    <create_position name="$CutsceneObj2_EndPos" object="$CutsceneObj2" space="$CutsceneObj2.zone" x="100m" y="-1km" z="2km"/>
+
+                                    <set_value name="$CutsceneObj3" exact="$Rings.{13}"/>
+                                    <create_position name="$CutsceneObj3_StartPos" object="$CutsceneObj3" space="$CutsceneObj3.zone" x="-300m" y="-1km" z="-2km"/>
+                                    <create_position name="$CutsceneObj3_EndPos" object="$CutsceneObj3" space="$CutsceneObj3.zone" x="-600m" y="-1.5km" z="-2.5km"/>
+
+                                    <set_value name="$CutsceneFlyThroughObj" exact="$Rings.{12}"/>
+                                    <create_position name="$FlyThroughStartPos" object="$CutsceneFlyThroughObj" space="$CutsceneFlyThroughObj.zone" x="-50m" z="-2km"/>
+                                    <create_position name="$FlyThroughEndPos" object="$CutsceneFlyThroughObj" space="$CutsceneFlyThroughObj.zone" x="50m" z="2km"/>
+
+                                    <create_position name="$ShipSceneStartPos" object="$RaceShip" space="$RaceShip.zone" x="400m" z="800m"/>
+                                    <create_position name="$ShipSceneEndPos" object="$RaceShip" space="$RaceShip.zone" x="250m" z="200m"/>
+
+                                    <teleport_player object="$RaceShip" control="true" force="true" instant="true"/>
+                                    <play_cutscene result="$TrialCutscene" key="'Story_welfare_2'" abortable="true">
+                                      <param name="obj_1" object="$CutsceneObj1"/>
+                                      <param name="obj_2" object="$CutsceneObj2"/>
+                                      <param name="obj_3" object="$CutsceneObj3"/>
+                                      <param name="flythrough_obj" object="$CutsceneFlyThroughObj"/>
+                                      <param name="ship" object="$RaceShip"/>
+
+                                      <param name="obj_1_x" number="$CutsceneObj1_StartPos.x"/>
+                                      <param name="obj_1_y" number="$CutsceneObj1_StartPos.y"/>
+                                      <param name="obj_1_z" number="$CutsceneObj1_StartPos.z"/>
+                                      <param name="obj_1_x2" number="$CutsceneObj1_EndPos.x"/>
+                                      <param name="obj_1_y2" number="$CutsceneObj1_EndPos.y"/>
+                                      <param name="obj_1_z2" number="$CutsceneObj1_EndPos.z"/>
+
+                                      <param name="obj_2_x" number="$CutsceneObj2_StartPos.x"/>
+                                      <param name="obj_2_y" number="$CutsceneObj2_StartPos.y"/>
+                                      <param name="obj_2_z" number="$CutsceneObj2_StartPos.z"/>
+                                      <param name="obj_2_x2" number="$CutsceneObj2_EndPos.x"/>
+                                      <param name="obj_2_y2" number="$CutsceneObj2_EndPos.y"/>
+                                      <param name="obj_2_z2" number="$CutsceneObj2_EndPos.z"/>
+
+                                      <param name="obj_3_x" number="$CutsceneObj3_StartPos.x"/>
+                                      <param name="obj_3_y" number="$CutsceneObj3_StartPos.y"/>
+                                      <param name="obj_3_z" number="$CutsceneObj3_StartPos.z"/>
+                                      <param name="obj_3_x2" number="$CutsceneObj3_EndPos.x"/>
+                                      <param name="obj_3_y2" number="$CutsceneObj3_EndPos.y"/>
+                                      <param name="obj_3_z2" number="$CutsceneObj3_EndPos.z"/>
+
+                                      <param name="fly_through_x" number="$FlyThroughStartPos.x"/>
+                                      <param name="fly_through_y" number="$FlyThroughStartPos.y"/>
+                                      <param name="fly_through_z" number="$FlyThroughStartPos.z"/>
+                                      <param name="fly_through_x2" number="$FlyThroughEndPos.x"/>
+                                      <param name="fly_through_y2" number="$FlyThroughEndPos.y"/>
+                                      <param name="fly_through_z2" number="$FlyThroughEndPos.z"/>
+
+                                      <param name="ship_x" number="$ShipSceneStartPos.x"/>
+                                      <param name="ship_y" number="$ShipSceneStartPos.y"/>
+                                      <param name="ship_z" number="$ShipSceneStartPos.z"/>
+                                      <param name="ship_x2" number="$ShipSceneEndPos.x"/>
+                                      <param name="ship_y2" number="$ShipSceneEndPos.y"/>
+                                      <param name="ship_z2" number="$ShipSceneEndPos.z"/>
+                                    </play_cutscene>
+                                  </actions>
+                                  <delay exact="9s"/>
+                                  <actions>
+                                    <cutscene_event key="'Story_welfare_2'" event="'Obj1End'"/>
+                                    <cutscene_event key="'Story_welfare_2'" event="'Obj2Start'"/>
+                                  </actions>
+                                  <delay exact="9s"/>
+                                  <actions>
+                                    <cutscene_event key="'Story_welfare_2'" event="'Obj2End'"/>
+                                    <cutscene_event key="'Story_welfare_2'" event="'Obj3Start'"/>
+                                  </actions>
+                                  <delay exact="9s"/>
+                                  <actions>
+                                    <cutscene_event key="'Story_welfare_2'" event="'Obj3End'"/>
+                                    <cutscene_event key="'Story_welfare_2'" event="'FlyThroughtStart'"/>
+                                  </actions>
+                                  <delay exact="9s"/>
+                                  <actions>
+                                    <cutscene_event key="'Story_welfare_2'" event="'FlyThroughEnd'"/>
+                                    <cutscene_event key="'Story_welfare_2'" event="'ShipStart'"/>
+                                  </actions>
+                                  <cues>
+                                    <cue name="Time_Trial_Intro">
+                                      <conditions>
+                                        <event_cutscene_stopped cutscene="$TrialCutscene"/>
+                                      </conditions>
+                                      <delay exact="2s"/>
+                                      <actions>
+
+                                      </actions>
+                                      <cues>
+                                        <cue name="Time_Trial_Intro_Dialogue" ref="md.LIB_Dialog.Speak_Actor">
+                                          <param name="Actor"             value="$Drek"/>
+                                          <param name="CutsceneKey"       value="$CharacterCutsceneTable.{$Drek}"/>
+                                          <param name="DelayInitial"      value="2s"/>
+                                          <param name="Lines"             value="[[30222047]]"/>
+                                          <param name="EndSignalCue"      value="Time_Trial_Speak_To_Drek"/>
+                                        </cue>
+
+                                        <cue name="Time_Trial_Start">
+                                          <conditions>
+                                            <event_speak_finished actor="$Drek"/>
+                                          </conditions>
+                                          <cues>
+                                            <cue name="Time_Trial_RML" ref="md.RML_Race_Timetrial.RaceTimetrial">
+                                              <param name="EndSignalCue" value="Time_Trial_End"/>
+                                              <param name="MissionCue" value="$MissionCue"/>
+                                              <param name="ReportSignalCue" value="Time_Trial_RML_Signal"  comment="Cue to be signalled during the mission with various feedback"/>
+
+                                              <param name="StartStep"       value="4"/>
+                                              <param name="ObjectiveText"   value="{30222,1785}"        comment="Objective text. Objective action is 'Race'"/>
+                                              <param name="TrackObjects"    value="$Rings.list"         comment="List of trigger objects to fly through" />
+                                              <param name="Laps"            value="-1"                  comment="Number of laps to complete"/>
+                                              <param name="StartSector"     value="$TrialSector"        comment="Sector to start the race from"/>
+                                              <param name="StartPos"        value="$StartPos"           comment="Sector position to start the race from"/>
+                                              <param name="Ship"            value="$RaceShip"           comment="Ship which must be flown. If omitted, the player can fly any ship"/>
+
+                                              <param name="DebugChance"     value="100" />
+                                            </cue>
+
+                                            <cue name="Time_Trial_RML_Signal" instantiate="true">
+                                              <conditions>
+                                                <event_cue_signalled/>
+                                              </conditions>
+                                              <actions>
+                                                <debug_text text="event.param" chance="$DebugChance"/>
+                                                <do_if value="event.param.$id == 'race_started'">
+                                                  <play_music music="'legacy_x2_intro_chase'"/>
+                                                </do_if>
+                                              </actions>
+                                            </cue>
+
+                                            <cue name="Time_Trial_RML_Signal_Slow" instantiate="true">
+                                              <conditions>
+                                                <event_cue_signalled cue="Time_Trial_RML_Signal"/>
+                                                <check_value value="event.param.$id == 'lap_finished' and event.param.$laptime gt 75s and event.param.$lap == 1"/>
+                                              </conditions>
+                                              <cues>
+                                                <cue name="Time_Trial_RML_Signal_Slow_Speak" ref="md.LIB_Dialog.Speak_Actor">
+                                                  <param name="Actor"             value="$Drek"/>
+                                                  <param name="CutsceneKey"       value="$CharacterCutsceneTable.{$Drek}"/>
+                                                  <param name="DelayInitial"      value="2s"/>
+                                                  <param name="Lines"             value="[[30222049]]"/>
+                                                </cue>
+                                              </cues>
+                                            </cue>
+
+                                            <cue name="Time_Trial_RML_Signal_Too_Slow" instantiate="true">
+                                              <conditions>
+                                                <event_cue_signalled cue="Time_Trial_RML_Signal"/>
+                                                <check_value value="event.param.$id == 'lap_finished' and event.param.$laptime gt 75s and event.param.$lap gt 4"/>
+                                              </conditions>
+                                              <cues>
+                                                <cue name="Time_Trial_RML_Signal_Too_Slow_Speak" ref="md.LIB_Dialog.Speak_Actor">
+                                                  <param name="Actor"             value="$Drek"/>
+                                                  <param name="CutsceneKey"       value="$CharacterCutsceneTable.{$Drek}"/>
+                                                  <param name="DelayInitial"      value="2s"/>
+                                                  <param name="Lines"             value="[[30222050]]" comment="{10173,30222050}"/>
+                                                  <param name="EndSignalCue"      value="Time_Trial_End"/>
+                                                </cue>
+                                              </cues>
+                                            </cue>
+
+                                            <cue name="Time_Trial_RML_Signal_Finished" instantiate="true">
+                                              <conditions>
+                                                <event_cue_signalled cue="Time_Trial_RML_Signal"/>
+                                                <check_value value="event.param.$id == 'lap_finished' and event.param.$laptime le 75s"/>
+                                              </conditions>
+                                              <actions>
+                                                <cancel_cue cue="Time_Trial_RML"/>
+                                              </actions>
+                                              <cues>
+                                                <cue name="Time_Trial_RML_Signal_Finished_Speak" ref="md.LIB_Dialog.Speak_Actor">
+                                                  <param name="Actor"             value="$Drek"/>
+                                                  <param name="CutsceneKey"       value="$CharacterCutsceneTable.{$Drek}"/>
+                                                  <param name="DelayInitial"      value="2s"/>
+                                                  <param name="Lines"             value="[[30222051], [30222055]]"/>
+                                                  <param name="EndSignalCue"      value="Time_Trial_End"/>
+                                                </cue>
+                                              </cues>
+                                            </cue>
+
+                                            <cue name="Time_Trial_End">
+                                              <conditions>
+                                                <event_cue_signalled/>
+                                              </conditions>
+                                              <actions>
+                                                <set_value name="$FadeoutTime" exact="2s"/>
+                                                <set_value name="$FadeinTime" exact="4s"/>
+                                                <fade_screen fadeout="$FadeoutTime" fadein="$FadeinTime" color="black"/>
+                                                <find_dockingbay name="$Dock" object="$CasinoStation">
+                                                  <match_dock size="tag.dock_s" storage="false" free="true" walkable="true"/>
+                                                </find_dockingbay>
+                                                <find_npc_slot name="$AirmarshalSlot" object="$Dock" excludeblocked="false" excludefilled="false" tags="tag.airmarshal"/>
+                                                <remove_actor_from_room actor="$Drek"/>
+                                                <signal_cue_instantly cue="md.NPC_Instantiation.NPC_Placement_Manager" param="['add_definition', $Drek, 
+                                                    table[
+                                                    $requestercue = namespace,
+                                                    $location = $AirmarshalSlot,
+                                                    $priority = 100,
+                                                    $debugchance = 0,
+                                                    $debugcaller = if $DebugChance == 100 then this else null]
+                                                    ]"/>
+                                              </actions>
+                                              <delay exact="$FadeoutTime / 2"/>
+                                              <actions>
+                                                <leave_control_position/>
+                                              </actions>
+                                              <delay exact="$FadeoutTime / 2"/>
+                                              <actions>
+                                                <set_owner object="$RaceShip" faction="faction.civilian"/>
+                                                <spawn_docked ship="$RaceShip" dock="$Dock"/>
+                                                <add_actor_to_room actor="player.entity" object="$Dock">
+                                                  <position object="$Drek" x="1.1m" y="1.8m" z="-1.1m"/>
+                                                  <rotation yaw="150deg"/>
+                                                </add_actor_to_room>
+                                                <start_conversation actor="$Drek" conversation="drek_dockingbay"/>
+                                              </actions>
+                                              <delay exact="$FadeinTime + 1s"/>
+                                              <actions>
+                                                <request_store_ship ship="$RaceShip" object="$CasinoStation"/>
+                                              </actions>
+                                            </cue>
+
+                                            <cue name="Time_Trial_End_Conv_Started">
+                                              <conditions>
+                                                <event_conversation_started actor="$Drek" conversation="drek_dockingbay"/>
+                                              </conditions>
+                                              <actions>
+                                                <allow_conversation_escape enabled="false"/>
+                                                <add_npc_line speaker="$Drek" delay="3s" line="30222056" comment="{10173,30222056}"/>
+                                                <add_npc_line speaker="$Drek" delay="0s" line="30222057" comment="{10173,30222057}"/>
+                                                <add_npc_line speaker="$Drek" delay="0s" line="30222058" comment="{10173,30222058}"/>
+                                                <add_npc_line speaker="$Drek" delay="1s" line="30222060" comment="{10173,30222060}"/>
+
+                                                <set_value name="$Skills" exact="table[{skilltype.piloting} = 6, {skilltype.morale} = 4]"/>
+                                                <set_value name="$SkillsText" exact="''"/>
+                                                <include_actions ref="md.GM_GetExactCrew.GetNPCSkillText"/>
+                                              </actions>
+                                              <cues>
+                                                <cue name="Time_Trial_End_Conv_Ended">
+                                                  <conditions>
+                                                    <event_conversation_finished actor="$Drek"/>
+                                                  </conditions>
+                                                  <actions>
+                                                    <signal_cue_instantly cue="md.NPC_Instantiation.NPC_Placement_Manager" param="['add_definition', $Drek, 
+                                                        table[
+                                                        $requestercue = namespace,
+                                                        $location = 'disconnect',
+                                                        $priority = 100,
+                                                        $debugchance = 0,
+                                                        $debugcaller = if $DebugChance == 100 then this else null]
+                                                        ]"/>
+
+                                                    <update_mission cue="$MissionCue" description="$SkillsText"/>
+                                                  </actions>
+                                                  <cues>
+                                                    <cue name="Get_Pilot_RML" ref="md.RML_Deliver_Crew.DeliverCrew">
+                                                      <param name="EndSignalCue"    value="Get_Pilot_End"/>
+                                                      <param name="MissionCue"      value="$MissionCue"/>
+                                                      <param name="StartStep"       value="5" comment="Briefing step to start the mission on"/>
+                                                      <param name="UpdateBriefing"  value="true" comment="Update the briefing objective step when the objective is updated"/>
+                                                      <param name="DebugChance"     value="$DebugChance"/>
+                                                      <param name="Faction"         value="faction.civilian"/>
+                                                      <param name="NpcCount"        value="1"/>
+                                                      <param name="Skills"          value="$Skills"/>
+                                                      <param name="Destination"     value="$CasinoStation"/>
+                                                      <param name="Text_Objective"  value="{30222,1787}"/>
+                                                      <param name="Text_ProgressBar" value="null"/>
+                                                    </cue>
+
+                                                    <cue name="Get_Pilot_End">
+                                                      <conditions>
+                                                        <event_cue_signalled/>
+                                                      </conditions>
+                                                      <actions>
+                                                        <!--Remove the mission for now. It will be added in the next section.-->
+                                                        <remove_mission cue="$MissionCue"/>
+                                                      </actions>
+                                                      <cues>
+                                                        <cue name="Signal_The_Anomalies" checkinterval="1s">
+                                                          <conditions>
+                                                            <check_value value="player.age gt Time_Trial_End_Conv_Ended.time + 1min"/>
+                                                          </conditions>
+                                                          <delay exact="5s"/>
+                                                          <actions>
+                                                            <signal_cue cue="The_Anomalies"/>
+                                                            <cancel_cue cue="Intro_TalkTo"/>
+                                                          </actions>
+                                                        </cue>
+                                                      </cues>
+                                                    </cue>
+                                                  </cues>
+                                                </cue>
+                                              </cues>
+                                            </cue>
+                                          </cues>
+                                        </cue>
+                                      </cues>
+                                    </cue>
+                                  </cues>
+                                </cue>
+                              </cues>
+                            </cue>
+                          </cues>
+                        </cue>
+                      </cues>
+                    </cue>
+
+                  </cues>
+                </cue>
+
+              </cues>
+            </cue>
+
+            <cue name="The_Anomalies">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <find_sector name="$Anomaly_1_Sec" macro="macro.cluster_04_sector001_macro" comment="Nopileos' Fortune"/>
+                <find_sector name="$Anomaly_2_Sec" macro="macro.cluster_08_sector001_macro" comment="Silent Witness"/>
+                <append_to_list name="md.Encounters.Manager.$IgnoredSectors" exact="$Anomaly_1_Sec"/>
+                <append_to_list name="md.Encounters.Manager.$IgnoredSectors" exact="$Anomaly_2_Sec"/>
+
+                <create_position name="$Anomaly_1_FlyTo_Pos" space="$Anomaly_1_Sec" x="900km" y="25km" z="1005km"/>
+                <set_value name="$Anomaly_1_FlyTo_Radius" exact="10km"/>
+                <create_position name="$Anomaly_1_Spawn_Pos" space="$Anomaly_1_Sec" x="908km" y="30km" z="1030km"/>
+                <create_position name="$Anomaly_2_Spawn_Pos" space="$Anomaly_2_Sec" x="74km" y="45km" z="163km"/>
+                <!--Silent Witness
+              cluster_08_sector001_macro
+              position.[74278.703125m, 45043.257813m, 163273.875000m]-->
+              </actions>
+              <cues>
+                <cue name="The_Anomalies_Intro_Speak" ref="md.LIB_Dialog.Speak_Actor">
+                  <param name="Actor"             value="$Drek"/>
+                  <param name="CutsceneKey"       value="$CharacterCutsceneTable.{$Drek}"/>
+                  <param name="DelayInitial"      value="2s"/>
+                  <param name="Lines"             value="[[30222061], [30222062]]" comment="{10173,30222061} {10173,30222062}"/>
+                  <param name="EndSignalCue"      value="The_Anomalies_Fly_To"/>
+                </cue>
+
+                <cue name="The_Anomalies_Fly_To">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <create_mission cue="$MissionCue" name="{30222,1701}" description="{30222,1702}" type="missiontype.plot" faction="faction.civilian" difficulty="level.medium" abortable="false" icon="'briefing_boso_ta_01'" iconcaption="{30201,2}">
+                      <briefing>
+                        <objective step="1" action="objective.flyto" object="$Anomaly_1_Sec" offset="$Anomaly_1_FlyTo_Pos" radius="$Anomaly_1_FlyTo_Radius"/>
+                      </briefing>
+                    </create_mission>
+                    <set_objective_from_briefing cue="$MissionCue" step="1"/>
+                    <create_object name="$Anomaly_1" groupname="$Anomalies" macro="macro.wormhole_v1_macro" sector="$Anomaly_1_Sec">
+                      <safepos value="$Anomaly_1_Spawn_Pos"/>
+                    </create_object>
+                    <set_object_name object="$Anomaly_1" page="20109" line="4911"/>
+                    <get_safe_pos result="$Anomaly_Ship_SpawnPos" sector="$Anomaly_1_Sec" object="$Anomaly_1" exact="3km" radius="500m"/>
+                    <create_ship name="$Anomaly_1_Ship" sector="$Anomaly_1_Sec" capturable="false">
+                      <select faction="faction.paranid" size="class.ship_s" tags="[tag.mission, tag.fighter]"/>
+                      <owner exact="faction.civilian" overridenpc="true"/>
+                      <safepos value="$Anomaly_Ship_SpawnPos"/>
+                    </create_ship>
+                    <set_object_min_hull object="$Anomaly_1_Ship" exact="5"/>
+                    <create_order id="'MoveWait'" immediate="true" object="$Anomaly_1_Ship" name="$AnomalyShipWaitOrder">
+                      <param name="destination" value="[$Anomaly_1_Sec, $Anomaly_Ship_SpawnPos]"/>
+                    </create_order>
+
+                    <signal_cue_instantly cue="md.NPC_Instantiation.NPC_Placement_Manager" param="['remove_request', $Drek, namespace]"/>
+                  </actions>
+                  <cues>
+                    <cue name="The_Anomalies_Fly_To_Arrived" checkinterval="2s">
+                      <conditions>
+                        <check_value value="player.ship and player.sector == $Anomaly_1_Sec and player.ship.distanceto.[$Anomaly_1_Sec, $Anomaly_1_FlyTo_Pos] lt $Anomaly_1_FlyTo_Radius"/>
+                      </conditions>
+                      <actions>
+                        <set_value name="$AtFlytoPos" exact="true"/>
+                      </actions>
+                      <cues>
+                        <cue name="The_Anomalies_Fly_To_Arrived_Boso_Speak" ref="md.LIB_Dialog.Speak_Actor">
+                          <param name="Actor"             value="$Boso"/>
+                          <param name="CutsceneKey"       value="$CharacterCutsceneTable.{$Boso}"/>
+                          <param name="DelayInitial"      value="1s"/>
+                          <param name="Lines"             value="[[30222110], [30222112]]" comment="{10201,30222110} {10201,30222112}"/>
+                          <param name="EndSignalCue"      value="The_Anomalies_Find_Anomaly"/>
+                        </cue>
+
+                        <cue name="The_Anomalies_Find_Anomaly">
+                          <conditions>
+                            <event_cue_signalled/>
+                          </conditions>
+                          <delay exact="1s"/>
+                          <actions>
+                            <create_position name="$FindAnomalyPos" object="$Anomaly_1" max="5km" space="$Anomaly_1_Sec"/>
+                            <update_mission cue="$MissionCue">
+                              <briefing>
+                                <objective step="1" action="objective.find" text="{20109,4911}" object="$Anomaly_1_Sec" offset="$FindAnomalyPos" radius="15km"/>
+                              </briefing>
+                            </update_mission>
+                            <set_objective_from_briefing cue="$MissionCue" step="1"/>
+                          </actions>
+                        </cue>
+                      </cues>
+                    </cue>
+
+                    <cue name="The_Anomalies_Pinged_Anomaly">
+                      <conditions>
+                        <event_long_range_scan_ping object="$Anomaly_1"/>
+                      </conditions>
+                      <actions>
+                        <cancel_cue cue="The_Anomalies_Fly_To_Arrived"/>
+                      </actions>
+                      <cues>
+                        <cue name="The_Anomalies_Long_Range_Ping_Boso_Speak" ref="md.LIB_Dialog.Speak_Actor">
+                          <param name="Actor"             value="$Boso"/>
+                          <param name="CutsceneKey"       value="$CharacterCutsceneTable.{$Boso}"/>
+                          <param name="DelayInitial"      value="2s"/>
+                          <param name="Lines"             value="[[30222133]]" comment="{10201,30222133}"/>
+                          <param name="EndSignalCue"      value="The_Anomalies_Fly_To_Anomaly"/>
+                        </cue>
+
+                        <cue name="The_Anomalies_Fly_To_Anomaly">
+                          <conditions>
+                            <event_cue_signalled/>
+                          </conditions>
+                          <delay exact="2s"/>
+                          <actions>
+                            <update_mission cue="$MissionCue">
+                              <briefing>
+                                <objective step="2" action="objective.investigate" text="{20109,4911}" object="$Anomaly_1"/>
+                              </briefing>
+                            </update_mission>
+                            <set_objective_from_briefing cue="$MissionCue" step="2"/>
+                          </actions>
+                        </cue>
+                      </cues>
+                    </cue>
+
+                    <cue name="The_Anomalies_Entered_Anomaly">
+                      <conditions>
+                        <event_player_entered_anomaly entry="$Anomaly_1"/>
+                      </conditions>
+                    </cue>
+
+                    <cue name="The_Anomalies_Near_Anomaly" checkinterval="1s">
+                      <conditions>
+                        <check_value value="player.ship and player.sector == $Anomaly_1_Sec and player.ship.distanceto.{$Anomaly_1} lt 5km"/>
+                      </conditions>
+                      <actions>
+                        <cancel_cue cue="The_Anomalies_Pinged_Anomaly"/>
+
+                        <create_object name="$Anomaly_2" groupname="$Anomalies" macro="macro.wormhole_v1_macro" sector="$Anomaly_2_Sec">
+                          <safepos value="$Anomaly_2_Spawn_Pos"/>
+                        </create_object>
+                        <set_object_name object="$Anomaly_2" page="20109" line="4911"/>
+                        <add_anomaly_destination anomaly="$Anomaly_1" destination="$Anomaly_2"/>
+                        <add_anomaly_destination anomaly="$Anomaly_2" destination="$Anomaly_1"/>
+
+                        <get_safe_pos result="$Drek_Ship_SpawnPos" sector="$Anomaly_2_Sec" object="$Anomaly_2" exact="3km" radius="500m"/>
+                        <create_ship name="$Drek_Ship" sector="$Anomaly_2_Sec" capturable="false">
+                          <select faction="faction.argon" size="class.ship_s" tags="[tag.mission, tag.fighter]"/>
+                          <pilot actor="$Drek"/>
+                          <owner exact="$CasinoOwner"/>
+                          <safepos value="$Drek_Ship_SpawnPos"/>
+                        </create_ship>
+                        <set_object_min_hull object="$Drek_Ship" exact="5"/>
+                        <create_order id="'MoveWait'" immediate="true" object="$Drek_Ship" name="$DrekShipWaitOrder">
+                          <param name="destination" value="[$Anomaly_2_Sec, $Drek_Ship_SpawnPos]"/>
+                        </create_order>
+
+                        <do_all exact="5">
+                          <set_value name="$Yaw" min="0deg" max="359deg" />
+                          <set_value name="$Pitch" min="0deg" max="359deg" />
+                          <set_value name="$Roll" min="0deg" max="359deg" />
+                          <create_object groupname="$Mines" macro="macro.weapon_gen_mine_02_a_macro" sector="$Anomaly_2_Sec" owner="faction.criminal">
+                            <safepos object="$Anomaly_2" min="2km" max="6km" />
+                            <rotation yaw="$Yaw" pitch="$Pitch" roll="$Roll" />
+                          </create_object>
+                        </do_all>
+
+                        <set_value name="$SpeakList" exact="[]"/>
+                        <do_if value="The_Anomalies_Pinged_Anomaly.state == cuestate.waiting">
+                          <append_to_list name="$SpeakList" exact="[30222133]" comment="{10201,30222133}"/>
+                        </do_if>
+                        <append_to_list name="$SpeakList" exact="[30222116]" comment="{10201,30222116}"/>
+                        <append_to_list name="$SpeakList" exact="[30222117, 2s]" comment="{10201,30222117}"/>
+                      </actions>
+                      <delay exact="7s"/>
+                      <actions>
+                        <create_order id="'MoveWait'" immediate="true" object="$Anomaly_1_Ship" name="$AnomalyShipEscapeOrder">
+                          <param name="destination" value="[$CasinoStation.sector, position.[0m,0m,0m]]"/>
+                        </create_order>
+                        <set_object_min_hull object="$Anomaly_1_Ship" exact="0"/>
+                      </actions>
+                      <cues>
+                        <cue name="The_Anomalies_Ship_Left">
+                          <conditions>
+                            <event_object_changed_sector object="$Anomaly_1_Ship"/>
+                          </conditions>
+                          <actions>
+                            <destroy_object object="$Anomaly_1_Ship"/>
+                          </actions>
+                        </cue>
+                        <cue name="The_Anomalies_Near_Anomaly_Boso_Speak" ref="md.LIB_Dialog.Speak_Actor">
+                          <param name="Actor"             value="$Boso"/>
+                          <param name="CutsceneKey"       value="$CharacterCutsceneTable.{$Boso}"/>
+                          <param name="DelayInitial"      value="0s"/>
+                          <param name="Lines"             value="$SpeakList"/>
+                          <param name="EndSignalCue"      value="The_Anomalies_Near_Anomaly_Drek"/>
+                        </cue>
+
+                        <cue name="The_Anomalies_Near_Anomaly_Drek">
+                          <conditions>
+                            <event_cue_signalled/>
+                          </conditions>
+                          <actions>
+
+                          </actions>
+                          <cues>
+                            <cue name="The_Anomalies_Near_Anomaly_Drek_Speak" ref="md.LIB_Dialog.Speak_Actor">
+                              <param name="Actor"             value="$Drek"/>
+                              <param name="CutsceneKey"       value="$CharacterCutsceneTable.{$Drek}"/>
+                              <param name="DelayInitial"      value="0s"/>
+                              <param name="Lines"             value="[[30222064], [30222066]]" comment="{10173,30222064} {10173,30222066}"/>
+                              <param name="EndSignalCue"      value="The_Anomalies_Rescue_Drek"/>
+                            </cue>
+
+                            <cue name="The_Anomalies_Rescue_Drek">
+                              <conditions>
+                                <event_cue_signalled/>
+                              </conditions>
+                              <actions>
+                                <set_value name="$SpeakList" exact="[[30222119]]" comment="{10201,30222119}"/>
+                                <do_if value="player.sector != $Drek.sector">
+                                  <append_to_list name="$SpeakList" exact="[30222135]" comment="{10201,30222135}"/>
+                                </do_if>
+                              </actions>
+                              <cues>
+                                <cue name="The_Anomalies_Rescue_Drek_Boso_Speak" ref="md.LIB_Dialog.Speak_Actor">
+                                  <param name="Actor"             value="$Boso"/>
+                                  <param name="CutsceneKey"       value="$CharacterCutsceneTable.{$Boso}"/>
+                                  <param name="DelayInitial"      value="0s"/>
+                                  <param name="Lines"             value="$SpeakList"/>
+                                  <param name="EndSignalCue"      value="The_Anomalies_Find_Drek"/>
+                                </cue>
+
+                                <cue name="The_Anomalies_Find_Drek">
+                                  <conditions>
+                                    <event_cue_signalled/>
+                                  </conditions>
+                                  <actions>
+                                    <set_value name="$IsNearAnomaly_1" exact="player.sector == $Anomaly_1.sector and player.entity.distanceto.{$Anomaly_1} lt 20km"/>
+                                    <update_mission cue="$MissionCue">
+                                      <briefing>
+                                        <objective step="2" action="objective.find" text="$Drek.knownname" object="if $IsNearAnomaly_1 then $Anomaly_1 else $Drek_Ship"/>
+                                      </briefing>
+                                    </update_mission>
+                                    <set_objective_from_briefing cue="$MissionCue" step="2"/>
+                                  </actions>
+                                  <cues>
+                                    <cue name="The_Anomalies_Find_Drek_Left_Anomaly" checkinterval="1s">
+                                      <conditions>
+                                        <check_value value="$IsNearAnomaly_1"/>
+                                        <check_value value="player.sector != $Anomaly_1.sector or player.entity.distanceto.{$Anomaly_1} gt 20km"/>
+                                        <check_value value="player.sector != $Drek.sector or player.entity.distanceto.{$Drek} gt 20km"/>
+                                      </conditions>
+                                      <actions>
+                                        <update_mission cue="$MissionCue">
+                                          <briefing>
+                                            <objective step="2" action="objective.find" text="$Drek.knownname" object="$Drek_Ship"/>
+                                          </briefing>
+                                        </update_mission>
+                                        <set_objective_from_briefing cue="$MissionCue" step="2"/>
+                                      </actions>
+                                    </cue>
+
+                                    <cue name="The_Anomalies_Found_Drek" checkinterval="1s">
+                                      <conditions>
+                                        <check_value value="player.sector == $Drek.sector or player.entity.distanceto.{$Drek} lt 10km"/>
+                                      </conditions>
+                                      <actions>
+                                        <cancel_cue cue="The_Anomalies_Find_Drek_Left_Anomaly"/>
+                                        <update_mission cue="$MissionCue">
+                                          <briefing>
+                                            <objective step="2" action="objective.find" text="$Drek.knownname" object="$Drek_Ship"/>
+                                          </briefing>
+                                        </update_mission>
+                                        <set_objective_from_briefing cue="$MissionCue" step="2"/>
+                                        <do_if value="The_Anomalies_Entered_Anomaly.state == cuestate.waiting">
+                                          <set_value name="$SpeakList" exact="[[30222069]]" comment="{10173,30222069}"/>
+                                        </do_if>
+                                        <do_else>
+                                          <set_value name="$SpeakList" exact="[[30222067]]" comment="{10173,30222067}"/>
+                                        </do_else>
+                                        <append_to_list name="$SpeakList" exact="[30222071, 2s]"/>
+                                      </actions>
+                                      <cues>
+                                        <cue name="The_Anomalies_Found_Drek_Speak" ref="md.LIB_Dialog.Speak_Actor">
+                                          <param name="Actor"             value="$Drek"/>
+                                          <param name="CutsceneKey"       value="$CharacterCutsceneTable.{$Drek}"/>
+                                          <param name="DelayInitial"      value="2s"/>
+                                          <param name="Lines"             value="$SpeakList"/>
+                                          <param name="EndSignalCue"      value="The_Anomalies_Destroy_Mines"/>
+                                        </cue>
+
+                                        <cue name="The_Anomalies_Destroy_Mines">
+                                          <conditions>
+                                            <event_cue_signalled/>
+                                          </conditions>
+                                          <actions>
+                                            <debug_text text="'destroy mines ' + $Mines"/>
+                                            <update_mission cue="$MissionCue">
+                                              <briefing>
+                                                <objective step="3" action="objective.destroy" group="$Mines"/>
+                                              </briefing>
+                                            </update_mission>
+                                            <set_objective_from_briefing cue="$MissionCue" step="3"/>
+                                          </actions>
+                                          <cues>
+                                            <cue name="The_Anomalies_Mines_Destroyed">
+                                              <conditions>
+                                                <event_object_destroyed group="$Mines"/>
+                                                <check_value value="$Mines.count le 1"/>
+                                              </conditions>
+                                              <delay exact="1s"/>
+                                              <actions>
+                                                <set_value name="$Dal" exact="@md.$PersistentCharacters.$DalBusta"/>
+                                                <do_if value="$Dal">
+                                                  <set_value name="$CharacterCutsceneTable.{$Dal}" exact="'ShowNPCFace'"/>
+                                                </do_if>
+                                                <update_mission cue="$MissionCue">
+                                                  <briefing>
+                                                    <objective step="4" action="objective.flyto" object="$Drek_Ship"/>
+                                                  </briefing>
+                                                </update_mission>
+                                                <set_objective_from_briefing cue="$MissionCue" step="4"/>
+
+                                                <!--Dal
+                                                <t id="30222110">Allow me to interject. While I'm sure our dear Boron is curious as to what methods were used to stabalise such an anomaly, I believe it is in our interests to return it to its natural state.</t>
+                                                <t id="30222111">And how do you(male) suggest we fix it?</t>-->
+
+                                                <!--
+                                                Boso
+                                                <t id="30222123">Allow me to interject. While I am curious as to what methods were used to stabalise such an anomaly, I believe it is in our interests to return it to its natural state.</t>
+                                                <t id="30222124">I am actually in full agreement.</t>
+                                                <t id="30222125">Until we can ascertain the methods used, we must consider this a wreckless activity performed by amatures.</t>
+                                                <t id="30222126">I surmise that each traversal will introduce gravitational eddies which will serve to destabalise it.</t>
+                                                <t id="30222127">In short, fly through until you are lost.</t>
+                                                <t id="30222128">(female you){,30222127}</t>
+                                                <t id="30222129">Let us hope you do not find yourself in a Xenon stronghold.</t>-->
+
+                                                <!--Drek
+                                                <t id="30222072">I'm back up and running. Question is, what do we do with this thing? I think this is what they've used to create shortcuts during the races.</t>
+                                                <t id="30222073">If that's what it will take then I'll do my part.</t>
+                                                <t id="30222074">I'll follow your lead.</t>
+                                                <t id="30222075">(female 'you'){,30222074}</t>-->
+
+                                                <!--TODO @Owen #important use usecase system-->
+                                                <speak actor="$Drek" line="30222072"/>
+
+                                              </actions>
+                                              <cues>
+                                                <cue name="The_Anomalies_Mines_Destroyed_Drek_Speak_End">
+                                                  <conditions>
+                                                    <event_speak_finished actor="$Drek"/>
+                                                  </conditions>
+                                                  <actions>
+                                                    <!--TODO @Owen use Dal-->
+                                                    <start_conversation actor="$Boso" conversation="AnomalyConv"/>
+                                                  </actions>
+                                                </cue>
+                                                <cue name="The_Anomalies_Boso_Conv_Start">
+                                                  <conditions>
+                                                    <event_conversation_started actor="$Boso" conversation="AnomalyConv"/>
+                                                  </conditions>
+                                                  <actions>
+                                                    <!--TODO @Owen #important use usecase system-->
+                                                    <allow_conversation_escape enabled="false"/>
+                                                    <add_npc_line speaker="$Boso" line="30222123" comment="{10201,30222123}"/>
+                                                    <add_npc_line speaker="$Boso" line="30222125" comment="{10201,30222125}"/>
+                                                    <do_if value="$Dal and $Dal.hascontext.{player.headquarters}">
+                                                      <add_npc_line speaker="$Dal" line="30222111" comment="{10111,30222111}"/>
+                                                    </do_if>
+                                                    <add_npc_line speaker="$Boso" line="30222126" comment="{10201,30222126}"/>
+                                                    <add_npc_line speaker="$Boso" line="30222127" comment="{10201,30222127}"/>
+                                                    <add_npc_line speaker="$Boso" line="30222129" comment="{10201,30222129}"/>
+                                                    <add_npc_line speaker="$Drek" line="30222073" comment="{10173,30222073}"/>
+                                                    <add_npc_line speaker="$Drek" line="30222074" comment="{10173,30222074}"/>
+                                                  </actions>
+                                                  <cues>
+                                                    <cue name="The_Anomalies_Boso_Conv_End">
+                                                      <conditions>
+                                                        <event_conversation_finished/>
+                                                      </conditions>
+                                                      <actions>
+                                                        <set_value name="$TraverseCount" exact="0"/>
+
+                                                        <do_if value="player.sector == $Anomaly_1.sector">
+                                                          <set_value name="$TargetAnomaly" exact="$Anomaly_1"/>
+                                                        </do_if>
+                                                        <do_else>
+                                                          <set_value name="$TargetAnomaly" exact="$Anomaly_2"/>
+                                                        </do_else>
+
+                                                        <update_mission cue="$MissionCue">
+                                                          <briefing>
+                                                            <objective step="4" action="objective.custom" customaction="{30222,1786}" text="{20109,4911}" object="$TargetAnomaly"/>
+                                                          </briefing>
+                                                        </update_mission>
+                                                        <set_objective_from_briefing cue="$MissionCue" step="4"/>
+                                                      </actions>
+                                                      <cues>
+                                                        <cue name="The_Anomalies_Traversed_Anomaly" instantiate="true">
+                                                          <conditions>
+                                                            <event_player_entered_anomaly/>
+                                                            <check_value value="$Anomalies.indexof.{event.param}"/>
+                                                          </conditions>
+                                                          <actions>
+                                                            <set_value name="$TraverseCount" operation="add"/>
+
+                                                            <do_if value="$TraverseCount gt 2">
+                                                              <cancel_cue cue="The_Anomalies_Changed_Sector"/>
+                                                              <remove_anomaly_destination anomaly="$Anomaly_1" destination="$Anomaly_2"/>
+                                                              <remove_anomaly_destination anomaly="$Anomaly_2" destination="$Anomaly_1"/>
+                                                              <set_object_name object="$Anomaly_1" page="20109" line="4901"/>
+                                                              <set_object_name object="$Anomaly_2" page="20109" line="4901"/>
+                                                              <speak actor="$Boso" line="30222132" delay="2s" comment="{10201,30222132}"/>
+
+                                                              <dismiss_control_entity actor="$Drek" object="$Drek_Ship"/>
+                                                              <remove_actor_from_room actor="$Drek"/>
+                                                              <destroy_object object="$Drek_Ship" explosion="false"/>
+                                                              <set_objective cue="$MissionCue" action="objective.none"/>
+
+                                                              <signal_cue cue="The_Anomalies_Destabalised_Drek_Speak"/>
+                                                              <cancel_cue cue="The_Anomalies_Traversed_Anomaly.static"/>
+                                                            </do_if>
+                                                            <do_else>
+                                                              <!--TODO @Owen use usecase system-->
+                                                              <do_if value="$TraverseCount == 1">
+                                                                <speak actor="$Drek" line="30222076" delay="2s" comment="{10173,30222076}"/>
+                                                              </do_if>
+                                                              <do_elseif value="$TraverseCount == 2">
+                                                                <speak actor="$Boso" line="30222131" delay="2s" comment="{10201,30222131}"/>
+                                                              </do_elseif>
+                                                            </do_else>
+                                                          </actions>
+                                                          <delay exact="1s"/>
+                                                          <actions>
+                                                            <signal_cue_instantly cue="md.NPC_Instantiation.NPC_Placement_Manager" param="['add_definition', $Drek,
+                                                              table[
+                                                              $requestercue = namespace,
+                                                              $location = $CasinoRoom,
+                                                              $priority = 100,
+                                                              $position = position.[-4.5m, 0.05m, -6.2m],
+                                                              $rotation = rotation.[17deg, 0deg, 0deg],
+                                                              $debugchance = 0,
+                                                              $debugcaller = if $DebugChance == 100 then this else null]
+                                                              ]"/>
+                                                          </actions>
+                                                        </cue>
+
+                                                        <cue name="The_Anomalies_Changed_Sector" instantiate="true">
+                                                          <conditions>
+                                                            <event_object_changed_sector object="player.entity"/>
+                                                          </conditions>
+                                                          <delay exact="50ms"/>
+                                                          <actions>
+                                                            <do_if value="event.param == $Anomaly_1.sector">
+                                                              <set_value name="$TargetAnomaly" exact="$Anomaly_1"/>
+                                                            </do_if>
+                                                            <do_elseif value="event.param == $Anomaly_2.sector">
+                                                              <set_value name="$TargetAnomaly" exact="$Anomaly_2"/>
+                                                            </do_elseif>
+
+                                                            <update_mission cue="$MissionCue">
+                                                              <briefing>
+                                                                <objective step="4" action="objective.custom" customaction="{30222,1786}" text="{20109,4911}" object="$TargetAnomaly"/>
+                                                              </briefing>
+                                                            </update_mission>
+                                                            <set_objective_from_briefing cue="$MissionCue" step="4"/>
+                                                          </actions>
+                                                        </cue>
+
+                                                        <cue name="The_Anomalies_Destabalised_Drek_Speak">
+                                                          <conditions>
+                                                            <event_cue_signalled/>
+                                                          </conditions>
+                                                          <delay exact="10s"/>
+                                                          <actions>
+                                                            <!--TODO @Owen background comm?-->
+                                                            <speak actor="$Drek" line="[30222079, 30222081]" comment="{10173,30222079} {10173,30222081}"/>
+                                                            <remove_from_list name="md.Encounters.Manager.$IgnoredSectors" exact="$Anomaly_1_Sec" multiple="false"/>
+                                                            <remove_from_list name="md.Encounters.Manager.$IgnoredSectors" exact="$Anomaly_2_Sec" multiple="false"/>
+                                                          </actions>
+                                                          <cues>
+                                                            <cue name="The_Anomalies_Destabalised_Drek_Speak_End" version="2">
+                                                              <conditions>
+                                                                <event_speak_finished actor="$Drek"/>
+                                                              </conditions>
+                                                              <actions>
+                                                                <!--TODO @Owen walkto room-->
+                                                                <update_mission cue="$MissionCue">
+                                                                  <briefing>
+                                                                    <objective step="5" action="objective.dockat" object="$CasinoStation"/>
+                                                                  </briefing>
+                                                                </update_mission>
+                                                                <set_objective_from_briefing cue="$MissionCue" step="5"/>
+                                                              </actions>
+                                                              <patch sinceversion="2" state="complete">
+                                                                <do_if value="The_Anomalies_Entered_Station.state == cuestate.waiting">
+                                                                  <cancel_cue cue="The_Anomalies_Traversed_Anomaly"/>
+                                                                  <set_objective_from_briefing cue="$MissionCue" step="5"/>
+                                                                  <debug_text text="'Restoring objective to ' + $CasinoStation + ' ' + $CasinoStation.knownname" filter="savegame"/>
+                                                                </do_if>
+                                                              </patch>
+                                                              <cues>
+                                                                <cue name="The_Anomalies_Entered_Station" checkinterval="1s">
+                                                                  <conditions>
+                                                                    <check_value value="player.entity.hascontext.{$CasinoStation}"/>
+                                                                  </conditions>
+                                                                  <actions>
+                                                                    <update_mission cue="$MissionCue">
+                                                                      <briefing>
+                                                                        <objective step="5" action="objective.goto" object="$CasinoRoom" text="$CasinoRoom.parent.name"/>
+                                                                      </briefing>
+                                                                    </update_mission>
+                                                                    <set_objective_from_briefing cue="$MissionCue" step="5"/>
+                                                                  </actions>
+                                                                  <cues>
+                                                                    <cue name="The_Anomalies_Entered_Casino">
+                                                                      <conditions>
+                                                                        <event_object_changed_room object="player.entity" room="$CasinoRoom"/>
+                                                                      </conditions>
+                                                                      <delay exact="1s"/>
+                                                                      <actions>
+                                                                        <update_mission cue="$MissionCue">
+                                                                          <briefing>
+                                                                            <objective step="5" action="objective.talkto" object="$Drek"/>
+                                                                          </briefing>
+                                                                        </update_mission>
+                                                                        <set_objective_from_briefing cue="$MissionCue" step="5"/>
+
+                                                                        <!--<t id="30222083">Good to see you in one piece.</t>
+                                                                        <t id="30222085">Take a look. I entered our ship into the race today, and we seem to be doing quite well.</t>
+                                                                        <t id="30222086">Now we have to hope that our hard work has paid off. Anyone who tries to use that anomaly as a shortcut will get quite a surprise!</t>
+                                                                        <t id="30222087">There we have it. A much more palatable result.</t>
+                                                                        <t id="30222088">I have to thank you for your help. I'll have this module's blueprint transferred to your computer.</t>
+                                                                        <t id="30222090">Once you've built one, that will make us rivals, I suppose.</t>
+                                                                        <t id="30222092">I look forward to the competition!</t>
+                                                                        <t id="30222093">(pronounced Rah-Man-Kits)I do wonder what happened to Raamanckits...</t>
+                                                                        <t id="30222094">Good to see you again.</t>-->
+
+                                                                        <!--
+                                                                        <page id="10174" title="Mission Argon/Terran NPC Male 13 / Race Announcer - Welfare research" descr="BATCH3 - APPROVED" voice="yes">
+                                                                          <t id="30222000">(Research missions)</t>
+                                                                          <t id="30222001">And here is Lasonnis! She's got a clear lead as they head into the final section.</t>
+                                                                          <t id="30222002">We're waiting for Lasonnis to clear the nebula and make the run to the finish.</t>
+                                                                          <t id="30222003">Wait, who's this?</t>
+                                                                          <t id="30222004">(pronounced Rah-Man-Kits)The ship of Raamanckits has emerged first, coming out of absolutely nowhere to take the lead in this race!</t>
+                                                                          <t id="30222005">What a remarkable finish!</t>
+                                                                          <t id="30222006">Here comes the driver from the newly formed Drek racing team.</t>
+                                                                          <t id="30222007">All the ships are taking their positions for the start of the race.</t>
+                                                                          <t id="30222008">(excited countdown)3</t>
+                                                                          <t id="30222009">2</t>
+                                                                          <t id="30222010">1</t>
+                                                                          <t id="30222011">And away they go!</t>
+                                                                          <t id="30222012">What a race!</t>
+                                                                          <t id="30222013">They've made contact!</t>
+                                                                          <t id="30222014">It's Lasonnis leading the pack, followed by the newcomer from Drek Racing.</t>
+                                                                          <t id="30222015">Raamanckits has once again disappeared. Will we see him make a miraculous comeback, as we did in the previous event?</t>
+                                                                          <t id="30222016">No, it's Lasonnis who crosses the line to take the lead in this championship!</t>
+                                                                          <t id="30222017">And a great result for Drek Racing! Second place on their first outing!</t>
+                                                                          <t id="30222018">Still no sign of Raamanckits. I guess his luck ran out.</t>
+                                                                        </page>-->
+
+                                                                        <!--DREK
+                                                                        <t id="30222083">Good to see you in one piece.</t>
+                                                                        <t id="30222085">Take a look. I entered our ship into the race today, and we seem to be doing quite well.</t>
+                                                                        <t id="30222086">Now we have to hope that our hard work has paid off. Anyone who tries to use that anomaly as a shortcut will get quite a surprise!</t>-->
+
+                                                                        <!--Announcer
+                                                                        <t id="30222012">What a race!</t>
+                                                                        <t id="30222014">It's Lasonnis leading the pack, followed by the newcomer from Drek Racing.</t>
+                                                                        <t id="30222015">Raamanckits has once again disappeared. Will we see him make a miraculous comeback, as we did in the previous event?</t>
+                                                                        <t id="30222016">No, it's Lasonnis who crosses the line to take the lead in this championship!</t>
+                                                                        <t id="30222017">And a great result for Drek Racing! Second place on their first outing!</t>
+                                                                        <t id="30222018">Still no sign of Raamanckits. I guess his luck ran out.</t>-->
+
+                                                                        <!--Drek
+                                                                        <t id="30222087">There we have it. A much more palatable result.</t>
+                                                                        <t id="30222088">I have to thank you for your help. I'll have this module's blueprint transferred to your computer.</t>
+                                                                        <t id="30222090">Once you've built one, that will make us rivals, I suppose.</t>
+                                                                        <t id="30222092">I look forward to the competition!</t>
+                                                                        <t id="30222093">(pronounced Rah-Man-Kits)I do wonder what happened to Raamanckits...</t>-->
+                                                                      </actions>
+                                                                      <cues>
+                                                                        <cue name="The_End_Drek_Conv_Start">
+                                                                          <conditions>
+                                                                            <event_conversation_started actor="$Drek"/>
+                                                                          </conditions>
+                                                                          <actions>
+                                                                            <allow_conversation_escape enabled="false"/>
+                                                                            <add_npc_line speaker="$Drek" line="30222083"/>
+                                                                            <add_npc_line speaker="$Drek" line="30222085"/>
+                                                                            <add_npc_line speaker="$Drek" line="30222086"/>
+                                                                            <add_npc_line speaker="$RaceAnnouncer" line="30222012" delay="4s"/>
+                                                                            <add_npc_line speaker="$RaceAnnouncer" line="30222014" delay="0.5s"/>
+                                                                            <add_npc_line speaker="$RaceAnnouncer" line="30222015" delay="1s"/>
+                                                                            <add_npc_line speaker="$RaceAnnouncer" line="30222016" delay="1s"/>
+                                                                            <add_npc_line speaker="$RaceAnnouncer" line="30222017" delay="1s"/>
+                                                                            <add_npc_line speaker="$RaceAnnouncer" line="30222018" delay="3s"/>
+                                                                            <add_npc_line speaker="$Drek" line="30222087" delay="4s"/>
+                                                                            <add_npc_line speaker="$Drek" line="30222088"/>
+                                                                            <add_npc_line speaker="$Drek" line="30222090"/>
+                                                                            <add_npc_line speaker="$Drek" line="30222092"/>
+                                                                            <add_npc_line speaker="$Drek" line="30222093" delay="1s"/>
+                                                                          </actions>
+                                                                        </cue>
+                                                                        <cue name="The_End_Cutscene">
+                                                                          <conditions>
+                                                                            <event_speak_finished actor="$Drek" line="30222086"/>
+                                                                          </conditions>
+                                                                          <actions>
+                                                                            <set_value name="$FadeoutTime" exact="1.5s"/>
+                                                                            <set_value name="$FadeinTime" exact="1.5s"/>
+                                                                            <fade_screen fadeout="$FadeoutTime" fadein="$FadeinTime" color="black"/>
+
+                                                                            <set_value name="$CutsceneSector" exact="$Anomaly_1_Sec"/>
+                                                                            <create_ship name="$CutsceneShip_1" sector="$CutsceneSector">
+                                                                              <select size="class.ship_s" faction="faction.argon" tags="tag.fighter"/>
+                                                                              <owner exact="faction.civilian"/>
+                                                                              <safepos x="900km" y="25km" z="1005km"/>
+                                                                              <rotation yaw="180deg"/>
+                                                                            </create_ship>
+                                                                            <set_object_min_hull object="$CutsceneShip_1" exact="5"/>
+                                                                            <create_position name="$CutsceneShip_1_Start_Pos" object="$CutsceneShip_1" space="$CutsceneShip_1.zone"/>
+                                                                            <create_position name="$CutsceneShip_1_Flyto_Pos" object="$CutsceneShip_1" z="50km" space="$CutsceneSector"/>
+
+                                                                            <create_position name="$CamPos" object="$CutsceneShip_1" x="140m" y="80m" z="4000m" space="$CutsceneShip_1.zone"/>
+                                                                            <create_position name="$CamPos2" object="$CutsceneShip_1" x="1400m" y="80m" z="6500m" space="$CutsceneShip_1.zone"/>
+
+                                                                            <create_order id="'MoveWait'" immediate="true" object="$CutsceneShip_1" name="$AnomalyShipWaitOrder">
+                                                                              <param name="destination" value="[$CutsceneSector, position.[200km, 25km, 0km]]"/>
+                                                                            </create_order>
+                                                                          </actions>
+                                                                          <delay exact="$FadeoutTime"/>
+                                                                          <actions>
+                                                                            <play_cutscene result="$Cutscene" key="'Story_welfare_3'" abortable="false">
+                                                                              <param name="ship" object="$CutsceneShip_1"/>
+                                                                              <param name="ship2" object="$CutsceneShip_1"/>
+                                                                              <param name="ship_x" number="$CamPos.x"/>
+                                                                              <param name="ship_y" number="$CamPos.y"/>
+                                                                              <param name="ship_z" number="$CamPos.z"/>
+                                                                              <param name="ship_x2" number="$CamPos2.x"/>
+                                                                              <param name="ship_y2" number="$CamPos2.y"/>
+                                                                              <param name="ship_z2" number="$CamPos2.z"/>
+                                                                            </play_cutscene>
+                                                                          </actions>
+                                                                        </cue>
+
+                                                                        <cue name="The_End_Cutscene_Shot_2">
+                                                                          <conditions>
+                                                                            <event_speak_finished actor="$RaceAnnouncer" line="30222015"/>
+                                                                          </conditions>
+                                                                          <actions>
+                                                                            <cutscene_event key="'Story_welfare_3'" event="'LookAtShip1End'"/>
+                                                                            <cutscene_event key="'Story_welfare_3'" event="'LookAtShip2'"/>
+                                                                          </actions>
+                                                                        </cue>
+
+                                                                        <cue name="The_End_Cutscene_End">
+                                                                          <conditions>
+                                                                            <event_speak_finished actor="$RaceAnnouncer" line="30222018"/>
+                                                                          </conditions>
+                                                                          <actions>
+                                                                            <cutscene_event key="'Story_welfare_3'" event="'LookAtShip2End'"/>
+                                                                            <set_value name="$FadeoutTime" exact="1.5s"/>
+                                                                            <set_value name="$FadeinTime" exact="1.5s"/>
+                                                                            <fade_screen fadeout="$FadeoutTime" fadein="$FadeinTime" color="black"/>
+                                                                          </actions>
+                                                                        </cue>
+
+                                                                        <cue name="The_End_Drek_Conv_Finished" version="2">
+                                                                          <conditions>
+                                                                            <event_conversation_finished actor="$Drek"/>
+                                                                          </conditions>
+                                                                          <actions>
+                                                                            <do_for_each name="$Precursor" in="$ResearchWare.research.precursors.list">
+                                                                              <add_research ware="$Precursor"/>
+                                                                            </do_for_each>
+                                                                            <add_blueprints wares="ware.module_gen_welfare_gamblinghall_01"/>
+                                                                            <remove_mission cue="$MissionCue"/>
+                                                                            <cancel_cue cue="The_Anomalies"/>
+                                                                          </actions>
+                                                                          <patch sinceversion="2">
+                                                                            <debug_text text="'Ending still active mission'" filter="savegame"/>
+                                                                            <remove_mission cue="$MissionCue"/>
+                                                                            <cancel_cue cue="The_Anomalies"/>
+                                                                          </patch>
+                                                                        </cue>
+
+                                                                      </cues>
+                                                                    </cue>
+                                                                  </cues>
+                                                                </cue>
+                                                              </cues>
+                                                            </cue>
+                                                          </cues>
+                                                        </cue>
+                                                      </cues>
+                                                    </cue>
+                                                  </cues>
+                                                </cue>
+                                              </cues>
+                                            </cue>
+                                          </cues>
+                                        </cue>
+                                      </cues>
+                                    </cue>
+                                  </cues>
+                                </cue>
+                              </cues>
+                            </cue>
+                          </cues>
+                        </cue>
+                      </cues>
+                    </cue>
+                  </cues>
+                </cue>
+              </cues>
+            </cue>
+
+          </cues>
+        </cue>
+      </cues>
+    </cue>
+
+  </cues>
+</mdscript>

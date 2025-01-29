@@ -1,0 +1,1438 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="GM_Escort" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--Base Mission information-->
+    <!--
+      Generic Mission name:    Escort (e.g. stations or sectors) at specified location(s) - intended for Master Missions
+      Primary 'missiontype':   missiontype.escort
+      Page: 30157
+      Note: The GM selects two stations, and then, when the player approaches the station looks for a fitting ship to commandeer them, 
+        or spawns a ship if no fitting one is around. It then commandeers the ship, tells it to dock at the the 2nd station.
+        The RML is responsible for commandeering enemy ships to try and kill the first ship
+    -->
+
+    <!--
+      The Feedback Manager contains a table of feedback values related to this Generic Mission. 
+		  This table is 'const' during the mission (the table itself doesn't change anymore after inialization)
+	    There are several maintypes of feedback:
+        event:    Something which happens during a mission but does not cause it to end e.g. the mission being accepted
+        removed:  The mission offer was removed before acceptance
+        success:  The mission was successfully completed by the player
+        failure:  The player failed the mission
+        error:    Something went wrong with the mission set-up or during the mission
+    -->
+    <cue name="FeedbackValueManager" namespace="this" version="3">
+      <actions>
+        <set_value name="$FeedbackValues" exact="table[
+                   $MISSION_GENERATED           = table[$type = 'event',    $text = 'Mission variation generated successfully'],
+                   $MISSION_ACCEPTED            = table[$type = 'event',    $text = 'Mission accepted'],
+                   $MISSION_NO_VARIANT          = table[$type = 'event',    $text = 'No mission variant currently possible'],
+                   $MISSION_NO_NPC_SCENE        = table[$type = 'event',    $text = 'No mission NPC scene could be set up'],
+                   
+                   $OFFER_REMOVED               = table[$type = 'removed',  $text = 'Offer removed'],
+                   $DECLINED_OFFER              = table[$type = 'removed',  $text = 'Player declined Event Offer'],
+                   $EVENT_OFFER_TIMEOUT         = table[$type = 'removed',  $text = 'Event Offer timeout'],
+                   $SIGNAL_LEAK_REMOVED         = table[$type = 'removed',  $text = 'Signal leak offer removed'],
+                   
+                   $MISSION_SUCCEEDED           = table[$type = 'success',  $text = 'Mission succeeded'],
+                   
+                   $MISSION_ABORTED             = table[$type = 'failure',  $text = 'Mission aborted by player'],
+                   $FORCED_CLEANUP              = table[$type = 'failure',  $text = 'Forced to end from outside'],
+                   $MISSION_TIMEOUT             = table[$type = 'failure',  $text = 'Mission timeout'],
+                   $RML_FAILED                  = table[$type = 'failure',  $text = 'RML failure'],
+                   
+                   $NO_VALID_CLIENT_OWNER       = table[$type = 'error',    $text = 'No valid ClientOwner parameter provided'],
+                   $INVALID_OFFER_TYPE          = table[$type = 'error',    $text = 'No offer parameters were valid'],
+                   $NO_TEXT_OFFSET              = table[$type = 'error',    $text = 'No TextOffset set'],
+                   $INVALID_TARGETSECTOR_PARAM  = table[$type = 'error',    $text = 'Invalid TargetSector param'],
+                   $INVALID_TARGETOFFSET_PARAM  = table[$type = 'error',    $text = 'Invalid TargetOffset param'],
+                   $INVALID_TARGETOFFSETY_PARAM = table[$type = 'error',    $text = 'Invalid TargetOffset param - should be on ecliptic (y=0)!'],
+                   $INVALID_TARGETRADIUS_PARAM  = table[$type = 'error',    $text = 'Invalid TargetRadius param'],
+                   $INVALID_TARGETCOUNT_PARAM   = table[$type = 'error',    $text = 'Invalid TargetCount param'],
+                   $INVALID_FACTION_PARAM       = table[$type = 'error',    $text = 'Invalid Faction param'],
+                   $INVALID_FORCE_CLEANUP       = table[$type = 'error',    $text = 'ForceCleanup cue invalid'],
+                   $RML_ERROR                   = table[$type = 'error',    $text = 'RML error']
+                   ]"/>
+      </actions>
+      <patch sinceversion="3">
+        <!--To patch new feedback values, increment 'version' and 'sinceversion' number-->
+        <force_cue cue="FeedbackValueManager"/>
+      </patch>
+    </cue>
+
+    <!--Required variables: $Page & $TextOffset (and any below substitute_text values)
+    If text is to be substituted for a new text variant, people should feel free to add the substitution below. Alternatively, pass in an overriding text in the $TextTable param-->
+    <library name="GenerateTextTable">
+      <actions>
+        <!--Text page indexes $TextOffset + #
+        1 = $TextTable.$missionname
+        2 = $TextTable.$description
+        3 = $TextTable.$objective      -->
+
+        <set_value name="$TextTable.$missionname"       exact="readtext.{$Page}.{$TextOffset + 1}" chance="if $TextTable.$missionname? then 0 else 100"/>
+
+        <do_if value="if $TextTable.$description? then 0 else 100">
+
+          <set_value name="$TextTable.$description"       exact="readtext.{$Page}.{$TextOffset + 2}" chance="if $TextTable.$description? then 0 else 100"/>
+
+          <set_value name="$TextTable.$description" exact="$TextTable.$description + '\n\n' + readtext.{$Page}.{100} + '\n' + readtext.{$Page}.{200}"/>
+
+          <!--do_if value="$EscortDestinations.{1}.{1}.accesslicence and not (faction.player.haslicence.{$EscortDestinations.{1}.{1}.accesslicence}.{$EscortDestinations.{1}.{1}.owner}) or
+                $EscortDestinations.{2}.sector.accesslicence and not (faction.player.haslicence.{$EscortDestinations.{2}.sector.accesslicence}.{$EscortDestinations.{2}.sector.owner})" >
+            <set_value name="$TextTable.$description" exact="$TextTable.$description + '\n\n' + {30004,1512}"/>
+          </do_if-->
+
+          <do_if value="$MiningShip == true">
+            <substitute_text text="$DepartureString" source="readtext.{$Page}.{300}">
+              <replace string="'$SECTOR$'"   with="$EscortDestinations.{1}.{1}.knownname"/>
+            </substitute_text>
+            <substitute_text text="$TextTable.$description" source="$TextTable.$description">
+              <replace string="'$DEPARTURE$'"   with="$DepartureString"/>
+              <replace string="'$DESTINATION$'" with="$EscortDestinations.{2}.knownname"/>
+            </substitute_text>
+          </do_if>
+          <do_else>
+            <set_value name="$DepartureString" exact="$EscortDestinations.{1}.knownname"/>
+            <substitute_text text="$TextTable.$description" source="$TextTable.$description">
+              <replace string="'$DEPARTURE$'"   with="$DepartureString"/>
+              <replace string="'$DESTINATION$'" with="$EscortDestinations.{2}.knownname"/>
+            </substitute_text>
+          </do_else>
+        </do_if>
+
+        <substitute_text text="$TextTable.$objective"     source="readtext.{$Page}.{$TextOffset + 3}" chance="if $TextTable.$objective? then 0 else 100">
+          <replace string="'$TARGET$'"  with="$EscortDestinations.{1}.{1}.knownname"/>
+        </substitute_text>
+      </actions>
+    </library>
+
+    <library name="GenerateVoiceTable">
+      <actions>
+        <run_actions ref="md.LIB_Generic.GenerateGenericVoiceTable" result="$VoiceTable">
+          <param name="VoiceTable" value="$VoiceTable"/>
+        </run_actions>
+      </actions>
+    </library>
+
+    <library name="Start" version="3">
+      <params>
+        <!-- Generic Parameters -->
+        <param name="OfferObject" default="null" comment="The object on which this mission is based e.g. A Ship / Station / Signal Leak. Only needed for missions with a physical location."/>
+        <param name="Client" default="null" comment="Pre-existing client"/>
+        <param name="ClientOwner" default="null" comment="Overriding owner for reward calculation or creation of $Client if not provided. Defaults to $OfferObject owner if able"/>
+        <param name="MissionCue" default="null" comment="Cue the mission is attached to. Defaults to Start (this)."/>
+        <param name="MissionThread" default="null" comment="Mission thread for the offer and mission"/>
+
+        <param name="GenerateReward" default="true" comment="If RewardCr or RewardNotoriety are invalid, generate them?"/>
+        <param name="RewardCr" default="null" comment="If the reward for this mission is credits, the number of credits should be set to this variable." />
+        <param name="RewardObj" default="null" comment="If the reward for this mission is not credits, and is an object, it should be set to this variable." />
+        <param name="RewardNotoriety" default="null"/>
+        <param name="RewardText" default="null"  comment="Any text needed to define the reward for this mission - may be used in conjunction with $RewardCr and $RewardObj." />
+        <param name="MissionDuration" default="null"/>
+        <param name="MissionType" default="missiontype.escort" comment="Variations can override mission type if required"/>
+        <param name="MissionLevel"/>
+        <param name="Difficulty"/>
+
+        <!--Offer location and conversation-->
+        <param name="WithoutOffer" default="false" comment="Do not create a mission offer. Either run immediatly or wait for WithoutOfferWaitCue"/>
+        <param name="WithoutOfferWaitCue" default="null" comment="Do not create a mission offer but wait for this cue to be completed before running the mission"/>
+        <param name="DeclineButton" default="true" comment="Have a decline button instead of a back button in the offer conversation"/>
+        <param name="EventOffer" default="false" comment="Is the mission offered directly to the player with an interactive event"/>
+        <param name="ConversationOffer" default="false" comment="When $EventOffer is false, should this offer be through a conversation with the $Client. Otherwise, offer at mission location"/>
+        <param name="ConversationTriggerCue" default="null" comment="If provided, when this cue is signalled, start the mission offer conversation."/>
+        <param name="OfferMaxDistance" default="null" comment="Maximum distance to OfferObject before it is cleaned up. null = do not check"/>
+        <param name="HideFromBBS" default="false" comment="Hide this offer from the BBS? Show only through locations or special conversation handling."/>
+        <param name="RemoveOnSectorChange" default="true"/>
+        <param name="OfferDistance" default="50km" comment="Distance to the offer location before it becomes visible on the map or BBS (unless otherwise hidden)"/>
+
+        <!--BBS only params-->
+        <param name="BBSObject" default="null"/>
+        <param name="BBSDistance" default="null"/>
+        <param name="BBSTimeoutMin" default="null"/>
+        <param name="BBSTimeoutMax" default="null"/>
+        <param name="BBSSpace" default="null"/>
+
+        <!--Mission text-->
+        <param name="Page"        comment="Allows a different text page to be used instead of the generic one. Text IDs must be mapped similarly."/>
+        <param name="TextOffset"  comment="The text offset for this variant's text on the page.
+               Each variant starts at a different offset, but the entries[] within that offset have to match for all variants."/>
+        <param name="TextTable" default="table[]" comment="Table, usually populated by the mission, to store the texts by an identifier key e.g. $missionname = 'Kill Bala Gi'
+               Check library 'GenerateTextTable' for identifier keys. Pass in a table with such an entry to override the text usually generated from the $Page and $TextOffset"/>
+        <param name="VoiceTable" default="table[]" comment="Table, usually populated by the mission, keys can have a value of 0 (=stay silent)"/>
+        
+        <!--Mission specific params-->
+        <param name="EnemyFactions"     default="null"  comment="Faction or List of factions which will attack"/>
+        <param name="MiningShip"        default="false" comment="Special handling for Khaak Mining Ship attack"/>
+        <param name="CutsceneMacro"     default="null"  comment="Macro to be displayed in the briefing cutscene"/>
+        <param name="Faction"                           comment="Faction of whom to find enemies for."/>
+        <param name="EscortDestinations"                comment="List with DepartureStation, Targetstation, Radius, Objective"/>
+        <param name="ReportSignalCue"   default="null"  comment="Cue to be signalled when something happens which could be of interest to the calling cue. Saves values to ReportSignalCue.$FeedbackValue and ReportSignalCue.$EndFeedbackValue"/>
+        <param name="CancelOfferCue"    default="null"  comment="Cue which when completed will force this missions offer to be removed and cleaned up. No effect if mission has been accepted."/>
+        <param name="ForceCleanup"      default="null"  comment="Cue to force a cleanup from outside when completed"/>
+        <param name="DebugChance"       default="0"/>
+
+
+      </params>
+      <actions>
+        <!--Feedback value setup-->
+        <set_value name="$Feedback" exact="null"/>
+        <set_value name="$FeedbackManager" exact="md.GM_Escort.FeedbackValueManager"/>
+        <create_group groupname="$Commandeered"/>
+        <create_group groupname="$CommandeeredTotal"/>
+
+        <assert value="$WithoutOffer or not $MissionCue or (not $MissionCue.hasmission and not $MissionCue.hasmissionoffer)"
+                text="'Mission is set to create an offer but provided MissionCue: ' + $MissionCue + ' already has an offer or is a running mission [Owen]'"/>
+
+        <!--Param validation-->
+        <do_if value="not $WithoutOffer">
+          <include_actions ref="md.GenericMissions.GetOfferType"/>
+          <do_if value="not $OfferType">
+            <set_value name="$Feedback" exact="'$INVALID_OFFER_TYPE'"/>
+          </do_if>
+        </do_if>
+
+        <do_if value="not $Feedback">
+          <do_if value="not $TextOffset">
+            <set_value name="$Feedback" exact="'$NO_TEXT_OFFSET'"/>
+          </do_if>
+          <do_else>
+            <do_if value="$Client">
+              <set_value name="$PreexistingClient"/>
+            </do_if>
+            <do_if value="not $ClientOwner">
+              <set_value name="$ClientOwner" exact="if $Client then $Client.owner else @$OfferObject.owner"/>
+              <assert value="$ClientOwner" text="'No valid $ClientOwner [Owen]'"/>
+            </do_if>
+
+            <do_if value="not $ClientOwner">
+              <set_value name="$Feedback" exact="'$NO_VALID_CLIENT_OWNER'"/>
+            </do_if>
+            <do_else>
+              <!--Mission specific param checks-->
+              <do_if value="not $EscortDestinations.{1}">
+                <set_value name="$Feedback" exact="'$INVALID_DEPARTURETARGET_PARAM'"/>
+              </do_if>
+              <do_if value="not $EscortDestinations.{2}">
+                <set_value name="$Feedback" exact="'$INVALID_ESCORTTARGET_PARAM'"/>
+              </do_if>
+            </do_else>
+          </do_else>
+        </do_if>
+      </actions>
+      <patch sinceversion="2">
+        <set_value name="$VoiceTable" exact="table[]"/>
+      </patch>
+      <patch sinceversion="3">
+        <run_actions ref="md.LIB_Generic.GenerateGenericVoiceTable" result="$VoiceTable">
+          <param name="VoiceTable" value="$VoiceTable"/>
+        </run_actions>
+      </patch>
+      <cues>
+        <cue name="Do_Not_Start_Mission" onfail="cancel">
+          <conditions>
+            <check_value value="$Feedback"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="CleanUp"/>
+          </actions>
+        </cue>
+
+        <cue name="Do_Start_Mission" onfail="cancel">
+          <conditions>
+            <check_value value="not $Feedback"/>
+          </conditions>
+          <actions>
+            <do_if value="not $MissionCue">
+              <set_value name="$MissionCue" exact="Start"/>
+            </do_if>
+
+            <do_if value="not $PreexistingClient?">
+              <!-- No pre-existing client, create a temporary client for this mission -->
+              <!-- This auto-assigns a 'matching' text-page using the metadata (id=0) specified in the text-files. Speak commands for this actor will then refer to the selected text-page-->
+              <!-- Possibly we'll need to add additional filters (in case some topics aren't supported by all generic text-pages) -->
+              <create_cue_actor cue="Start" name="$Client" comment="temporary cue-actor will be cleaned up in the Cleanup-cue, see destroy_object on $Client">
+                <select faction="$ClientOwner" tags="tag.crew"/>
+                <owner exact="$ClientOwner"/>
+              </create_cue_actor>
+            </do_if>
+
+            <!-- Determine the reward (credits/object/notoriety) -->
+            <do_if value="$GenerateReward">
+              <include_actions ref="md.LIB_Reward_Balancing.Allocate_RewardWeight" comment="input: $Difficulty, $ClientOwner; output: $RewardCreditsWeight, $RewardModWeight, $RewardSeminarWeight"/>
+              <do_if value="not $RewardCr" weight="$RewardCreditsWeight">
+                <signal_cue_instantly cue="md.LIB_Reward_Balancing.Reward_Money" param="[Start, $Difficulty, $MissionLevel, $ClientOwner]" comment="basic reward credits"/>
+                <include_actions ref="md.LIB_Reward_Balancing.Apply_RewardMultiplier" comment="signal leak and mission thread bonus"/>
+                <set_value name="$RewardCr" exact="$Reward_Money__Result_Multiplied / 2"/>
+                <set_value name="$BonusCr" exact="0Cr"/>
+                <set_value name="$BaseBonusCr" min="$Reward_Money__Result / 22" max="$Reward_Money__Result / 28"/>
+              </do_if>
+              <do_if value="not $RewardObj">
+                <run_actions ref="md.LIB_Reward_Balancing.DetermineAdditionalReward" result="$AdditionalReward">
+                  <param name="RewardModWeight" value="$RewardModWeight"/>
+                  <param name="RewardSeminarWeight" value="$RewardSeminarWeight"/>
+                </run_actions>
+                <do_if value="$AdditionalReward != null">
+                  <set_value name="$RewardObj" exact="$AdditionalReward"/>
+                  <set_value name="$RewardText" exact="$RewardObj.name"/>
+                </do_if>
+              </do_if>
+              
+              <do_if value="not $RewardNotoriety">
+                <signal_cue_instantly cue="md.LIB_Reward_Balancing.Reward_Notoriety" param="[Start, $Difficulty, $MissionLevel, $ClientOwner]"/>
+                <set_value name="$RewardNotoriety" exact="$Reward_Notoriety__Result"/>
+              </do_if>
+            </do_if>
+
+            <include_actions ref="GenerateTextTable"/>
+            <include_actions ref="GenerateVoiceTable"/>
+
+            <do_if value="$ReportSignalCue">
+              <!--Signal the $ReportSignalCue that the mission has been successfully generated-->
+              <set_value name="$FeedbackData" exact="$FeedbackManager.$FeedbackValues.$MISSION_GENERATED.clone"/>
+              <set_value name="$FeedbackData.$ID" exact="'$MISSION_GENERATED'"/>
+              <set_value name="$ReportSignalCue.$FeedbackValue" exact="$FeedbackData.clone" comment="Mission variation generated successfully"/>
+              <signal_cue_instantly cue="$ReportSignalCue" param="table[$Name = $TextTable.$missionname, $Cue = $MissionCue, $Reward = $RewardCr, $RewardText = $RewardText]"/>
+            </do_if>
+          </actions>
+          <cues>
+
+            <!--***MISSION OFFER***-->
+            <cue name="With_Offer" onfail="cancel">
+              <conditions>
+                <check_value value="$WithoutOffer" exact="false"/>
+              </conditions>
+              <cues>
+                <!--Cue which creates the offer, when signalled. To be signalled from the GenericMissions.OfferMission library, referenced below-->
+                <cue name="CreateOffer" instantiate="true" comment="instanced to prevent cleanup">
+                  <conditions>
+                    <event_cue_signalled/>
+                    <check_value value="not @$OfferCreated"/>
+                  </conditions>
+                  <actions>
+                    <do_if value="not @$OfferCreated">
+                      <!-- Briefing details -->
+                      <create_offer cue="$MissionCue" location="$OfferObject" distance="$OfferDistance" name="$TextTable.$missionname" description="$TextTable.$description" difficulty="$Difficulty" actor="$Client"
+                                  faction="$ClientOwner" type="$MissionType" reward="$RewardCr" rewardtext="$RewardText" duration="$MissionDuration" hidden="$HideFromBBS" space="$BBSSpace" opposingfaction="if $EnemyFactions == datatype.list then $EnemyFactions.{1} else $EnemyFactions">
+                        <briefing>
+                          <objective step="1" action="objective.flyto" text="$DepartureString"/>
+                          <objective step="2" action="objective.escort" text="$TextTable.$objective"/>
+                        </briefing>
+                      </create_offer>
+                    </do_if>
+                    <set_value name="$OfferCreated" exact="true"/>
+                  </actions>
+                </cue>
+
+                <!--The majority of the offer logic is within this library. The parameters we pass down below, specify in which way this mission is going to be offered to the player (i.e. BBS, Signal-Leak, ...)
+                Some of the mission specific handling is still contained in this file but triggered via the library via a signal e.g. setting up the briefing details via the 'CreateOffer' cue above.-->
+                <cue name="Offer_Management" ref="md.GenericMissions.OfferMission">
+                  <param name="OfferType"     value="$OfferType"/>
+                  <param name="OfferCue"      value="$MissionCue"/>
+                  <param name="CleanupCue"    value="Offer_End"/>
+                  <param name="BriefingSetupCue" value="CreateOffer"/>
+                  <param name="MissionName"   value="$TextTable.$missionname"/>
+                  <param name="CancelOfferCue" value="$CancelOfferCue"/>
+
+                  <!--Object based params (offered by Station/Ship/Signal-leak)-->
+                  <param name="TimeoutMin"  value="8min" comment="Minimum time the offer remains valid"/>
+                  <param name="TimeoutMax"  value="12min"/>
+                  <param name="MaxDistance" value="$OfferMaxDistance"/>
+                  <param name="RemoveOnSectorChange" value="$RemoveOnSectorChange"/>
+
+                  <!--Object and Signal Leak based params-->
+                  <param name="OfferObject" value="$OfferObject"/>
+
+                  <!--BBS based offers-->
+                  <param name="BBSObject"     value="@$BBSObject"/>
+                  <param name="BBSDistance"   value="@$BBSDistance"/>
+                  <param name="BBSTimeoutMin" value="@$BBSTimeoutMin"/>
+                  <param name="BBSTimeoutMax" value="@$BBSTimeoutMax"/>
+
+                  <!--Conversation event offers-->
+                  <param name="AllowOfferEvent" value="$AllowOfferEvent"/>
+                  <param name="ConversationTriggerCue" value="$ConversationTriggerCue"/>
+
+                  <!--Client-->
+                  <param name="Client"                 value="$Client"/>
+                  <param name="VoiceTable"             value="$VoiceTable"/>
+
+                  <param name="DebugChance" value="$DebugChance"/>
+                </cue>
+
+                <!--Cue signalled when the offer library is finished-->
+                <cue name="Offer_End">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <do_if value="this.$Feedback.$ID == '$accepted_offer'">
+                      <signal_cue cue="MissionAccepted"/>
+                    </do_if>
+                    <do_elseif value="this.$Feedback.$ID == '$DECLINED_OFFER'">
+                      <set_value name="$Feedback" exact="'$DECLINED_OFFER'"/>
+                      <signal_cue cue="CleanUp" />
+                    </do_elseif>
+                    <do_elseif value="this.$Feedback.$ID == '$OFFER_REMOVED'">
+                      <set_value name="$Feedback" exact="'$OFFER_REMOVED'"/>
+                      <signal_cue cue="CleanUp" />
+                    </do_elseif>
+                    <do_elseif value="this.$Feedback.$ID == '$SIGNAL_LEAK_REMOVED'">
+                      <set_value name="$Feedback" exact="'$SIGNAL_LEAK_REMOVED'"/>
+                      <signal_cue cue="CleanUp" />
+                    </do_elseif>
+                    <do_elseif value="this.$Feedback.$ID == '$EVENT_OFFER_TIMEOUT'">
+                      <set_value name="$Feedback" exact="'$EVENT_OFFER_TIMEOUT'"/>
+                      <signal_cue cue="CleanUp" />
+                    </do_elseif>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <!--These cues handle the cases where a mission is automatically accepted on creation-->
+            <cue name="Without_Offer" onfail="cancel">
+              <conditions>
+                <check_value value="$WithoutOffer"/>
+                <check_value value="not $WithoutOfferWaitCue"/>
+              </conditions>
+              <actions>
+                <signal_cue cue="MissionAccepted" />
+              </actions>
+            </cue>
+
+            <cue name="Without_Offer_Wait_Cue" onfail="cancel">
+              <conditions>
+                <check_value value="$WithoutOffer"/>
+                <check_value value="$WithoutOfferWaitCue"/>
+              </conditions>
+              <cues>
+                <cue name="Without_Offer_Wait_Cue_Completed">
+                  <conditions>
+                    <check_any>
+                      <event_cue_completed cue="$WithoutOfferWaitCue"/>
+                      <check_all>
+                        <event_cue_signalled cue="$WithoutOfferWaitCue"/>
+                        <check_value value="event.param == $MissionCue"/>
+                      </check_all>
+                    </check_any>
+                  </conditions>
+                  <actions>
+                    <signal_cue_instantly cue="MissionAccepted" />
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <!--These cues handle the briefing presentations e.g. Holomap or cutscene render targets (depending on the mission)
+            note: play_cutscene action should not be in the actions of the cue with a event_briefing_submission_selected condition. It must be delayed-->
+            <cue name="BriefingStarted">
+              <conditions>
+                <check_any>
+                  <event_briefing_started cue="$MissionCue"/>
+                  <event_briefing_submission_selected cue="$MissionCue"/>
+                </check_any>
+              </conditions>
+              <actions>
+                <set_value name="$RenderTarget" exact="event.param.{1}"/>
+                <set_value name="$StartBriefingCutscene"/>
+                <set_value name="$stationindex" exact="1"/>
+                <debug_text text="'Briefing started'" chance="$DebugChance"/>
+              </actions>
+              <cues>
+                <cue name="DisplayCutscene" onfail="cancel">
+                  <conditions>
+                    <check_value value="$StartBriefingCutscene?"/>
+                  </conditions>
+                  <actions>
+                    <create_presentation_cluster name="$CutsceneCluster" background="macro.cluster_black_wlight_bg_macro"/>
+                    <find_zone name="$CutsceneZone" space="$CutsceneCluster"/>
+
+                    <do_if value="@$CutsceneMacro">
+                      <create_object name="$CutsceneObject" zone="$CutsceneZone" macro="$CutsceneMacro">
+                        <position x="0" y="0" z="0"/>
+                      </create_object>
+
+                      <do_if value="$CutsceneObject">
+                        <set_value name="$BriefingCutsceneStarted"/>
+                        <set_value name="$CutsceneKey" exact="'OrbitIndefinitely'"/>
+                        <play_cutscene key="$CutsceneKey" rendertarget="$RenderTarget">
+                          <param name="targetobject" object="$CutsceneObject"/>
+                        </play_cutscene>
+                      </do_if>
+                    </do_if>
+                  </actions>
+                </cue>
+
+                <cue name="BriefingStopped">
+                  <conditions>
+                    <check_any>
+                      <event_briefing_cancelled cue="$MissionCue"/>
+                      <event_briefing_submission_unselected cue="$MissionCue"/>
+                    </check_any>
+                  </conditions>
+                  <actions>
+                    <do_if value="$BriefingCutsceneStarted?">
+                      <!--Temp value. This is used to identify if a cutscene for this mission is still playing.-->
+                      <remove_value name="$BriefingCutsceneStarted"/>
+
+                      <stop_cutscene key="$CutsceneKey"/>
+
+                      <do_if value="$CutsceneCluster.exists">
+                        <destroy_object object="$CutsceneCluster"/>
+                      </do_if>
+                      <do_if value="$CutsceneObject.exists">
+                        <destroy_object object="$CutsceneObject"/>
+                      </do_if>
+                    </do_if>
+
+                    <do_if value="$HoloMap?">
+                      <remove_holomap />
+                      <remove_value name="$HoloMap"/>
+                    </do_if>
+
+                    <debug_text text="'Briefing canceled'" chance="$DebugChance"/>
+                    <reset_cue cue="BriefingStarted"/>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <!--This cue creates the mission itself, either from scratch or via an existing mission offer-->
+            <cue name="MissionAccepted">
+              <conditions>
+                <event_cue_signalled />
+              </conditions>
+              <actions>
+                <debug_text text="'Mission accepted!'" chance="$DebugChance"/>
+                <set_value name="stat.missions_accepted" operation="add"/>
+
+                <do_if value="$WithoutOffer">
+                  <!--$MissionCue may already be a mission cue passed in as a parameter-->
+                  <do_if value="not $MissionCue.hasmission">
+                    <do_if value="$MissionThread">
+                      <create_mission cue="$MissionCue" missionthread="$MissionThread" name="$TextTable.$missionname" description="$TextTable.$description" difficulty="$Difficulty" faction="$ClientOwner" type="$MissionType" reward="$RewardCr" rewardtext="$RewardText"/>
+                    </do_if>
+                    <do_else>
+                      <create_mission cue="$MissionCue" name="$TextTable.$missionname" abortable="true" description="$TextTable.$description" difficulty="$Difficulty" faction="$ClientOwner" type="$MissionType" reward="$RewardCr" rewardtext="$RewardText"/>
+                    </do_else>
+                  </do_if>
+
+                  <update_mission cue="$MissionCue">
+                    <briefing>
+                      <objective step="1" action="objective.flyto" text="$EscortDestinations.{1}.knownname" encyclopedia="$EscortDestinations.{1}"/>
+                      <objective step="2" action="objective.escort" text="$TextTable.objective"/>
+                    </briefing>
+                  </update_mission>
+                </do_if>
+                <do_else>
+                  <!--Copy data from the offer, then remove it-->
+                  <do_if value="$MissionThread">
+                    <create_mission cue="$MissionCue" offercue="$MissionCue" missionthread="$MissionThread"/>
+                  </do_if>
+                  <do_else>
+                    <create_mission cue="$MissionCue" offercue="$MissionCue"/>
+                  </do_else>
+                  <remove_offer cue="$MissionCue"/>
+                  <cancel_cue cue="With_Offer"/>
+                </do_else>
+
+                <do_if value="$ReportSignalCue">
+                  <set_value name="$FeedbackData" exact="$FeedbackManager.$FeedbackValues.$MISSION_ACCEPTED.clone"/>
+                  <set_value name="$FeedbackData.$ID" exact="'$MISSION_ACCEPTED'"/>
+                  <set_value name="$ReportSignalCue.$FeedbackValue" exact="$FeedbackData.clone" comment="Mission accepted"/>
+                  <signal_cue_instantly cue="$ReportSignalCue"/>
+                </do_if>
+
+                <signal_cue_instantly cue="md.GenericMissions.GenericAcceptLogbookEntry" param="[$TextTable.$missionname, $Client, $ClientOwner]"/>
+              </actions>
+              <cues>
+                <cue name="ActivateImmediately" onfail="cancel">
+                  <conditions>
+                    <check_value value="not $MissionThread"/>
+                  </conditions>
+                  <actions>
+                    <signal_cue cue="ActivateMission"/>
+                  </actions>
+                </cue>
+
+                <cue name="ActivateOnCondition" onfail="cancel">
+                  <conditions>
+                    <check_value value="$MissionThread"/>
+                  </conditions>
+                  <actions>
+                    <do_if value="$MissionThread.canactivatesubmission.{$MissionCue}">
+                      <signal_cue cue="ActivateMission"/>
+                      <cancel_cue cue="ActivateOnCondition"/>
+                    </do_if>
+                  </actions>
+                  <cues>
+                    <!--TODO @Owen add an event for when a submission has been removed from the thread-->
+                    <cue name="CheckMissionThreadState" checkinterval="1s">
+                      <conditions>
+                        <check_value value="$MissionThread.canactivatesubmission.{$MissionCue}"/>
+                      </conditions>
+                      <actions>
+                        <signal_cue cue="ActivateMission"/>
+                        <cancel_cue cue="ActivateOnCondition"/>
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="ActivateMission">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <set_value name="$StartStep" exact="1"/>
+                    <set_value name="$TargetLocation" exact="$EscortDestinations.{2}"/>
+                    <set_value name="$Radius" exact="$EscortDestinations.{3}"/>
+                    <set_value name="$EnemyStrength" exact="$EscortDestinations.{5}"/>
+                    <set_value name="$EscortClass" exact="$EscortDestinations.{6}"/>
+                    <set_value name="$TargetShip" exact="null"/>
+                    <set_value name="$KillCount" exact="0"/>
+                    <create_group groupname="$KhaakShips"/>
+
+                    <do_if value="$MiningShip == true">
+                      <set_value name="$DepartureLocation" exact="$EscortDestinations.{1}.{1}"/>
+                      <set_value name="$Offset" exact="$EscortDestinations.{1}.{2}"/>
+
+                      <get_ship_definition reference="$TargetShipDef" size="$EscortClass" faction="$Faction" tags="tag.solid"/>
+                      <create_ship name="$TargetShip" ref="$TargetShipDef" sector="$DepartureLocation" capturable="false" commandeerable="true">
+                        <loadout>
+                          <level exact="0.5"/>
+                        </loadout>
+                        <owner exact="$Faction" overridenpc="true" />
+                        <pilot>
+                          <select faction="$Faction" tags="[tag.commander]"/>
+                        </pilot>
+                        <cargo>
+                          <wares list="[ware.ore]">
+                            <fillpercent exact="[80,90,100].random"/>
+                          </wares>
+                        </cargo>
+                        <orientation refobject="$TargetLocation" orientation="look_at"/>
+                        <position space="$EscortDestinations.{1}.{3}" value="$Offset" max="5km"/>
+                      </create_ship>
+
+                      <do_if value="$EnemyStrength ge 10" comment="if $EnemyStrength is above 10, include friendly escort ships">
+                        <do_all exact="3">
+                          <get_ship_definition reference="$TargetEscortDef" size="$EscortClass" faction="$Faction" tags="tag.military"/>
+                          <create_ship name="$TargetEscort" ref="$TargetEscortDef" sector="$DepartureLocation" capturable="false" commandeerable="true">
+                            <loadout>
+                              <level exact="1"/>
+                            </loadout>
+                            <owner exact="$Faction" overridenpc="true"/>
+                            <pilot>
+                              <select faction="$Faction" tags="[tag.commander]"/>
+                            </pilot>
+                            <orientation refobject="$TargetLocation" orientation="look_at"/>
+                            <position space="$TargetShip.sector" object="$TargetShip" max="10km"/>
+                          </create_ship>
+                          <cancel_all_orders object="$TargetEscort"/>
+                          <create_order object="$TargetEscort" id="'Escort'" default="true">
+                            <param name="target" value="$TargetShip"/>
+                            <param name="formation" value="formationshape.pointguard"/>
+                            <param name="formationparam" value="200m"/>
+                          </create_order>
+                          <add_to_group groupname="$EscortShips" object="$TargetEscort"/>
+                        </do_all>
+                      </do_if>
+
+                      <create_order id="'Wait'" object="$TargetShip" immediate="true">
+                        <param name="holdfire" value="true"/>
+                      </create_order>
+                      <set_value name="$CommandeerShip" exact="'Created'"/>
+                    </do_if>
+                    <do_else>
+                      <set_value name="$DepartureLocation" exact="$EscortDestinations.{1}"/>
+                      <set_value name="$Offset" exact="$DepartureLocation.position"/>
+                    </do_else>
+                    <do_if value="$MissionDuration">
+                      <update_mission cue="$MissionCue" endtime="player.age + $MissionDuration"/>
+                    </do_if>
+                  </actions>
+                  <cues>
+
+                    <!-- Trigger the RML, which will check the win/lose conditions and report back -->
+                    <cue name="FlyTo_Ref" ref="md.RML_FlyTo.FlyTo">
+                      <param name="MissionCue" value="$MissionCue" />
+                      <param name="StartStep" value="1" comment="Briefing step to start the mission on"/>
+                      <param name="Target" value="$DepartureLocation" />
+                      <param name="Offset" value="if $MiningShip == true then $Offset else null" />
+                      <param name="Radius" value="$Radius" />
+                      <param name="Distance" value="$Radius" />
+                      <param name="EndSignalCue" value="ReachedDepartureLocation"/>
+                      <param name="DebugChance" value="$DebugChance" />
+                    </cue>
+
+                    <cue name="ReachedDepartureLocation" version="2">
+                      <conditions>
+                        <event_cue_signalled/>
+                      </conditions>
+                      <actions>
+                        <do_if value="if ($MiningShip == true) then $TargetLocation.isoperational else $DepartureLocation.isoperational">
+
+                          <do_if value="not $TargetShip.isoperational">
+                            <find_ship_by_true_owner name="$TargetShip" faction="$Faction" space="if $MiningShip == true then $DepartureLocation else $DepartureLocation.sector" commandeerable="true" class="$EscortClass" checkoperational="true" tag="if $MiningShip == true then tag.solid else tag.trader">
+                              <match_distance object="if $MiningShip == true then $DepartureLocation else $DepartureLocation.sector" value="$Offset" max="$Radius + 5km"/>
+                            </find_ship_by_true_owner>
+                            <do_if value="not $TargetShip">
+                              <do_if value="$EscortClass == [class.ship_m]">
+                                <do_if value="$MiningShip == true">
+                                  <set_value name="$InternalStorage" exact="false"/>
+                                </do_if>
+                                <do_else>
+                                  <set_value name="$DockSize" exact="tag.dock_m"/>
+                                  <set_value name="$InternalStorage" exact="true"/>
+                                </do_else>
+                              </do_if>
+                              <do_elseif value="$EscortClass == [class.ship_l]">
+                                <set_value name="$DockSize" exact="tag.dock_l"/>
+                                <set_value name="$InternalStorage" exact="false"/>
+                              </do_elseif>
+                              <debug_text text="'Creating Escort Ship'" chance="$DebugChance"/>
+                              <get_ship_definition reference="$TargetShipDef" size="$EscortClass" faction="$Faction" tags="if $MiningShip == true then tag.solid else tag.trader"/>
+
+                              <do_if value="$MiningShip == true">
+                                <create_ship name="$TargetShip" ref="$TargetShipDef" sector="if $MiningShip == true then $DepartureLocation else $DepartureLocation.sector" capturable="false" commandeerable="true">
+                                  <owner exact="$Faction" overridenpc="true" />
+                                  <pilot>
+                                    <select faction="$Faction" tags="[tag.commander]"/>
+                                  </pilot>
+                                  <position space="$DepartureLocation" value="$Offset" max="5km"/>
+                                </create_ship>
+                              </do_if>
+
+                              <do_else>
+                                <find_dockingbay name="$DepartureLocationDocks" object="$DepartureLocation" multiple="true" state="componentstate.operational">
+                                  <match_dock storage="$InternalStorage" size="$DockSize"/>
+                                </find_dockingbay>
+                                <do_if value="$DepartureLocationDocks.count">
+                                  <create_ship name="$TargetShip" ref="$TargetShipDef" dock="$DepartureLocationDocks.random" capturable="false" commandeerable="true">
+                                    <owner exact="$Faction" overridenpc="true" />
+                                    <pilot>
+                                      <select faction="$Faction" tags="[tag.commander]"/>
+                                    </pilot>
+                                  </create_ship>
+                                </do_if>
+                                <do_else>
+                                  <create_ship name="$TargetShip" ref="$TargetShipDef" zone="$DepartureLocation.zone" capturable="false" commandeerable="true">
+                                    <owner exact="$Faction" overridenpc="true" />
+                                    <pilot>
+                                      <select faction="$Faction" tags="[tag.commander]"/>
+                                    </pilot>
+                                  </create_ship>
+                                </do_else>
+                              </do_else>
+
+                              <set_value name="$CommandeerShip" exact="'Created'"/>
+                            </do_if>
+                            <do_else>
+                              <set_value name="$CommandeerShip" exact="'Commandeered'"/>
+                            </do_else>
+                          </do_if>
+                          <set_object_relation_behaviour object="$TargetShip" disable="true"/>
+                        </do_if>
+
+                        <do_else comment="Station was destroyed">
+                          <set_value name="MissionEnded.$EndFeedbackValue" exact="-2"/>
+                          <set_value name="MissionEnded.$EndFeedbackText" exact="'Station was destroyed'"/>
+                          <signal_cue cue="MissionEnded"/>
+                        </do_else>
+                      </actions>
+                      <patch sinceversion="2">
+                        <!-- The RML did not use to check for $TargetShip being present, so we catch up on that check once -->
+                        <do_if value="$TargetShip == null">
+                          <set_value name="MissionEnded.$EndFeedbackValue" exact="-1"/>
+                          <signal_cue cue="MissionEnded"/>
+                        </do_if>
+                      </patch>
+                      <cues>
+
+                        <cue name="Create_KhaakShips" checkinterval="80s" instantiate="true">
+                          <conditions>
+                            <check_value value="($MiningShip == true) and ($KhaakShips.count lt $EnemyStrength) and not ($KillCount gt ($EnemyStrength*1.5)i)"/>
+                          </conditions>
+                          <delay min="50s" max="60s"/>
+                          <actions>
+                            <set_value name="$ActivateTime" exact="[3s,5s].random"/>
+                            <get_safe_pos result="$TargetPos" sector="$TargetShip.sector"  object="$TargetShip" min="10km" max="15km" radius="5km" allowyaxis="false"/>
+                            <create_ship name="$Ship" sector="$DepartureLocation" commandeerable="true" groupname="$KhaakShips">
+                              <select faction="faction.khaak" size="class.ship_m"/>
+                              <owner exact="faction.khaak"/>
+                              <pilot actor="null"/>
+                              <safepos value="$TargetPos"/>
+                            </create_ship>
+                            <do_if value="$Ship.exists">
+                              <debug_text text="'Created Khaak ship ' + $Ship + ' ' + $Ship.knownname + ' in sector ' + $DepartureLocation.knownname" chance="$DebugChance"/>
+
+                              <find_object_component name="$Engines" multiple="true" object="$Ship" class="class.engine"/>
+                              <do_for_each name="$Engine" in="$Engines">
+                                <set_object_hacked object="$Engine" duration="$ActivateTime"/>
+                              </do_for_each>
+
+                              <do_if value="$KhaakShips.count lt $EnemyStrength">
+                                <do_all min="1" max="($EnemyStrength*0.3)i">
+                                  <create_ship name="$Follower" sector="$DepartureLocation" commandeerable="true" groupname="$KhaakShips">
+                                    <select faction="faction.khaak" size="class.ship_s"/>
+                                    <owner exact="faction.khaak"/>
+                                    <pilot>
+                                      <select faction="faction.khaak" tags="tag.aipilot"/>
+                                    </pilot>
+                                    <!--TODO @Owen better spawning position for subordinates-->
+                                    <safepos object="$Ship"/>
+                                  </create_ship>
+                                  <set_object_commander object="$Follower" commander="$Ship"/>
+                                  <create_order object="$Follower" id="'Escort'" default="true">
+                                    <param name="formation" value="formationshape.halfcircle"/>
+                                    <!-- ship width -->
+                                    <param name="formationparam" value="32.6274m"/>
+                                    <param name="rollformation" value="true"/>
+                                    <param name="overrideformationskill" value="true"/>
+                                  </create_order>
+                                </do_all>
+                              </do_if>
+
+                              <add_effect object="$Ship.zone" effect="'jump_jumpin_khaak'">
+                                <position object="$Ship"/>
+                              </add_effect>
+                            </do_if>
+                            <do_else>
+                              <cancel_cue cue="this"/>
+                            </do_else>
+                          </actions>
+                          <delay exact="$ActivateTime"/>
+                          <actions>
+                            <do_if value="$Ship.isoperational">
+                              <create_cue_actor cue="this" name="$Pilot">
+                                <select faction="faction.khaak" tags="tag.aipilot"/>
+                              </create_cue_actor>
+                              <assign_control_entity object="$Ship" actor="$Pilot" post="controlpost.aipilot" transfer="true"/>
+                              <create_order object="$Ship" id="'Patrol'" default="true">
+                                <param name="space" value="$Ship.sector"/>
+                              </create_order>
+                            </do_if>
+                          </actions>
+                        </cue>
+                        
+                        <cue name="Khaak_Killed_By_Player" instantiate="true">
+                          <conditions>
+                            <event_object_destroyed group="$KhaakShips"/>
+                            <check_value value="event.param.isplayerowned"/>
+                          </conditions>
+                          <actions>
+                            <set_value name="$KillCount" operation="add" exact="1"/>
+                          </actions>
+                        </cue>
+
+                        <cue name="Escort_Ref" ref="md.RML_Escort.Escort">
+                          <param name="MissionCue"          value="$MissionCue"/>
+                          <param name="EndSignalCue"        value="MissionEnded"/>
+                          <param name="ObjectiveText"       value="$TextTable.$objective" />
+                          <param name="TargetShip"          value="$TargetShip"/>
+                          <param name="TargetLocation"      value="$TargetLocation"/>
+                          <param name="DepartureLocation"   value="$DepartureLocation"/>
+                          <param name="StartStep"           value="2"/>
+                          <param name="Faction"             value="$Faction"/>
+                          <param name="EnemyFactions"       value="$EnemyFactions"/>
+                          <param name="NoBoost"             value="true" />
+                          <param name="EnemyStrength"       value="$EnemyStrength"/>
+                        </cue>
+
+                      </cues>
+                    </cue>
+
+                    <cue name="Aborted">
+                      <conditions>
+                        <event_mission_aborted cue="$MissionCue"/>
+                      </conditions>
+                      <actions>
+                        <signal_cue_instantly cue="md.GenericMissions.GenericAbortLogbookEntry" param="[$TextTable.$missionname, $Client]"/>
+
+                        <set_value name="$Feedback" exact="'$MISSION_ABORTED'"/>
+                        <remove_mission cue="$MissionCue" type="aborted"/>
+                        <signal_cue cue="CleanUp" />
+                      </actions>
+                    </cue>
+
+                    <cue name="MissionTimeout" onfail="cancel">
+                      <conditions>
+                        <check_value value="typeof $MissionDuration == datatype.time"/>
+                        <check_value value="$MissionDuration" min="1s"/>
+                      </conditions>
+                      <delay exact="$MissionDuration"/>
+                      <actions>
+                        <signal_cue_instantly cue="md.GenericMissions.GenericTimeoutLogbookEntry" param="[$TextTable.$missionname, $Client]"/>
+
+                        <remove_mission cue="$MissionCue" type="failed"/>
+                        <set_value name="$Feedback" exact="'$MISSION_TIMEOUT'"/>
+                        <signal_cue_instantly cue="CleanUp" />
+                      </actions>
+                    </cue>
+
+                    <cue name="MissionEnded">
+                      <!-- Handle the end-feedback (usually originating from the RML used above) -->
+                      <conditions>
+                        <event_cue_signalled/>
+                      </conditions>
+                      <actions>
+
+                        <!-- Failure case -->
+                        <do_if value="MissionEnded.$EndFeedbackValue" max="0">
+                          <debug_text text="'This mission has failed. RML Feedback: ' + MissionEnded.$EndFeedbackValue" chance="$DebugChance"/>
+                          <set_value name="$Feedback" exact="'$RML_FAILED'"/>
+                          <speak actor="$Client" line="$VoiceTable.$MissionFailed" comment="(failed mission)" chance="if $VoiceTable.$MissionFailed == 0 then 0 else 100" />
+                          <signal_cue_instantly cue="md.GenericMissions.GenericFailLogbookEntry" param="[$TextTable.$missionname, $Client, @MissionEnded.$EndFeedbackText]"/>
+
+                          <remove_mission cue="$MissionCue" type="failed" reason="@MissionEnded.$EndFeedbackText"/>
+                        </do_if>
+
+                        <!-- Success case -->
+                        <do_else>
+                          <!--TODO: Partial success-->
+                          <debug_text text="'This mission has ended. RML Feedback: ' + MissionEnded.$EndFeedbackValue" chance="$DebugChance"/>
+                          <do_if value="$RewardNotoriety and $ClientOwner">
+                            <debug_text text="'Relation was: ' + player.entity.relationto.{$ClientOwner}" chance="$DebugChance"/>
+                            <add_faction_relation faction="faction.player" otherfaction="$ClientOwner" value="$RewardNotoriety" reason="relationchangereason.missioncompleted" />
+                            <debug_text text="'Relation is now: ' + player.entity.relationto.{$ClientOwner}" chance="$DebugChance"/>
+                          </do_if>
+
+                          <do_if value="$RewardCr">
+                            <reward_player money="$RewardCr" />
+                          </do_if>
+                          <do_if value="$RewardObj">
+                            <do_if value="$RewardObj.isinventory">
+                              <add_inventory entity="player.entity" ware="$RewardObj" />
+                              <show_notification text="[{1015,100}, '', $RewardText]" sound="notification_achievement" comment="Item received" />
+                            </do_if>
+                          </do_if>
+                          <set_value name="stat.missions_completed" operation="add"/>
+                          <set_value name="$Feedback" exact="'$MISSION_SUCCEEDED'"/>
+                          <speak actor="$Client" line="$VoiceTable.$MissionSuccess" comment="(successful mission)" chance="if $VoiceTable.$MissionSuccess == 0 then 0 else 100" />
+                          <signal_cue_instantly cue="md.GenericMissions.GenericCompleteLogbookEntry" param="[$TextTable.$missionname, $Client, null, $RewardCr]"/>
+
+                          <remove_mission cue="$MissionCue" type="completed" activate="next" />
+                        </do_else>
+                        <signal_cue cue="CleanUp" />
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+              </cues>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="ForceCleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ForceCleanup"/>
+          </conditions>
+          <actions>
+            <do_if value="not $ForceCleanup.exists">
+              <set_value name="$Feedback" exact="'$INVALID_FORCE_CLEANUP'"/>
+              <signal_cue_instantly cue="CleanUp"/>
+            </do_if>
+          </actions>
+          <cues>
+            <cue name="ForceCleanup_Wait">
+              <conditions>
+                <check_any>
+                  <event_cue_completed cue="$ForceCleanup"/>
+                  <check_all>
+                    <event_cue_signalled cue="$ForceCleanup"/>
+                    <check_value value="event.param == $MissionCue"/>
+                  </check_all>
+                </check_any>
+              </conditions>
+              <actions>
+                <set_value name="$Feedback" exact="'$FORCED_CLEANUP'"/>
+                <signal_cue_instantly cue="CleanUp"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="CleanUp">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+
+            <!-- Release/Destroy Escort Ship-->
+            <do_if value="$CommandeerShip?">
+              <do_if value="$CommandeerShip == 'Created' and $TargetShip.isoperational">
+                <create_order id="'MoveDie'" object="$TargetShip" immediate="true">
+                  <param name="mintime" value="120s" comment="stay alive for specified time, after it docks"/>
+                </create_order>
+                <debug_text text="'Moving commandeered ship away to die: ' + $TargetShip.knownname" chance="$DebugChance"/>
+              </do_if>
+              <do_elseif value="$TargetShip.isoperational">
+                <release_commandeered_object object="$TargetShip"/>
+                <set_object_relation_behaviour object="$TargetShip" disable="false"/>
+                <debug_text text="'Releasing commandeered ship: ' + $TargetShip.knownname" chance="$DebugChance"/>
+              </do_elseif>
+            </do_if>
+            <do_if value="$MiningShip == true">
+              <do_if value="$KhaakShips?">
+                <do_all exact="$KhaakShips.count" counter="$i">
+                  <do_if value="$KhaakShips.{$i}.isoperational">
+                    <create_order id="'MoveDie'" object="$KhaakShips.{$i}" immediate="true">
+                      <param name="mintime" value="60s" comment="stay alive for specified time, after it docks"/>
+                    </create_order>
+                  </do_if>
+                </do_all>
+              </do_if>
+              <do_if value="$EscortShips?">
+                <do_all exact="$EscortShips.count" counter="$i">
+                  <do_if value="$EscortShips.{$i}.isoperational">
+                    <create_order id="'MoveDie'" object="$EscortShips.{$i}" immediate="true">
+                      <param name="mintime" value="60s" comment="stay alive for specified time, after it docks"/>
+                    </create_order>
+                  </do_if>
+                </do_all>
+              </do_if>
+            </do_if>
+
+            <!--Temp value. This is used to identify if a cutscene for this mission is still playing.-->
+            <do_if value="$BriefingCutsceneStarted?">
+              <remove_value name="$BriefingCutsceneStarted"/>
+              <stop_cutscene key="$CutsceneKey"/>
+
+              <do_if value="$CutsceneCluster.exists">
+                <destroy_object object="$CutsceneCluster"/>
+              </do_if>
+              <do_if value="$CutsceneShip.exists">
+                <destroy_object object="$CutsceneShip"/>
+              </do_if>
+            </do_if>
+            <do_if value="$HoloMap?">
+              <remove_holomap />
+              <remove_value name="$HoloMap"/>
+            </do_if>
+
+
+            <!--***Cleanup objects***-->
+
+            <!--No .exists check here as $Client may not be connected to gamegraph-->
+            <do_if value="$Client.isclass.npc and (not $PreexistingClient?)">
+              <destroy_object object="$Client" comment="cleanup the client we created with create_cue_actor"/>
+            </do_if>
+
+            <!--***Evaluate result***-->
+
+            <do_if value="$DebugChance or $ReportSignalCue">
+              <set_value name="$FeedbackData" exact="$FeedbackManager.$FeedbackValues.{$Feedback}.clone"/>
+              <do_if value="$FeedbackData">
+                <set_value name="$FeedbackData.$ID" exact="$Feedback"/>
+                <debug_text text="'Mission ended with reason: ' + $FeedbackData.$type + ' - ' + $FeedbackData.$text" chance="$DebugChance"/>
+              </do_if>
+              <do_else>
+                <set_value name="$FeedbackData" exact="table[$ID = 'error_unknown', $type = 'error', $text = 'This is an unknown error']" comment="feedback = id, type and error-text from the above FeedbackValues-table"/>
+                <assert value="false" text="'Mission ended with unknown case: ' + $Feedback + ' [Owen]'" break="1"/>
+              </do_else>
+
+              <do_if value="$ReportSignalCue" comment ="The cue which called us">
+                <set_value name="$ReportSignalCue.$EndFeedbackValue" exact="$FeedbackData" comment="return feedback-data to calling cue"/>
+                <signal_cue cue="$ReportSignalCue"/>
+              </do_if>
+            </do_if>
+
+            <cancel_cue cue="Start"/>
+          </actions>
+        </cue>
+
+      </cues>
+    </library>
+
+    <!-- MISSION SETUP HELPERS -->
+
+
+    <!--GENERIC MISSION VARIANTS-->
+
+    <cue name="Force_Generic_Var_1" instantiate="true">
+      <conditions>
+        <event_cue_signalled />
+      </conditions>
+      <actions>
+        <signal_cue cue="md.GenericMissions.RemoveAllOffers" />
+        <do_all exact="30">
+          <signal_cue_instantly cue="GenerateGenericMission" param="table[$Sector = player.sector, $MissionVariant = 1, $DebugChance = 0]"/>
+        </do_all>
+      </actions>
+      <force name="GM_Escort_Var_1" />
+    </cue>
+
+    <cue name="Force_Generic_Var_2" instantiate="true">
+      <conditions>
+        <event_cue_signalled />
+      </conditions>
+      <actions>
+        <signal_cue cue="md.GenericMissions.RemoveAllOffers" />
+        <do_all exact="30">
+          <signal_cue_instantly cue="GenerateGenericMission" param="table[$Sector = player.sector, $MissionVariant = 1, $DebugChance = 0]"/>
+        </do_all>
+      </actions>
+      <force name="GM_Escort_Var_2" />
+    </cue>
+
+    <!--event.param = table[]-->
+    <cue name="GenerateGenericMission" instantiate="true" namespace="this">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <set_value name="$Sector"           exact="event.param.$Sector"/>
+        <set_value name="$ReportSignalCue"  exact="@event.param.$ReportSignalCue"/>
+        <set_value name="$MissionVariant"   exact="@event.param.$MissionVariant"/>
+        <do_if value="event.param.$RemoveOnSectorChange?">
+          <set_value name="$RemoveOnSectorChange" exact="event.param.$RemoveOnSectorChange"/>
+        </do_if>
+        <do_else>
+          <set_value name="$RemoveOnSectorChange" exact="true"/>
+        </do_else>
+        <set_value name="$DebugChance"      exact="@event.param.$DebugChance"/>
+        <set_value name="$ReportSignalCue.$GM_Wrapper" exact="this"/>
+
+        <set_value name="$FeedbackManager" exact="FeedbackValueManager"/>
+        <assert value="$FeedbackManager.$FeedbackValues.$MISSION_NO_VARIANT?" text="'Required error code does not exist. Was the FeedbackValueManager not updated for stand-alone missions? [Owen/Roger]'"/>
+
+        <debug_text text="'Attempting to generate a generic mission'" chance="$DebugChance"/>
+      </actions>
+      <cues>
+
+        <cue name="GenerateGenericMission_SelectVariant">
+          <actions>
+            <set_value name="$ValidVariants" exact="[]"/>
+
+            <!--Set up some common variables first so that the variants don't have to do things multiple times-->
+
+            <!--Find potential offer stations in the sector-->
+            <find_station name="$PotentialOfferStations" excluded="md.GenericMissions.Manager.$ExcludedOfferObjects" space="$Sector" multiple="true">
+              <match owner="md.GenericMissions.Manager.$DefaultExcludedOfferFactions" negate="true"/>
+              <match_relation_to object="player.entity" comparison="not" relation="killmilitary" />
+            </find_station>
+
+            <do_if value="$PotentialOfferStations.count">
+
+              <do_if value="$MissionVariant">
+                <!--A specific MissionVariant ID was requested-->
+                <debug_text text="'Checking if requested ' + $MissionVariant + ' can be spawned'" chance="$DebugChance"/>
+                <do_if value="$MissionVariant == 1">
+                  <signal_cue_instantly cue="GenerateGenericMission_Variant_1"/>
+                </do_if>
+                <do_if value="$MissionVariant == 2">
+                  <signal_cue_instantly cue="GenerateGenericMission_Variant_2"/>
+                </do_if>
+                <do_else>
+                  <assert value="false" text="'Unknown $MissionVariant ID ' + $MissionVariant + ' [Owen]'"/>
+                </do_else>
+              </do_if>
+              <do_else>
+                <!--Attempt to a mission variant at random-->
+                <signal_cue_instantly cue="GenerateGenericMission_Variant_1"/>
+                <signal_cue_instantly cue="GenerateGenericMission_Variant_2"/>
+              </do_else>
+            </do_if>
+
+            <do_if value="$ValidVariants.count">
+              <signal_cue cue="$ValidVariants.random"/>
+            </do_if>
+            <do_else>
+              <do_if value="$ReportSignalCue">
+                <set_value name="$FeedbackData" exact="$FeedbackManager.$FeedbackValues.$MISSION_NO_VARIANT.clone"/>
+                <set_value name="$FeedbackData.$ID" exact="'$MISSION_NO_VARIANT'"/>
+                <set_value name="$ReportSignalCue.$FeedbackValue" exact="$FeedbackData.clone" comment="No mission variant possible"/>
+                <signal_cue_instantly cue="$ReportSignalCue"/>
+              </do_if>
+              <cancel_cue cue="GenerateGenericMission"/>
+            </do_else>
+          </actions>
+        </cue>
+
+        <cue name="GenerateGenericMission_Variant_1" namespace="this">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <!--this uses its own namespace so grab the shared data from GenerateGenericMission-->
+            <set_value name="$Sector" exact="GenerateGenericMission.$Sector"/>
+            <set_value name="$DebugChance" exact="GenerateGenericMission.$DebugChance"/>
+
+            <set_value name="$OfferStations" exact="GenerateGenericMission.$PotentialOfferStations.clone"/>
+            <shuffle_list list="$OfferStations"/>
+
+            <set_value name="$Difficulty" exact="level.medium"/>
+            <set_value name="$MissionLevel" exact="1"/>
+
+            <set_value name="$Sector" exact="player.sector"/>
+            <set_value name="$Valid" exact="false"/>
+
+            <do_all exact="$OfferStations.count" counter="$i">
+              <set_value name="$EnemiesCloseby" exact="false"/>
+              <set_value name="$Station"    exact="$OfferStations.{$i}"/>
+              <set_value name="$Faction"    exact="$Station.owner"/>
+
+              <get_factions_by_relation result="$EnemyFactions" faction="$Faction" relation="killmilitary"/>
+              <remove_from_list name="$EnemyFactions" exact="faction.criminal"/>
+              <remove_from_list name="$EnemyFactions" exact="faction.khaak"/>
+              <!--<remove_from_list name="$EnemyFactions" exact="faction.holyorderfanatic"/>-->
+
+              <shuffle_list list="$EnemyFactions"/>
+
+              <set_value name="$DepartureStation" exact="null"/>
+              <set_value name="$EscortDestinations" exact="null"/>
+              <set_value name="$HighestEnemyCount" exact="0"/>
+
+              <do_if value="not $Station.sector.hashazardousregion" comment="Disable in Hazardous Region sectors for now">
+                <do_any>
+                  <do_all>
+                    <set_value name="$EnemyStrength" exact="3"/>
+                    <set_value name="$EscortClass" exact="[class.ship_m]"/>
+                  </do_all>
+                  <do_all>
+                    <set_value name="$EnemyStrength" exact="[10,14].randominrange"/>
+                    <set_value name="$MissionLevel" operation="add" exact="8"/>
+                    <set_value name="$EscortClass" exact="[class.ship_l]"/>
+                  </do_all>
+                </do_any>
+
+                <find_cluster_in_range name="$SurroundingClusters" object="$Station" mindistance="0" maxdistance="1" multiple="true"/>
+                <do_all exact="$EnemyFactions.count" counter="$factions_i">
+                  <create_list name="$EnemyShips"/>
+                  <do_all exact="$SurroundingClusters.count" counter="$i">
+                    <find_ship_by_true_owner name="$EnemyShips" space="$SurroundingClusters.{$i}" faction="$EnemyFactions.{$factions_i}" primarypurpose="purpose.fight" commandeerable="true" class="if $EscortClass == [class.ship_m] then [class.ship_s, class.ship_m] else [class.ship_m, class.ship_l]" multiple="true" append="true"/>
+                  </do_all>
+                  <do_if value="$EnemyShips.count ge 5">
+                    <set_value name="$HighestEnemyCount" exact="$EnemyShips.count"/>
+                    <set_value name="$MissionEnemy" exact="$EnemyFactions.{$factions_i}"/>
+                    <set_value name="$EnemiesCloseby" exact="true"/>
+                  </do_if>
+                </do_all>
+
+                <do_if value="$EnemiesCloseby">
+                  <find_station_by_true_owner name="$DepartureStation" space="$Station.sector" faction="$Faction" defencestation="false"/>
+
+                  <set_value name="$Difficulty" exact="level.medium"/>
+
+                  <do_any>
+                    <set_value name="$TextOffset" exact="[1000, 1100].random"/>
+                  </do_any>
+
+                  <do_if value="$DepartureStation">
+                    <find_station_by_true_owner name="$PossibleTargetDestinations" space="$Station.sector" faction="$Faction" multiple="true">
+                      <match_distance object="$DepartureStation" min="75km" max="125km"/>
+                    </find_station_by_true_owner>
+
+                    <do_if value="$PossibleTargetDestinations.count">
+                      <shuffle_list list="$PossibleTargetDestinations"/>
+                      <set_value name="$EscortDestinations" exact="[$DepartureStation, $PossibleTargetDestinations.{1}, 25km, objective.escort, $EnemyStrength, $EscortClass]"/>
+                      <debug_text text="'EscortDestination: ' + $EscortDestinations" chance="$DebugChance"/>
+                    </do_if>
+                  </do_if>
+                </do_if>
+
+
+                <do_if value="$EscortDestinations and ($EnemiesCloseby == true)">
+                  <set_value name="$Valid" exact="true"/>
+                  <break/>
+                </do_if>
+
+              </do_if>
+
+              <do_if value="$Valid">
+                <break/>
+              </do_if>
+            </do_all>
+
+            <do_if value="$Valid">
+              <debug_text text="'Escort Enemy Faction: ' + $MissionEnemy.knownname + ' ' + $HighestEnemyCount" chance="$DebugChance"/>
+              <append_to_list name="GenerateGenericMission.$ValidVariants" exact="this"/>
+            </do_if>
+            <do_else>
+              <cancel_cue cue="this"/>
+            </do_else>
+          </actions>
+          <cues>
+            <cue name="GenerateGenericMission_Variant_1_Trigger">
+              <conditions>
+                <event_cue_signalled cue="parent"/>
+              </conditions>
+              <cues>
+                <cue name="GenerateGenericMission_Variant_1_Ref" ref="Start">
+                  <param name="OfferObject"   value="$Station"/>
+                  <param name="MissionLevel"  value="$MissionLevel"/>
+                  <param name="Difficulty"    value="$Difficulty"/>
+
+                  <!--Mission offer-->
+                  <param name="RemoveOnSectorChange" value="@GenerateGenericMission.$RemoveOnSectorChange"/>
+                  <param name="BBSSpace" value="$Sector"/>
+
+                  <!--Mission text-->
+                  <param name="Page"          value="30157"/>
+                  <param name="TextOffset"    value="$TextOffset"/>
+
+                  <!--Mission specific params-->
+                  <param name="Faction"             value="$Faction"/>
+                  <param name="EnemyFactions"       value="$MissionEnemy"/>
+                  <param name="EscortDestinations"  value="$EscortDestinations"/>
+                  <param name="ReportSignalCue"     value="@GenerateGenericMission.$ReportSignalCue"/>
+                  <param name="DebugChance"         value="@GenerateGenericMission.$DebugChance"/>
+                </cue>
+              </cues>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="GenerateGenericMission_Variant_2" namespace="this" comment="Khaak Miner Attack Variant">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <!--this uses its own namespace so grab the shared data from GenerateGenericMission-->
+            <set_value name="$Sector" exact="GenerateGenericMission.$Sector"/>
+            <set_value name="$DebugChance" exact="GenerateGenericMission.$DebugChance"/>
+
+            <set_value name="$OfferStations" exact="GenerateGenericMission.$PotentialOfferStations.clone"/>
+            <shuffle_list list="$OfferStations"/>
+
+            <set_value name="$Difficulty" exact="level.medium"/>
+            <set_value name="$MissionLevel" exact="1"/>
+
+            <set_value name="$Sector" exact="player.sector"/>
+            <set_value name="$Valid" exact="false"/>
+
+            <do_all exact="$OfferStations.count" counter="$i">
+
+              <set_value name="$ResourceFieldCloseby" exact="false"/>
+              <set_value name="$Station"    exact="$OfferStations.{$i}"/>
+              <set_value name="$Faction"    exact="$Station.owner"/>
+
+              <set_value name="$MissionEnemy" exact="faction.khaak"/>
+
+              <set_value name="$DepartureDestination" exact="null"/>
+              <set_value name="$EscortDestinations" exact="null"/>
+
+              <find_ship_by_true_owner name="$MiningShip" faction="$Faction" space="player.galaxy" primarypurpose="purpose.mine" waretransport="waretransport.solid" class="class.ship_m" reachablefrom="$Sector" />
+
+              <!-- Check if the faction in question usually makes use of solid mining ships -->
+              <do_if value="(($Faction != faction.scaleplate) or ($Faction != faction.hatikvah) or (md.$DLCPirateFactions.indexof.{$Faction})) and ($MiningShip.isoperational)">
+                <find_cluster_in_range name="$SurroundingClusters" object="$Station" mindistance="0" maxdistance="1" multiple="true"/>
+                <shuffle_list list="$SurroundingClusters"/>
+                <do_all exact="$SurroundingClusters.count" counter="$cluster_j">
+
+                  <set_value name="$Resources" exact="[ware.ice, ware.ore, ware.silicon]"/>
+                  <shuffle_list list="$Resources"/>
+                  <set_value name="$ResultSector" exact="null"/>
+
+                  <do_all exact="$Resources.count" counter="$i">
+                    <find_resource ware="$Resources.{$i}" refobject="$SurroundingClusters.{$cluster_j}" sector="$ResultSector" position="$TargetOffset"/>
+                    <do_if value="$ResultSector">
+                      <do_if value="not $ResultSector.hashazardousregion">
+                        <break/>
+                      </do_if>
+                      <do_else>
+                        <set_value name="$ResultSector" exact="null"/>
+                      </do_else>
+                    </do_if>
+                  </do_all>
+
+                  <do_if value="$ResultSector">
+                    <break/>
+                  </do_if>
+                </do_all>
+
+
+                <do_if value="$ResultSector">
+
+                  <set_value name="$DepartureDestination" exact="[$ResultSector, $TargetOffset]" comment="List of Sector, Position, Radius"/>
+
+                  <do_any>
+                    <do_all>
+                      <set_value name="$Difficulty" exact="level.medium"/>
+                      <set_value name="$EnemyStrength" exact="4"/>
+                      <set_value name="$MissionLevel" operation="add" exact="4"/>
+                    </do_all>
+                    <do_all>
+                      <set_value name="$Difficulty" exact="level.medium"/>
+                      <set_value name="$EnemyStrength" exact="10"/>
+                    </do_all>
+                  </do_any>
+
+                  <set_value name="$EscortClass" exact="[class.ship_m]"/>
+
+                  <set_value name="$TextOffset" exact="[2000, 2100].random"/>
+
+
+                  <do_if value="$DepartureDestination">
+                    <find_station_by_true_owner name="$PossibleTargetDestinations" space="$ResultSector" faction="$Faction" multiple="true">
+                      <match_distance space="$ResultSector" value="$TargetOffset" min="100km" max="125km"/>
+                    </find_station_by_true_owner>
+
+                    <do_if value="$PossibleTargetDestinations.count">
+                      <shuffle_list list="$PossibleTargetDestinations"/>
+                      <set_value name="$EscortDestinations" exact="[$DepartureDestination, $PossibleTargetDestinations.{1}, 15km, objective.escort, $EnemyStrength, $EscortClass]"/>
+                      <debug_text text="'EscortDestination: ' + $EscortDestinations" chance="$DebugChance"/>
+                    </do_if>
+                  </do_if>
+                </do_if>
+
+                <do_if value="$EscortDestinations">
+                  <set_value name="$Valid" exact="true"/>
+                  <break/>
+                </do_if>
+
+                <do_if value="$Valid">
+                  <break/>
+                </do_if>
+
+              </do_if>
+              <remove_value name="$MiningShip"/>
+            </do_all>
+
+            <do_if value="$Valid">
+              <append_to_list name="GenerateGenericMission.$ValidVariants" exact="this"/>
+            </do_if>
+            <do_else>
+              <cancel_cue cue="this"/>
+            </do_else>
+          </actions>
+          <cues>
+            <cue name="GenerateGenericMission_Variant_2_Trigger">
+              <conditions>
+                <event_cue_signalled cue="parent"/>
+              </conditions>
+              <cues>
+                <cue name="GenerateGenericMission_Variant_2_Ref" ref="Start">
+                  <param name="OfferObject"   value="$Station"/>
+                  <param name="MissionLevel"  value="$MissionLevel"/>
+                  <param name="Difficulty"    value="$Difficulty"/>
+
+                  <!--Mission offer-->
+                  <param name="RemoveOnSectorChange" value="@GenerateGenericMission.$RemoveOnSectorChange"/>
+                  <param name="BBSSpace" value="$Sector"/>
+
+                  <!--Mission text-->
+                  <param name="Page"          value="30157"/>
+                  <param name="TextOffset"    value="$TextOffset"/>
+
+                  <!--Mission specific params-->
+                  <param name="Faction"             value="$Faction"/>
+                  <param name="MiningShip"          value="true"/>
+                  <param name="EnemyFactions"       value="$MissionEnemy"/>
+                  <param name="EscortDestinations"  value="$EscortDestinations"/>
+                  <param name="ReportSignalCue"     value="@GenerateGenericMission.$ReportSignalCue"/>
+                  <param name="DebugChance"         value="@GenerateGenericMission.$DebugChance"/>
+                </cue>
+              </cues>
+            </cue>
+          </cues>
+        </cue>
+
+      </cues>
+    </cue>
+
+
+  </cues>
+</mdscript>

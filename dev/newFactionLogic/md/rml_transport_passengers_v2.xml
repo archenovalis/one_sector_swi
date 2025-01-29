@@ -1,0 +1,678 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_Transport_Passengers_V2" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--
+    
+    
+    $feedbackvalue:
+    -107 $PlacementTable was not a valid cue
+    -106 Neither Passenger nor StartObject exists. Player will not know where to start.
+    -105 Interior parameters were incomplete
+    -104 not a valid NPC template on an object
+    -103 Cue parameters not defined
+    -102 Destination is not valid
+    -101 $Passenger is not a NPC or a list with [npctemplate, $Object]
+    -100: Undefined failure. Defaulted to -100
+    -7: NPC no longer exists
+    -6: Destination destroyed
+    -5: Destination no longer has a dock
+    -4: Timeout
+    -3: Destination became enemy
+    -2: Passenger is no longer a npctemplate contained within the object
+    -1: Selected ship is invalid
+    1: Passenger Successfully transported
+    2: Passenger Successfully on board-->
+
+    <library name="GenerateVoiceTable">
+      <actions>
+        <set_value name="$VoiceTable.$MissionNpcEmbark" exact="11801" comment="(NPC moved onto player ship)" chance="if $VoiceTable.$MissionNpcEmbark? then 0 else 100"/>
+      </actions>
+    </library>
+    
+    <!--TODO @Owen handling for the selected ship being destroyed-->
+    <library name="TransportPassengers_V2" version="3">
+      <params>
+        <param name="EndSignalCue"/>
+        <param name="MissionCue"/>
+        <param name="StartStep" default="1" comment="Briefing step to start the mission on"/>
+        <param name="UpdateBriefing" default="true" comment="Update the briefing objective step when the objective is updated"/>
+
+        <param name="Passenger" comment="
+               Person to transport. An NPC component which does not have to be connected (.exists may fail but .isclass.npc should be true).
+               This library does not deal with passengers only stored as npctemplates, but it does check if the ship does have that npctemplate for validation"/>
+
+        <param name="StartObject"           default="null"  comment="
+               Object the NPC is expected to start on. If the NPC is not connected, the player will be guided to this object.
+               This is also the object which will be used to create the dynamic interior if the below 'Startxxxx' parameters are provided."/>
+
+        <param name="SkipConversation" default="false" comment="If true, the passenger will come on board automatically when the ship landed."/>
+        <param name="DropOff" default="true" comment="If set to false, RML will complete once the NPC is on board"/>
+        <param name="Destination" default="null"  comment="Destination object to drop off the passenger"/>
+        <param name="TimeOut" default="null" comment="Amount of time before the mission fails through time out"/>
+        <param name="CheckEnemy" default="false" comment="Check whether the station or dock is an enemy and end the RML"/>
+        <param name="VoiceTable" default="table[]" comment="Table, usually populated by the mission, keys can have a value of 0 (=stay silent)"/>        
+
+        <!-- ************************************************************************************************************************************************************************ -->
+        <!-- If the mission is to manage placing the delivery NPC, all of these parameters must be passed in together -->
+        <!-- Room, corridor and door definitions could be provided by the caller through get_room_definition -->
+        <param name="PlaceNPC"              default="true"  comment="Should the NPC be placed by this library. If true, the following should be set."/>
+        <param name="PlacementTable"        default="table[$cue = namespace, $priority = 50]"  comment="Table containing the owning cue and priority of placing the NPC vs other missions"/>
+        <param name="NPCStartSlotTags"      default="[tag.npc_generic]"  comment="NPC slot tags to help position the DeliveryNPC" />
+        
+        <param name="StartRoomMacro"        default="null"  comment="The dynamic interior room the NPC should be placed in, if not placed already" />
+        <param name="StartCorridorMacro"    default="null"  comment="The dynamic interior corridor leading to DeliveryRoomMacro" />
+        <param name="StartDoor"             default="null"  comment="Door macro slot connection" />
+        <param name="StartInteriorName"     default="null"  comment="The name of the dynamic interior the DeliveryNPC should used, if not placed already" />
+        <!-- ************************************************************************************************************************************************************************ -->
+
+        <param name="DebugChance" default="0" />
+      </params>
+      <actions>
+        <set_value name="$feedbackvalue" exact="0"/>
+        <create_list name="$ErrorList"/>
+
+        <do_if value="$Destination and not $Destination.isclass.container">
+          <append_to_list name="$ErrorList" exact="-102"/>
+        </do_if>
+
+        <do_if value="not $EndSignalCue or not $MissionCue">
+          <append_to_list name="$ErrorList" exact="-103"/>
+        </do_if>
+
+        <do_if value="not $ErrorList.count">
+          <set_value name="$PassengerTemplate" exact="null"/>
+          <set_value name="$PassengerTemplateContainer" exact="null"/>
+          <do_if value="$Passenger.isclass.npc">
+            <set_value name="$PassengerTemplate" exact="$Passenger.npctemplate"/>
+          </do_if>
+          <do_else>
+            <append_to_list name="$ErrorList" exact="-101"/>
+          </do_else>
+
+          <do_if value="not $Passenger.exists and not $StartObject.exists">
+            <append_to_list name="$ErrorList" exact="-106"/>
+          </do_if>
+
+          <set_value name="$HasValidInteriorParams" exact="false"/>
+          <do_if value="$PlaceNPC">
+            <do_if value="typeof $PlacementTable != datatype.table or not $PlacementTable.$cue.exists or not (typeof $PlacementTable.$priority).isnumeric">
+              <debug_text text="'$PlacementTable invalid: ' + $PlacementTable" filter="error"/>
+              <append_to_list name="$ErrorList" exact="-107"/>
+            </do_if>
+            <do_else>
+              <do_if value="$StartRoomMacro or $StartCorridorMacro or $StartDoor or $StartInteriorName">
+                <!--An interior param was passed. Validate them-->
+                <set_value name="$HasValidInteriorParams" exact="true"/>
+                <do_if value="typeof $StartRoomMacro != datatype.macro">
+                  <debug_text text="'$StartRoomMacro invalid: ' + $StartRoomMacro" filter="error"/>
+                  <set_value name="$HasValidInteriorParams" exact="false"/>
+                </do_if>
+                <do_elseif value="typeof $StartCorridorMacro != datatype.macro">
+                  <debug_text text="'$StartCorridorMacro invalid: ' + $StartCorridorMacro" filter="error"/>
+                  <set_value name="$HasValidInteriorParams" exact="false"/>
+                </do_elseif>
+                <do_elseif value="typeof $StartDoor != datatype.macroslot">
+                  <debug_text text="'$StartDoor invalid: ' + $StartDoor" filter="error"/>
+                  <set_value name="$HasValidInteriorParams" exact="false"/>
+                </do_elseif>
+                <do_elseif value="typeof $StartInteriorName != datatype.string">
+                  <debug_text text="'$StartInteriorName invalid: ' + $StartInteriorName" filter="error"/>
+                  <set_value name="$HasValidInteriorParams" exact="false"/>
+                </do_elseif>
+                <do_if value="not $HasValidInteriorParams">
+                  <!--Interior parameters were incomplete-->
+                  <append_to_list name="$ErrorList" exact="-105" />
+                </do_if>
+              </do_if>
+            </do_else>
+          </do_if>
+        </do_if>
+        <include_actions ref="GenerateVoiceTable"/>
+      </actions>
+      <patch sinceversion="2" state="complete">
+        <set_value name="$PlacementTable" exact="table[$cue = namespace, $priority = 50]"/>
+        <set_value name="$NPCStartSlotTags" exact="[tag.npc_generic]"/>
+        <set_value name="$Room" exact="null"/>
+      </patch>
+      <patch sinceversion="3">
+        <set_value name="$VoiceTable" exact="table[]"/>
+        <set_value name="$VoiceTable.$MissionNpcEmbark" exact="11801" comment="(NPC moved onto player ship)" chance="if $VoiceTable.$MissionNpcEmbark? then 0 else 100"/>
+      </patch>
+
+      <cues>
+
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count gt 0"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup"/>
+          </actions>
+        </cue>
+
+        <cue name="StartMission" onfail="cancel" version="2">
+          <conditions>
+            <check_value value="$ErrorList.count == 0"/>
+          </conditions>
+          <actions>
+            <debug_text text="'TransportPassengers_V2 Start'" chance="$DebugChance" />
+            <signal_cue_instantly cue="md.RML_Transport_Passengers_V2.Instanced_Clean_Up_Helper" param="namespace"/>
+          </actions>
+          <patch sinceversion="2" state="complete">
+            <signal_cue_instantly cue="md.RML_Transport_Passengers_V2.Instanced_Clean_Up_Helper" param="namespace"/>
+          </patch>
+          <cues>
+            <cue name="Init">
+              <actions>
+                <set_value name="$Room" exact="null"/>
+                <set_value name="$EndTime" exact="null"/>
+                <do_if value="@$TimeOut">
+                  <do_if value="typeof $TimeOut == datatype.time">
+                    <do_if value="$TimeOut" min="1s">
+                      <set_value name="$EndTime" exact="player.age + $TimeOut"/>
+                      <signal_cue cue="TimeOut" />
+                    </do_if>
+                  </do_if>
+                </do_if>
+
+                <do_if value="@$Passenger.ship.isplayerowned and $Passenger.ship.people.{$PassengerTemplate}.exists">
+                  <set_value name="$AlreadyOnBoard" exact="true"/>
+                  <set_value name="$PassengerTemplateContainer" exact="$Passenger.ship"/>
+                  <debug_text text="'Passenger ' + $Passenger + ' ' + $Passenger.knownname + ' is already on player owned ship ' + $PassengerTemplateContainer + ' ' + $PassengerTemplateContainer.knownname" chance="$DebugChance"/>
+                  <do_if value="$DropOff">
+                    <set_value name="$DropOffStep" exact="$StartStep"/>
+                    <signal_cue cue="Drop_Off_Passenger"/>
+                  </do_if>
+                  <do_else>
+                    <set_value name="$feedbackvalue" exact="2"/>
+                    <signal_cue cue="Cleanup"/>
+                  </do_else>
+                </do_if>
+                <do_else>
+                  <set_value name="$PickupStep" exact="$StartStep"/>
+                  <set_value name="$DropOffStep" exact="$PickupStep + 1"/>
+                  <signal_cue cue="Pick_Up_Passenger"/>
+                </do_else>
+              </actions>
+            </cue>
+
+            <cue name="PassengerKilled">
+              <conditions>
+                <check_any>
+                  <event_object_destroyed object="$Passenger"/>
+                  <check_all>
+                    <event_cue_signalled cue="TransportPassengers_V2"/>
+                    <check_value value="event.param == 'passenger_is_lost'"/>
+                  </check_all>
+                </check_any>
+              </conditions>
+              <actions>
+                <do_if value="$PassengerTemplateContainer.exists and $PassengerTemplateContainer.people.{$PassengerTemplate}.exists">
+                  <debug_text text="'Removing passenger npctemplate ' + $PassengerTemplate + ' from ship ' + $PassengerTemplateContainer" chance="$DebugChance"/>
+                  <remove_npc_template object="$PassengerTemplateContainer" template="$PassengerTemplate"/>
+                </do_if>
+                <set_value name="$feedbackvalue" exact="-7" />
+                <signal_cue cue="Cleanup"/>
+              </actions>
+            </cue>
+
+            <cue name="Pick_Up_Passenger">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <cues>
+                <!--Patch for if the interior was previously created by a library. It can now be managed by this RML.-->
+                <cue name="Pick_Up_Passenger_Patch" onfail="cancel">
+                  <conditions>
+                    <check_value value="$InteriorTable?"/>
+                  </conditions>
+                  <actions>
+                    <do_if value="$InteriorTable.$Patch_Interior and $InteriorTable.$Patch_Corridor and $InteriorTable.$Patch_Room">
+                      <set_value name="$Interior" exact="$InteriorTable.$Patch_Interior"/>
+                      <set_value name="$Corridor" exact="$InteriorTable.$Patch_Corridor"/>
+                      <set_value name="$Room" exact="$InteriorTable.$Patch_Room"/>
+                      <debug_text text="'Mission has a room generated from an outdated library. Make the interior persistent. Interior: ' + $Interior + ' ' + $Interior.knownname" filter="savegame"/>
+                      <set_dynamic_interior_persistent object="$Interior.object" interior="$Interior" persistent="true"/>
+                    </do_if>
+                    <do_else>
+                      <create_dynamic_interior object="$StartObject" name="$StartInteriorName" corridor="$StartCorridorMacro" door="$StartDoor" room="$StartRoomMacro" roomname="$Room" corridorname="$Corridor" interiorname="$Interior" persistent="true"/>
+                    </do_else>
+                    <include_actions ref="PlaceNPC"/>
+                  </actions>
+                </cue>
+
+                <library name="PlaceNPC">
+                  <actions>
+                    <!--Signal placement manager with the new requests-->
+                    <signal_cue_instantly cue="md.NPC_Instantiation.NPC_Placement_Manager" param="['add_definition', $Passenger, 
+                                          table[
+                                          $requestercue = $PlacementTable.$cue,
+                                          $priority = $PlacementTable.$priority,
+                                          $location = if $Room then $Room else $StartObject,
+                                          $slottags = $NPCStartSlotTags,
+                                          $debugchance = $DebugChance,
+                                          $debugcaller = if $DebugChance == 100 then this else null]
+                                          ]"/>
+                  </actions>
+                </library>
+                
+                <cue name="Pick_Up_Passenger_Init">
+                  <actions>
+                    <do_if value="$PlaceNPC">
+                      <do_if value="$HasValidInteriorParams">
+                        <create_dynamic_interior object="$StartObject" name="$StartInteriorName" corridor="$StartCorridorMacro" door="$StartDoor" room="$StartRoomMacro" roomname="$Room" corridorname="$Corridor" interiorname="$Interior" persistent="true"/>
+                      </do_if>
+                      <include_actions ref="PlaceNPC"/>
+                    </do_if>
+                    <do_else>
+                      <debug_text text="'Transport passenger ' + ' ' + $Passenger + ' ' + $Passenger.knownname + ' but placement of the NPC will not be done by this RML'" chance="$DebugChance"/>
+                    </do_else>
+                    
+                    <set_value name="$LastObjectiveObject" exact="null"/>
+                    <signal_cue cue="Pick_Up_Passenger_UpdateBriefing"/>
+                  </actions>
+                </cue>
+
+                <cue name="Pick_Up_Passenger_UpdateBriefing" instantiate="true">
+                  <conditions>
+                    <check_any>
+                      <event_cue_signalled />
+                      <event_object_changed_attention object="$Passenger"/>
+                    </check_any>
+                    <check_value value="not $SkipConversation"/>
+                  </conditions>
+                  <!--Added to make sure Init is called before briefing update-->
+                  <delay exact="1ms"/>
+                  <actions>
+                    <update_mission cue="$MissionCue">
+                      <briefing>
+                        <objective step="$PickupStep" action="objective.talkto" text="$Passenger.knownname"/>
+                      </briefing>
+                    </update_mission>
+                    <do_if value="$DropOff">
+                      <update_mission cue="$MissionCue">
+                        <briefing>
+                          <objective step="$DropOffStep" action="objective.flyto" text="$Destination.knownname"/>
+                        </briefing>
+                      </update_mission>
+                      <set_value name="$EndSignalCue.$FinalStep" exact="$DropOffStep"/>
+                    </do_if>
+                    <set_value name="$ObjectiveObject" exact="if $Passenger.exists then $Passenger else $StartObject"/>
+                    <set_objective cue="$MissionCue" step="$PickupStep" action="objective.talkto" text="$Passenger.knownname" object="$ObjectiveObject" silent="$ObjectiveObject == $LastObjectiveObject" endtime="$EndTime"/>
+                    <set_value name="$LastObjectiveObject" exact="$ObjectiveObject"/>
+                  </actions>
+                </cue>
+
+                <cue name="Pick_Up_Passenger_Conversation_Validation" instantiate="true">
+                  <conditions>
+                    <event_conversation_started actor="$Passenger"/>
+                    <check_value value="not $SkipConversation"/>
+                  </conditions>
+                  <delay exact="1ms"/>
+                  <actions>
+                    <assert value="$Passenger.$PassengerConvHandlerExists" text="'A conversation was started on the passenger waiting to be picked up, but no mission stated it was handling this conversation. [Owen]'"/>
+                    <remove_value name="$Passenger.$PassengerConvHandlerExists"/>
+                  </actions>
+                </cue>
+
+                <!--Whatever fires this signal must also select the destination for the passenger to move to-->
+                <cue name="Pick_Up_Passenger_Ship_Selected">
+                  <conditions>
+                    <event_object_signalled object="$Passenger" param="'passenger_transport_ship_selected'"/>
+                  </conditions>
+                  <actions>
+                    <assert value="event.param2.isclass.ship" text="'Selected object is not a ship [Owen]'"/>
+                    <do_if value="event.param2.isclass.ship">
+                      <set_value name="$PassengerTemplateContainer" exact="event.param2"/>
+                      <!--At this point, the passenger component MUST exist-->
+                      <assert value="$Passenger.exists" text="$PassengerTemplateContainer + ' ' + $PassengerTemplateContainer.knownname + 'was selected as the ship but passenger ' + $Passenger + ' is disconnected [Owen]'"/>
+                      <do_if value="$Passenger.exists">
+                        <signal_cue cue="Drop_Off_Passenger"/>
+                        <do_if value="@$InteriorTable.$LibraryInstance.exists">
+                          <signal_cue_instantly cue="$InteriorTable.$LibraryInstance" param="['release_npc', $Passenger]"/>
+                        </do_if>
+                        <cancel_cue cue="Pick_Up_Passenger"/>
+                      </do_if>
+                      <do_else>
+                        <set_value name="$feedbackvalue" exact="-7" />
+                        <signal_cue cue="Cleanup"/>
+                      </do_else>
+                    </do_if>
+                    <do_else>
+                      <set_value name="$feedbackvalue" exact="-1" />
+                      <signal_cue cue="Cleanup"/>
+                    </do_else>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="Drop_Off_Passenger">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <cues>
+                <cue name="Drop_Off_Passenger_Init">
+                  <actions>
+                    <do_if value="$UpdateBriefing">
+                      <do_if value="$DropOff">
+                        <update_mission cue="$MissionCue">
+                          <briefing>
+                            <objective step="$DropOffStep" action="objective.flyto" text="$Destination.knownname"/>
+                          </briefing>
+                        </update_mission>
+                      </do_if>
+                      <do_else>
+                        <update_mission cue="$MissionCue">
+                          <briefing>
+                            <objective step="$DropOffStep" action="objective.wait" text="if $Passenger.isfemale then {30004,5105} else {30004,5104}"/>
+                          </briefing>
+                        </update_mission>
+                      </do_else>
+                    </do_if>
+                    <set_value name="$PassengerOnboard" exact="false"/>
+                    <set_value name="$LastObjectiveObject" exact="null"/>
+                    <signal_cue cue="Drop_Off_Passenger_Check_Passenger_Status"/>
+                  </actions>
+                </cue>
+
+                <cue name="Drop_Off_Passenger_Status_Ticker" instantiate="true" checkinterval="1s">
+                  <conditions>
+                    <check_value value="not $PassengerOnboard"/>
+                  </conditions>
+                  <actions>
+                    <signal_cue cue="Drop_Off_Passenger_Check_Passenger_Status"/>
+                  </actions>
+                </cue>
+
+                <cue name="Drop_Off_Passenger_Check_Passenger_Status" instantiate="true">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <do_if value="$PassengerTemplateContainer.people.{$PassengerTemplate}.exists">
+                      <set_value name="$PassengerOnboard" exact="$PassengerOnboard or $Passenger.hascontext.{$PassengerTemplateContainer}"/>
+                      <do_if value="$PassengerOnboard">
+                        <!-- If the RML is only supposed to handle picking up the passenger, it's completed here -->
+                        <do_if value="$DropOff">
+                          <set_objective cue="$MissionCue" step="$DropOffStep" action="objective.dockat" object="$Destination" silent="$Destination == $LastObjectiveObject" endtime="$EndTime" updatebriefing="true"/>
+                          <set_value name="$LastObjectiveObject" exact="$Destination"/>
+                          <do_if value="not $AlreadyOnBoard?">
+                            <speak actor="$Passenger" line="$VoiceTable.$MissionNpcEmbark" comment="(NPC moved onto player ship)" chance="if $VoiceTable.$MissionNpcEmbark == 0 then 0 else 100" />
+                          </do_if>
+                        </do_if>
+                        <do_else>
+                          <set_value name="$feedbackvalue" exact="2"/>
+                          <signal_cue cue="Cleanup"/>
+                        </do_else>
+                      </do_if>
+                      <do_else>
+                        <!--NPC is not onboard and they should be moving towards the ship-->
+                        <do_if value="player.entity.hascontext.{$PassengerTemplateContainer}">
+                          <!--Player is onboard waiting for the NPC to arrive-->
+                          <set_objective cue="$MissionCue" step="$DropOffStep" action="objective.wait" text="if $Passenger.isfemale then {30004,5105} else {30004,5104}" object="$Passenger" silent="$Passenger == $LastObjectiveObject" endtime="$EndTime" updatebriefing="true"/>
+                          <set_value name="$LastObjectiveObject" exact="$Passenger"/>
+                        </do_if>
+                        <do_else>
+                          <!--Player is also not onboard - Embark: Ship-->
+                          <set_objective cue="$MissionCue" step="$DropOffStep" action="objective.embark" object="$PassengerTemplateContainer" silent="$PassengerTemplateContainer == $LastObjectiveObject" endtime="$EndTime" updatebriefing="true"/>
+                          <set_value name="$LastObjectiveObject" exact="$PassengerTemplateContainer"/>
+                        </do_else>
+                      </do_else>
+                    </do_if>
+                    <do_else>
+                      <!--Passenger is no longer a npctemplate contained within the object-->
+                      <set_value name="$feedbackvalue" exact="-2" />
+                      <signal_cue cue="Cleanup"/>
+                    </do_else>
+                  </actions>
+                </cue>
+
+                <cue name="Drop_Off_Arrived" checkinterval="1s">
+                  <conditions>
+                    <check_value value="$Destination != null"/>
+                    <!--TODO @Owen - check for a ship finished landing-->
+                    <check_value value="$Passenger.hascontext.{$Destination}"/>
+                  </conditions>
+                  <!--Remove this delay when we can reliably check if the ship has touched down-->
+                  <delay exact="5s"/>
+                  <actions>
+                    <set_value name="$feedbackvalue" exact="1"/>
+                    <signal_cue cue="Cleanup"/>
+                  </actions>
+                </cue>
+
+              </cues>
+            </cue>
+
+            <cue name="StationFactionBecameEnemy" onfail="cancel">
+              <conditions>
+                <check_value value="$CheckEnemy"/>
+              </conditions>
+              <cues>
+                <cue name="StationFactionBecameEnemy_Check" checkinterval="5s" instantiate="true">
+                  <actions>
+                    <do_if value="$Destination and $Destination.owner.hasrelation.enemy.{faction.player}">
+                      <set_value name="$feedbackvalue" exact="-3" />
+                      <signal_cue cue="Cleanup" />
+                    </do_if>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="DestinationDestroyed">
+              <conditions>
+                <event_object_destroyed object="$Destination" check="false"/>
+              </conditions>
+              <actions>
+                <set_value name="$feedbackvalue" exact="-6" />
+                <signal_cue cue="Cleanup" />
+              </actions>
+            </cue>
+
+            <!--TOdO @Owen #EntityTypes event that a person has been removed matching the template of a passenger-->
+            <!--<cue name="PassengerLost" instantiate="true">
+              <conditions>
+                <event_object_destroyed group="$Passengers"/>
+              </conditions>
+              <delay exact="1s" />
+              <actions>
+                <set_value name="$feedbackvalue" exact="-xxxx"/>
+                <signal_cue cue="Cleanup"/>
+              </actions>
+            </cue>-->
+
+            <cue name="NoDockAvailable" checkinterval="5s">
+              <conditions>
+                <check_value value="$Destination"/>
+                <count_dockingbays object="$Destination" exact="0">
+                  <match_dock walkable="true"/>
+                </count_dockingbays>
+              </conditions>
+              <actions>
+                <set_value name="$feedbackvalue" exact="-5" />
+                <signal_cue cue="Cleanup" />
+              </actions>
+            </cue>
+
+            <cue name="TimeOut">
+              <conditions>
+                <event_cue_signalled />
+              </conditions>
+              <delay exact="$TimeOut" />
+              <actions>
+                <set_value name="$feedbackvalue" exact="-4" />
+                <signal_cue cue="Cleanup" />
+              </actions>
+            </cue>
+
+            <!--TODO @Owen library for disembarking of passengers? Or just a despawn signal in the caller?-->
+          </cues>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <!--TODO remove_objective-->
+
+            <do_if value="$feedbackvalue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'ERROR: Feedback value is 0 and no error values were set. Defaulting to -100'" chance="$DebugChance" />
+                <set_value name="$feedbackvalue" exact="-100"/>
+              </do_if>
+              <do_else>
+                <set_value name="$feedbackvalue" exact="$ErrorList.{1}"/>
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+                    <do_if value="$ErrorList.{$Counter}" exact="-107">
+                      <set_value name="$FeedbackText" exact="'$PlacementTable was not a valid cue'"/>
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-106">
+                      <set_value name="$FeedbackText" exact="'Neither Passenger nor StartObject exists. Player will not know where to start.'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-105">
+                      <set_value name="$FeedbackText" exact="'Interior parameters were incomplete'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-104">
+                      <set_value name="$FeedbackText" exact="'A Passenger is not on the player ship at the start'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-103">
+                      <set_value name="$FeedbackText" exact="'Cue parameters not defined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-102">
+                      <set_value name="$FeedbackText" exact="'$Passengers group is empty'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'$Passengers is not of type group'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-100">
+                      <set_value name="$FeedbackText" exact="'Undefined failure. Defaulted to -100'"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                    </do_else>
+
+                    <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+              <do_if value="$feedbackvalue" exact="-8">
+                <debug_text text="'Passenger killed'" chance="$DebugChance"/>
+                <set_value name="$FeedbackText" exact="{30004,6043}"/>
+              </do_if>
+              <do_elseif value="$feedbackvalue" exact="-7">
+                <debug_text text="'NPC no longer exists'" chance="$DebugChance"/>
+                <set_value name="$FeedbackText" exact="{30004,6043}"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="-6">
+                <debug_text text="'Destination destroyed'" chance="$DebugChance"/>
+                <set_value name="$FeedbackText" exact="{30004,6027}"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="-5">
+                <debug_text text="'No dock available'" chance="$DebugChance"/>
+                <set_value name="$FeedbackText" exact="{30004,6040}"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="-4">
+                <debug_text text="'Timeout'" chance="$DebugChance"/>
+                <set_value name="$FeedbackText" exact="{30004,6002}"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="-3">
+                <debug_text text="'Destination became enemy'" chance="$DebugChance"/>
+                <set_value name="$FeedbackText" exact="{30004,6038}"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="-2">
+                <debug_text text="'Passenger is no longer a npctemplate contained within the object'" chance="$DebugChance"/>
+                <set_value name="$FeedbackText" exact="{30004,6043}"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="-1">
+                <debug_text text="'Selected ship is invalid'" chance="$DebugChance"/>
+                <set_value name="$FeedbackText" exact="{30004,6110}"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="1">
+                <debug_text text="'Passenger Successfully transported'" chance="$DebugChance"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="2">
+                <debug_text text="'Passenger Successfully on board'" chance="$DebugChance"/>
+              </do_elseif>
+
+              <do_if value="$feedbackvalue" min="1">
+                <debug_text text="'Mission Successful. Feedback id: ' + $feedbackvalue" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_if>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission Failed. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+            <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$feedbackvalue"/>
+            <signal_cue cue="$EndSignalCue"/>
+            <cancel_cue cue="TransportPassengers_V2"/>
+          </actions>
+        </cue>
+      </cues>
+    </library>
+
+    <!--In the case that the RML is cancelled, its own cleanup cue will not activate, so some cleanup is move outside to this instanced cue.
+    event.param == RML namespace-->
+    <cue name="Instanced_Clean_Up_Helper" instantiate="true" namespace="this">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <do_if value="typeof event.param == datatype.cue and event.param.exists">
+          <set_value name="$OwnerCue" exact="event.param"/>
+          <debug_text text="'Waiting for owner cue ' + $OwnerCue + ' to be cancelled.'" chance="$OwnerCue.$DebugChance"/>
+        </do_if>
+        <do_else>
+          <debug_text text="'Cue parameter ' + event.param + ' was invalid'" filter="error"/>
+          <cancel_cue cue="this"/>
+        </do_else>
+      </actions>
+      <cues>
+        <cue name="Instanced_Clean_Up_Helper_Trigger">
+          <conditions>
+            <event_cue_cancelled cue="$OwnerCue"/>
+          </conditions>
+          <actions>
+            <!--At this point, we still have access to the $OwnerCue's variables.-->
+            <debug_text text="'Owner cue ' + $OwnerCue + ' has been cancelled. Cleaning up.'" chance="$OwnerCue.$DebugChance"/>
+
+            <!--Remove the placement request from $OwnerCue on $Passenger-->
+            <do_if value="$OwnerCue.$Passenger.isclass.npc">
+              <signal_cue_instantly cue="md.NPC_Instantiation.NPC_Placement_Manager" param="['remove_request', $OwnerCue.$Passenger, $OwnerCue]"/>
+            </do_if>
+
+            <!--If the interior was created by $OwnerCue, make sure it gets cleaned up when possible-->
+            <do_if value="@$OwnerCue.$Interior.exists">
+              <signal_cue_instantly cue="md.NPC_Instantiation.RemoveMissionInterior" param="[$OwnerCue.$Interior, $OwnerCue.$DebugChance]"/>
+            </do_if>
+
+            <cancel_cue cue="namespace"/>
+          </actions>
+        </cue>
+
+        <cue name="Instanced_Clean_Up_Helper_Orphaned" checkinterval="5s">
+          <conditions>
+            <check_value value="not $OwnerCue.exists"/>
+          </conditions>
+          <actions>
+            <debug_text text="'Owner cue no longer exists. Should have been caught elsewhere.'" filter="error"/>
+            <cancel_cue cue="namespace"/>
+          </actions>
+        </cue>
+      </cues>
+    </cue>
+  </cues>
+</mdscript>

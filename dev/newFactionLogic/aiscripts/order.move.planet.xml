@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="iso-8859-1" ?>
+<!--
+this script moves a ship towards a planet (using a defined direction) until it's out of view, then cleans it up
+-->
+<aiscript name="order.move.planet" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" version="3">
+  <order id="MoveToPlanet" name="{1041,741}" description="{1041,742}" category="internal" allowinloop="false">
+    <params>
+      <param name="direction" default="null" type="internal"/>
+      <param name="distance" default="200km" type="internal"/>
+      <param name="debugchance" type="bool" default="0" advanced="true" text="{1041, 10086}" comment="Print debug output">
+        <input_param name="truevalue" value="100"/>
+      </param>
+    </params>
+  </order>
+  <init>
+    <set_command command="command.move" />
+    <set_value name="$StartTime" exact="player.age"/>
+  </init>
+  <patch sinceversion="3">
+    <do_if value="this.assignedcontrolled.dock">
+      <debug_text text="'PATCH: %s %s %s %s %s docked in unhandled case. marking arrived.'.[this.assignedcontrolled.class, @this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, this.assignedcontrolled.macro]" filter="savegame"/>
+      <destroy_object object="this.assignedcontrolled" explosion="false"/>
+    </do_if>
+  </patch>
+  <attention min="unknown">
+    <actions>
+      <!-- never allow this order to be aborted -->
+      <set_order_state order="this.assignedcontrolled.order" state="orderstate.critical"/>
+
+      <!-- Block all dockslots to prevent the player from docking at this ship -->
+      <find_dockingbay name="$ship_docks" object="this.assignedcontrolled" multiple="true"/>
+      <do_all exact="$ship_docks.count" counter="$Count">
+        <set_room_locked room="$ship_docks.{$Count}" locked="true"/>
+      </do_all>
+      <remove_value name="$ship_docks" />
+
+      <create_position name="$startpos" object="this.assignedcontrolled" space="this.sector"/>
+
+      <label name="start" />
+
+      <!-- don't allow the ship to die if the player is on that ship! -->
+      <do_while value="player.entity.hascontext.{this.assignedcontrolled}">
+        <wait exact="10s" />
+      </do_while>
+
+      <do_while value="true">
+        <create_position name="$targetpos" object="this.assignedcontrolled" space="this.sector"/>
+        <do_if value="$direction?">
+          <set_value name="$targetpos" exact="position.[$targetpos.x + ($direction.x * $distance), $targetpos.y + ($direction.y * $distance), $targetpos.z + ($direction.z * $distance)]" />
+        </do_if>
+        <do_else>
+          <set_value name="$targetpos" exact="position.[$targetpos.x, $targetpos.y, $targetpos.z + $distance]" />
+        </do_else>
+        <move_to object="this.assignedcontrolled" destination="this.sector" uselocalhighways="false" abortpath="true" finishonapproach="true" travel="true">
+          <position value="$targetpos" />
+          <interrupt_after_time time="5min"/>
+        </move_to>
+        <!-- re: dock condition: unknown case involving drop drones either starting docked or becoming docked. end with success in that case until cause is found. -->
+        <do_if value="(this.attention lt attention.visible and this.assignedcontrolled.distanceto.[this.assignedcontrolled.sector, $startpos] gt $distance) or this.assignedcontrolled.dock">
+          <destroy_object object="this.assignedcontrolled" explosion="false" />
+          <!-- infinite wait to stop any actions in calling scripts from running in the same frame -->
+          <wait />
+        </do_if>
+        <wait exact="1s" />
+      </do_while>
+    </actions>
+  </attention>
+</aiscript>

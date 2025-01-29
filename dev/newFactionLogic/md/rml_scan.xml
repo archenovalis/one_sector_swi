@@ -1,0 +1,434 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_Scan" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+    
+    <!--
+    This RML is intended for use in Master-Missions. 
+    It handles checking if the player boarded the ship. Target can be specified with $TargetShip (GM_Scan) or non-specified with $TargetSpec (HL_BoardRare).
+    
+    $feedbackvalue:
+    -106 $ScanType not specified or invalid
+    -105 $ScanShip needs to be specified for the $TargetPersonName and $TargetIDCode case
+    -104 $ScanPercentage needs to be specified for the $TargetShip and $TargetStation cases
+    -103 Only 1 of $TargetXxx can be specified
+    -102 Not a single $TargetXxx was specified 
+    -101 Cue parameters not defined
+    -100: Undefined failure. Defaulted to -100
+    -1: $TargetShip, $TargetStation or $ScanShip (for the case of TargetPersonName and TargetIDCode) was destroyed
+    1: Ship Boarded
+    -->
+    <library name="Scan" version="2">
+      <params>
+        <param name="EndSignalCue"/>
+        <param name="MissionCue"/>
+        <param name="StartStep" default="1" comment="Briefing step to start the mission on"/>
+        <param name="UpdateBriefing" default="true" comment="Update the briefing objective step when the objective is updated"/>
+        <param name="DebugChance" default="0" />
+
+        <param name="ScanObjective"                       comment="The objective type for the mission"/>
+        <param name="ObjectiveText"                       comment="The text for the mission objective"/>
+        <!-- different scanning mission types (select exactly 1) -->
+        <param name="TargetShip"          default="null"  comment="(1) Scan specified ship"/>
+        <param name="TargetStation"       default="null"  comment="(2) Scan modules of specified station"/>
+        <param name="TargetIDCode"        default="null"  comment="(3) Scan ship with specied id-code"/>
+        <param name="TargetModule"        default="null"  comment="(4) Spacesuit-scan specific target-module to discover blueprints"/>
+        <param name="TargetWare"          default="null"  comment="(5) Deep-scan ships to find specified ware"/>
+        <param name="TargetItem"          default="null"  comment="(6) Deep-scan ships to find specified item"/>
+        <param name="TargetPersonName"    default="null"  comment="(7) Deep-scan ships to find specified person"/>
+        <param name="TargetSpace"         default="null"  comment="(8) If set, the scanned Target has to be in a specific sector/cluster"/>
+        <!-- dependent parameters -->
+        <param name="ScanType"            default="null"  comment="0=proximity-scan (only for $TargetShip, $TargetStation and $TargetIDCode), 1=explicit scan/deep-scan (not valid for $TargetStation)"/>
+        <param name="ScanPercentage"      default="null"  comment="percentage to which we need to scan (only relevant for $TargetShip/$TargetStation-case)"/>
+        <param name="ScanShip"            default="null"  comment="Ship target (only relevant for the $TargetPersonName and $TargetIDCode-case)"/>
+        <param name="EnemyFaction"        default="null"  comment="Enemy faction (only relevant for $TargetWare case, for the other types the enemyfaction is implicitly defined by the TargetShip, TargetStation, TargetIDCode and TargetModule)"/>
+      </params>
+      <actions>
+        <set_value name="$feedbackvalue" exact="0"/>
+        <create_list name="$ErrorList"/>
+        
+        <do_if value="not $EndSignalCue or not $MissionCue">
+          <append_to_list name="$ErrorList" exact="-101"/>
+        </do_if>
+
+        <set_value name="$TargetParams" exact="0"/>
+        <do_if value="$TargetShip">
+          <set_value name="$TargetParams" operation="add"/>
+        </do_if>
+        <do_if value="$TargetStation">
+          <set_value name="$TargetParams" operation="add"/>
+          <assert value="$ScanType == 0" text="'Scantype expected to be 0!'" break="1"/>
+        </do_if>
+        <do_if value="$TargetModule">
+          <set_value name="$TargetParams" operation="add"/>
+          <assert value="$ScanType == 0" text="'Scantype expected to be 0!'" break="1"/>
+        </do_if>
+        <do_if value="$TargetWare">
+          <set_value name="$TargetParams" operation="add"/>
+          <assert value="$ScanType == 1" text="'Scantype expected to be 1!'" break="1"/>
+        </do_if>
+        <do_if value="$TargetItem">
+          <set_value name="$TargetParams" operation="add"/>
+          <assert value="$ScanType == 1" text="'Scantype expected to be 1!'" break="1"/>
+        </do_if>
+        <do_if value="$TargetPersonName">
+          <assert value="$ScanType == 1" text="'Scantype expected to be 1!'" break="1"/>
+          <set_value name="$TargetParams" operation="add"/>
+        </do_if>
+        <do_if value="$TargetIDCode">
+          <set_value name="$TargetParams" operation="add"/>
+        </do_if>
+        
+        <do_if value="$TargetParams == 0">
+          <append_to_list name="$ErrorList" exact="-102"/>
+        </do_if>
+        <do_elseif value="not ($TargetParams == 1)">
+          <append_to_list name="$ErrorList" exact="-103"/>
+        </do_elseif>
+        <do_if value="($TargetShip or $TargetStation) and not $ScanPercentage">
+          <append_to_list name="$ErrorList" exact="-104"/>
+        </do_if>
+        <do_if value="($TargetPersonName) and not $ScanShip">
+          <append_to_list name="$ErrorList" exact="-105"/>
+        </do_if>
+        <do_if value="($TargetIDCode) and not $ScanShip">
+          <append_to_list name="$ErrorList" exact="-105"/>
+        </do_if>
+
+        <do_if value="not ($ScanType == 0 or $ScanType==1)">
+          <append_to_list name="$ErrorList" exact="-106"/>
+        </do_if>
+
+      </actions>
+      <patch sinceversion="1">
+        <set_value name="$TargetSpace" exact="null"/>
+      </patch>
+      <patch sinceversion="2">
+        <set_value name="$EnemyFaction" exact="null" comment="new since 7.0"/>
+      </patch>
+      <cues>
+
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="1"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup"/>
+          </actions>
+        </cue>
+
+        <cue name="StartMission" onfail="cancel" version="2">
+          <conditions>
+            <check_value value="$ErrorList.count" min="0"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="UpdateBriefing"/>
+          </actions>
+          <patch sinceversion="2">
+            <do_if value="$TargetModule">
+              <set_value name="$ScanType" exact="0"/>
+              <do_if value="$TargetModule.revealedpercentage">
+                <set_value name="$feedbackvalue" exact="1"/>
+                <signal_cue cue="Cleanup"/>
+              </do_if>
+            </do_if>
+          </patch>
+          <cues>
+
+            <cue name="Debug_InstallScanner">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <install_software object="player.ship" software="ware.software_scannerobjectmk2" />
+                <install_software object="player.ship" software="ware.software_scannerobjectmk3" />
+              </actions>
+            </cue>
+
+            <cue name="Debug_FindShipWithWare" instantiate="true">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <do_if value="$TargetSpace != null">
+                  <do_if value="$EnemyFaction != null">
+                    <debug_text text="'Searching for ship matching Ware=%s Space=%s EnemyFaction=%s'.[$TargetWare, $TargetSpace, $EnemyFaction]"/>
+                    <find_ship name="$ShipWithWare" space="$TargetSpace" multiple="false" sortbydistanceto="player.entity" owner="$EnemyFaction">
+                      <match_any_cargo wares="$TargetWare"/>
+                    </find_ship>
+                  </do_if>
+                  <do_else>
+                    <debug_text text="'Searching for ship matching Ware=%s Space=%s'.[$TargetWare, $TargetSpace]"/>
+                    <find_ship name="$ShipWithWare" space="$TargetSpace" multiple="false" sortbydistanceto="player.entity">
+                      <match_any_cargo wares="$TargetWare"/>
+                    </find_ship>
+                  </do_else>
+                </do_if>
+                <do_else>
+                  <do_if value="$EnemyFaction != null">
+                    <debug_text text="'Searching for ship matching Ware=%s Space=%s EnemyFaction=%s'.[$TargetWare, $TargetSpace, $EnemyFaction]"/>
+                    <find_ship name="$ShipWithWare" space="player.galaxy" multiple="false" sortbydistanceto="player.entity" owner="$EnemyFaction">
+                      <match_any_cargo wares="$TargetWare"/>
+                    </find_ship>
+                  </do_if>
+                  <do_else>
+                    <debug_text text="'Searching for ship matching Ware=%s Space=%s'.[$TargetWare, $TargetSpace]"/>
+                    <find_ship name="$ShipWithWare" space="player.galaxy" multiple="false" sortbydistanceto="player.entity">
+                      <match_any_cargo wares="$TargetWare"/>
+                    </find_ship>
+                  </do_else>
+                </do_else>
+                <do_if value="$ShipWithWare.exists">
+                  <set_objective cue="$MissionCue" step="$StartStep" action="$ScanObjective" text="$ObjectiveText" object="$ShipWithWare"/>
+                  <debug_text text="'Found matching ship id=%s idcode=%s'.[$ShipWithWare, $ShipWithWare.idcode]"/>
+                  <!-- kill engines to make it easy to scan the ship -->
+                  <do_for_each in="$ShipWithWare.engines.all.list" name="$engine">
+                    <destroy_object object="$engine"/>
+                  </do_for_each>
+                </do_if>
+                <do_else>
+                  <debug_text text="'No ship carying %s found!'.[$TargetWare]"/>
+                </do_else>
+              </actions>
+            </cue>
+
+            <!-- TODO: Queues listening for specified ship, ship carying specific item (assuming unique) or ship carying specific person being destroyed (fail condition) -->
+            
+            <cue name="CheckMissionStatus_Discovered" instantiate="true">
+              <conditions>
+                <!-- TODO: @Owen change this to event_object_discovered on $TargetStation - to avoid dozens of events triggering constantly -->
+                <event_player_discovered_object comment="This is triggered when you fly near a station-module (or near ships, or near anything)"/>
+                <check_value value="$ScanType == 0"/>
+              </conditions>
+              <actions>
+                <set_value name="$ScannedObject" exact="event.param"/>
+                <debug_text text="'discovered ' + $ScannedObject.name" chance="$DebugChance"/>
+
+                <do_if value="$TargetShip">
+                  <do_if value="$ScannedObject == $TargetShip">
+                    <set_value name="$feedbackvalue" exact="1" comment="success"/>
+                    <signal_cue cue="Cleanup"/>
+                  </do_if>
+                </do_if>
+                <do_elseif value="$TargetStation">
+                  <do_if value="$ScannedObject.hascontext.{$TargetStation}">
+                    <signal_cue cue="UpdateBriefing"/>
+                  </do_if>
+                  <do_if value="$TargetStation.revealedpercentage ge $ScanPercentage">
+                    <debug_text text="'station-scan passed (' + $TargetStation.revealedpercentage + ' >= ' + $ScanPercentage + ')'" chance="$DebugChance"/>
+                    <set_value name="$feedbackvalue" exact="1" comment="success"/>
+                    <signal_cue cue="Cleanup"/>
+                  </do_if>
+                </do_elseif>
+                <do_elseif value="$TargetModule">
+                  <do_if value="$ScannedObject == $TargetModule">
+                    <set_value name="$feedbackvalue" exact="1"/>
+                    <signal_cue cue="Cleanup"/>
+                  </do_if>
+                </do_elseif>
+                <do_elseif value="$TargetIDCode">
+                  <do_if value="($ScannedObject.isclass.ship) and ($ScannedObject.idcode == $TargetIDCode)">
+                    <debug_text text="'idcode-check ' + $ScannedObject.name + ' passed'" chance="$DebugChance"/>
+                    <set_value name="$feedbackvalue" exact="1"/>
+                    <signal_cue cue="Cleanup"/>
+                  </do_if>
+                </do_elseif>
+              </actions>
+            </cue>
+
+
+            <cue name="CheckMissionStatus_Scanned" instantiate="true">
+              <conditions>
+                <event_scan_finished scanner="global.$PlayerControlledGroup" comment="This is triggered when the player triggers a 'scan'"/>
+                <check_value value="$ScanType == 1"/>
+              </conditions>
+              <actions>
+                <set_value name="$ScannedObject" exact="event.param"/>
+                <debug_text text="'Scanned: ' + $ScannedObject.name" chance="$DebugChance"/>
+                
+                <set_value name="$TargetInTargetSpace" exact="true"/>
+                <do_if value="$TargetSpace and ($TargetSpace != $ScannedObject.sector)">
+                  <set_value name="$TargetInTargetSpace" exact="false"/>
+                </do_if>
+                
+                <do_if value="$TargetInTargetSpace">
+                  <do_if value="$TargetShip">
+                    <do_if value="$ScannedObject == $TargetShip and $ScannedObject.revealedpercentage ge $ScanPercentage">
+                      <set_value name="$feedbackvalue" exact="1" comment="success"/>
+                      <signal_cue cue="Cleanup"/>
+                    </do_if>
+                  </do_if>
+                  <do_elseif value="$TargetStation">
+                    <assert value="false" text="'Cannot deep-scan station, should never get here!'" break="1"/>
+                  </do_elseif>
+                  <do_elseif value="$TargetWare">
+                    <do_if value="($EnemyFaction == null) or ($ScannedObject.owner == $EnemyFaction)">
+                      <set_value name="$warecount" exact="$ScannedObject.cargo.{$TargetWare}.count"/>
+                      <do_if value="$warecount">
+                        <set_value name="$feedbackvalue" exact="1"/>
+                        <signal_cue cue="Cleanup"/>
+                      </do_if>
+                    </do_if>
+                  </do_elseif>
+                  <do_elseif value="$TargetItem">
+                    <!-- TODO: Do sth similar as for TargetPerson (we actually are looking for the ship) -->
+                  </do_elseif>
+                  <do_elseif value="$TargetPersonName">
+                    <do_if value="$ScannedObject == $ScanShip">
+                      <set_value name="$feedbackvalue" exact="1"/>
+                      <signal_cue cue="Cleanup"/>
+                    </do_if>
+                  </do_elseif>
+                  <do_elseif value="$TargetIDCode">
+                    <do_if value="($ScannedObject.isclass.ship) and ($ScannedObject.idcode == $TargetIDCode)">
+                      <debug_text text="'idcode-check ' + $ScannedObject.name + ' passed'" chance="$DebugChance"/>
+                      <set_value name="$feedbackvalue" exact="1"/>
+                      <signal_cue cue="Cleanup"/>
+                    </do_if>
+                  </do_elseif>
+                </do_if>
+              </actions>
+            </cue>
+
+            <cue name="CheckMissionFailure">
+              <conditions>
+                <check_any>
+                  <event_object_destroyed object="$TargetShip" check="false"/>
+                  <event_object_destroyed object="$TargetStation" check="false"/>
+                  <event_object_destroyed object="$ScanShip" check="false"/>
+                  <event_object_destroyed object="$TargetModule" check="false"/>
+                </check_any>
+              </conditions>
+              <actions>
+                <set_value name="$feedbackvalue" exact="-1" comment="fail"/>
+                <signal_cue cue="Cleanup"/>
+              </actions>
+            </cue>
+            
+          </cues>
+        </cue>
+
+        <cue name="UpdateBriefing" instantiate="true" comment="Called each time a briefing-update is needed">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+
+            <do_if value="$UpdateBriefing">
+              
+              <!-- set LRS-scanner to "special-ping" on this -->
+              <set_value name="$ScanTarget" exact="null"/>
+              <do_if value="$TargetIDCode">
+                <set_value name="$ScanTarget" exact="$ScanShip"/>
+              </do_if>
+              <do_elseif value="$TargetShip">
+                <set_value name="$ScanTarget" exact="$TargetShip"/>
+              </do_elseif>
+
+              <!-- update briefing steps -->
+              <update_mission cue="$MissionCue" scantarget="$ScanTarget">
+                <briefing>
+                  <objective step="$StartStep" action="$ScanObjective" text="$ObjectiveText"/>
+                </briefing>
+              </update_mission>
+
+              <!--TODO @Owen rework parameters so that $ObjectiveText is optional so it can default to the object name-->
+              <do_if value="($ScanType == 0 and $TargetStation)">
+                <set_objective cue="$MissionCue" step="$StartStep" action="$ScanObjective" text="$ObjectiveText" object="$TargetStation">
+                  <progress progress="$TargetStation.revealedpercentage" max="$ScanPercentage"/>
+                </set_objective>
+              </do_if>
+              <do_elseif value="$TargetModule">
+                <set_objective cue="$MissionCue" step="$StartStep" action="$ScanObjective" text="$ObjectiveText" object="$TargetModule"/>
+              </do_elseif>
+              <do_elseif value="$TargetShip">
+                <set_objective cue="$MissionCue" step="$StartStep" action="$ScanObjective" text="$ObjectiveText" object="$TargetShip"/>
+              </do_elseif>
+              <do_else>
+                <set_objective cue="$MissionCue" step="$StartStep" action="$ScanObjective" text="$ObjectiveText"/>
+              </do_else>
+
+            </do_if>
+
+          </actions>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <!--TODO remove_objective-->
+
+            <do_if value="$feedbackvalue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'ERROR: Feedback value is 0 and no error values were set. Defaulting to -100'"/>
+                <set_value name="$feedbackvalue" exact="-100"/>
+              </do_if>
+              <do_else>
+                <set_value name="$feedbackvalue" exact="$ErrorList.{1}"/>
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+
+                    <do_if value="$ErrorList.{$Counter}" exact="-106">
+                      <set_value name="$FeedbackText" exact="'$ScanType invalid or undefined'"/>
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-105">
+                      <set_value name="$FeedbackText" exact="'$ScanShip needs to be specified for the $TargetPersonName and $TargetIDCode case'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-104">
+                      <set_value name="$FeedbackText" exact="'$ScanPercentage needs to be specified for the $TargetShip and $TargetStation cases'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-103">
+                      <set_value name="$FeedbackText" exact="'Only 1 of $TargetXxx can be specified'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-102">
+                      <set_value name="$FeedbackText" exact="'Not a single $TargetXxx was specified'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'Cue parameters not defined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-100">
+                      <set_value name="$FeedbackText" exact="'Undefined failure. Defaulted to -100'"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                    </do_else>
+
+                    <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+
+              <do_if value="$feedbackvalue" exact="1">
+                <set_value name="$FeedbackText" exact="'Scan success'"/>
+              </do_if>
+              <do_elseif value="$feedbackvalue" exact="-1">
+                <set_value name="$FeedbackText" exact="{30004,6020}" comment="'Scan failed'"/>
+              </do_elseif>
+
+              <do_if value="$feedbackvalue" min="1">
+                <debug_text text="'Mission Successful. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_if>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission Failed. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+            <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$feedbackvalue"/>
+            <signal_cue cue="$EndSignalCue"/>
+            <cancel_cue cue="Scan"/>
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

@@ -1,0 +1,147 @@
+<?xml version="1.0" encoding="utf-8"?>
+<aiscript name="order.trade.depositinventory" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" version="1">
+  <order id="DepositInventory" name="{1041, 651}" description="{1041, 652}" category="trade">
+    <params>
+      <param name="destination" type="object" default="null" text="{1041, 10027}" advanced="true" comment="Destination. Object. NB: this should normally always be the player HQ. retrieval of inventory items from stations other than the player HQ is currently unsupported.">
+        <input_param name="class" value="if not this.ship.iscapitalship then [class.station, class.ship_m, class.ship_l, class.ship_xl] else [class.station, class.ship_l, class.ship_xl]"/>
+      </param>
+      <param name="cannotdock" type="internal" default="false" text="{1041, 10133}" comment="Unable to dock. used for error handling in case of inability to dock"/>
+      <param name="debugchance" type="bool" default="0" advanced="true" text="{1041, 10086}" comment="Print debug output">
+        <input_param name="truevalue" value="100"/>
+      </param>
+    </params>
+    <requires>
+      <match shiptype="shiptype.lasertower" negate="true"/>
+      <match class="class.spacesuit" negate="true"/>
+    </requires>
+    <location object="$destination" condition="@$destination.exists"/>
+  </order>
+  <interrupts>
+    <handler ref="SectorChangeHandler"/>
+    <handler ref="TargetInvalidHandler"/>
+    <handler ref="AttackHandler"/>
+    <handler ref="MissileLockHandler"/>
+    <handler ref="ScannedHandler"/>
+    <handler ref="InspectedHandler"/>
+    <handler ref="FoundAbandonedHandler"/>
+    <handler ref="FoundLockboxHandler"/>
+    <handler ref="ResupplyHandler"/>
+    <handler ref="TideHandler"/>
+  </interrupts>
+  <init>
+    <do_if value="not this.inventory.count">
+      <debug_text text="'i have no inventory items to deposit.'" chance="$debugchance"/>
+      <set_value name="$failurereason" exact="{1045,137}" comment="No inventory items to deposit."/>
+      <set_value name="$fail"/>
+    </do_if>
+
+    <do_if value="not @$destination.exists">
+      <set_value name="$destination" exact="this.trueowner.headquarters"/>
+      <do_if value="$destination.exists">
+        <edit_order_param order="this.assignedcontrolled.order" param="'destination'" value="$destination"/>
+      </do_if>
+    </do_if>
+
+    <do_if value="@$destination.isoperational">
+      <debug_text text="'destination %s %s %s in sector %s %s found.'.[@$destination.idcode, @$destination.knownname, $destination, $destination.sector.knownname, $destination.sector]" chance="$debugchance"/>
+    </do_if>
+    <do_else>
+      <!-- this is a valid case in that it is possible that the player does not have an HQ, but it shouldn't have been possible to issue the order in the first place in that case except with the advanced order queue menu. -->
+      <debug_text text="'destination not found. order cannot be completed.'" chance="$debugchance"/>
+      <set_value name="$failurereason" exact="{1045,136}" comment="No station available to deposit inventory to."/>
+      <set_value name="$fail"/>
+    </do_else>
+
+    <!-- set command -->
+    <set_command command="command.trade" param="$destination"/>
+
+  </init>
+  <attention min="unknown">
+    <actions>
+
+      <!-- very short wait to allow this order to be aborted in case player does not have an HQ. -->
+      <wait exact="1ms"/>
+
+      <debug_text text="'order to deposit %s items with %s %s at %s %s %s in sector %s started.'.[this.inventory.count, @$destination.assignedcontrolentity.default.knownname, @$destination.assignedcontrolentity.default, @$destination.idcode, @$destination.knownname, $destination, @$destination.sector.knownname]" chance="$debugchance"/>
+
+      <label name="start"/>
+
+      <!-- this is necessary only if the order was not cancelled but cannot be completed. -->
+      <do_if value="$fail?">
+        <resume label="finish"/>
+      </do_if>
+
+      <do_if value="@this.assignedcontrolled.hascontext.{$destination}">
+        <debug_text text="'%s %s %s already docked at destination. transferring items.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled]" chance="$debugchance"/>
+        <resume label="transfer"/>
+      </do_if>
+
+      <assert value="this.assignedcontrolled.order.id == 'DepositInventory'" text="'current order is not DepositInventory. it is: %s'.[@this.assignedcontrolled.order.id]"/>
+      <!-- move.generic called implicitly via order.dock -->
+      <do_if value="not $cannotdock">
+        <debug_text text="'%s %s %s moving to dock at HQ %s %s %s.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, @$destination.idcode, @$destination.knownname, $destination]" chance="$debugchance"/>
+        <create_order id="'DockAndWait'" object="this.assignedcontrolled" immediate="true">
+          <param name="destination" value="$destination"/>
+          <param name="trading" value="true"/>
+          <param name="allowplayeronly" value="this.isplayerowned"/>
+          <param name="callerid" value="this.assignedcontrolled.order"/>
+          <!--<param name="debugchance" value="$debugchance"/>-->
+        </create_order>
+      </do_if>
+      <do_else>
+        <debug_text text="'%s %s %s unable to dock at HQ %s %s %s. cancelling order.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, @$destination.idcode, @$destination.knownname, $destination]" filter="error"/>
+        <set_value name="$failurereason" exact="{1045,119}" comment="Unable to dock."/>
+        <resume label="finish"/>
+      </do_else>
+
+      <!-- very short wait to prevent the script resuming while the DockAndWait order is created. -->
+      <wait exact="1ms"/>
+
+      <label name="transfer"/>
+
+      <set_value name="$depositentity" exact="$destination.assignedcontrolentity.default"/>
+      <do_if value="not $depositentity.exists">
+        <debug_text text="'deposit entity not found. make sure that %s %s %s has an assignedcontrolentity.'.[@$destination.idcode, @$destination.knownname, $destination]" filter="error"/>
+        <!-- this is a technical error so no player-facing message. -->
+        <resume label="finish"/>
+      </do_if>
+
+      <debug_text text="'transferring %s inventory items to %s %s at %s %s %s.'.[this.inventory.count, @$depositentity.knownname, $depositentity, @$depositentity.assignedcontrolled.idcode, @$depositentity.assignedcontrolled.knownname, $depositentity.assignedcontrolled]" chance="$debugchance"/>
+
+      <set_value name="$numtypestransferred" exact="0"/>
+      <set_value name="$totalamounttransferred" exact="0"/>
+      <do_all exact="this.inventory.count" counter="$i" reverse="true">
+        <set_value name="$locware" exact="this.inventory.{$i}"/>
+        <do_if value="$locware and this.inventory.{$locware}.exists and this.inventory.{$locware}.count">
+          <set_value name="$locamount" exact="this.inventory.{$locware}.count"/>
+          <set_value name="$numtypestransferred" exact="$numtypestransferred + 1"/>
+          <set_value name="$totalamounttransferred" exact="$totalamounttransferred + $locamount"/>
+          <add_inventory ware="$locware" exact="$locamount" entity="$depositentity"/>
+          <remove_inventory ware="$locware" exact="$locamount" entity="this"/>
+          <debug_text text="'transferred %s %s to %s %s. %s items remaining.'.[$locamount, $locware, @$depositentity.knownname, $depositentity, this.inventory.count]" chance="$debugchance"/>
+          <remove_value name="$locamount"/>
+        </do_if>
+        <remove_value name="$locware"/>
+      </do_all>
+      <debug_text text="'done. transferred %s items of %s types.'.[$totalamounttransferred, $numtypestransferred]" chance="$debugchance"/>
+
+      <label name="finish"/>
+
+      <!-- do any necessary cleanup here and add an on_abort node below if necessary. -->
+      <do_if value="$failurereason? and @this.assignedcontrolled.order.isrunning">
+        <set_order_failed order="this.assignedcontrolled.order" text="$failurereason"/>
+      </do_if>
+
+      <do_if value="not this.assignedcontrolled.isunit and not this.assignedcontrolled.nextorder and (not this.assignedcontrolled.commander or (this.assignedcontrolled.commander == player.occupiedship)) and notification.npc_await_orders.active">
+        <set_value name="$speakline" exact="10304" comment="Awaiting orders."/>
+        <run_script name="'player.interaction'" sinceversion="1">
+          <param name="Line" value="$speakline"/>
+          <param name="MaxQueueDelay" value="10s"/>
+          <param name="caption" value="{1016,6}.[this.assignedcontrolled.knownname, this.assignedcontrolled.idcode]"/>
+          <param name="interactive" value="false"/>
+          <param name="debugchance" value="$debugchance"/>
+        </run_script>
+      </do_if>
+    </actions>
+  </attention>
+</aiscript>

@@ -1,0 +1,195 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<aiscript name="order.move.follow" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" version="1">
+  <!--
+
+  Following Script
+  by Adrian
+  
+  Generic routine for following one ship with another.
+
+  -->
+  <order id="Follow" name="{1041, 321}" description="{1041, 322}" category="navigation" infinite="true" allowinloop="false">
+    <params>
+      <param name="target" type="object" text="{1041, 10112}" comment="Ship to follow">
+        <input_param name="class" value="[class.ship]" />
+      </param>
+      <param name="commandaction" type="internal" default="null" comment="commandaction to display. used by order.assist to indicate error."/>
+      <param name="debugchance" type="bool" default="0" advanced="true" text="{1041, 10086}" comment="Print debug output">
+        <input_param name="truevalue" value="100"/>
+      </param>
+    </params>
+    <requires>
+      <match shiptype="shiptype.lasertower" negate="true"/>
+      <match class="class.spacesuit" negate="true"/>
+    </requires>
+    <location object="$target" condition="$target.exists"/>
+  </order>
+  <interrupts>
+    <handler ref="SectorChangeHandler"/>
+    <handler comment="resume to 'start' if zone changes (only in follow)">
+      <conditions>
+        <check_any>
+          <check_all>
+            <event_object_changed_zone object="$target"/>
+            <check_value value="this.command.value" exact="command.follow" />
+          </check_all>
+          <event_object_destroyed object="$target" />
+        </check_any>
+      </conditions>
+      <actions>
+        <abort_called_scripts resume="start" />
+      </actions>
+    </handler>
+    <handler ref="TargetInvalidHandler"/>
+    <handler ref="AttackHandler"/>
+    <handler ref="ScannedHandler"/>
+    <handler ref="InspectedHandler"/>
+    <handler ref="FoundAbandonedHandler"/>
+    <handler ref="FoundLockboxHandler"/>
+    <handler ref="TideHandler"/>
+  </interrupts>
+  <init>
+    <set_command command="command.follow" param="$target" />
+  </init>
+  <patch sinceversion="1">
+    <set_value name="$commandaction" exact="null"/>
+  </patch>
+  <attention min="unknown">
+    <actions>
+
+      <do_if value="$commandaction">
+        <set_command_action commandaction="$commandaction"/>
+      </do_if>
+
+      <set_value name="$bigship" exact="this.ship.isclass.ship_xl or this.ship.isclass.ship_l" />
+
+      <!-- Label to allow us to repeat indefinitely -->
+      <label name="start" />
+
+      <do_if value="not $target.isoperational">
+        <resume label="finish" />
+      </do_if>
+
+      <do_if value="$target.zone.isclass.highway">
+        <wait exact="3s">
+          <interrupt>
+            <conditions>
+              <event_object_changed_zone object="$target"/>
+              <check_value value="not $target.zone.isclass.highway"/>
+            </conditions>
+          </interrupt>
+        </wait>
+        <resume label="start" />
+      </do_if>
+
+      <!-- Warp to different zone -->
+      <label name="warp" />
+
+      <do_if value="not $target.isoperational">
+        <resume label="finish" />
+      </do_if>
+
+      <do_if value="this.sector != @$target.sector or (this.zone != $target.zone and this.ship.bboxdistanceto.{$target} gt 10km)">
+        <!-- Handle highways/gates ... -->
+        <run_script name="'move.generic'" result="$movesuccess">
+          <param name="destination" value="$target"/>
+          <param name="changecommandaction" value="not $commandaction"/>
+          <param name="debugchance" value="$debugchance"/>
+        </run_script>
+        <do_if value="not $movesuccess">
+          <do_if value="@this.assignedcontrolled.order.isrunning">
+            <set_order_failed order="this.assignedcontrolled.order" text="{1045, 101}" comment="Unable to reach destination."/>
+          </do_if>
+          <debug_text text="'Unable to reach destination. Aborting.'" chance="$debugchance"/>
+          <resume label="finish"/>
+        </do_if>
+        <wait exact="3s" />
+      </do_if>
+
+      <!-- ...and go there! -->
+      <label name="move" />
+
+      <do_if value="not $target.isoperational">
+        <resume label="finish" />
+      </do_if>
+
+      <!-- Required for all infinite orders, no effect in case of finite timeout -->
+      <set_order_syncpoint_reached order="this.ship.order" />
+
+      <!-- Get a safe position and the closest distance from target to it -->
+      <get_safe_pos object="$target" zone="$target.zone" radius="this.ship.size/2" allowyaxis="false" result="$pos" ignored="this.ship" />
+      <set_value name="$closestdist" exact="$target.distanceto.[$target.zone, $pos]" />
+
+      <!-- Close enought to stop -->
+      <do_if value="this.ship.distanceto.{$target}" max="$closestdist + 2km + this.ship.size*2">
+        <!-- Is moving -->
+        <do_if value="@$moving ">
+          <set_value name="$moving" exact="false"/>
+          <!-- Stop with a move action to rotate and align -->
+          <!-- In a max of 4 tries -->
+          <do_all exact="4" counter="$i">
+            <!-- check this place is free -->
+            <get_safe_pos result="$safepos" zone="this.zone" radius="this.ship.size/2.0" ignored="this.ship" object="this.ship" z="1m"/>
+            <move_to object="this.ship" destination="this.ship.zone" forceposition="false" forcerotation="true" commandaction="false">
+              <position value="$safepos"/>
+              <rotation pitch="0deg" yaw="this.ship.rotation.yaw" roll="0deg" />
+            </move_to>
+            <!-- If is free, end -->
+            <do_if value="this.ship.distanceto.{$safepos}" max="this.ship.size">
+              <break />
+            </do_if>
+          </do_all>
+          <stop_moving object="this.ship" />
+        </do_if>
+        <!-- If is not moving and close enought, do not do anything -->
+      </do_if>
+      <!-- Far away, so move -->
+      <do_else>
+        <!-- Already moving -->
+        <do_if value="@$moving">
+          <!-- Update target destination, because target moved from the last position -->
+          <do_if value="$target.distanceto.[$target.zone, $destination]" min="$closestdist + 2km + this.ship.size*2">
+            <set_value name="$moving" exact="false" comment="to restart the movement" />
+          </do_if>
+          <!-- Update target destination, because we arrive to destination -->
+          <do_elseif value="this.ship.distanceto.[this.zone, $destination]" max="this.ship.size">
+            <set_value name="$moving" exact="false" comment="to restart the movement" />
+          </do_elseif>
+        </do_if>
+        <!-- Not moving, so move -->
+        <do_else>
+          <set_value name="$moving" exact="true"/>
+          <set_value name="$destination" exact="$pos" />
+          <!-- Move and interrupt, to continue with distance checks -->
+          <move_to object="this.ship" destination="$target.zone" uselocalhighways="not $bigship" forceposition="false" finishonapproach="true" commandaction="false" >
+            <position value="$destination" max="1km"/>
+            <interrupt_after_time time="0s"/>
+          </move_to>
+        </do_else>
+      </do_else>
+
+      <do_if value="not $commandaction">
+        <do_if value="@$moving">
+          <set_command_action commandaction="commandaction.flyingto" param="$target" />
+        </do_if>
+        <do_else>
+          <set_command_action commandaction="commandaction.standingby" />
+        </do_else>
+      </do_if>
+
+      <wait min="3s" max="15s" />
+      <!-- Restart the script from the top -->
+      <resume label="warp" />
+
+      <label name="finish" />
+
+      <debug_text text="'target dead'" chance="$debugchance" />
+
+      <!-- If target is dead and this is a default order, cancel it -->
+      <do_if value="not $target.isoperational and this.assignedcontrolled.defaultorder.exists and (this.assignedcontrolled.order == this.assignedcontrolled.defaultorder)">
+        <cancel_order order="this.assignedcontrolled.defaultorder"/>
+      </do_if>
+
+    </actions>
+  </attention>
+</aiscript>

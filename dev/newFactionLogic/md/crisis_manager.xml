@@ -1,0 +1,201 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="Crisis_Manager" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+    <!--########################
+    Libraries to be called from outside to inform the crisis manager
+    ############################-->
+    <library name="CanRequestCrisis" purpose="run_actions">
+      <actions>
+        <return value="Manager.$LastCrisisThreatMessage lt 0 or player.age gt Manager.$LastCrisisThreatMessage + Manager.$CrisisThreatInterval"/>
+      </actions>
+    </library>
+
+    <library name="ThreatenCrisis" purpose="run_actions">
+      <params>
+        <param name="Cue"/>
+        <param name="Faction"/>
+      </params>
+      <actions>
+        <set_value name="$Result" exact="false"/>
+        <signal_cue_instantly cue="Crisis_Threatened" param="table[$cue = $Cue, $faction = $Faction, $resultnamespace = this]" comment="Result saved to $resultnamespace.$Result"/>
+        <return value="$Result"/>
+      </actions>
+    </library>
+
+    <library name="TriggerCrisis" purpose="run_actions">
+      <params>
+        <param name="Cue"/>
+        <param name="Faction"/>
+      </params>
+      <actions>
+        <set_value name="$Result" exact="false"/>
+        <signal_cue_instantly cue="Crisis_Triggered" param="table[$cue = $Cue, $faction = $Faction, $resultnamespace = this]" comment="Result saved to $resultnamespace.$Result"/>
+        <return value="$Result"/>
+      </actions>
+    </library>
+
+    <library name="EndCrisis" purpose="run_actions">
+      <params>
+        <param name="Cue"/>
+      </params>
+      <actions>
+        <set_value name="$Result" exact="false"/>
+        <signal_cue_instantly cue="Crisis_Ended" param="table[$cue = $Cue, $resultnamespace = this]" comment="Result saved to $resultnamespace.$Result"/>
+        <return value="$Result"/>
+      </actions>
+    </library>
+
+    <library name="GetCrisisTriggerCount" purpose="run_actions">
+      <params>
+        <param name="StaticCue"/>
+        <param name="Faction" default="null"/>
+      </params>
+      <actions>
+        <set_value name="$Result" exact="0"/>
+        <do_for_each name="$Crisis" in="Manager.$CrisisHistory">
+          <do_if value="$Crisis.$triggertime? and $Crisis.$staticcue == $StaticCue and (not $Faction or $Crisis.$faction == $Faction)">
+            <set_value name="$Result" operation="add"/>
+          </do_if>
+        </do_for_each>
+        <return value="$Result"/>
+      </actions>
+    </library>
+
+    <cue name="Manager" namespace="this">
+      <conditions>
+        <event_cue_signalled cue="md.Setup.Start" />
+      </conditions>
+      <actions>
+        <set_value name="$CrisisHistory" exact="[]"/>
+        <set_value name="$LastCrisisThreatMessage" exact="-1s"/>
+
+        <!--Balancing values-->
+        <set_value name="$CrisisThreatInterval" exact="1h"/>
+
+        <set_value name="$DebugChance" exact="0"/>
+      </actions>
+      <cues>
+        <cue name="Crisis_Threatened" instantiate="true" namespace="this">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <set_value name="$Cue" exact="event.param.$cue"/>
+            <set_value name="$Faction" exact="event.param.$faction"/>
+            <set_value name="$ResultNamespace" exact="event.param.$resultnamespace"/>
+            <set_value name="$ResultNamespace.$Result" exact="false"/>
+            <do_if value="typeof $Cue != datatype.cue or not $Cue.exists">
+              <debug_text text="'Invalid crisis cue ' + $Cue" filter="error"/>
+            </do_if>
+            <do_elseif value="typeof $Faction != datatype.faction or not $Faction.isactive">
+              <debug_text text="'Crisis faction is not an active faction' + $Faction" filter="error"/>
+            </do_elseif>
+            <do_else>
+              <!--Register crisis request-->
+              <append_to_list name="Manager.$CrisisHistory" exact="table[$threattime = player.age, $cue = $Cue, $staticcue = $Cue.staticbase, $faction = $Faction]"/>
+              <set_value name="Manager.$LastCrisisThreatMessage" exact="player.age"/>
+              <set_value name="$ResultNamespace.$Result" exact="true"/>
+
+              <debug_text text="'Threatened crisis ' + Manager.$CrisisHistory.last" chance="Manager.$DebugChance"/>
+            </do_else>
+          </actions>
+        </cue>
+
+        <cue name="Crisis_Triggered" instantiate="true" namespace="this">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <set_value name="$Cue" exact="event.param.$cue"/>
+            <set_value name="$Faction" exact="event.param.$faction"/>
+            <set_value name="$ResultNamespace" exact="event.param.$resultnamespace"/>
+            <set_value name="$ResultNamespace.$Result" exact="false"/>
+            <do_if value="typeof $Cue != datatype.cue or not $Cue.exists">
+              <debug_text text="'Invalid crisis cue ' + $Cue" filter="error"/>
+            </do_if>
+            <do_elseif value="typeof $Faction != datatype.faction or not $Faction.isactive">
+              <debug_text text="'Crisis faction is not an active faction' + $Faction" filter="error"/>
+            </do_elseif>
+            <do_else>
+              <set_value name="$Error" exact="false"/>
+              <set_value name="$ExistingEntry" exact="null"/>
+              <do_for_each name="$Crisis" in="Manager.$CrisisHistory">
+                <do_if value="$Crisis.$cue == $Cue">
+                  <set_value name="$ExistingEntry" exact="$Crisis"/>
+                  <do_if value="$Crisis.$faction != $Faction">
+                    <debug_text text="'Crisis ' + $Cue + ' is requested to be triggered for faction ' + $Faction + ' but the crisis history is referencing faction ' + $Crisis.$faction" filter="error"/>
+                    <set_value name="$Error" exact="true"/>
+                  </do_if>
+                  <break/>
+                </do_if>
+              </do_for_each>
+
+              <do_if value="not $Error">
+                <do_if value="$ExistingEntry and $ExistingEntry.$triggertime?">
+                  <debug_text text="'Crisis cue ' + $Cue + ' is already triggered. Ignoring request.'" filter="error"/>
+                </do_if>
+                <do_else>
+                  <do_all chance="Manager.$DebugChance">
+                    <do_if value="$ExistingEntry and $ExistingEntry.$threattime?">
+                      <debug_text text="'Triggering crisis ' + $Cue + ' for faction ' + $Faction + ' which was threatened at ' + $ExistingEntry.$threattime"/>
+                    </do_if>
+                    <do_else>
+                      <debug_text text="'Triggering crisis ' + $Cue + ' for faction ' + $Faction + ' which has never been threatened'"/>
+                    </do_else>
+                  </do_all>
+                </do_else>
+
+                <!--Register crisis request-->
+                <do_if value="$ExistingEntry">
+                  <set_value name="$ExistingEntry.$triggertime" exact="player.age"/>
+                </do_if>
+                <do_else>
+                  <append_to_list name="Manager.$CrisisHistory" exact="table[$triggertime = player.age, $cue = $Cue, $staticcue = $Cue.staticbase, $faction = $Faction]"/>
+                </do_else>
+
+                <!--Inform faction logic-->
+                <signal_cue_instantly cue="md.FactionLogic.FactionSignalled" param="[$Faction, 'add_crisis', $Cue]"/>
+
+                <set_value name="$ResultNamespace.$Result" exact="true"/>
+              </do_if>
+            </do_else>
+          </actions>
+        </cue>
+
+        <cue name="Crisis_Ended" instantiate="true" namespace="this">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <set_value name="$Cue" exact="event.param.$cue"/>
+            <set_value name="$ResultNamespace" exact="event.param.$resultnamespace"/>
+            <set_value name="$ResultNamespace.$Result" exact="false"/>
+            <do_if value="typeof $Cue != datatype.cue or not $Cue.exists">
+              <debug_text text="'Invalid crisis cue ' + $Cue" filter="error"/>
+            </do_if>
+            <do_else>
+              <set_value name="$ExistingEntry" exact="null"/>
+              <do_for_each name="$Crisis" in="Manager.$CrisisHistory">
+                <do_if value="$Crisis.$cue == $Cue">
+                  <set_value name="$ExistingEntry" exact="$Crisis"/>
+                  <do_all chance="Manager.$DebugChance">
+                    <do_if value="$ExistingEntry.$threattime?">
+                      <debug_text text="'Ending crisis ' + $Cue + ' for faction ' + $Faction + ' which was triggered at ' + $ExistingEntry.$triggertime"/>
+                    </do_if>
+                    <do_else>
+                      <debug_text text="'Ending crisis ' + $Cue + ' for faction ' + $Faction + ' which has never been triggered'"/>
+                    </do_else>
+                  </do_all>
+                  <remove_from_list name="Manager.$CrisisHistory" exact="$ExistingEntry"/>
+                  <set_value name="$ResultNamespace.$Result" exact="true"/>
+                  <break/>
+                </do_if>
+              </do_for_each>
+            </do_else>
+          </actions>
+        </cue>
+      </cues>
+    </cue>
+
+  </cues>
+</mdscript>

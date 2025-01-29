@@ -1,0 +1,208 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<mdscript name="NPC_Shiptrader" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+
+  <cues>
+
+    <cue name="Base" instantiate="true" namespace="this">
+      <conditions>
+        <check_any>
+          <check_all>
+            <event_platform_actor_created />
+            <check_value value="event.param.controlpost == controlpost.shiptrader"/>
+          </check_all>
+          <check_all>
+            <!--event.param = actor-->
+            <event_cue_signalled />
+            <check_value value="event.param.isclass.npc and event.param.controlpost == controlpost.shiptrader"/>
+          </check_all>
+        </check_any>
+      </conditions>
+      <actions>
+        <!-- <debug_text text="'Actor %1 (%2) was created, type=%3, at docking bay %4 (distance=%5m)'.[event.param, event.param.knownname, event.param2, event.param.parent.knownname, event.param.distanceto.{player.entity}]" /> -->
+        <do_if value="event.name == 'event_platform_actor_created'">
+          <set_value name="$actor" exact="event.param" />
+        </do_if>
+        <do_elseif value="event.name == 'event_cue_signalled'">
+          <set_value name="$actor" exact="event.param" />
+        </do_elseif>
+        <set_entity_traits entity="$actor" customhandler="true" />
+        <!-- From now on, only this instance tree is responsible for handling the shiptrader conversation -->
+      </actions>
+
+      <cues>
+        <cue name="ActorDestructed">
+          <conditions>
+            <event_object_destroyed object="$actor" />
+          </conditions>
+          <actions>
+            <!-- No actor, no handler instances -->
+            <cancel_cue cue="Base" />
+          </actions>
+        </cue>
+
+        <cue name="ActorUnassigned">
+          <conditions>
+            <event_control_entity_removed object="$actor"/>
+          </conditions>
+          <actions>
+            <debug_text text="'Shiptrader ' + $actor + ' ' + $actor.knownname + ' was unassigned'"/>
+            <set_entity_traits entity="$actor" customhandler="false" />
+            <cancel_cue cue="Base"/>
+          </actions>
+        </cue>
+
+        <!-- Start handler for default conversation -->
+        <cue name="DefaultComm" instantiate="true">
+          <conditions>
+            <check_any>
+              <event_conversation_started actor="$actor" />
+              <event_conversation_returned_to_section actor="$actor" />
+            </check_any>
+            <check_value value="event.param == 'default'" />
+          </conditions>
+          <actions>
+            <!-- Check 'kill' relation first, exit conversation if true. -->
+            <do_if value="event.object.hasrelation.enemy.{faction.player}">
+              <add_npc_line line="2004" comment="(Greeting - rejected)" />
+            </do_if>
+            <do_else>
+              <set_value name="$container" exact="$actor.container"/>
+              <do_if value="event.name == 'event_conversation_started'">
+                <debug_text text="'Shiptrader conversation started: %1, actor=%2, %3'.[event.param, event.object, event.object.knownname]" />
+                <set_conversation_return_section section="g_goodbye" />
+                <!-- Greeting -->
+                <include_actions ref="md.Conversations.Greeting" />
+              </do_if>
+              <do_if value="$container.canbuildships and (not $container.owner.hastag.noplayerbuyships)">
+                <add_player_choice_sub text="{1002,8008}" position="top_left" section="cArch_configureships" choiceparam="[0, 0, $container, 'purchase', []]" comment="Buy ships" />
+              </do_if>
+
+              <do_if value="$container.canequipships">
+                <find_object_component name="$dockedplayership" object="$container" class="class.ship" includeobjects="true" docked="true" owner="faction.player" />
+                <add_player_choice_sub text="{1002,8010}" position="left" section="cArch_configureships" choiceparam="[0, 0, $container, 'upgrade', [], true]" comment="Upgrade a ship" selectable="$dockedplayership.exists" />
+                <remove_value name="$dockedplayership"/>
+              </do_if>
+
+              <do_if value="event.object.isplayerowned">
+                <!--
+                Hired NPC
+                4: Work somewhere else for me
+                5: More
+	                1: Fire
+                6: Goodbye-->
+                <!--TODO @Owen rename section and implement 'g_worksomewhere'-->
+                <set_value name="$selectable" exact="$container.builds.queued.count == 0 and $container.builds.inprogress.count == 0"/>
+                <add_player_choice text="{1002,3008}" section="g_worksomewhere" position="top_right" choiceparam="[0, 0, true, player.container, null, 'hire', ['g_worksomewhere_positionselected', event.object, false]]" selectable="$selectable" tooltip="if not $selectable then {1026,20100} else ''" comment="Work somewhere else ('Building' displayed if busy)"/>
+                <add_player_choice_sub text="{1002,12025}" section="g_mainmore" position="right" comment="Show more options" />
+                <remove_value name="$selectable"/>
+              </do_if>
+              <do_else>
+                <add_player_choice_sub text="{1002,12008}" comment="Where can I find ...?" section="g_askforway" position="top_right" baseparam="event.param2" />
+                <do_if value="player.room != $actor.room">
+                  <add_player_choice_sub text="{1002,12010}" comment="How can I find you?" section="g_askforway_finish" position="right" baseparam="event.param2" choiceparam="[$actor]" />
+                </do_if>
+              </do_else>
+              <add_player_choice_return text="{1002,2}" position="bottom_right" comment="Goodbye"/>
+              <remove_value name="$container"/>
+            </do_else>
+          </actions>
+        </cue>
+
+        <cue name="SectionHandler" instantiate="true">
+          <conditions>
+            <check_any>
+              <event_conversation_started convprefix="cArch_" actor="$actor"/>
+              <event_conversation_next_section sectionprefix="cArch_" actor="$actor" />
+              <event_conversation_returned_to_section sectionprefix="cArch_" actor="$actor" />
+            </check_any>
+          </conditions>
+          <actions>
+            <debug_text text="'&lt;%1&gt; section: \'%2\''.[event.name, event.param]" />
+
+            <do_if value="event.param == 'cArch_configureships'">
+              <open_menu menu="ShipConfigurationMenu" param="event.param2" param2="event.param3" />
+            </do_if>
+
+            <do_elseif value="event.param == 'cArch_sellshipconfirmed'">
+              <transfer_money from="$actor.container" to="faction.player" amount="event.param2.{2} * 1Cr" />
+              <set_value name="$soldships" exact="event.param2.{1}" />
+              <do_all exact="$soldships.count" counter="$i">
+                <set_value name="$soldship" exact="component.{$soldships.{$i}}" />
+                <include_actions ref="SellShipActions" />
+              </do_all>
+            </do_elseif>
+
+            <do_else>
+              <debug_text text="'ERROR: Unexpected section \'' + event.param + '\''" filter="general" />
+            </do_else>
+          </actions>
+        </cue>
+
+        <library name="SellShipActions">
+          <actions>
+            <remove_object_account object="$soldship" transfer="true" />
+            <remove_object_commander object="$soldship" />
+            <!-- this also changes the owner of all control entities and personnel -->
+            <set_owner object="$soldship" faction="$actor.owner" />
+
+            <reinitialise_control_entities object="$soldship"/>
+
+            <!-- Block all dockslots to prevent the player from docking at this ship -->
+            <!--TODO @Owen #EntityTypes Place new pilot in a lift and walk to the ship?-->
+            <find_dockingbay name="$ship_docks" object="$soldship" multiple="true"/>
+            <do_all exact="$ship_docks.count" counter="$Count">
+              <set_room_locked room="$ship_docks.{$Count}" locked="true"/>
+            </do_all>
+            <remove_value name="$ship_docks" />
+
+            <do_if value="$soldship.pilot">
+              <create_order object="$soldship" id="'MoveDie'">
+                <!-- bysale is no longer supported, normal docking bays are now all external -->
+                <!--<param name="bysale" value="$actor.container" />-->
+              </create_order>
+            </do_if>
+            <do_else>
+              <!-- no pilot, create one -->
+              <!--TODO @Owen #EntityTypes Different pilot tags for different objects-->
+
+              <do_if value="$dock? and $soldship.owner != faction.xenon">
+                <create_platform_actor name="$pilot" room="$dock" type="entitytype.officer">
+                  <select faction="$actor.owner" tags="controlpost.aipilot.tag"/>
+                  <owner exact="$actor.owner" />
+                </create_platform_actor>
+                <do_if value="$pilot?">
+                  <assign_control_entity actor="$pilot" object="$soldship" post="controlpost.aipilot"/>
+                </do_if>
+              </do_if>
+              <do_else>
+                <create_cue_actor name="$pilot" cue="this">
+                  <select faction="$actor.owner" tags="controlpost.aipilot.tag"/>
+                  <owner exact="$actor.owner" />
+                </create_cue_actor>
+                <do_if value="$pilot?">
+                  <assign_control_entity actor="$pilot" object="$soldship" post="controlpost.aipilot" transfer="true"/>
+                </do_if>
+              </do_else>
+              <do_if value="$pilot?">
+                <do_if value="$pilot.container">
+                  <create_order object="$soldship" id="'MoveDie'" />
+                </do_if>
+
+                <remove_cue_actor actor="$pilot" cue="this" />
+                <remove_value name="$pilot" />
+              </do_if>
+              <do_else>
+                <!-- should not happen, but to prevent exploits -->
+                <destroy_object object="$soldship" />
+              </do_else>
+            </do_else>
+
+          </actions>
+        </library>
+
+      </cues>
+    </cue>
+
+  </cues>
+
+</mdscript>

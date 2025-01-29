@@ -1,0 +1,371 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_Hack_Object" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--
+    $feedbackvalue:
+    Mission Errors <=-100
+    -104: Targets_Param contained no valid operational objects
+    -103: Targets_Param was empty
+    -102: EndSignalCue or MissionCue not defined
+    -101: Targets_Param is not a valid group
+    -100: Undefined failure. Defaulted to -100
+    
+    Player Fails
+    -1: Player hacked no objects
+    
+    Player Success
+    1: player hacked all objects
+    2: player hacked some but not all objects-->
+
+    <library name="HackObjects">
+      <params>
+        <param name="EndSignalCue"/>
+        <param name="MissionCue"/>
+        <param name="StartStep" default="1" comment="Briefing step to start the mission on"/>
+        <param name="UpdateBriefing" default="true" comment="Update the briefing objective step when the objective is updated"/>
+        <!--param name="ObjectiveText"                   comment="The text for the mission objective."/-->
+        <param name="Targets_Param" default="null" comment="Targets to hack. This group will be copied to '$Targets'"/>
+        <param name="PanelType" default="null" comment="Panel to hack on the objects of $Targets_Param. (These must be the base objects)"/>
+
+        <param name="Objective" default="objective.hack"/>
+
+        <param name="DebugChance" default="0"/>
+      </params>
+      <actions>
+        <set_value name="$feedbackvalue" exact="0"/>
+        <create_list name="$ErrorList"/>
+
+        <do_if value="not $EndSignalCue or not $MissionCue">
+          <append_to_list name="$ErrorList" exact="-102"/>
+        </do_if>
+
+        <do_if value="typeof $Targets_Param != datatype.group">
+          <append_to_list name="$ErrorList" exact="-101"/>
+        </do_if>
+        <do_elseif value="$Targets_Param.count" exact="0">
+          <append_to_list name="$ErrorList" exact="-103"/>
+        </do_elseif>
+        <do_else>
+          <create_group groupname="$Targets"/>
+          <do_all exact="$Targets_Param.count" counter="$Counter" reverse="true">
+            <do_if value="$Targets_Param.{$Counter}.isoperational">
+              <do_if value="$PanelType and not $Targets_Param.{$Counter}.isclass.object">
+                <debug_text text="'Target ' + $Targets_Param.{$Counter}.knownname + ' is not of class object and so can not be used with $PanelType - ' + $PanelType"/>
+              </do_if>
+              <do_else>
+                <add_to_group groupname="$Targets" object="$Targets_Param.{$Counter}"/>
+              </do_else>
+            </do_if>
+          </do_all>
+          <do_if value="$Targets.count" exact="0">
+            <append_to_list name="$ErrorList" exact="-104"/>
+          </do_if>
+        </do_else>
+      </actions>
+      <cues>
+
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="1"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup"/>
+          </actions>
+        </cue>
+
+        <cue name="StartMission" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" exact="0"/>
+          </conditions>
+          <actions>
+            <create_group groupname="$HackedObjects"/>
+            <set_value name="$InitialGroupCount" exact="$Targets.count"/>
+            <set_value name="$PlayerHackCount" exact="0"/>
+            <set_value name="$ObjectiveTarget" exact="null"/>
+          </actions>
+          <cues>
+            
+            <cue name="DEBUG_GetSecurityDecryptionSystem" instantiate="true">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <add_inventory entity="player.entity" ware="ware.inv_securityslicer" exact="5" comment="controlpaneltype.hack_all_turrets"/>
+                <add_inventory entity="player.entity" ware="ware.inv_securitydecryptionsystem" exact="5" comment="for hacking Discount, Engineer, Production, Storage, BuildModules, ShieldGenerators, Watchdogs" />
+              </actions>
+            </cue>
+            
+            
+            <cue name="ChooseTarget" version="2">
+              <actions>
+                <debug_text text="$Targets.count + ' targets remain.'" chance="$DebugChance"/>
+                <do_if value="$Targets.count" min="1">
+                  <set_value name="$Target" exact="$Targets.{1}"/>
+                  <set_value name="$ObjectiveTarget" exact="$Target"/>
+                  <set_value name="$TargetRoom" exact="null"/>
+                  <set_value name="$HackStep" exact="$StartStep"/>
+                  
+                  <do_if value="$PanelType">
+                    <set_value name="$ObjectiveText" exact="$PanelType.name"/>
+                  </do_if>
+                  <do_else>
+                    <set_value name="$ObjectiveText" exact="$Target.knownname"/>
+                  </do_else>
+
+                  <debug_text text="'Target is now ' + $Target.knownname" chance="$DebugChance"/>
+                  <do_if value="$UpdateBriefing">
+                    <update_mission cue="$MissionCue">
+                      <briefing>
+                        <objective step="$HackStep" action="$Objective" object="$ObjectiveTarget" text="$ObjectiveText"/>
+                      </briefing>
+                    </update_mission>
+                  </do_if>
+                </do_if>
+                <do_else>
+                  <!--Player hacked all targets-->
+                  <do_if value="$PlayerHackCount == $InitialGroupCount">
+                    <set_value name="$feedbackvalue" exact="1"/>
+                  </do_if>
+                  <!--Player hacked some targets-->
+                  <do_elseif value="$PlayerHackCount" min="1">
+                    <set_value name="$feedbackvalue" exact="2"/>
+                  </do_elseif>
+                  <do_else>
+                    <set_value name="$feedbackvalue" exact="-1"/>
+                  </do_else>
+                  <signal_cue_instantly cue="Cleanup"/>
+                </do_else>
+              </actions>
+              <patch sinceversion="2">
+                <do_if value="not $TargetRoom.exists">
+                  <set_value name="$TargetRoom" exact="null"/>
+                </do_if>
+              </patch>
+              <cues>
+
+                <cue name="Update_Objective_Init">
+                  <actions>
+                    <signal_cue cue="Update_Objective"/>
+                  </actions>
+                </cue>
+                
+                <cue name="Update_Objective" instantiate="true">
+                  <conditions>
+                    <check_any>
+                      <event_cue_signalled/>
+                      <check_all>
+                        <event_npc_slots_validated object="$Target"/>
+                        <check_value value="$PanelType"/>
+                      </check_all>
+                    </check_any>
+                    <!--Only update the objective if the mission doesn't involve a panel or the target room is not yet found-->
+                    <check_value value="not $PanelType or not $TargetRoom.exists"/>
+                  </conditions>
+                  <actions>
+                    <do_if value="$PanelType">
+                      <find_room name="$TargetRoom" object="$Target" hascontrolpanel="$PanelType" multiple="false" />
+                      <do_if value="$TargetRoom">
+                        <set_objective cue="$MissionCue" step="$HackStep" action="$Objective" text="$ObjectiveText" object="$TargetRoom"/>
+                      </do_if>
+                      <do_else>
+                        <set_objective cue="$MissionCue" step="$HackStep" action="$Objective" text="$ObjectiveText" object="$ObjectiveTarget"/>
+                      </do_else>
+                    </do_if>
+                    <do_elseif value="$ObjectiveTarget">
+                      <set_objective cue="$MissionCue" step="$HackStep" action="$Objective" object="$ObjectiveTarget" text="$ObjectiveText"/>
+                    </do_elseif>
+                  </actions>
+                  <delay exact="1ms"/>
+                  <actions>
+                    <do_if value="$TargetRoom.exists">
+                      <signal_cue cue="TargetRoomHandler"/>
+                    </do_if>
+                  </actions>
+                </cue>
+
+                <cue name="TargetRoomHandler">
+                  <conditions>
+                    <event_cue_signalled/>
+                    <check_value value="$TargetRoom.exists"/>
+                  </conditions>
+                  <cues>
+                    <cue name="HackingPanelRoomHint" instantiate="true">
+                      <conditions>
+                        <event_object_changed_room object="player.entity" room="$TargetRoom"/>
+                      </conditions>
+                      <actions>
+                        <remove_help all="true"/>
+                      </actions>
+                      <delay exact="3s"/>
+                      <actions>
+                        <do_if value="not player.entity.inventory.{ware.inv_securitydecryptionsystem}.exists and $PanelType != controlpaneltype.hack_all_turrets">
+                          <show_help line="535" duration="20s" position="1" force="true" allowclose="true" comment="'Use a Security Decryption System, which can be crafted from items in your inventory, to sabotage a control panel.'"/>
+                        </do_if>
+                        <do_elseif value="not player.entity.inventory.{ware.inv_securityslicer}.exists and $PanelType == controlpaneltype.hack_all_turrets">
+                          <show_help line="547" duration="20s" position="1" force="true" allowclose="true" comment="'Use a Security Slicer, which can be crafted from items in your inventory, to sabotage a turret control panel.'"/>
+                        </do_elseif>
+                      </actions>
+                    </cue>
+
+                    <cue name="TargetRoom_Destroyed">
+                      <conditions>
+                        <event_object_destroyed object="$TargetRoom"/>
+                      </conditions>
+                      <actions>
+                        <set_value name="$TargetRoom" exact="null"/>
+                      </actions>
+                      <delay exact="1ms"/>
+                      <actions>
+                        <reset_cue cue="TargetRoomHandler"/>
+                        <signal_cue cue="Update_Objective"/>
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+
+              </cues>
+            </cue>
+
+            <cue name="TargetHacked" instantiate="true">
+              <conditions>
+                <event_player_hacked_object/>
+              </conditions>
+              <actions>
+                <debug_text text="'Hacked: %s(%s) Hacker:%s Controlpanel-Type:%s'.[event.param, event.param.knownname, event.param2, event.param3]" chance="$DebugChance"/>
+
+                <do_if value="$PanelType">
+                  <!-- the control panel used for the hack -->
+                  <do_if value="@event.param3 == $PanelType">
+                    <debug_text text="'p1=%s, p2=%s, p3=%s (remaining %s)'.[event.param, event.param2, event.param3, $Targets.count]" chance="$DebugChance"/>
+                    <!-- check if the thing that was hacked is part of an object in the list OR the thing that was hacked itself was in that list -->
+                    <do_if value="$Targets.indexof.{event.param.container}">
+                      <debug_text text="'case1 (event.param.container)'" chance="$DebugChance"/>
+                      <set_value name="$PlayerHackCount" operation="add"/>
+                      <remove_from_group group="$Targets" object="event.param.container"/>
+                      <reset_cue cue="ChooseTarget"/>
+                    </do_if>
+                    <do_elseif value="$Targets.indexof.{event.param} ">
+                      <debug_text text="'case2 (event.param)'" chance="$DebugChance"/>
+                      <set_value name="$PlayerHackCount" operation="add"/>
+                      <remove_from_group group="$Targets" object="event.param"/>
+                      <reset_cue cue="ChooseTarget"/>
+                    </do_elseif>
+                    <do_else>
+                      <debug_text text="'case3 (else)'" chance="$DebugChance"/>
+                    </do_else>
+                  </do_if>
+                  <do_else>
+                    <!-- All the stuff which was affected by the hack -->
+                  </do_else>
+                </do_if>
+                <do_elseif value="$Targets.indexof.{event.param}">
+                  <!-- A specific component from the $Targets-list has been hacked -->
+                  <assert value="false" text="'@Owen, @Roger - Not implemented?'" />
+                  
+                  <debug_text text="'Found in hack-Target-list'"/>
+                  <set_value name="$PlayerHackCount" operation="add"/>
+                  <remove_from_group group="$Targets" object="event.param"/>
+                  <reset_cue cue="ChooseTarget"/>
+                </do_elseif>
+              </actions>
+            </cue>
+
+            <cue name="TargetLost" instantiate="true">
+              <conditions>
+                <check_any>
+                  <event_object_abandoned group="$Targets"/>
+                  <event_object_changed_true_owner group="$Targets"/>
+                  <event_object_destroyed group="$Targets"/>
+                </check_any>
+              </conditions>
+              <delay exact="1ms"/>
+              <actions>
+                <debug_text text="'TargetLost'" chance="$DebugChance"/>
+                <do_if value="event.name == 'event_object_abandoned' or event.name == 'event_object_changed_true_owner'">
+                  <remove_from_group group="$Targets" object="event.object"/>
+                </do_if>
+
+                <!--Set objectives again-->
+                <reset_cue cue="ChooseTarget"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <!--TODO remove_objective-->
+
+            <do_if value="$feedbackvalue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'ERROR: Feedback value is 0 and no error values were set. Defaulting to -100'"/>
+                <set_value name="$feedbackvalue" exact="-100"/>
+              </do_if>
+              <do_else>
+                <set_value name="$feedbackvalue" exact="$ErrorList.{1}"/>
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+                    <do_if value="$ErrorList.{$Counter}" exact="-104">
+                      <set_value name="$FeedbackText" exact="'No Targets were operational'"/>
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-103">
+                      <set_value name="$FeedbackText" exact="'Provided group Targets_Param was empty'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-102">
+                      <set_value name="$FeedbackText" exact="'EndSignalCue or MissionCue not defined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'$Targets is not of type group'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-100">
+                      <set_value name="$FeedbackText" exact="'Undefined failure. Defaulted to -100'"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                    </do_else>
+
+                    <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+
+              <do_if value="$feedbackvalue" exact="-1">
+                <set_value name="$FeedbackText" exact="{30004,6011}" comment="'Player did not hack any objects'"/>
+              </do_if>
+              <do_elseif value="$feedbackvalue" exact="1">
+                <set_value name="$FeedbackText" exact="'Player hacked all objects'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="2">
+                <set_value name="$FeedbackText" exact="'player hacked some but not all objects'"/>
+              </do_elseif>
+
+              <do_if value="$feedbackvalue" min="1">
+                <debug_text text="'Mission Successful. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_if>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission Failed. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+            <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$feedbackvalue"/>
+            <signal_cue cue="$EndSignalCue"/>
+            <cancel_cue cue="HackObjects"/>
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

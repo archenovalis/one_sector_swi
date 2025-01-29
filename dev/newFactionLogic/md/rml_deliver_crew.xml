@@ -1,0 +1,480 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_Deliver_Crew" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--
+    This RML is intended for use in Master-Missions. 
+    It handles checking if the player delivered one or more NPC's with a specific skill at a certain level, to the target-faction.
+    
+    $feedbackvalue:
+    -105 Destination parameter not a station
+    -104 Destination parameter left undefined
+    -103 $Faction parameter left undefined
+    -102 $Skills is incorrectly defined.
+    -101 Cue parameters not defined
+    -100: Undefined failure. Defaulted to -100
+    1: Passengers Successfully transported -->
+
+    <library name="DeliverCrew" version="2">
+      <params>
+        <param name="EndSignalCue"/>
+        <param name="MissionCue"/>
+        <param name="StartStep"       default="1"   comment="Briefing step to start the mission on"/>
+        <param name="UpdateBriefing"  default="true" comment="Update the briefing objective step when the objective is updated"/>
+        <param name="DebugChance"     default="0" />
+
+        <param name="MissionName"     default="''"/>
+        <param name="Text_Objective"                comment="Objective text to get the crew (can substitute $NPCCOUNTDONE$ and $NPCCOUNT$)"/>
+        <param name="Text_ProgressBar"              comment="Progress bar text e.g. 'Pilots'"/>
+        <param name="NpcCount"        default="1" 	comment="How many NPC's with these skills we want"/>
+        <param name="Skills"                        comment="The specific skilltype[skilllevel] of an NPC we are looking for"/>
+        <param name="Destination"                   comment="Where to deliver (station)"/>
+        <param name="Faction"                       comment="The faction to which this NPC needs to be delivered"/>
+
+        <param name="FailOnContainerDestruction" default="true"/>
+      </params>
+      <actions>
+        <set_value name="$feedbackvalue" exact="0"/>
+        <create_list name="$ErrorList"/>
+
+        <do_if value="not $EndSignalCue or not $MissionCue">
+          <append_to_list name="$ErrorList" exact="-101"/>
+        </do_if>
+
+        <do_if value="typeof $Skills != datatype.table">
+          <append_to_list name="$ErrorList" exact="-102" />
+        </do_if>
+        <do_elseif value="$Skills.keys.count" max="0">
+          <append_to_list name="$ErrorList" exact="-102" />
+        </do_elseif>
+
+        <do_if value="not $Destination">
+          <append_to_list name="$ErrorList" exact="-104"/>
+        </do_if>
+        <do_elseif value="not $Destination.isclass.station" comment="ships not supported by crew-transfer feature">
+          <append_to_list name="$ErrorList" exact="-105"/>
+        </do_elseif>
+
+        <do_if value="not $Faction">
+          <append_to_list name="$ErrorList" exact="-103"/>
+        </do_if>
+      </actions>
+      <patch sinceversion="2">
+        <!-- All instances of the RML up until now benefit from the automatic failure. -->
+        <set_value name="$FailOnContainerDestruction" exact="true"/>
+        <do_if value="not $Destination.isoperational">
+          <debug_text text="'$Destination has been destroyed'" chance="$DebugChance"/>
+          <set_value name="$feedbackvalue" exact="-3"/>
+          <signal_cue cue="Cleanup"/>
+        </do_if>
+      </patch>
+      <cues>
+
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="1"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup"/>
+          </actions>
+        </cue>
+
+        <cue name="StartMission" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="0"/>
+          </conditions>
+          <actions>
+            <debug_text text="'StartMission'" chance="$DebugChance"/>
+            <set_value name="$NpcCountDone" exact="0"/>
+
+            <signal_cue cue="UpdateBriefing"/>
+          </actions>
+          <cues>
+
+            <cue name="DebugAcquireNPC" instantiate="true">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <do_if value="player.ship">
+                  <debug_text text="'Placing matching npc on current playership'" chance="$DebugChance"/>
+                  <create_npc_template name="$crew" object="player.ship" macro="macro.character_argon_female_pilot_01_macro" role="entityrole.service"/>
+                  <do_if value="$crew">
+                    <set_skill object="player.ship" template="$crew" type="skilltype.boarding" exact="15" comment="15 is 5 stars"/>
+                    <set_skill object="player.ship" template="$crew" type="skilltype.engineering" exact="15"/>
+                    <set_skill object="player.ship" template="$crew" type="skilltype.management" exact="15"/>
+                    <set_skill object="player.ship" template="$crew" type="skilltype.piloting" exact="15"/>
+                    <set_skill object="player.ship" template="$crew" type="skilltype.morale" exact="15"/>
+                  </do_if>
+                </do_if>
+                <do_else>
+                  <debug_text text="'ignored (player not on ship)'" chance="$DebugChance"/>
+                </do_else>
+              </actions>
+            </cue>
+
+            <cue name="DebugAcquireNewbieNPC" instantiate="true">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <do_if value="player.ship">
+                  <debug_text text="'Placing newbie npc on current playership'" chance="$DebugChance"/>
+                  <create_npc_template name="$crew" object="player.ship" macro="macro.character_argon_female_pilot_01_macro" role="entityrole.service"/>
+                  <do_if value="$crew">
+                    <set_skill object="player.ship" template="$crew" type="skilltype.boarding" exact="1" comment="15 is 5 stars"/>
+                    <set_skill object="player.ship" template="$crew" type="skilltype.engineering" exact="1"/>
+                  </do_if>
+                </do_if>
+                <do_else>
+                  <debug_text text="'ignored (player not on ship)'" chance="$DebugChance"/>
+                </do_else>
+              </actions>
+            </cue>
+
+            <!-- Input: $Skills (List of skills), $TheNPC; Output: $hasrequiredskills true/false-->
+            <library name="NpcMeetsRequirements">
+              <actions>
+                <set_value name="$hasrequiredskills" exact="true"/>
+                <do_all exact="$Skills.keys.count" counter="$SkillCounter">
+                  <set_value name="$skillname" exact="$Skills.keys.{$SkillCounter}" />
+                  <set_value name="$wantedskillvalue" exact="$Skills.{$skillname}" />
+                  <set_value name="$actualvalue" exact="$TheNPC.skill.{$skillname}" />
+                  <do_if value="$actualvalue lt $wantedskillvalue">
+                    <set_value name="$hasrequiredskills" exact="false"/>
+                    <break/>
+                  </do_if>
+                </do_all>
+              </actions>
+            </library>
+
+            <cue name="ConversationStarted" instantiate="true">
+              <conditions>
+                <event_conversation_started/>
+              </conditions>
+              <actions>
+                <set_value name="$hasrequiredskills" exact="false"/>
+                <set_value name="$npcname" exact="''"/>
+                <set_value name="$IsComm" exact="false"/>
+                <set_value name="$TheNPC" exact="null"/>
+
+                <do_if value="typeof event.object == datatype.component" comment="normal conversation">
+                  <set_value name="$TheNPC" exact="event.object"/>
+                  <set_value name="$npcname" exact="$TheNPC.knownname"/>
+                  <debug_text text="'Comm-normal: name=' + $npcname" chance="$DebugChance"/>
+
+                  <do_if value="$TheNPC.owner == faction.player">
+                    <do_if value="$TheNPC.hascontext.{$Destination}">
+                      <!-- The skill requirement check is only relevant if the NPC is at the destination -->
+                      <include_actions ref="NpcMeetsRequirements"/>
+                    </do_if>
+                    <do_else>
+                      <!-- If the NPC is not at the destination, don't show the Transfer conversation option -->
+                      <set_value name="this.$noconversation"/>
+                    </do_else>
+                  </do_if>
+                </do_if>
+                <do_else comment="Comm person in the backroom">
+                  <set_value name="$locobject" exact="event.object.{1}"/>
+                  <set_value name="$npctemplate" exact="event.object.{2}"/>
+                  <set_value name="$npctemplaterole" exact="$locobject.people.{$npctemplate}.role"/>
+                  <set_value name="$npcname" exact="$locobject.people.{$npctemplate}.name"/>
+                  <debug_text text="'Comm-backroom: name=' + $npcname + ' role=' + $npctemplaterole + ' template=' + $npctemplate" chance="$DebugChance"/>
+
+                  <do_if value="$npctemplaterole == entityrole.service or $npctemplaterole == entityrole.marine">
+                    <set_value name="$IsComm" exact="true"/>
+                    <do_if value="$locobject.isplayerowned and $locobject.hascontext.{$Destination}">
+                      <!-- copy & paste from NpcMeetsRequirements -->
+                      <set_value name="$hasrequiredskills" exact="true"/>
+                      <do_all exact="$Skills.keys.count" counter="$SkillCounter">
+                        <set_value name="$skillname" exact="$Skills.keys.{$SkillCounter}" />
+                        <set_value name="$wantedskillvalue" exact="$Skills.{$skillname}" />
+                        <set_value name="$actualvalue" exact="$locobject.people.{$npctemplate}.skill.{$skillname}" />
+                        <do_if value="$actualvalue lt $wantedskillvalue">
+                          <set_value name="$hasrequiredskills" exact="false"/>
+                          <break/>
+                        </do_if>
+                      </do_all>
+                    </do_if>
+                    <do_else>
+                      <!-- If the NPC template isn't player owned, or not at the destination, don't show the Transfer conversation option -->
+                      <set_value name="this.$noconversation"/>
+                      <debug_text text="'Not playerowned(' + $locobject.isplayerowned + ') or not at delivery location (' + $locobject.hascontext.{$Destination} + ')'" chance="$DebugChance"/>
+                    </do_else>
+                  </do_if>
+                </do_else>
+
+                <do_if value="not this.$noconversation?">
+                  <do_if value="$hasrequiredskills">
+                    <debug_text text="'talking to ' + $npcname + ' (has required skills)'" chance="$DebugChance"/>
+                    <add_player_choice text="{30004,5401}" section="delivercrew_do" choiceparam="$MissionCue" highlighted="true" tooltip="$MissionName" comment="Transfer Crew-member dialog-option"/>
+                  </do_if>
+                  <do_else>
+                    <do_if value="$IsComm and $locobject.isplayerowned and @$locobject.hascontext.{$Destination}">
+                      <add_player_choice text="{30004,5401}" section="delivercrew_do" selectable="false" tooltip="{30004,7008}" position="bottom_left" comment="The Crew Member's skills do not fit mission requirements"/>
+                    </do_if>
+                    <do_elseif value="$TheNPC.exists and $TheNPC.owner == faction.player">
+                      <add_player_choice text="{30004,5401}" section="delivercrew_do" selectable="false" tooltip="{30004,7008}" position="bottom_left" comment="The Crew Member's skills do not fit mission requirements"/>
+                    </do_elseif>
+                    <debug_text text="'talking to ' + $npcname + ', does not have required skills'" chance="$DebugChance"/>
+                  </do_else>
+                </do_if>
+
+              </actions>
+            </cue>
+
+            <cue name="Conversation_DeliverCrew" instantiate="true">
+              <conditions>
+                <event_conversation_next_section choiceparam="$MissionCue" section="delivercrew_do"/>
+              </conditions>
+              <actions>
+                <debug_text text="'Crew-member transferred'" chance="$DebugChance"/>
+                <set_value name="$NpcCountDone" operation="add"/>
+
+                <do_if value="typeof event.object == datatype.component" comment="normal conversation">
+                  <!-- remove npc-entity (from the cockpit) -->
+                  <set_value name="$TheNPC" exact="event.object"/>
+                  <do_if value="$TheNPC.roleobject">
+                    <remove_npc_template object="$TheNPC.roleobject" template="$TheNPC.npctemplate"/>
+                  </do_if>
+                  <do_elseif value="$TheNPC.assignedcontrolled">
+                    <dismiss_control_entity actor="$TheNPC" object="$TheNPC.assignedcontrolled"/>
+                  </do_elseif>
+                  <set_owner object="$TheNPC" faction="$Faction"/>
+                  <find_npc_waypoint name="$DespawnSlot" object="$Destination" tags="tag.npctransport" comment="find destination waypoint (the AI will then figure out how to get there)"/>
+                  <set_value name="$DespawnTable" exact="table[$slot = $DespawnSlot]"/>
+                  <signal_objects object="$TheNPC" param="'npc_despawn'" param2="$DespawnTable.clone" comment="statemachine will handle it, in case no waypoint found"/>
+                </do_if>
+                <do_else>
+                  <!-- remove npc-template (from the backroom) -->
+                  <set_value name="$locobject" exact="event.object.{1}"/>
+                  <set_value name="$npctemplate" exact="event.object.{2}"/>
+                  <remove_npc_template object="$locobject" template="$npctemplate"/>
+                </do_else>
+
+                <do_if value="$NpcCountDone ge $NpcCount">
+                  <set_value name="$feedbackvalue" exact="1" comment="success"/>
+                  <signal_cue cue="Cleanup"/>
+                </do_if>
+                <do_else>
+                  <signal_cue cue="UpdateBriefing"/>
+                </do_else>
+              </actions>
+            </cue>
+
+            <cue name="CheckMissionStatus_CrewExchange_Npc" instantiate="true">
+              <conditions>
+                <event_object_signalled object="$Destination" param="'npc_mission_delivery'" param2="$MissionCue" />
+              </conditions>
+              <actions>
+                <set_value name="$TheNPC" exact="event.param3" comment="Npc-instance"/>
+
+                <include_actions ref="NpcMeetsRequirements"/>
+
+                <do_if value="$hasrequiredskills == true">
+                  <set_value name="$NpcCountDone" operation="add"/>
+                  <do_if value="$TheNPC.roleobject">
+                    <remove_npc_template object="$TheNPC.roleobject" template="$TheNPC.npctemplate"/>
+                    <clear_entity_role_object entity="$TheNPC"/>
+                  </do_if>
+                  <do_elseif value="$TheNPC.assignedcontrolled">
+                    <dismiss_control_entity actor="$TheNPC" object="$TheNPC.assignedcontrolled"/>
+                  </do_elseif>
+                  <set_owner object="$TheNPC" faction="$Destination.owner"/>
+                  <find_npc_waypoint name="$DespawnSlot" object="$Destination" tags="tag.npctransport" comment="find destination waypoint (the AI will then figure out how to get there)"/>
+                  <set_value name="$DespawnTable" exact="table[$slot = $DespawnSlot]"/>
+                  <signal_objects object="$TheNPC" param="'npc_despawn'" param2="$DespawnTable.clone" comment="statemachine will handle it, in case no waypoint found"/>
+                </do_if>
+
+                <do_if value="$NpcCountDone ge $NpcCount">
+                  <set_value name="$feedbackvalue" exact="1" comment="success"/>
+                  <signal_cue cue="Cleanup"/>
+                </do_if>
+                <do_else>
+                  <signal_cue cue="UpdateBriefing"/>
+                </do_else>
+
+              </actions>
+            </cue>
+
+            <cue name="CheckMissionStatus_CrewExchange_Template" instantiate="true">
+              <conditions>
+                <event_object_signalled object="$Destination" param="'npctemplate_mission_delivery'" param2="$MissionCue" />
+              </conditions>
+              <actions>
+                <debug_text text="'Crew exchange p3.controllable=' + event.param3.{1} + ' p3.seed=' + event.param3.{2}"/>
+
+                <set_value name="$controllable" exact="event.param3.{1}"/>
+                <set_value name="$npctemplate" exact="event.param3.{2}" comment="seed"/>
+
+                <do_if value="($controllable.exists) and ($npctemplate != null)">
+
+                  <set_value name="$hasrequiredskills" exact="true"/>
+                  <do_for_each name="$skillname" valuename="$wantedskillvalue" in="$Skills">
+                    <set_value name="$actualvalue" exact="$controllable.people.{$npctemplate}.skill.{$skillname}" />
+                    <do_if value="$actualvalue lt $wantedskillvalue">
+                      <set_value name="$hasrequiredskills" exact="false"/>
+                      <break/>
+                    </do_if>
+                  </do_for_each>
+
+                  <do_if value="$hasrequiredskills == true">
+                    <set_value name="$NpcCountDone" operation="add"/>
+                    <set_value name="this.$NPCInstance" exact="$controllable.roleentity.{$npctemplate}"/>
+                    <do_if value="this.$NPCInstance">
+                      <clear_entity_role_object entity="this.$NPCInstance"/>
+                      <set_owner object="this.$NPCInstance" faction="$Destination.owner"/>
+                      <find_npc_waypoint name="$DespawnSlot" object="$Destination" tags="tag.npctransport" comment="find destination waypoint (the AI will then figure out how to get there)"/>
+                      <set_value name="$DespawnTable" exact="table[$slot = $DespawnSlot]"/>
+                      <signal_objects object="this.$NPCInstance" param="'npc_despawn'" param2="$DespawnTable.clone" comment="statemachine will handle it, in case no waypoint found"/>
+                    </do_if>
+
+                    <remove_npc_template object="$controllable" template="$npctemplate"/>
+                  </do_if>
+
+                  <do_if value="$NpcCountDone ge $NpcCount">
+                    <set_value name="$feedbackvalue" exact="1" comment="success"/>
+                    <signal_cue cue="Cleanup"/>
+                  </do_if>
+                  <do_else>
+                    <signal_cue cue="UpdateBriefing"/>
+                  </do_else>
+                </do_if>
+              </actions>
+            </cue>
+
+            <cue name="DestinationDestroyed">
+              <conditions>
+                <event_object_destroyed object="$Destination"/>
+              </conditions>
+              <actions>
+                <debug_text text="'$Destination has been destroyed'" chance="$DebugChance"/>
+                <do_if value="$FailOnContainerDestruction">
+                  <do_if value="event.param.owner" exact="faction.player">
+                    <set_value name="$feedbackvalue" exact="-4"/>
+                  </do_if>
+                  <do_else>
+                    <set_value name="$feedbackvalue" exact="-3"/>
+                  </do_else>
+                  <signal_cue cue="Cleanup"/>
+                </do_if>
+              </actions>
+            </cue>
+
+          </cues>
+        </cue>
+
+        <cue name="UpdateBriefing" instantiate="true" comment="Called each time a briefing-update is needed">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+
+            <update_mission cue="$MissionCue">
+              <delivery>
+                <people target="$Destination" people="$NpcCount - $NpcCountDone" skills="$Skills"/>
+              </delivery>
+            </update_mission>
+
+            <do_if value="$UpdateBriefing">
+              <update_mission cue="$MissionCue">
+                <briefing>
+                  <objective step="$StartStep" action="objective.acquire_crew" text="$Text_Objective"/>
+                </briefing>
+              </update_mission>
+            </do_if>
+            <do_if value="$NpcCount == 1">
+              <set_objective cue="$MissionCue" step="$StartStep" action="objective.acquire_crew" text="$Text_Objective" object="$Destination"/>
+            </do_if>
+            <do_else>
+              <set_objective cue="$MissionCue" step="$StartStep" action="objective.acquire_crew" text="$Text_Objective" object="$Destination">
+                <progress progress="$NpcCountDone" max="$NpcCount" text="$Text_ProgressBar"/>
+              </set_objective>
+            </do_else>
+          </actions>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <!--TODO remove_objective-->
+
+            <do_if value="$feedbackvalue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'ERROR: Feedback value is 0 and no error values were set. Defaulting to -100'"/>
+                <set_value name="$feedbackvalue" exact="-100"/>
+              </do_if>
+              <do_else>
+                <set_value name="$feedbackvalue" exact="$ErrorList.{1}"/>
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+                    <do_if value="$ErrorList.{$Counter}" exact="-105">
+                      <set_value name="$FeedbackText" exact="'$Destination parameter not a station: ' + $Destination + ' ' + $Destination.knownname"/>
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-104">
+                      <set_value name="$FeedbackText" exact="'$Destination parameter left undefined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-103">
+                      <set_value name="$FeedbackText" exact="'$Faction parameter left undefined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-102">
+                      <set_value name="$FeedbackText" exact="'$Skills is incorrectly defined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'Cue parameters not defined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-100">
+                      <set_value name="$FeedbackText" exact="'Undefined failure. Defaulted to -100'"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                    </do_else>
+
+                    <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+                  
+                
+                </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+
+              <do_if value="$feedbackvalue" exact="-4">
+                <set_value name="$FeedbackText" exact="{30004,6080}" comment="Container was destroyed"/>
+              </do_if>
+              <do_if value="$feedbackvalue" exact="-3">
+                <set_value name="$FeedbackText" exact="{30004,6081}" comment="Container was destroyed(by a player owned object)"/>
+              </do_if>
+              <do_if value="$feedbackvalue" exact="-2">
+                <set_value name="$FeedbackText" exact="{30004,6026}" comment="'Destination changed owner'"/>
+              </do_if>
+              <do_elseif value="$feedbackvalue" exact="1">
+                <set_value name="$FeedbackText" exact="'Delivered crew with required skills'"/>
+              </do_elseif>
+
+              <do_if value="$feedbackvalue" min="1">
+                <debug_text text="'Mission Successful. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_if>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission Failed. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+            <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$feedbackvalue"/>
+            <signal_cue cue="$EndSignalCue"/>
+            <cancel_cue cue="DeliverCrew"/>
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

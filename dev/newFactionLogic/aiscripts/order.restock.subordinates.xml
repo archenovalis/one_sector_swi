@@ -1,0 +1,399 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<aiscript name="order.restock.subordinates" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" priority="2" version="2">
+  <!--
+  Order to find a shipyard to restock subordinates at
+  by Owen
+  -->
+  <order id="RestockSubordinates" name="{1041, 201}" description="{1041, 202}" category="internal">
+    <params>
+      <param name="init" type="internal" default="false" text="{1041, 10047}" comment="Initialize. Is this ship being initialised? Subordinates not flagged to be rebuilt are ignored if true."/>
+      <param name="jumps" type="number" default="-1" advanced="true" text="{1041, 10048}" comment="Jump distance. Number of jumps from current system to look for shipyards. Negative to have no limit."/>
+      <param name="internalorder" type="bool" default="false" advanced="true" text="{1041, 10159}" comment="Order results from an automated behavior."/>
+      <param name="debugchance" type="bool" default="0" advanced="true" text="{1041, 10086}" comment="Print debug output">
+        <input_param name="truevalue" value="100"/>
+      </param>
+    </params>
+    <requires>
+      <match shiptype="shiptype.lasertower" negate="true"/>
+      <match class="class.spacesuit" negate="true"/>
+    </requires>
+  </order>
+  <interrupts>
+    <handler ref="TargetInvalidHandler"/>
+    <handler ref="TideHandler"/>
+  </interrupts>
+  <patch sinceversion="2">
+    <!-- patched to true since that is safer. if no path is possible, order should be called again with the proper flag set. -->
+    <set_value name="$internalorder" exact="this.isplayerowned"/>
+  </patch>
+  <attention min="unknown">
+    <actions>
+      <label name="start" />
+      <do_if value="not this.ship.isjobship">
+        <debug_text text="'Ship is not a job ship. Restocking subordinates not yet supported.'" chance="$debugchance"/>
+        <return />
+      </do_if>
+
+      <debug_text text="'restock subordinates. init: ' + $init + ', sector ' + this.sector + ' ' + @this.sector.knownname" chance="$debugchance" />
+
+      <!--first, check if there are any suitable orphaned subordinates in the area-->
+      <get_subordinate_jobs jobs="$subordinatejobs" amount="$subordinateamounts" commander="this.ship" init="$init" />
+      <do_all exact="$subordinatejobs.count" counter="$i" chance="$debugchance">
+        <debug_text text="'we need %s ships with job ID %s'.[$subordinateamounts.{$i}, $subordinatejobs.{$i}]"/>
+      </do_all>
+
+      <do_if value="not $subordinatejobs.count">
+        <get_subordinate_macro name="$macros" commander="this.ship" init="$init" multiple="true"/>
+        <debug_text text="'no suitable subordinate job ships found. we need the following macros:'" chance="$debugchance"/>
+        <do_all exact="$macros.count" counter="$i" chance="$debugchance">
+          <debug_text text="' ' + $macros.{$i}"/>
+        </do_all>
+
+        <do_if value="not $macros.count">
+          <resume label="finish"/>
+        </do_if>
+      </do_if>
+
+      <set_value name="$clusterranges" exact="table[]"/>
+      <do_if value="$jumps ge 0">
+        <find_cluster_in_range distances="$distances" maxdistance="$jumps" multiple="true" object="this.ship"/>
+      </do_if>
+      <do_else>
+        <find_cluster_in_range distances="$distances" multiple="true" object="this.ship"/>
+      </do_else>
+      <do_for_each name="$nearcluster" valuename="$nearclusterdist" in="$distances">
+        <do_if value="not $clusterranges.{$nearclusterdist}?">
+          <set_value name="$clusterranges.{$nearclusterdist}" exact="[$nearcluster]"/>
+        </do_if>
+        <do_else>
+          <append_to_list name="$clusterranges.{$nearclusterdist}" exact="$nearcluster"/>
+        </do_else>
+      </do_for_each>
+      <remove_value name="$distances"/>
+      <set_value name="$maxjumps" exact="$clusterranges.keys.last"/>
+      <debug_text text="'The most distant cluster is ' + $maxjumps + ' jumps away'" chance="$debugchance"/>
+
+      <label name="search"/>
+
+      <!--Look for existing ships-->
+      <do_while value="$subordinatejobs? and $subordinatejobs.count">
+        <do_all exact="$maxjumps + 1" counter="$i">
+          <do_if value="$clusterranges.{$i - 1}?">
+            <do_all exact="$clusterranges.{$i - 1}.count" counter="$k" chance="$debugchance">
+              <debug_text text="this.ship.knownname + ' is searching for job ships ' + $subordinatejobs + ' in ' + $clusterranges.{$i - 1}.{$k}.knownname" chance="$debugchance"/>
+            </do_all>
+            <find_ship_by_true_owner name="$ships" space="$clusterranges.{$i - 1}" faction="this.trueowner" job="$subordinatejobs" validjobship="false" multiple="true"/>
+            <shuffle_list list="$ships"/>
+            <do_all exact="$ships.count" counter="$o">
+              <!--Check again that the ship is not a valid job ship as it may have been organised into one by a previous ship-->
+              <do_if value="$o == 1 or not $ships.{$o}.isvalidjobship">
+                <set_value name="$index" exact="$subordinatejobs.indexof.{$ships.{$o}.job}"/>
+                <do_if value="$index">
+                  <set_object_commander object="$ships.{$o}" commander="this.ship"/>
+                  <debug_text text="this.ship.knownname + ' is taking command of orphaned job ship ' + $ships.{$o} + ' ' + $ships.{$o}.knownname + ' of job ' + $ships.{$o}.job" chance="$debugchance"/>
+                  <organise_job_ship_subordinates commander="this.ship"/>
+                  <set_ship_expiration_time ship="$ships.{$o}" time="-1s"/>
+                  <!--Give the subordinates which are valid to job definitions the same expiration time as their commander-->
+                  <set_value name="$validsubordinates" exact="$ships.{$o}.jobsubordinates.valid"/>
+                  <do_all exact="$validsubordinates.count" counter="$i">
+                    <set_ship_expiration_time ship="$validsubordinates.{$i}" time="-1s"/>
+                  </do_all>
+                  <remove_value name="$validsubordinates"/>
+                  <activate_job_ship_orders ship="$ships.{$o}"/>
+
+                  <!--Reduce the amount by 1 or remove from list if that was the last ship for that job-->
+                  <do_if value="$subordinateamounts.{$index} gt 1">
+                    <set_value name="$subordinateamounts.{$index}" operation="subtract"/>
+                  </do_if>
+                  <do_else>
+                    <remove_value name="$subordinatejobs.{$index}"/>
+                    <remove_value name="$subordinateamounts.{$index}"/>
+                  </do_else>
+                  <do_if value="not $subordinatejobs.count">
+                    <debug_text text="'all subordinate jobs filled. ending 1.'" chance="$debugchance"/>
+                    <resume label="finish"/>
+                  </do_if>
+                </do_if>
+              </do_if>
+            </do_all>
+          </do_if>
+        </do_all>
+
+        <!--Unable to existing replacement ships for all jobs - look to build some instead-->
+        <get_subordinate_macro name="$macros" commander="this.ship" init="$init" multiple="true"/>
+        <do_if value="$macros.count">
+          <remove_value name="$subordinatejobs"/>
+          <debug_text text="'all free subordinate jobs reassigned but %s subordinate types still needed. looping back.'.[$macros.count]" chance="$debugchance"/>
+          <resume label="search"/>
+        </do_if>
+        <do_else>
+          <debug_text text="'all subordinate jobs filled. ending 2.'" chance="$debugchance"/>
+          <resume label="finish"/>
+        </do_else>
+      </do_while>
+
+      <!--Look for shipyards to build replacement subordinates-->
+      <debug_text text="'looking for shipyards'" chance="$debugchance"/>
+      <set_value name="$fallbackshipyards" exact="table[]" comment="Shipyards to select from even if they are potentially dangerous to get to. Key: Shipyard, Value: Number of unsafe sectors on the path."/>
+      <do_all exact="$maxjumps + 1" counter="$i">
+        <do_if value="$clusterranges.{$i - 1}?">
+          <!--TODO @Owen #contracts check there is a contact for the shipyards to build for this faction-->
+          <find_station name="$shipyards" space="$clusterranges.{$i - 1}" canbuildships="true" canbuildfor="this.owner" multiple="true">
+            <match_content class="class.buildmodule" checkoperational="true"/>
+            <match_relation_to object="this.ship" relation="friend" comparison="ge"/>
+          </find_station>
+          <debug_text text="'found %s shipyards'.[$shipyards.count]" chance="$debugchance"/>
+          <shuffle_list list="$shipyards"/>
+
+          <do_all exact="$shipyards.count" counter="$k">
+            <do_if value="$shipyards.{$k}.shiptrader">
+              <set_value name="$buildmodules" exact="$shipyards.{$k}.buildmodules"/>
+              <do_for_each name="$buildmodule" in="$shipyards.{$k}.buildmodules" counter="$m">
+                <do_if value="$fallbackshipyards.{$shipyards.{$k}}?">
+                  <!--Shipyard has already been identified as a fallback-->
+                  <break/>
+                </do_if>
+                <do_if value="$buildmodule.isbusy">
+                  <debug_text text="'shipyard %s %s %s has %s build modules. build module %s ruled out. buildmodule is busy.'.[$shipyards.{$k}.idcode, $shipyards.{$k}.knownname, $shipyards.{$k}, $buildmodules.count, $m]" chance="$debugchance"/>
+                </do_if>
+                <do_else>
+                  <do_for_each name="$macro" in="$macros">
+                    <do_if value="$buildmodule.canbuildmacro.{$macro}">
+                      <debug_text text="'found shipyard %s %s %s with free build module. Checking if the route is safe.'.[$shipyards.{$k}.idcode, $shipyards.{$k}.knownname, $shipyards.{$k}]" chance="$debugchance"/>
+                      <set_value name="$issafe" exact="$shipyards.{$k}.sector == this.sector"/>
+                      <do_if value="not $issafe">
+                        <get_jump_path component="$routeobjects" multiple="true">
+                          <start object="this.assignedcontrolled"/>
+                          <end object="$shipyards.{$k}"/>
+                        </get_jump_path>
+                        <set_value name="$unsafesectors" exact="[]"/>
+                        <do_for_each name="$routeobject" in="$routeobjects">
+                          <set_value name="$routesector" exact="if $routeobject.isclass.sector then $routeobject else $routeobject.sector"/>
+                          <do_if value="$routesector and $routesector != this.sector and not $unsafesectors.indexof.{$routesector}">
+                            <debug_text text="'Checking route sector ' + $routesector.knownname" chance="$debugchance"/>
+                            <do_if value="$routesector.iscontested">
+                              <do_if value="$routesector.owner.hasrelation.enemy.{this.trueowner}">
+                                <debug_text text="$routesector + ' ' + $routesector.knownname + ' is potentially unsafe due to owner faction ' + $routesector.owner" chance="$debugchance"/>
+                                <append_to_list name="$unsafesectors" exact="$routesector"/>
+                              </do_if>
+                            </do_if>
+                            <do_else>
+                              <do_for_each name="$contestingfaction" in="$routesector.contestingfactions">
+                                <do_if value="$contestingfaction.hasrelation.enemy.{this.trueowner}">
+                                  <debug_text text="$routesector + ' ' + $routesector.knownname + ' is potentially unsafe due to contesting faction ' + $contestingfaction" chance="$debugchance"/>
+                                  <append_to_list name="$unsafesectors" exact="$routesector"/>
+                                  <break/>
+                                </do_if>
+                              </do_for_each>
+                            </do_else>
+                          </do_if>
+                          <do_if value="$unsafesectors.count == 0">
+                            <set_value name="$issafe" exact="true"/>
+                          </do_if>
+                        </do_for_each>
+                      </do_if>
+                      <do_if value="$issafe">
+                        <set_value name="$shipyard" exact="$shipyards.{$k}"/>
+                        <!--TODO @Owen @Klaus Workaround to clear counter variables-->
+                        <remove_value name="$k"/>
+                        <remove_value name="$m"/>
+                        <resume label="flyto"/>
+                      </do_if>
+                      <do_else>
+                        <set_value name="$fallbackshipyards.{$shipyards.{$k}}" exact="$unsafesectors.count"/>
+                        <break/>
+                      </do_else>
+                    </do_if>
+                    <do_else>
+                      <debug_text text="'shipyard %s %s %s has %s build modules. build module %s ruled out. can not build macro: %s'.[$shipyards.{$k}.idcode, $shipyards.{$k}.knownname, $shipyards.{$k}, $buildmodules.count, $m, $macro]" chance="$debugchance"/>
+                    </do_else>
+                  </do_for_each>
+                </do_else>
+              </do_for_each>
+            </do_if>
+          </do_all>
+        </do_if>
+      </do_all>
+
+      <do_if value="$fallbackshipyards.keys.count">
+        <debug_text text="'Unable to find a shipyard along a safe route. There are shipyards to consider through enemy space.'" chance="$debugchance"/>
+        <set_value name="$sortedfallbackshipyards" exact="$fallbackshipyards.keys.sorted"/>
+
+        <get_subordinate_jobs jobs="$basesubordinatejobs" amount="$basesubordinateamounts" job="this.ship.job" init="$init" />
+        <set_value name="$basesubordinateamount" exact="0"/>
+        <do_all exact="$basesubordinateamounts.count" counter="$i">
+          <set_value name="$basesubordinateamount" operation="add" exact="$basesubordinateamounts.{$i}"/>
+        </do_all>
+        <assert value="$basesubordinateamount" text="'get_subordinate_jobs states that job ' + this.ship.job + ' does not have any subordinates defined [Owen]'"/>
+
+        <get_subordinate_jobs jobs="$subordinatejobs" amount="$subordinateamounts" commander="this.ship" init="$init" />
+        <set_value name="$missingsubordinateamount" exact="0"/>
+        <do_all exact="$subordinatejobs.count" counter="$i">
+          <set_value name="$missingsubordinateamount" operation="add" exact="$subordinateamounts.{$i}"/>
+        </do_all>
+        <debug_text text="'base job can have ' + $basesubordinateamount + ' subordinates. Ship currently is missing: ' + $missingsubordinateamount" chance="$debugchance"/>
+        <do_if value="$basesubordinateamount and $missingsubordinateamount">
+          <do_if value="$basesubordinateamount ge 8 and $missingsubordinateamount ge 7">
+            <!--For ships which have many subordinates, if they're missing a majority of them then send them off to restock even if far and dangerous-->
+            <debug_text text="'Emergency restock. Travel no matter the distance or presence of enemies.'" chance="$debugchance"/>
+            <set_value name="$maxdist" exact="-1"/>
+          </do_if>
+          <do_else>
+            <set_value name="$maxdist" exact="5"/>
+          </do_else>
+
+          <set_value name="$bestshipyarddist" exact="-1"/>
+          <set_value name="$lowestenemycount" exact="-1"/>
+          <do_for_each name="$fallbackshipyard" in="$sortedfallbackshipyards">
+            <set_value name="$enemysectorcount" exact="$fallbackshipyards.{$fallbackshipyard}"/>
+            <do_if value="$lowestenemycount lt 0">
+              <set_value name="$lowestenemycount" exact="$enemysectorcount" comment="set to the first value of the sorted table"/>
+            </do_if>
+            
+            <do_if value="$enemysectorcount gt $lowestenemycount">
+              <!--disregard any shipyards with more enemy sectors en route than the first one-->
+              <break/>
+            </do_if>
+            <do_else>
+              <set_value name="$gatedistance" exact="this.gatedistance.{$fallbackshipyard}"/>
+              <debug_text text="'fallback shipyard ' + $fallbackshipyard + ' ' + $fallbackshipyard.knownname + ' is ' + $gatedistance + ' jumps away'" chance="$debugchance"/>
+              <do_if value="($bestshipyarddist lt 0 or $gatedistance lt $bestshipyarddist) and ($maxdist lt 0 or $gatedistance lt $maxdist)">
+                <set_value name="$bestshipyarddist" exact="$gatedistance"/>
+                <set_value name="$shipyard" exact="$fallbackshipyard"/>
+              </do_if>
+            </do_else>
+          </do_for_each>
+          <do_if value="@$shipyard">
+            <debug_text text="'Selected fallback shipyard ' + $shipyard + ' ' + $shipyard.knownname + ' which is ' + $bestshipyarddist + ' sectors away and has ' + $lowestenemycount + ' enemy sectors to traverse'" chance="$debugchance"/>
+            <resume label="flyto"/>
+          </do_if>
+        </do_if>
+      </do_if>
+
+      <label name="flyto"/>
+
+      <do_if value="not $shipyard?">
+        <resume label="finish"/>
+      </do_if>
+
+      <remove_value name="$clusterranges"/>
+      <debug_text text="'Moving to shipyard ' + $shipyard + ' ' + $shipyard.knownname + ' in ' + $shipyard.sector.knownname" chance="$debugchance"/>
+
+      <run_script name="'move.generic'" result="$movesuccess">
+        <param name="destination" value="$shipyard"/>
+        <param name="endintargetzone" value="true"/>
+        <param name="strictblacklist" value="$internalorder"/>
+      </run_script>
+      <do_if value="not $movesuccess">
+        <do_if value="@this.assignedcontrolled.order.isrunning">
+          <set_order_failed order="this.assignedcontrolled.order" text="{1045, 101}" comment="Unable to reach destination."/>
+        </do_if>
+        <debug_text text="'Unable to move to destination %s %s possibly due to blacklist. Returning.'.[$shipyard.class, @$shipyard.knownname]" chance="$debugchance"/>
+        <resume label="finish"/>
+      </do_if>
+      <set_value name="$totalprocessors" exact="$shipyard.buildprocessors.count"/>
+      <set_value name="$freeprocessors" exact="$shipyard.freebuildprocessors.count"/>
+      <set_value name="$maxrequests" exact="[$freeprocessors + ($totalprocessors / 4) + 1, 10].min"/>
+      <remove_value name="$totalprocessors"/>
+      <remove_value name="$freeprocessors"/>
+      <do_if value="not $shipyard.exists or $maxrequests == 0">
+        <resume label="finish"/>
+      </do_if>
+
+      <!--Create waiting subordinates.  but do not queue them from processing-->
+      <create_replacement_subordinates name="$waitingsubordinates" commander="this.ship" buildobject="$shipyard" init="$init" max="$maxrequests" multiple="true"/>
+      <do_if value="$waitingsubordinates.count == 0">
+        <resume label="finish"/>
+      </do_if>
+
+      <debug_text text="'checking if %s created waiting subordinates can be constructed at shipyard %s %s %s.'.[$waitingsubordinates.count, $shipyard.idcode, $shipyard.knownname, $shipyard]" chance="$debugchance"/>
+
+      <set_value name="$builds" exact="[]"/>
+      <signal_objects object="$shipyard" param="'shiptrader_requestbuilds'" param2="$waitingsubordinates" param3="$builds"/>
+
+      <do_if value="$builds.count == 0">
+        <resume label="finish"/>
+      </do_if>
+
+      <create_group groupname="$subordinates"/>
+      <set_command command="command.resupply"/>
+
+      <label name="wait"/>
+
+      <debug_text text="'waiting for ' + $builds.count + ' subordinates'" chance="$debugchance" />
+      <get_safe_pos result="$randpos" object="$shipyard" radius="this.ship.size / 2.0" max="5km" zone="$shipyard.zone"/>
+      <move_to object="this.ship" destination="$shipyard.zone">
+        <position value="$randpos"/>
+        <interrupt>
+          <conditions>
+            <check_any>
+              <check_all>
+                <check_any>
+                  <event_build_started object="$shipyard"/>
+                  <event_build_finished object="$shipyard"/>
+                </check_any>
+                <check_value value="event.param.container == $shipyard and $builds.indexof.{event.param3}"/>
+              </check_all>
+              <check_all>
+                <event_build_cancelled object="$shipyard"/>
+                <check_value value="$builds.indexof.{event.param}"/>
+              </check_all>
+              <event_object_destroyed object="$shipyard"/>
+              <event_object_destroyed group="$subordinates"/>
+            </check_any>
+          </conditions>
+          <actions>
+            <do_if value="event.name == 'event_build_started'">
+              <add_to_group groupname="$subordinates" object="event.param3.buildobject"/>
+              <assert value="event.param3.buildobject" text="'buildobject does not exist [Owen]'"/>
+            </do_if>
+            <do_elseif value="event.name == 'event_build_finished' and event.param3">
+              <debug_text text="'build event ' + event.name + ' for object ' + event.param3.buildobject.knownname" chance="$debugchance" />
+              <remove_from_group group="$subordinates" object="event.param3.buildobject"/>
+              <remove_from_list name="$builds" exact="event.param3" multiple="false" />
+            </do_elseif>
+            <do_elseif value="event.name == 'event_build_cancelled'">
+              <do_if value="event.param.buildobject">
+                <debug_text text="'build event ' + event.name + ' for object ' + event.param.buildobject.knownname" chance="$debugchance" />
+                <remove_from_group group="$subordinates" object="event.param.buildobject"/>
+              </do_if>
+              <remove_from_list name="$builds" exact="event.param" multiple="false" />
+            </do_elseif>
+            <do_elseif value="event.name == 'event_object_destroyed'">
+              <do_if value="event.object == $shipyard">
+                <resume label="finish"/>
+              </do_if>
+              <do_else>
+                <do_all exact="$builds.count" counter="$i">
+                  <do_if value="$builds.{$i}.buildobject == event.object">
+                    <remove_value name="$builds.{$i}"/>
+                    <break/>
+                  </do_if>
+                </do_all>
+              </do_else>
+            </do_elseif>
+          </actions>
+        </interrupt>
+      </move_to>
+
+      <do_all exact="$builds.count" counter="$i" reverse="true">
+        <do_if value="not $builds.{$i}.exists">
+          <remove_value name="$builds.{$i}"/>
+        </do_if>
+      </do_all>
+
+      <do_if value="$builds.count">
+        <debug_text text="'at the shipyard. waiting for %s builds to finish.'.[$builds.count]" chance="$debugchance"/>
+        <resume label="wait"/>
+      </do_if>
+
+      <debug_text text="'all subordinates built'" chance="$debugchance" />
+
+      <label name="finish" />
+
+      <!-- short wait to allow order-related events to fire in case the order ends without hitting any blocking actions. -->
+      <wait exact="1ms" sinceversion="1"/>
+
+    </actions>
+  </attention>
+</aiscript>

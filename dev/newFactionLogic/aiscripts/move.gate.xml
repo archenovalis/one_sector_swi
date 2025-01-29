@@ -1,0 +1,584 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<aiscript name="move.gate" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" version="12">
+  <!--
+
+  Move Gate
+  by Adrian
+  
+  Generic routine for moving through specific gate.
+
+  -->
+  <params>
+    <param name="gate" comment="Gate to use. Has to be a jump gate or a highway entry gate."/>
+    <param name="recallsubordinates" default="false" comment="recall subordinates and cancel existing recall subordinate orders. handled in move.generic."/>
+    <param name="waitfor" default="null" comment="wait for this object after crossing the gate."/>
+    <param name="noboost" default="false"/>
+    <param name="nextpos" default="[null, position.[0,0,0]]" comment="[point of reference, position], next destination immediately after crossing a gate. Only used by capital ships."/>
+    <param name="debugchance" default="0"/>
+  </params>
+  <interrupts>
+    <handler ref="TargetInvalidHandler"/>
+  </interrupts>
+  <patch sinceversion="1">
+    <set_value name="$recallsubordinates" exact="false"/>
+  </patch>
+  <patch sinceversion="2" early="true">
+    <set_value name="$time_interrupt" exact="([this.assignedcontrolled.distanceto.{$gate} / [this.assignedcontrolled.maxspeed, 1].max, 5s].min)s"/>
+  </patch>
+  <patch sinceversion="3">
+    <set_value name="$exitgate" exact="$gate.exit"/>
+    <set_value name="$waitfor" exact="null"/>
+    <create_group groupname="$group_waitfor"/>
+  </patch>
+  <patch sinceversion="4">
+    <do_if value="$gatedestination and (this.sector == $gatedestination.sector)">
+      <debug_text text="'%s %s %s already in destination sector. resuming movement.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled]" filter="savegame"/>
+      <!-- NB: this signal only works because move.gate is always called from move.generic -->
+      <signal_objects object="this.assignedcontrolled" param="'move.generic_reinitialize'"/>
+    </do_if>
+  </patch>
+  <patch sinceversion="6">
+    <request_gate ship="this.assignedcontrolled" gate="$gate" unlock="true" result="$result"/>
+  </patch>
+  <patch sinceversion="9">
+    <do_if value="@$gate.isclass.gate and this.assignedcontrolled.iscapitalship">
+      <set_value name="$jumpeffect" exact="'jump_jumpin_capship'"/>
+      <set_value name="$warpeffect" exact="'warpteleport'"/>
+      <do_if value="this.assignedcontrolled.isclass.ship_xl">
+        <set_value name="$jumpeffect" exact="'jump_jumpin_capship_xl'"/>
+        <set_value name="$warpeffect" exact="'warpteleport_xl'"/>
+      </do_if>
+    </do_if>
+  </patch>
+  <patch sinceversion="10" early="true">
+    <set_value name="$moveduration" min="11s" max="17s"/>
+  </patch>
+  <patch sinceversion="11">
+    <set_value name="$noboost" exact="false"/>
+  </patch>
+  <patch sinceversion="12">
+    <set_value name="$nextpos" exact="[null, position.[0,0,0]]"/>
+  </patch>
+  <attention min="unknown">
+    <actions>
+
+      <label name="check" />
+
+      <do_if value="$gate.isclass.gate">
+        <set_value name="$gateorigin" exact="$gate.zone"/>
+      </do_if>
+      <do_elseif value="$gate.isclass.highwayentrygate">
+        <set_value name="$gateorigin" exact="$gate.highway.origin"/>
+      </do_elseif>
+      <do_else>
+        <debug_text text="'ERROR: $gate (%1 %2 %3) is neither a gate nor a highwayentrygate.'.[$gate.class, $gate.knownname, $gate]" filter="error"/>
+        <return/>
+      </do_else>
+      <set_value name="$gatedestination" exact="$gate.destination"/>
+      <set_value name="$exitgate" exact="$gate.exit"/>
+
+      <do_if value="this.assignedcontrolled.hascontext.{$gatedestination.sector}">
+        <debug_text text="'already at destination.'" chance="$debugchance"/>
+        <resume label="across"/>
+      </do_if>
+
+      <label name="move" />
+
+      <!-- If is not in the same sector use the generic routine to get there -->
+      <do_if value="this.sector != $gate.sector">
+        <!-- handling for move.generic failure unnecessary in this case -->
+        <run_script name="'move.generic'">
+          <param name="destination" value="$gate.zone"/>
+          <param name="endintargetzone" value="true"/>
+          <param name="recallsubordinates" value="$recallsubordinates"/>
+          <param name="noboost" value="$noboost"/>
+          <param name="debugchance" value="$debugchance"/>
+        </run_script>
+      </do_if>
+      <assert value="this.sector == $gate.sector" text="'%s [%s] is performing a movement to gate %s [%s] - %s which is in a different sector'.[this.assignedcontrolled.knownname, this.assignedcontrolled, $gate.knownname, $gate, $gate.sector.knownname]"/>
+
+      <set_value name="$debug_time_startmove_gate" exact="player.age" chance="$debugchance"/>
+      <do_if value="not this.assignedcontrolled.iscapitalship">
+        <debug_text text="'we are not in a capital ship. skipping approach movement'" chance="$debugchance"/>
+        <set_value name="$moveintogate"/>
+        <resume label="cross_gate"/>
+      </do_if>
+
+      <do_if value="this.assignedcontrolled.distanceto.{$gate} gt (10km + (this.assignedcontrolled.size / 2.0))">
+        <set_value name="$maxoffset" exact="[this.assignedcontrolled.size * 2, ([$gate.size, this.assignedcontrolled.size].max / 2 - this.assignedcontrolled.size / 2)].min"/>
+        <set_value name="$randomoffsetx" min="-($maxoffset)" max="$maxoffset"/>
+        <set_value name="$randomoffsety" min="-($maxoffset)" max="$maxoffset"/>
+        <!-- NB: we have to approach superhighway gates from behind,
+                and accelerator gates from the front.
+                jump gates can be approached from either side. -->
+        <set_value name="$approach_front" exact="false"/>
+        <do_if value="$gate.isclass.gate and not $gate.entryhighway and not $gate.exithighway and ($gate.isaccelerator or this.assignedcontrolled.relativeposition.{$gate}.z gt 0)">
+          <set_value name="$approach_front" exact="true"/>
+        </do_if>
+
+        <do_if value="$approach_front">
+          <get_safe_pos result="$pos" zone="$gate.zone" object="$gate" value="position.[$randomoffsetx, $randomoffsety, 5km - (this.assignedcontrolled.size / 2.0)]" directionobject="$gate" direction="quadrant.front" angle="30deg" radius="this.assignedcontrolled.size" ignored="this.assignedcontrolled" allowyaxis="true"/>
+        </do_if>
+        <do_else>
+          <get_safe_pos result="$pos" zone="$gate.zone" object="$gate" value="position.[$randomoffsetx, $randomoffsety, -5km + (this.assignedcontrolled.size / 2.0)]" directionobject="$gate" direction="quadrant.back" angle="30deg" radius="this.assignedcontrolled.size" ignored="this.assignedcontrolled" allowyaxis="true"/>
+        </do_else>
+
+        <debug_text text="'startpos: %s. approaching from front: %s'.[$pos, $approach_front]" chance="0"/>
+        <debug_text text="'moving to parking position.\n distance to gate: %sm.\n distance between position and gate %sm.\n pos: %s\n gate size: %sm, ship size: %sm\n max offset: %sm\n random x: %sm, random y: %sm'.[$gate.distanceto.{this.assignedcontrolled}, $gate.distanceto.{$pos}, $pos, $gate.size, this.assignedcontrolled.size, $maxoffset, $randomoffsetx, $randomoffsety]" chance="$debugchance"/>
+        <remove_value name="$randomoffsety"/>
+        <remove_value name="$randomoffsetx"/>
+        <remove_value name="$maxoffset"/>
+
+        <!-- move to the front of the gate  -->
+        <move_to object="this.assignedcontrolled" destination="$gate.zone" travel="not $noboost" finishonapproach="true">
+          <position value="$pos"/>
+        </move_to>
+      </do_if>
+      <do_else>
+        <debug_text text="'%s %s (%s) %s m away from gate. going straight through.'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, this.assignedcontrolled.distanceto.{$gate}]" chance="$debugchance"/>
+      </do_else>
+
+      <wait min="5s" max="10s" chance="0"/>
+
+      <!-- we need to go through a gate -->
+      <set_value name="$moveintogate" exact="true"/>
+
+      <label name="cross_gate"/>
+
+      <do_if value="this.assignedcontrolled.hascontext.{$gatedestination.sector}">
+        <!-- movement can be interrupted by event invalidtarget after having gone through the gate, but before event_object_changed_sector. script will resume at this label. -->
+        <debug_text text="'cross_gate: already at destination sector. checking to finish.'" chance="$debugchance"/>
+        <resume label="check"/>
+      </do_if>
+
+      <create_group groupname="$group_waitfor"/>
+      <do_if value="this.assignedcontrolled.subordinates.count">
+        <create_position name="$locpos" space="$gatedestination.sector" object="$exitgate"/>
+        <do_all exact="this.assignedcontrolled.subordinates.count" counter="$i">
+          <set_value name="$locship" exact="this.assignedcontrolled.subordinates.{$i}"/>
+          <do_if value="$locship.isoperational and (not $locship.dock or not $locship.hascontext.{this.assignedcontrolled}) and ((@$locship.formationleader == this.assignedcontrolled) or ((@$locship.order.id == 'Escort' or @$locship.order.id == 'SupplyFleet') and ($locship.order.$target == this.assignedcontrolled)))">
+            <add_to_group groupname="$group_waitfor" object="$locship"/>
+            <debug_text text="'ordering %s %s %s through the gate to sector %s'.[@$locship.idcode, @$locship.knownname, $locship, $gatedestination.sector.knownname]" chance="$debugchance"/>
+            <create_order id="'MoveWait'" object="$locship" immediate="true">
+              <param name="destination" value="[$gatedestination.sector, $locpos]"/>
+              <param name="recallsubordinates" value="$recallsubordinates"/>
+              <param name="waitforatgate" value="this.assignedcontrolled"/>
+              <param name="noboost" value="$noboost or ($locship.shieldpercentage le 80) or (@this.assignedcontrolled.order.id == 'Attack')"/>
+              <param name="debugchance" value="$debugchance"/>
+            </create_order>
+          </do_if>
+          <remove_value name="$locship"/>
+        </do_all>
+        <break_formation object="this.assignedcontrolled"/>
+        <debug_text text="'%s %s %s about to go through the gate. ordered %s subordinates through.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, $group_waitfor.count]" chance="($group_waitfor.count gt 0) * $debugchance"/>
+        <remove_value name="$locpos"/>
+      </do_if>
+
+      <do_if value="$waitfor.isoperational and not $group_waitfor.indexof.{$waitfor}">
+        <debug_text text="'%s %s %s has orders to wait for %s %s %s after crossing the gate.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, @$waitfor.idcode, @$waitfor.knownname, $waitfor]" chance="$debugchance"/>
+        <add_to_group groupname="$group_waitfor" object="$waitfor"/>
+      </do_if>
+
+      <move_to object="this.assignedcontrolled" destination="$gate" chance="0" comment="this was the movement to the approachpos. movement is now redundant."/>
+
+      <do_if value="not $gate.isclass.gate">
+        <!-- moving through superhighways:
+              we move to the highway's destination until we enter the gate,
+              then skip the movement below and wait until we get to the destination sector. -->
+        <include_interrupt_actions ref="NPCUseCase_NavApproachSuperHWGate" />
+        <move_to object="this.assignedcontrolled" destination="$gatedestination" uselocalhighways="false" abortpath="true" forcesteering="false" forceposition="false" travel="not $noboost">
+          <interrupt>
+            <conditions>
+              <event_object_changed_zone object="this.assignedcontrolled"/>
+              <check_value value="event.param.isclass.highway"/>
+            </conditions>
+            <actions>
+              <debug_text text="'entering superhighway'" chance="$debugchance"/>
+            </actions>
+          </interrupt>
+        </move_to>
+      </do_if>
+      <do_elseif value="this.assignedcontrolled.iscapitalship">
+        <do_if value="not this.assignedcontrolled.maxspeed">
+          <debug_text text="'unable to go through gate due to engine damage. waiting for repairs.'" chance="$debugchance"/>
+          <wait sinceversion="7">
+            <interrupt>
+              <conditions>
+                <event_object_hull_above_function_threshold object="this.assignedcontrolled"/>
+                <check_value value="this.assignedcontrolled.maxspeed"/>
+                <debug_text text="'engines repaired. going through'" debugchance="$debugchance"/>
+              </conditions>
+            </interrupt>
+          </wait>
+        </do_if>
+        <!-- warp to the other side -->
+        <create_position name="$startpos" space="$gate" object="this.assignedcontrolled"/>
+        <create_position name="$destpos" space="$exitgate" x="$startpos.x" y="$startpos.y" z="abs($startpos.z)"/>
+        <set_value name="$exitrot" exact="$exitgate.rotation"/>
+        <set_value name="$string_gatedirection" exact="'towards'"/>
+        <!-- NB: if gate is an accelerator, there is a distinct entrance/exit that we have to go out of -->
+        <do_if value="not $gate.isaccelerator">
+          <!-- NB: if gate is not an accelerator, we can go out either side. always exit on whichever side is facing sector center. -->
+          <create_position name="$evalpos_front" space="$exitgate" x="$startpos.x" y="$startpos.y" z="abs($startpos.z)"/>
+          <create_position name="$evalpos_front" space="$exitgate.sector" value="$evalpos_front" object="$exitgate"/>
+          <create_position name="$evalpos_back" space="$exitgate" x="$startpos.x" y="$startpos.y" z="-abs($startpos.z)"/>
+          <create_position name="$evalpos_back" space="$exitgate.sector" value="$evalpos_back" object="$exitgate"/>
+          <do_if value="$exitgate.sector.coreposition.distanceto.{$evalpos_back} lt $exitgate.sector.coreposition.distanceto.{$evalpos_front}">
+            <set_value name="$string_gatedirection" exact="'away from'"/>
+            <create_position name="$destpos" space="$exitgate" x="$startpos.x" y="$startpos.y" z="-abs($startpos.z)"/>
+            <set_value name="$exitrot" exact="rotation.[$exitrot.yaw + 180deg, $exitrot.pitch, $exitrot.roll]"/>
+          </do_if>
+          <remove_value name="$evalpos_back"/>
+          <remove_value name="$evalpos_front"/>
+        </do_if>
+        <do_if value="$nextpos.{1}">
+          <create_position name="$refpos" space="$exitgate.zone" value="$nextpos.{2}" object="$nextpos.{1}"/>
+          <create_orientation name="$exitrot" orientation="look_at" refposition="$refpos">
+            <position value="$destpos" space="$exitgate.zone" object="$exitgate"/>
+          </create_orientation>
+          <remove_value name="$refpos"/>
+        </do_if>
+        <debug_text text="'gate from %s to %s, in %s, is facing %s sector core.'.[$exitgate.sector.knownname, $gate.sector.knownname, $exitgate.sector.knownname, $string_gatedirection]" chance="$debugchance"/>
+        <debug_text text="'destpos distance to gate: %sm'.[$exitgate.distanceto.[$exitgate, $destpos]]" chance="$debugchance"/>
+        <remove_value name="$string_gatedirection"/>
+        <!-- pos and rot for effect have to be relative to zone -->
+        <create_position name="$destzonepos" space="$exitgate.zone" value="$destpos" object="$exitgate"/>
+        <do_if value="$gate.isaccelerator">
+          <add_effect object="$gate" effect="'jump_acceleratoreffect'"/>
+          <add_effect object="$exitgate" effect="'jump_acceleratoreffect'"/>
+        </do_if>
+        <do_else>
+          <add_effect object="$gate" effect="'jump_gateeffect'"/>
+          <add_effect object="$exitgate" effect="'jump_gateeffect'"/>
+        </do_else>
+        <set_value name="$jumpeffect" exact="'jump_jumpin_capship'"/>
+        <set_value name="$warpeffect" exact="'warpteleport'"/>
+        <do_if value="this.assignedcontrolled.isclass.ship_xl">
+          <set_value name="$jumpeffect" exact="'jump_jumpin_capship_xl'"/>
+          <set_value name="$warpeffect" exact="'warpteleport_xl'"/>
+        </do_if>
+        <add_effect object="this.assignedcontrolled.zone" effect="$jumpeffect">
+          <position value="this.assignedcontrolled.position"/>
+          <rotation value="this.assignedcontrolled.rotation"/>
+        </add_effect>
+        <wait min="1s" max="1.5s" sinceversion="6"/>
+        <warp object="this.assignedcontrolled" zone="$exitgate.zone">
+          <safepos object="$exitgate" value="$destpos" radius="[this.assignedcontrolled.height, this.assignedcontrolled.width, this.assignedcontrolled.length].max / 2m"/>
+          <rotation value="$exitrot"/>
+        </warp>
+        <!-- very short wait to establish new connections -->
+        <wait exact="1ms" sinceversion="8"/>
+        <debug_text text="'jumped. distance to gate: %sm, distance to destpos: %sm'.[this.assignedcontrolled.distanceto.{$exitgate}, this.assignedcontrolled.distanceto.[$exitgate, $destpos]]" chance="$debugchance"/>
+        <add_effect object="this.assignedcontrolled.zone" effect="$jumpeffect">
+          <position value="this.assignedcontrolled.position"/>
+          <rotation value="this.assignedcontrolled.rotation"/>
+        </add_effect>
+        <wait exact="2ms" sinceversion="8"/>
+        <add_effect object="this.assignedcontrolled" effect="$warpeffect"/>
+        <!-- wait for the sector transition. -->
+        <wait min="1.5s" max="2s" sinceversion="6"/>
+        <remove_value name="$warpeffect"/>
+        <remove_value name="$jumpeffect"/>
+        <remove_value name="$exitrot"/>
+        <remove_value name="$destzonepos"/>
+        <remove_value name="$destpos"/>
+        <remove_value name="$startpos"/>
+        <do_if value="this.assignedcontrolled.hascontext.{$gatedestination.sector}">
+          <debug_text text="'%s %s %s transitioned after %ss.\nwarp'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, player.age - $debug_time_startmove_gate]" chance="$debugchance"/>
+          <resume label="across"/>
+        </do_if>
+        <do_else>
+          <debug_text text="'not in destination sector after warp. increase wait duration?'" filter="error"/>
+        </do_else>
+      </do_elseif>
+
+      <!-- If we didn't cross yet, move through the gate. -->
+      <do_if value="$moveintogate">
+        <set_value name="$time_interrupt" exact="([this.assignedcontrolled.distanceto.{$gate} / [this.assignedcontrolled.maxspeed, 1].max, 5s].min)s"/>
+        <debug_text text="'moving through %1.'.[$gate.class]" chance="$debugchance"/>
+        <!-- cases:
+              capital ships moving through jump gates do move_gate.
+              S/M ships not in a highway moving through jump gates do move_to to the gate's destination.
+              S/M ships in a highway moving through jump gates wait until they cross the gate.
+              all ships moving through a superhighway wait until they exit the superhighway.
+        -->
+        <do_if value="$gate.isclass.gate and not this.zone.isclass.highway">
+          <include_interrupt_actions ref="NPCUseCase_NavApproachJumpGate" />
+          <do_if value="this.assignedcontrolled.iscapitalship">
+            <move_gate object="this.assignedcontrolled" gate="$gate" abortpath="false">
+              <interrupt>
+                <conditions>
+                  <event_object_changed_sector object="this.assignedcontrolled"/>
+                </conditions>
+                <actions>
+                  <debug_text text="'changed from sector %1 to sector %2 (moved through gate)'.[$gateorigin.sector.knownname, event.param.knownname]" chance="$debugchance"/>
+                  <set_value name="$moveintogate" exact="false"/>
+                </actions>
+              </interrupt>
+              <interrupt_after_time time="$time_interrupt"/>
+            </move_gate>
+          </do_if>
+          <do_else>
+            <move_to object="this.assignedcontrolled" destination="$gatedestination" uselocalhighways="false" abortpath="false" forcesteering="false" forceposition="false" travel="not $noboost">
+              <interrupt>
+                <conditions>
+                  <event_object_changed_sector object="this.assignedcontrolled"/>
+                  <check_value value="this.sector == $gatedestination.sector"/>
+                </conditions>
+                <actions>
+                  <debug_text text="'changed from sector %1 to sector %2 (moved through highway or not capital ship)'.[$gateorigin.sector.knownname, event.param.knownname]" chance="$debugchance"/>
+                  <set_value name="$moveintogate" exact="false"/>
+                </actions>
+              </interrupt>
+              <interrupt_after_time time="$time_interrupt"/>
+            </move_to>
+            <debug_text text="'finished move out of superhighway. sector: %s %s. destination: %s %s. moveintogate: %s'.[@this.sector.knownname, this.sector, @$gatedestination.sector.knownname, $gatedestination.sector, $moveintogate]" chance="0"/>
+          </do_else>
+        </do_if>
+        <do_else>
+          <debug_text text="'%1(%2) is already enroute to %3(%4), planned destination: %5(%6)'.[this.assignedcontrolled.knownname, this.assignedcontrolled, this.zone.destination.knownname, this.zone.destination, $gatedestination.knownname, $gatedestination]" chance="$debugchance"/>
+        </do_else>
+        <remove_value name="$time_interrupt"/>
+
+        <debug_text text="'moved to %1 from %2 to %3. \n gate was locked down for: %4 seconds.'.[$gate.class, $gateorigin.sector.knownname, $gatedestination.sector.knownname, player.age - $debug_time_startmove_gate]" chance="$debugchance"/>
+
+        <!-- Wait for the transition if needed -->
+        <do_if value="$moveintogate and (this.sector != $gatedestination.sector)">
+          <wait>
+            <interrupt>
+              <conditions>
+                <event_object_changed_sector object="this.assignedcontrolled"/>
+                <check_value value="this.sector"/>
+              </conditions>
+              <actions>
+                <debug_text text="'changed from sector %1 to sector %2 (wait). in highway: %s'.[$gateorigin.sector.knownname, this.sector.knownname, this.zone.isclass.highway]" chance="$debugchance"/>
+              </actions>
+            </interrupt>
+          </wait>
+        </do_if>
+      </do_if>
+
+      <do_if value="this.assignedcontrolled.iscapitalship">
+        <debug_text text="'%s %s %s transitioned after %ss.\nfly through'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, player.age - $debug_time_startmove_gate]" chance="$debugchance"/>
+      </do_if>
+
+      <!-- we should have gone through the gate and be in the correct sector now -->
+      <do_if value="$gatedestination.sector != this.sector">
+        <debug_text text="'failed going through gate!'" filter="error" />
+      </do_if>
+      <do_else>
+        <debug_text text="'moved through %1 from %2 to %3. \n total transit time: %4 \n time from initial request: %5'.[$gate.class, $gateorigin.sector.knownname, $gatedestination.sector.knownname, player.age - $debug_time_startmove_gate, if $time_initialrequest? then (player.age - $time_initialrequest) else 0s]" chance="$debugchance"/>
+      </do_else>
+
+      <!-- short wait to make sure we're in the destination sector -->
+      <wait exact="200ms"/>
+
+      <label name="across"/>
+
+      <do_if value="this.zone.isclass.highway">
+        <!-- we are in a highway, likely a local highway that goes into a gate. no further action needed. NB: waiting for $group_waitfor will be skipped until the next transition, if there is one. -->
+        <debug_text text="'%s %s %s crossed into %s while in a highway %s %s. skipping further movement.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, @this.zone.knownname, this.zone]" chance="$debugchance"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <debug_text text="'%s %s %s about to move to a position in zone while in a highway. handled, but this should not happen.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled]" filter="error" chance="this.zone.isclass.highway * 100"/>
+
+      <set_value name="$locz" exact="[this.assignedcontrolled.length * 7.0f, $exitgate.size / 2.0f].max"/>
+      <do_if value="@$group_waitfor.count">
+        <!-- clear the front of the gate. we may need to wait for stragglers. -->
+        <set_value name="$locoffset" exact="($exitgate.size / 2.0) + this.assignedcontrolled.size"/>
+        <set_value name="$possiblequadrants" exact="[]"/>
+        <do_if value="$gatedestination.sector.hashazardousregion">
+          <debug_text text="'rendezvousing at exit gate at sector with hazardous region'" chance="$debugchance"/>
+          <create_position name="$testpos" space="$gatedestination" object="$exitgate"/>
+
+          <set_value name="$locx" exact="0"/>
+          <!-- tried $zone.hashazardousregionat.{$pos} instead of get_safe_pos but was getting erroneous results. -->
+          <get_safe_pos result="$testsafepos" zone="$gatedestination" x="$locoffset" object="$exitgate" radius="this.assignedcontrolled.size/2m" direction="quadrant.right" directionobject="$exitgate"/>
+          <do_if value="$testsafepos.distanceto.{$testpos} le ($locoffset*3m + this.assignedcontrolled.size)">
+            <debug_text text="'tested x. distance to testsafepos: %sm\nlocoffset: %sm\npass: %s'.[$testsafepos.distanceto.{$testpos}, $locoffset, $testsafepos.distanceto.{$testpos} le ($locoffset*3m + this.assignedcontrolled.size)]" chance="$debugchance"/>
+            <set_value name="$locx" exact="$locoffset"/>
+            <append_to_list name="$possiblequadrants" exact="quadrant.right"/>
+          </do_if>
+          <do_all chance="if $locx == 0 then 100 else 50">
+            <get_safe_pos result="$testsafepos" zone="$gatedestination" x="-$locoffset" object="$exitgate" radius="this.assignedcontrolled.size/2m" direction="quadrant.left" directionobject="$exitgate"/>
+            <do_if value="$testsafepos.distanceto.{$testpos} le ($locoffset*3m + this.assignedcontrolled.size)">
+              <debug_text text="'tested -x. distance to testsafepos: %sm\nlocoffset: %sm\npass: %s'.[$testsafepos.distanceto.{$testpos}, $locoffset, $testsafepos.distanceto.{$testpos} le ($locoffset*3m + this.assignedcontrolled.size)]" chance="$debugchance"/>
+              <set_value name="$locx" exact="-$locoffset"/>
+              <append_to_list name="$possiblequadrants" exact="quadrant.left"/>
+            </do_if>
+          </do_all>
+
+          <set_value name="$locy" exact="0"/>
+          <do_if value="$locx == 0 or not @this.assignedcontrolled.iscapitalship">
+            <get_safe_pos result="$testsafepos" zone="$gatedestination" y="$locoffset" object="$exitgate" radius="this.assignedcontrolled.size/2m" direction="quadrant.up" directionobject="$exitgate"/>
+            <do_if value="$testsafepos.distanceto.{$testpos} le ($locoffset*3m + this.assignedcontrolled.size)">
+              <debug_text text="'tested y. distance to testsafepos: %sm\nlocoffset: %sm\npass: %s'.[$testsafepos.distanceto.{$testpos}, $locoffset, $testsafepos.distanceto.{$testpos} le ($locoffset*3m + this.assignedcontrolled.size)]" chance="$debugchance"/>
+              <set_value name="$locy" exact="$locoffset"/>
+              <append_to_list name="$possiblequadrants" exact="quadrant.up"/>
+            </do_if>
+            <do_all chance="if $locy == 0 then 100 else 50">
+              <get_safe_pos result="$testsafepos" zone="$gatedestination" y="-$locoffset" object="$exitgate" radius="this.assignedcontrolled.size/2m" direction="quadrant.down" directionobject="$exitgate"/>
+              <do_if value="$testsafepos.distanceto.{$testpos} le ($locoffset*3m + this.assignedcontrolled.size)">
+                <debug_text text="'tested -y. distance to testsafepos: %sm\nlocoffset: %sm\npass: %s'.[$testsafepos.distanceto.{$testpos}, $locoffset, $testsafepos.distanceto.{$testpos} le ($locoffset*3m + this.assignedcontrolled.size)]" chance="$debugchance"/>
+                <set_value name="$locy" exact="-$locoffset"/>
+                <append_to_list name="$possiblequadrants" exact="quadrant.down"/>
+              </do_if>
+            </do_all>
+          </do_if>
+          <remove_value name="$testsafepos"/>
+          <remove_value name="$testpos"/>
+        </do_if>
+        <do_else>
+          <do_any>
+            <do_all>
+              <set_value name="$locx" exact="$locoffset"/>
+              <append_to_list name="$possiblequadrants" exact="quadrant.right"/>
+            </do_all>
+            <do_all>
+              <set_value name="$locx" exact="-$locoffset"/>
+              <append_to_list name="$possiblequadrants" exact="quadrant.left"/>
+            </do_all>
+          </do_any>
+          <set_value name="$locy" exact="0"/>
+          <do_if value="not @this.assignedcontrolled.iscapitalship">
+            <do_any>
+              <do_all>
+                <set_value name="$locy" min="0" max="$locoffset"/>
+                <append_to_list name="$possiblequadrants" exact="quadrant.up"/>
+              </do_all>
+              <do_all>
+                <set_value name="$locy" min="0" max="-$locoffset"/>
+                <append_to_list name="$possiblequadrants" exact="quadrant.down"/>
+              </do_all>
+            </do_any>
+          </do_if>
+        </do_else>
+
+        <set_value name="$locref" exact="this.assignedcontrolled"/>
+        <do_if value="not this.assignedcontrolled.hascontext.{$gatedestination.sector}">
+          <set_value name="$locref" exact="$exitgate"/>
+        </do_if>
+        <set_value name="$locquadrant" exact="quadrant.none"/>
+        <do_if value="$possiblequadrants.count">
+          <set_value name="$locquadrant" exact="$possiblequadrants.random"/>
+        </do_if>
+        <create_position name="$safepos" space="$gatedestination" x="$locx" y="$locy" z="$locz" object="$locref"/>
+        <remove_value name="$locref"/>
+
+        <do_if value="true" chance="$debugchance">
+          <create_position name="$temppos" space="$exitgate" value="$safepos" object="$gatedestination"/>
+          <set_value name="$evalposdetails" exact="table[ $pos=$temppos, $quadrant=$locquadrant ]"/>
+          <remove_value name="$temppos"/>
+        </do_if>
+      </do_if>
+      <do_else>
+        <!-- move forward to a safepos to make sure the gate exit area is clear -->
+        <set_value name="$locref" exact="this.assignedcontrolled"/>
+        <do_if value="not this.assignedcontrolled.hascontext.{$gatedestination.sector}">
+          <debug_text text="'%s %s %s in sector %s %s about to move clear of the gate but has not yet transitioned to the destination sector. should be in sector %s %s. handled.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, @this.assignedcontrolled.sector.knownname, this.assignedcontrolled.sector, @$gatedestination.sector.knownname, $gatedestination.sector]" filter="error"/>
+          <!-- safety measure in case we are in a superhighway and have not crossed yet. should not be necessary. -->
+          <set_value name="$locref" exact="$exitgate"/>
+        </do_if>
+        <do_if value="$nextpos.{1} == $gatedestination.sector or @$nextpos.{1}.hascontext.{$gatedestination.sector}">
+          <do_if value="$locref.distanceto.{$nextpos.{2}} lt $locz">
+            <!-- NB: $safepos has to be before $nextpos since we'll be getting a safepos in a cone around it and should have space to later go to $nextpos -->
+            <set_value name="$locz" exact="$locref.distanceto.{$nextpos} / 2m"/>
+          </do_if>
+        </do_if>
+        <create_position name="$safepos" space="$gatedestination" z="$locz" object="$locref"/>
+        <set_value name="$locquadrant" exact="quadrant.front"/>
+        <remove_value name="$locref"/>
+      </do_else>
+
+      <get_safe_pos result="$safepos" zone="$gatedestination" value="$safepos" radius="this.assignedcontrolled.size" direction="$locquadrant" directionobject="$exitgate"/>
+      <create_position name="$interpos" space="$gatedestination" z="this.assignedcontrolled.length * 2.0f" object="this.assignedcontrolled"/>
+
+      <debug_text text="'%1 start safepos move, dist %2'.[player.age, this.assignedcontrolled.distanceto.{$safepos}]" chance="$debugchance" />
+      <set_value name="$moveduration" min="11s" max="17s"/>
+      <do_if value="@$group_waitfor.count">
+        <set_value name="$moveduration" exact="1min"/>
+      </do_if>
+      <!-- short movement straight forward to get the ship moving and create a smoother spline to clear the gate -->
+      <move_to object="this.assignedcontrolled" destination="$gatedestination" uselocalhighways="false" finishonapproach="false" abortpath="true" forceposition="false" boost="not $noboost and (this.assignedcontrolled.shieldpercentage gt 80) and (@this.assignedcontrolled.order.id != 'Attack')" sinceversion="5">
+        <position value="$interpos"/>
+        <interrupt_after_time time="0s"/>
+      </move_to>
+      <move_to object="this.assignedcontrolled" destination="$gatedestination" uselocalhighways="false" finishonapproach="false" abortpath="false" forceposition="false" boost="not $noboost and (this.assignedcontrolled.shieldpercentage gt 80) and (@this.assignedcontrolled.order.id != 'Attack')">
+        <position value="$safepos"/>
+        <interrupt_after_time time="$moveduration"/>
+      </move_to>
+      <remove_value name="$moveduration"/>
+
+      <do_if value="true" chance="$debugchance">
+        <create_position name="$evalpos" space="$exitgate" object="this.assignedcontrolled"/>
+        <create_position name="$evalpos2" space="$exitgate" value="$safepos" object="$gatedestination"/>
+        <debug_text text="'current pos: %s, distance to exitgate: %sm, gate radius: %sm\ntarget pos: %s\ninitial pos: %s, quadrant: %s'.[$evalpos, $exitgate.distanceto.{this.assignedcontrolled}, $exitgate.size / 2.0, $evalpos2, @$evalposdetails.$pos, @$evalposdetails.$quadrant]" chance="($locoffset? and $exitgate.distanceto.{this.assignedcontrolled} le ($exitgate.size / 2.0)) * $debugchance"/>
+      </do_if>
+      <remove_value name="$locz"/>
+      <remove_value name="$locy"/>
+      <remove_value name="$locx"/>
+      <remove_value name="$locoffset"/>
+      <remove_value name="$locquadrant"/>
+
+      <debug_text text="'%1 end safepos move, dist %2'.[player.age, this.assignedcontrolled.distanceto.{$safepos}]" chance="$debugchance" />
+
+      <do_if value="not @$group_waitfor.count">
+        <resume label="finish"/>
+      </do_if>
+
+      <set_value name="$time_startwait" exact="player.age" chance="$debugchance"/>
+      <set_value name="$num_waitfor" exact="$group_waitfor.count" chance="$debugchance"/>
+
+      <label name="waitfor"/>
+
+      <do_all exact="$group_waitfor.count" counter="$i" reverse="true">
+        <set_value name="$locship" exact="$group_waitfor.{$i}"/>
+        <do_if value="($locship.sector == this.sector) or not $locship.iszonechangepending">
+          <remove_from_group group="$group_waitfor" object="$locship"/>
+          <debug_text text="'%s %s %s already in sector or is not changing sectors. still waiting for %s ships.'.[@$locship.idcode, @$locship.knownname, $locship, $group_waitfor.count]" chance="$debugchance"/>
+        </do_if>
+        <remove_value name="$locship"/>
+      </do_all>
+
+      <do_if value="$group_waitfor.count">
+        <wait exact="1min" sinceversion="3">
+          <interrupt>
+            <conditions>
+              <check_any>
+                <check_all>
+                  <event_object_changed_sector group="$group_waitfor"/>
+                  <check_value value="event.param == this.sector"/>
+                </check_all>
+                <event_object_destroyed group="$group_waitfor"/>
+              </check_any>
+            </conditions>
+            <actions>
+              <do_if value="event.object.isoperational and (event.object.sector == this.sector)">
+                <remove_from_group group="$group_waitfor" object="event.object"/>
+                <debug_text text="'verified that %s %s %s is now in our sector.'.[@event.object.idcode, @event.object.knownname, event.object]" chance="$debugchance"/>
+              </do_if>
+            </actions>
+          </interrupt>
+        </wait>
+
+        <do_if value="$group_waitfor.count">
+          <debug_text text="'still waiting for %s ships.'.[$group_waitfor.count]" chance="$debugchance"/>
+          <resume label="waitfor"/>
+        </do_if>
+      </do_if>
+
+      <debug_text text="'done waiting. waited for %s ships for %s seconds.'.[$num_waitfor, player.age - $time_startwait]" chance="$debugchance"/>
+
+      <do_if value="(@this.assignedcontrolled.order.id == 'MoveWait') and this.assignedcontrolled.order.$waitforatgate">
+        <!-- if we are waiting for something due to having been ordered to do so,
+              and we are now done waiting,
+              cancel the movement order to skip any further movement resulting from that order. -->
+        <cancel_order order="this.assignedcontrolled.order"/>
+      </do_if>
+
+      <label name="finish"/>
+
+    </actions>
+  </attention>
+</aiscript>

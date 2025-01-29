@@ -1,0 +1,1060 @@
+<?xml version="1.0" encoding="utf-8"?>
+<aiscript name="interrupt.restock" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" priority="8">
+  <interrupts>
+    <library>
+      <handler name="ResupplyHandler">
+        <conditions>
+          <!-- param="'resupply'" param2="[$urgent?, $param_station, $override_deployablecategory, $override_deployablemacroamounts]" param3="$debugchance_interrupt" -->
+          <event_object_signalled object="this.ship" param="'resupply'"/>
+          <check_value value="not this.assignedcontrolled.isunit"/>
+          <check_value value="@this.assignedcontrolled.trueowner.doesresupply"/>
+        </conditions>
+        <actions>
+          <set_value name="$repair"/>
+          <set_value name="$resupply_ammo"/>
+          <set_value name="$resupply_units"/>
+          <set_value name="$restock_subordinates" exact="this.ship.isjobship"/>
+          <set_value name="$blacklist_stations" exact="[]"/>
+          <do_if value="@this.$restock_blackliststations.count">
+            <append_list_elements name="$blacklist_stations" other="this.$restock_blackliststations"/>
+          </do_if>
+          <set_value name="$urgent" exact="event.param2.{1}"/>
+          <set_value name="$param_station" exact="null"/>
+          <set_value name="$_override_deployablecategory" exact="null"/>
+          <!-- $_override_deployablemacroamounts overrides $_override_deployablecategory. should be a list of pairs: [[macro1, amount1], [macro2, amount2], etc]. will be capped to capacity. -->
+          <set_value name="$_override_deployablemacroamounts" exact="[]"/>
+          <do_if value="@event.param2.{3}">
+            <set_value name="$_override_deployablecategory" exact="event.param2.{3}"/>
+          </do_if>
+          <do_if value="@event.param2.{4}">
+            <set_value name="$_override_deployablemacroamounts" exact="event.param2.{4}"/>
+          </do_if>
+          <!-- internalorder is always true in this case since this involves automated checks. -->
+          <set_value name="$internalorder_interrupt" exact="true"/>
+          <do_if value="@event.param2.{2}.isoperational">
+            <set_value name="$param_station" exact="event.param2.{2}"/>
+          </do_if>
+          <do_elseif value="@this.assignedcontrolled.type == shiptype.resupplier or @this.assignedcontrolled.type == shiptype.carrier">
+            <set_value name="$param_station" exact="this.assignedcontrolled"/>
+          </do_elseif>
+
+          <do_if value="event.param3">
+            <set_value name="$debugchance_interrupt" exact="event.param3"/>
+          </do_if>
+          <do_else>
+            <set_value name="$debugchance_interrupt" exact="0"/>
+          </do_else>
+
+          <debug_text text="'%3 %1 (%2) checking to see if resupply is necessary.'.[this.ship.knownname, this.ship, @this.ship.job]" chance="$debugchance_interrupt"/>
+          <include_interrupt_actions ref="ResupplyCheck"/>
+        </actions>
+      </handler>
+
+      <!-- Library script to check if resupply is necessary. Has to be valid in two cases: when called from the interrupt handler above, and when called from order.restock. -->
+      <actions name="ResupplyCheck">
+        <set_value name="$_ammothreshold" exact="0.2"/>
+        <set_value name="$orders_interrupt" exact="this.ship.orders"/>
+        <do_if value="this.ship.defaultorder.exists">
+          <append_to_list name="$orders_interrupt" exact="this.ship.defaultorder"/>
+        </do_if>
+        <do_all exact="$orders_interrupt.count" counter="$counter_lib_orders">
+          <do_if value="(($orders_interrupt.{$counter_lib_orders}.id == 'Equip') or ($orders_interrupt.{$counter_lib_orders}.id == 'Repair') or ($orders_interrupt.{$counter_lib_orders}.id == 'RestockSubordinates')) and $orders_interrupt.{$counter_lib_orders}.state != orderstate.started">
+            <debug_text text="'%1 (%2) is already heading to dock with a %3 order. No need to check for resupply again.'.[this.ship.knownname, this.ship, $orders_interrupt.{$counter_lib_orders}.id]" chance="$debugchance_interrupt"/>
+            <set_value name="$cleanup_interrupt"/>
+            <break/>
+          </do_if>
+        </do_all>
+        <remove_value name="$orders_interrupt"/>
+
+        <do_if value="not $cleanup_interrupt?">
+          <!-- do we actually have to repair? -->
+          <do_if value="$repair">
+            <do_if value="not $hullpercent?">
+              <set_value name="$hullpercent" exact="100"/>
+            </do_if>
+            <do_if value="not @$damagedcomponents">
+              <set_value name="$damagedcomponents" exact="[]"/>
+            </do_if>
+
+            <!-- check for any damaged components -->
+            <find_object_component name="$damaged_components_interrupt" object="this.ship" class="class.destructible" checkoperational="false" multiple="true">
+              <match_any>
+                <match restorable="true" comment="wrecked"/>
+                <match repairable="true" invulnerable="false">
+                  <match_hull min="100" negate="true"/>
+                </match>
+                <match needsrepair="true" invulnerable="false">
+                  <match_hull min="100" negate="true"/>
+                </match>
+              </match_any>
+            </find_object_component>
+            <debug_text text="player.age + ' Init: %1 (%2) has %3 damaged components. Status of hull: %4'.[this.ship.knownname, this.ship, $damaged_components_interrupt.count, this.ship.hullpercentage]" chance="$debugchance_interrupt"/>
+            <!-- if the ship has no damaged components, -->
+            <do_if value="$damaged_components_interrupt.count == 0">
+              <!-- and the hull is fine, -->
+              <do_if value="$hullpercent le this.ship.hullpercentage">
+                <!-- we don't need to repair. -->
+                <set_value name="$repair" exact="false"/>
+                <debug_text text="'Hull of %1 (%2) does not need any repairs done.'.[this.ship.knownname, this.ship]" chance="$debugchance_interrupt"/>
+              </do_if>
+            </do_if>
+            <do_else>
+              <do_all exact="$damaged_components_interrupt.count" counter="$counter_damagedcomponents">
+                <do_if value="not $damagedcomponents.count or $damagedcomponents.indexof.{$damaged_components_interrupt.{$counter_damagedcomponents}}">
+                  <set_value name="$found_interrupt"/>
+                  <break/>
+                </do_if>
+              </do_all>
+              <do_if value="not $found_interrupt? and ($hullpercent le this.ship.hullpercentage)">
+                <set_value name="$repair" exact="false"/>
+                <debug_text text="'%1 (%2) has no subcomponents that need any repairs done.'.[this.ship.knownname, this.ship]" chance="$debugchance_interrupt"/>
+              </do_if>
+              <remove_value name="$found_interrupt"/>
+            </do_else>
+
+            <do_if value="$repair">
+              <set_value name="$_ammothreshold" exact="1.0"/>
+              <do_if value="not $repairall? or $repairall">
+                <do_if value="$damaged_components_interrupt.count">
+                  <set_value name="$damagedcomponents" exact="$damaged_components_interrupt"/>
+                </do_if>
+                <set_value name="$hullpercent" exact="100"/>
+              </do_if>
+              <do_if value="(this.ship.hullpercentage lt 50) or (this.ship.trueowner == faction.player)">
+                <debug_text text="'%1 (%2) is in urgent need of repair. hull percentage: %3. player owned? %4'.[this.ship.knownname, this.ship, this.ship.hullpercentage, this.ship.isplayerowned]" chance="$debugchance_interrupt"/>
+                <set_value name="$urgent" exact="1"/>
+              </do_if>
+            </do_if>
+            <remove_value name="$damaged_components_interrupt"/>
+          </do_if>
+
+          <!-- do we actually have to resupply? -->
+          <do_if value="$resupply_ammo">
+            <!-- how much do we need? -->
+            <set_value name="$missiles_numneeded_interrupt" exact="this.ship.ammostorage.missile.free"/>
+            <set_value name="$countermeasures_numneeded_interrupt" exact="this.ship.ammostorage.countermeasure.free"/>
+            <debug_text text="player.age + ': %1 (%2) could use %3 more missiles and %4 more countermeasures.'.[this.ship.knownname, this.ship, $missiles_numneeded_interrupt, $countermeasures_numneeded_interrupt]" chance="$debugchance_interrupt"/>
+
+            <!-- NB: percentages here represent the amount that we can carry rather than the amount that we have! so purchase threshold is 1 - $_ammothreshold -->
+            <set_value name="$missilesneeded_interrupt" exact="$missiles_numneeded_interrupt gt (this.ship.ammostorage.missile.capacity * (1.0-$_ammothreshold))"/>
+            <set_value name="$countermeasuresneeded_interrupt" exact="$countermeasures_numneeded_interrupt gt (this.ship.ammostorage.countermeasure.capacity * (1.0-$_ammothreshold))"/>
+            <!-- if we don't need any ammo, we don't need to resupply. -->
+            <do_if value="not $missilesneeded_interrupt and not $countermeasuresneeded_interrupt and not @$_override_deployablecategory and not @$_override_deployablemacroamounts.count">
+              <set_value name="$resupply_ammo" exact="false"/>
+              <debug_text text="'%1 (%2) does not have any ammunition capacity and does not need countermeasures. Skipping ammo resupply.'.[this.ship.knownname, this.ship]" chance="$debugchance_interrupt"/>
+            </do_if>
+            <do_else>
+              <debug_text text="'%s %s\nmissiles needed: %s, missile capacity: %s, percent free: %s, need missiles? %s\ncountermeasures needed: %s, countermeasure capacity: %s, percent free: %s, need countermeasures? %s'.[this.ship.knownname, this.ship, $missiles_numneeded_interrupt, this.ship.ammostorage.missile.capacity, ($missiles_numneeded_interrupt / [(this.ship.ammostorage.missile.capacity)f, 1.0].max) * 100, $missilesneeded_interrupt, $countermeasures_numneeded_interrupt, this.ship.ammostorage.countermeasure.capacity, ($countermeasures_numneeded_interrupt / [(this.ship.ammostorage.countermeasure.capacity)f, 1.0].max) * 100, $countermeasuresneeded_interrupt]" chance="$debugchance_interrupt"/>
+              <!-- what can we use? -->
+              <!--TODO @Owen If $param_station is set, only select ammo/units it can build-->
+              <!--<set_value name="$neededbombs_macrolist" exact="[]"/>
+              <set_value name="$neededmissiles_macrolist" exact="[]"/>-->
+              <!-- NB: class.missilelauncher, class.turret, and class.missileturret are all subclasses of class.weapon, so this should cover all of them. -->
+              <find_object_component name="$weapons_interrupt" object="this.ship" class="class.weapon" multiple="true"/>
+              <do_all exact="$weapons_interrupt.count" counter="$counter_lib_weapons" reverse="true">
+                <do_if value="$weapons_interrupt.{$counter_lib_weapons}.ammo.macro">
+                  <do_if value="$weapons_interrupt.{$counter_lib_weapons}.ammo.macro.isclass.[class.bomb, class.missile]">
+                    <set_value name="$resupply_go"/>
+                    <break/>
+                  </do_if>
+                </do_if>
+                <do_else>
+                  <debug_text text="'%1: %2 does not use ammo. removing from the weapons list. list now has %3 entries.'.[this.ship.knownname, $weapons_interrupt.{$counter_lib_weapons}.name, $weapons_interrupt.count - 1]" chance="$debugchance_interrupt"/>
+                  <remove_value name="$weapons_interrupt.{$counter_lib_weapons}"/>
+                </do_else>
+              </do_all>
+
+              <!-- only go in here if our countermeasure stocks are actually below threshold. fixes cases where ship is not carrying ammo but doesn't have ammo-using weapons and went to get countermeasures anyway. if we decide to get ammo, we'll fill up on countermeasures anyway. -->
+              <do_if value="$countermeasuresneeded_interrupt">
+                <do_if value="this.ship.ammostorage.countermeasure.free gt 0">
+                  <set_value name="$resupply_go"/>
+                </do_if>
+              </do_if>
+
+              <do_if value="@$_override_deployablemacroamounts.count">
+                <do_for_each name="$_locmacroamount" in="$_override_deployablemacroamounts">
+                  <set_value name="$_locmacro" exact="$_locmacroamount.{1}"/>
+                  <set_value name="$_locamount" exact="$_locmacroamount.{2}"/>
+                  <do_if value="(typeof $_locmacro == datatype.macro) and $_locmacro.ware and (typeof $_locamount).isnumeric">
+                    <set_value name="$_totaldeployableamount" exact="@$_totaldeployableamount + $_locamount"/>
+                    <do_if value="($_totaldeployableamount le this.assignedcontrolled.ammostorage.deployable.capacity) and (this.assignedcontrolled.ammostorage.{$_locmacro}.count lt $_locamount)">
+                      <set_value name="$_deployableamounttobuy" exact="@$_deployableamounttobuy + ($_locamount - this.assignedcontrolled.ammostorage.{$_locmacro}.count)"/>
+                      <debug_text text="'$_override_deployablemacroamounts is set and we want %s more %s.'.[$_locamount - this.assignedcontrolled.ammostorage.{$_locmacro}.count, $_locmacro]" chance="$debugchance_interrupt"/>
+                      <set_value name="$resupply_go"/>
+                    </do_if>
+                  </do_if>
+                </do_for_each>
+                <remove_value name="$_locamount"/>
+                <remove_value name="$_locmacro"/>
+              </do_if>
+              <do_if value="@$_override_deployablecategory and (this.assignedcontrolled.ammostorage.{$_override_deployablecategory}.count lt this.assignedcontrolled.ammostorage.deployable.capacity)">
+                <debug_text text="'$_override_deployablecategory is set and we have space for %s deployables.'.[this.assignedcontrolled.ammostorage.deployable.capacity - this.assignedcontrolled.ammostorage.{$_override_deployablecategory}.count]" chance="$debugchance_interrupt"/>
+                <set_value name="$resupply_go"/>
+              </do_if>
+
+              <!-- some ships have some ammo capacity but don't have any weapons that use that type of ammo. filter out here. -->
+              <do_if value="not $resupply_go?">
+                <set_value name="$resupply_ammo" exact="false"/>
+                <debug_text text="'%1 (%2) has ammunition capacity, but does not have weapons that use ammo or need countermeasures. Skipping ammo resupply.'.[this.ship.knownname, this.ship]" chance="$debugchance_interrupt"/>
+              </do_if>
+              <remove_value name="$resupply_go"/>
+            </do_else>
+            <remove_value name="$missilesneeded_interrupt"/>
+            <remove_value name="$countermeasuresneeded_interrupt"/>
+          </do_if>
+
+          <do_if value="$resupply_units">
+            <find_object_component name="$docks_interrupt" object="this.ship" class="class.dockingbay" multiple="true"/>
+            <do_all exact="$docks_interrupt.count" counter="$counter_lib_docks">
+              <do_if value="@$hasdock_interrupt">
+                <break/>
+              </do_if>
+              <do_else>
+                <do_all exact="$docks_interrupt.{$counter_lib_docks}.docksize.count" counter="$counter_lib_docks_docksize">
+                  <do_if value="$docks_interrupt.{$counter_lib_docks}.docksize.{$counter_lib_docks_docksize}" exact="tag.dock_s">
+                    <set_value name="$hasdock_interrupt"/>
+                    <break/>
+                  </do_if>
+                </do_all>
+              </do_else>
+            </do_all>
+            <remove_value name="$docks_interrupt"/>
+
+            <do_if value="$hasdock_interrupt?">
+              <set_value name="$units_numneeded_interrupt" exact="this.ship.units.free"/>
+              <debug_text text="'%1 (%2) could use %3 more units.'.[this.ship.knownname, this.ship, $units_numneeded_interrupt]" chance="$debugchance_interrupt"/>
+            </do_if>
+            <do_else>
+              <set_value name="$units_numneeded_interrupt" exact="null"/>
+              <debug_text text="'%1 (%2) does not have a dock for units.'.[this.ship.knownname, this.ship]" chance="$debugchance_interrupt"/>
+            </do_else>
+            <remove_value name="$hasdock_interrupt"/>
+
+            <do_if value="$units_numneeded_interrupt" negate="true">
+              <set_value name="$resupply_units" exact="false"/>
+              <debug_text text="'%1 (%2) does not need any units.'.[this.ship.knownname, this.ship]" chance="$debugchance_interrupt"/>
+            </do_if>
+            <remove_value name="$units_numneeded_interrupt"/>
+          </do_if>
+
+          <do_if value="$restock_subordinates">
+            <get_subordinate_macro name="$subordinate_macro_interrupt" commander="this.ship" init="false" />
+            <do_if value="not $subordinate_macro_interrupt">
+              <set_value name="$restock_subordinates" exact="false"/>
+            </do_if>
+            <do_else>
+              <!--<set_value name="$debugchance_interrupt" exact="(this.trueowner == faction.xenon) * 100"/>-->
+              <debug_text text="'%s %s %s needs subordinate %s'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, $subordinate_macro_interrupt]" chance="$debugchance_interrupt"/>
+            </do_else>
+            <remove_value name="$subordinate_macro_interrupt"/>
+          </do_if>
+
+          <do_if value="$repair or $resupply_ammo or $resupply_units or $restock_subordinates">
+            <set_value name="$ammotable_interrupt" exact="null"/>
+            <set_value name="$unittable_interrupt" exact="null"/>
+
+            <!-- NB: $defensible.loadoutlevel gets the loadout level defined in parameters.xml if no loadout level is defined or loadout level is invalid.
+              rawloadoutlevel returns the defensible's loadout level regardless of what that may be.
+              -1 is needed in the player-owned case since it is used to tell them to check their command hierarchy recursively up to the faction default. -->
+            <set_value name="$isplayerowned" exact="this.isplayerowned"/>
+            <set_value name="$loadoutlevel_interrupt" exact="if $isplayerowned then this.assignedcontrolled.rawloadoutlevel else this.assignedcontrolled.loadoutlevel"/>
+            <do_if value="$loadoutlevel_interrupt lt 0">
+              <set_value name="$loccommander" exact="this.assignedcontrolled"/>
+              <do_while value="($loadoutlevel_interrupt lt 0) and @$loccommander.commander.isoperational">
+                <set_value name="$loccommander" exact="$loccommander.commander"/>
+                <set_value name="$loadoutlevel_interrupt" exact="if $isplayerowned then $loccommander.rawloadoutlevel else $loccommander.loadoutlevel"/>
+                <debug_text text="'%s %s %s got loadout level from commander %s %s %s'.[this.ship.idcode, this.ship.knownname, this.ship, $loccommander.idcode, $loccommander.knownname, $loccommander]" chance="($loadoutlevel_interrupt ge 0) * $debugchance_interrupt"/>
+              </do_while>
+              <do_if value="($loadoutlevel_interrupt lt 0) and $isplayerowned">
+                <set_value name="$loadoutlevel_interrupt" exact="player.loadoutlevel"/>
+                <debug_text text="'using faction loadout level: ' + $loadoutlevel_interrupt" chance="$debugchance_interrupt"/>
+              </do_if>
+
+              <do_if value="$loadoutlevel_interrupt le 0">
+                <debug_text text="'%s %s %s has a loadout level of %s which disables resupply.'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, $loadoutlevel_interrupt]" chance="$debugchance_interrupt"/>
+                <set_value name="$resupply_ammo" exact="false"/>
+                <set_value name="$resupply_units" exact="false"/>
+              </do_if>
+              <remove_value name="$loccommander"/>
+            </do_if>
+            <debug_text text="'%s %s %s loadout level: '.[this.ship.idcode, this.ship.knownname, this.ship] + $loadoutlevel_interrupt" chance="$debugchance_interrupt"/>
+
+            <do_if value="$resupply_ammo">
+              <set_value name="$ammotable_interrupt" exact="table[]"/>
+
+              <do_if value="this.assignedcontrolled.ammostorage.missile.capacity">
+                <set_value name="$checkammo" exact="false"/>
+                <do_if value="this.assignedcontrolled.isjobship">
+                  <!--If a job ship, evaluate against the loadout level minus variation to see if the ship would require something with the lowest possible loadout at generation-->
+                  <evaluate_missile_storage object="this.assignedcontrolled" level="[0.0f, this.assignedcontrolled.loadoutlevel - this.assignedcontrolled.loadoutvariation].max"
+                                                 amounts="$minimum_ammoamounts" macros="$minimum_ammomacros"/>
+                  <do_all exact="$minimum_ammomacros.count" counter="$interruptcounter">
+                    <do_if value="this.assignedcontrolled.ammostorage.{$minimum_ammomacros.{$interruptcounter}}.count lt ($minimum_ammoamounts.{$interruptcounter} * $_ammothreshold)">
+                      <set_value name="$checkammo" exact="true"/>
+                      <break/>
+                    </do_if>
+                  </do_all>
+                </do_if>
+                <do_else>
+                  <set_value name="$checkammo" exact="true"/>
+                </do_else>
+                <do_if value="$checkammo">
+                  <set_value name="$loccount" exact="0"/>
+                  <evaluate_missile_storage object="this.assignedcontrolled" level="$loadoutlevel_interrupt" amounts="$output_ammoamounts_interrupt" macros="$output_ammomacros_interrupt"/>
+                  <do_all exact="$output_ammoamounts_interrupt.count" counter="$interruptcounter">
+                    <debug_text text="$interruptcounter + ': macro: %s, wanted amount: %s, amount in storage: %s'.[$output_ammomacros_interrupt.{$interruptcounter}, $output_ammoamounts_interrupt.{$interruptcounter}, this.assignedcontrolled.ammostorage.{$output_ammomacros_interrupt.{$interruptcounter}}.count]" chance="$debugchance_interrupt"/>
+                    <do_if value="$output_ammoamounts_interrupt.{$interruptcounter} and $output_ammomacros_interrupt.{$interruptcounter}.ware">
+                      <set_value name="$currentammocount" exact="this.assignedcontrolled.ammostorage.{$output_ammomacros_interrupt.{$interruptcounter}}.count"/>
+                      <do_if value="$currentammocount lt ($output_ammoamounts_interrupt.{$interruptcounter} * $_ammothreshold)">
+                        <set_value name="$ammotable_interrupt.{$output_ammomacros_interrupt.{$interruptcounter}.ware}" exact="$output_ammoamounts_interrupt.{$interruptcounter}"/>
+                        <set_value name="$locadded"/>
+                        <set_value name="$loccount" exact="$loccount + $output_ammoamounts_interrupt.{$interruptcounter}"/>
+                      </do_if>
+                      <do_elseif value="$currentammocount">
+                        <set_value name="$ammotable_interrupt.{$output_ammomacros_interrupt.{$interruptcounter}.ware}" exact="$currentammocount"/>
+                        <set_value name="$loccount" exact="$loccount + $currentammocount"/>
+                      </do_elseif>
+                      <remove_value name="$currentammocount"/>
+                      <debug_text text="'getting %s %s. %s pieces of ammunition total.'.[$ammotable_interrupt.{$output_ammomacros_interrupt.{$interruptcounter}.ware}, $output_ammomacros_interrupt.{$interruptcounter}, $loccount]" chance="$debugchance_interrupt"/>
+                    </do_if>
+                  </do_all>
+                  <!--<do_if value="not $ammotable_interrupt.keys.count and not this.assignedcontrolled.ammostorage.missile.count and this.assignedcontrolled.dps.missiles.all and not this.assignedcontrolled.dps.lasers.all">
+                    <debug_text text="'ship %s %s %s needs ammo but evaluate_missile_storage output %s macros and amounts.'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, $output_ammomacros_interrupt.count]" filter="error"/>
+                    <do_all exact="$output_ammomacros_interrupt.count" counter="$interruptcounter">
+                      <debug_text text="'macro: ' + $output_ammomacros_interrupt.{$interruptcounter} + ', amount: ' + $output_ammoamounts_interrupt.{$interruptcounter}"/>
+                    </do_all>
+                    <assert value="false" text="'check debug output for ' + this"/>
+                  </do_if>-->
+                  <do_if value="this.assignedcontrolled.ammostorage.missile.capacity lt $loccount">
+                    <set_value name="$locminamount" exact="1"/>
+                    <do_if value="this.assignedcontrolled.ammostorage.missile.capacity lt $ammotable_interrupt.keys.count">
+                      <debug_text text="'trying to load more ammo types than we can carry'" chance="$debugchance_interrupt"/>
+                      <set_value name="$locminamount" exact="0"/>
+                    </do_if>
+                    <debug_text text="'trying to load more ammo than we can carry'" chance="$debugchance_interrupt"/>
+                    <set_value name="$locamounttoreduce" exact="$loccount - this.assignedcontrolled.ammostorage.missile.capacity"/>
+                    <do_all exact="$ammotable_interrupt.keys.count" counter="$_i">
+                      <set_value name="$lockey" exact="$ammotable_interrupt.keys.{$_i}"/>
+                      <do_if value="$ammotable_interrupt.{$lockey} gt 1">
+                        <set_value name="$locamount" exact="$ammotable_interrupt.{$lockey}"/>
+                        <set_value name="$ammotable_interrupt.{$lockey}" exact="[$ammotable_interrupt.{$lockey} - $locamounttoreduce, $locminamount].max"/>
+                        <set_value name="$loccount" exact="$loccount - ($locamount - $ammotable_interrupt.{$lockey})"/>
+                        <debug_text text="'reducing %s to %s'.[$lockey, $ammotable_interrupt.{$lockey}]" chance="$debugchance_interrupt"/>
+                        <remove_value name="$locamount"/>
+                      </do_if>
+                      <remove_value name="$lockey"/>
+                      <do_if value="this.assignedcontrolled.ammostorage.missile.capacity ge $loccount">
+                        <debug_text text="'reduced purchased ammo to capacity'" chance="$debugchance_interrupt"/>
+                        <break/>
+                      </do_if>
+                    </do_all>
+                    <remove_value name="$locminamount"/>
+                    <remove_value name="$locamounttoreduce"/>
+                    <do_if value="this.assignedcontrolled.ammostorage.missile.capacity lt $loccount">
+                      <debug_text text="'reduced ammo to purchase but still over missile capacity.'" filter="error"/>
+                    </do_if>
+                  </do_if>
+                  <remove_value name="$output_ammoamounts_interrupt"/>
+                  <remove_value name="$output_ammomacros_interrupt"/>
+                  <remove_value name="$loccount"/>
+                </do_if>
+                <remove_value name="$checkammo"/>
+                <remove_value name="$minimum_ammoamounts"/>
+                <remove_value name="$minimum_ammomacros"/>
+              </do_if>
+
+              <do_if value="this.assignedcontrolled.ammostorage.deployable.capacity and ((this.assignedcontrolled.ammostorage.deployable.count lt this.assignedcontrolled.ammostorage.deployable.capacity) or (@$_override_deployablemacroamounts.count and (@$_deployableamounttobuy gt 0)) or (@$_override_deployablecategory and this.assignedcontrolled.ammostorage.{$_override_deployablecategory}.count lt this.assignedcontrolled.ammostorage.deployable.capacity))">
+                <set_value name="$loccount" exact="0"/>
+                <do_if value="@$_override_deployablemacroamounts.count">
+                  <set_value name="$_amountfactor" exact="1.0f"/>
+                  <do_if value="$_totaldeployableamount gt this.assignedcontrolled.ammostorage.deployable.capacity">
+                    <set_value name="$_amountfactor" exact="($_totaldeployableamount - this.assignedcontrolled.ammostorage.deployable.capacity)f / (this.assignedcontrolled.ammostorage.deployable.capacity)f"/>
+                    <debug_text text="'deployable amounts adjusted by %s'.[$_amountfactor]" chance="$debugchance_interrupt"/>
+                  </do_if>
+                  <do_for_each name="$_locmacroamount" in="$_override_deployablemacroamounts">
+                    <set_value name="$_locmacro" exact="$_locmacroamount.{1}"/>
+                    <set_value name="$_locamount" exact="$_locmacroamount.{2}"/>
+                    <do_if value="(typeof $_locmacro == datatype.macro) and $_locmacro.ware and (typeof $_locamount).isnumeric">
+                      <set_value name="$_locamount" exact="($_locamount * $_amountfactor)i"/>
+                      <set_value name="$ammotable_interrupt.{$_locmacro.ware}" exact="$_locamount"/>
+                      <set_value name="$loccount" exact="$loccount + $_locamount"/>
+                      <do_if value="this.assignedcontrolled.ammostorage.{$_locmacro}.count lt $_locamount">
+                        <set_value name="$locadded"/>
+                      </do_if>
+                    </do_if>
+                  </do_for_each>
+                  <remove_value name="$_locamount"/>
+                  <remove_value name="$_locmacro"/>
+                  <remove_value name="$_amountfactor"/>
+                </do_if>
+                <do_elseif value="@$_override_deployablecategory">
+                  <set_value name="$locware" exact="@this.assignedcontrolled.ammostorage.{$_override_deployablecategory}.list.{1}.ware"/>
+                  <do_if value="$_override_deployablecategory == deployablecategory.mine">
+                    <set_value name="$locware" exact="null"/>
+                    <do_for_each name="$locmacro" in="this.assignedcontrolled.ammostorage.{$_override_deployablecategory}.list">
+                      <do_if value="$locmacro.isfriendfoe">
+                        <set_value name="$locware" exact="$locmacro.ware"/>
+                        <break/>
+                      </do_if>
+                    </do_for_each>
+                  </do_if>
+                  <do_if value="@$locware and this.assignedcontrolled.ammostorage.{$_override_deployablecategory}.count">
+                    <set_value name="$loccount" exact="this.assignedcontrolled.ammostorage.{$_override_deployablecategory}.count"/>
+                    <set_value name="$ammotable_interrupt.{$locware}" exact="this.assignedcontrolled.ammostorage.{$_override_deployablecategory}.count"/>
+                  </do_if>
+                  <do_else>
+                    <do_if value="not @$locware">
+                      <set_value name="$locmk" min="1" max="$_override_deployablecategory.maxmk"/>
+                      <do_if value="$_override_deployablecategory == deployablecategory.mine">
+                        <set_value name="$locmk" exact="null"/>
+                        <do_all exact="$_override_deployablecategory.maxmk" counter="$_mk">
+                          <do_for_each name="$locmacro" in="$_override_deployablecategory.mk.{$_mk}.list">
+                            <do_if value="$locmacro.isfriendfoe">
+                              <set_value name="$locmk" exact="$_mk"/>
+                              <break/>
+                            </do_if>
+                          </do_for_each>
+                          <do_if value="$locmk">
+                            <break/>
+                          </do_if>
+                        </do_all>
+                      </do_if>
+                      <set_value name="$locware" exact="$_override_deployablecategory.mk.{$locmk}.list.{1}.ware"/>
+                    </do_if>
+                    <set_value name="$loccount" exact="this.assignedcontrolled.ammostorage.deployable.capacity - this.assignedcontrolled.ammostorage.{$_override_deployablecategory}.count"/>
+                    <set_value name="$ammotable_interrupt.{$locware}" exact="this.assignedcontrolled.ammostorage.deployable.capacity"/>
+                    <set_value name="$locadded"/>
+                  </do_else>
+                  <remove_value name="$locware"/>
+                  <remove_value name="$locmk"/>
+                </do_elseif>
+                <do_else>
+                  <set_value name="$checkdeployables" exact="false"/>
+                  <do_if value="this.assignedcontrolled.isjobship">
+                    <!--If a job ship, evaluate against the loadout level minus variation to see if the ship would require something with the lowest possible loadout at generation-->
+                    <evaluate_deployable_storage object="this.assignedcontrolled" level="[0.0f, this.assignedcontrolled.loadoutlevel - this.assignedcontrolled.loadoutvariation].max"
+                                               amounts="$minimum_deployableamounts" macros="$minimum_deployablemacros"/>
+                    <do_all exact="$minimum_deployablemacros.count" counter="$interruptcounter">
+                      <do_if value="this.assignedcontrolled.ammostorage.{$minimum_deployablemacros.{$interruptcounter}}.count lt ($minimum_deployableamounts.{$interruptcounter} * $_ammothreshold)">
+                        <set_value name="$checkdeployables" exact="true"/>
+                        <break/>
+                      </do_if>
+                    </do_all>
+                  </do_if>
+                  <do_else>
+                    <set_value name="$checkdeployables" exact="true"/>
+                  </do_else>
+                  <do_if value="$checkdeployables">
+                    <evaluate_deployable_storage object="this.assignedcontrolled" level="$loadoutlevel_interrupt" amounts="$output_deployableamounts_interrupt" macros="$output_deployablemacros_interrupt" categories="$output_deployablecategories_interrupt" mks="$output_deployablemks_interrupt"/>
+                    <do_all exact="$output_deployableamounts_interrupt.count" counter="$interruptcounter">
+                      <debug_text text="$interruptcounter + ': macro: %s, wanted amount: %s, amount in storage: %s'.[$output_deployablemacros_interrupt.{$interruptcounter}, $output_deployableamounts_interrupt.{$interruptcounter}, this.ship.ammostorage.{$output_deployablemacros_interrupt.{$interruptcounter}}.count]" chance="$debugchance_interrupt"/>
+                      <do_if value="$output_deployableamounts_interrupt.{$interruptcounter} and $output_deployablemacros_interrupt.{$interruptcounter}.ware">
+                        <set_value name="$currentdeployablecount" exact="this.assignedcontrolled.ammostorage.{$output_deployablemacros_interrupt.{$interruptcounter}}.count"/>
+                        <do_if value="$currentdeployablecount lt ($output_deployableamounts_interrupt.{$interruptcounter} * $_ammothreshold)">
+                          <set_value name="$ammotable_interrupt.{$output_deployablemacros_interrupt.{$interruptcounter}.ware}" exact="$output_deployableamounts_interrupt.{$interruptcounter}"/>
+                          <set_value name="$locadded"/>
+                          <set_value name="$loccount" exact="$loccount + $output_deployableamounts_interrupt.{$interruptcounter}"/>
+                        </do_if>
+                        <do_elseif value="$currentdeployablecount">
+                          <set_value name="$ammotable_interrupt.{$output_deployablemacros_interrupt.{$interruptcounter}.ware}" exact="$currentdeployablecount"/>
+                          <set_value name="$loccount" exact="$loccount + $currentdeployablecount"/>
+                        </do_elseif>
+                        <remove_value name="$currentdeployablecount"/>
+                      </do_if>
+                    </do_all>
+                    <remove_value name="$output_deployableamounts_interrupt"/>
+                    <remove_value name="$output_deployablemacros_interrupt"/>
+                    <remove_value name="$output_deployablecategories_interrupt"/>
+                    <remove_value name="$output_deployablemks_interrupt"/>
+                  </do_if>
+                  <remove_value name="$checkdeployables"/>
+                  <remove_value name="$minimum_deployableamounts"/>
+                  <remove_value name="$minimum_deployablemacros"/>
+                </do_else>
+
+                <do_if value="not $locadded?">
+                  <clear_table table="$ammotable_interrupt"/>
+                </do_if>
+                <do_elseif value="this.assignedcontrolled.ammostorage.deployable.capacity lt $loccount">
+                  <debug_text text="'trying to load more deployables than we can carry'" chance="$debugchance_interrupt"/>
+                  <set_value name="$locamounttoreduce" exact="$loccount - this.assignedcontrolled.ammostorage.deployable.capacity"/>
+                  <do_all exact="$ammotable_interrupt.keys.count" counter="$_i" reverse="true">
+                    <set_value name="$lockey" exact="$ammotable_interrupt.keys.{$_i}"/>
+                    <do_if value="$lockey.isdeployable and $ammotable_interrupt.{$lockey} gt 1">
+                      <set_value name="$locamount" exact="$ammotable_interrupt.{$lockey}"/>
+                      <do_if value="this.assignedcontrolled.ammostorage.{$lockey.objectmacro}.count lt $ammotable_interrupt.{$lockey}">
+                        <do_if value="($ammotable_interrupt.{$lockey} - $locamounttoreduce) lt 1">
+                          <set_value name="$loccount" exact="$loccount - $ammotable_interrupt.{$lockey}"/>
+                          <remove_value name="$ammotable_interrupt.{$lockey}"/>
+                          <set_value name="$debug_resultamount" exact="0" chance="$debugchance_interrupt"/>
+                        </do_if>
+                        <do_else>
+                          <set_value name="$ammotable_interrupt.{$lockey}" exact="[$ammotable_interrupt.{$lockey} - $locamounttoreduce, 1].max"/>
+                          <set_value name="$loccount" exact="$loccount - ($locamount - $ammotable_interrupt.{$lockey})"/>
+                          <set_value name="$debug_resultamount" exact="$ammotable_interrupt.{$lockey}" chance="$debugchance_interrupt"/>
+                        </do_else>
+                        <debug_text text="'reducing %s to %s'.[$lockey, $debug_resultamount]" chance="$debugchance_interrupt"/>
+                      </do_if>
+                      <remove_value name="$locamount"/>
+                    </do_if>
+                    <remove_value name="$lockey"/>
+                    <do_if value="this.assignedcontrolled.ammostorage.deployable.capacity ge $loccount">
+                      <debug_text text="'reduced purchased deployables to capacity'" chance="$debugchance_interrupt"/>
+                      <break/>
+                    </do_if>
+                  </do_all>
+                  <remove_value name="$locamounttoreduce"/>
+                  <do_if value="this.assignedcontrolled.ammostorage.deployable.capacity lt $loccount">
+                    <debug_text text="'reduced deployables to purchase but still over deployable capacity.'" filter="error"/>
+                  </do_if>
+                </do_elseif>
+              </do_if>
+
+              <!-- if, after evaluating options, we decide that we don't want any ammo, we don't need to resupply. -->
+              <do_if value="not $ammotable_interrupt.keys.count">
+                <set_value name="$resupply_ammo" exact="false"/>
+                <debug_text text="'%1 (%2) does not need nor want ammunition.'.[this.ship.knownname, this.ship]" chance="$debugchance_interrupt"/>
+              </do_if>
+            </do_if>
+            <remove_value name="$loccount"/>
+            <remove_value name="$locadded"/>
+
+            <do_if value="$resupply_units">
+              <set_value name="$unittable_interrupt" exact="table[]"/>
+
+              <set_value name="$checkunits" exact="false"/>
+              <do_if value="this.assignedcontrolled.isjobship">
+                <!--If a job ship, evaluate against the loadout level minus variation to see if the ship would require something with the lowest possible loadout at generation-->
+                <evaluate_unit_storage object="this.assignedcontrolled" level="[0.0f, this.assignedcontrolled.loadoutlevel - this.assignedcontrolled.loadoutvariation].max"
+                                               amounts="$minimum_unitamounts" macros="$minimum_unitmacros"/>
+                <do_all exact="$minimum_unitamounts.count" counter="$interruptcounter">
+                  <do_if value="this.assignedcontrolled.ammostorage.{$minimum_unitmacros.{$interruptcounter}}.count lt $minimum_unitamounts.{$interruptcounter} * $_ammothreshold">
+                    <set_value name="$checkunits" exact="true"/>
+                    <break/>
+                  </do_if>
+                </do_all>
+              </do_if>
+              <do_else>
+                <set_value name="$checkunits" exact="true"/>
+              </do_else>
+              <do_if value="$checkunits">
+                <!-- what can we use? -->
+                <set_value name="$loccount" exact="0"/>
+                <evaluate_unit_storage object="this.assignedcontrolled" level="$loadoutlevel_interrupt" amounts="$output_unitamounts_interrupt" macros="$output_unitmacros_interrupt"/>
+                <do_all exact="$output_unitamounts_interrupt.count" counter="$interruptcounter">
+                  <debug_text text="$interruptcounter + ': macro: %s, wanted amount: %s, amount in storage: %s'.[$output_unitmacros_interrupt.{$interruptcounter}, $output_unitamounts_interrupt.{$interruptcounter}, this.ship.units.{$output_unitmacros_interrupt.{$interruptcounter}}.count]" chance="$debugchance_interrupt"/>
+                  <do_if value="$output_unitamounts_interrupt.{$interruptcounter} and $output_unitmacros_interrupt.{$interruptcounter}.ware">
+                    <set_value name="$currentunitcounts" exact="this.assignedcontrolled.units.{$output_unitmacros_interrupt.{$interruptcounter}}.count"/>
+                    <do_if value="$currentunitcounts lt ($output_unitamounts_interrupt.{$interruptcounter} * $_ammothreshold)">
+                      <set_value name="$unittable_interrupt.{$output_unitmacros_interrupt.{$interruptcounter}.ware}" exact="$output_unitamounts_interrupt.{$interruptcounter}"/>
+                      <set_value name="$locadded"/>
+                      <set_value name="$loccount" exact="$loccount + $output_unitamounts_interrupt.{$interruptcounter}"/>
+                    </do_if>
+                    <do_elseif value="$currentunitcounts">
+                      <set_value name="$unittable_interrupt.{$output_unitmacros_interrupt.{$interruptcounter}.ware}" exact="$currentunitcounts"/>
+                      <set_value name="$loccount" exact="$loccount + $currentunitcounts"/>
+                    </do_elseif>
+                  </do_if>
+                </do_all>
+                <do_if value="not $locadded?">
+                  <clear_table table="$unittable_interrupt"/>
+                </do_if>
+                <do_elseif value="this.assignedcontrolled.units.maxcount lt $loccount">
+                  <debug_text text="'trying to load more units than we can carry'" chance="$debugchance_interrupt"/>
+                  <set_value name="$locamounttoreduce" exact="$loccount - this.assignedcontrolled.units.maxcount"/>
+                  <do_all exact="$unittable_interrupt.keys.count" counter="$_i">
+                    <set_value name="$lockey" exact="$unittable_interrupt.keys.{$_i}"/>
+                    <do_if value="$unittable_interrupt.{$lockey} gt 1">
+                      <set_value name="$locamount" exact="$unittable_interrupt.{$lockey}"/>
+                      <set_value name="$unittable_interrupt.{$lockey}" exact="[$unittable_interrupt.{$lockey} - $locamounttoreduce, 1].max"/>
+                      <set_value name="$loccount" exact="$loccount - ($locamount - $unittable_interrupt.{$lockey})"/>
+                      <debug_text text="'reducing %s to %s'.[$lockey, $unittable_interrupt.{$lockey}]" chance="$debugchance_interrupt"/>
+                      <remove_value name="$locamount"/>
+                    </do_if>
+                    <remove_value name="$lockey"/>
+                    <do_if value="this.assignedcontrolled.units.maxcount ge $loccount">
+                      <debug_text text="'reduced purchased units to capacity'" chance="$debugchance_interrupt"/>
+                      <break/>
+                    </do_if>
+                  </do_all>
+                  <remove_value name="$locamounttoreduce"/>
+                  <do_if value="this.assignedcontrolled.units.maxcount lt $loccount">
+                    <debug_text text="'reduced units to purchase but still over unit capacity.'" filter="error"/>
+                  </do_if>
+                </do_elseif>
+                <remove_value name="$output_unitamounts_interrupt"/>
+                <remove_value name="$output_unitmacros_interrupt"/>
+              </do_if>
+              <remove_value name="$checkunits"/>
+              <!-- if, after evaluating options, we decide that we don't want any drones, we don't need to resupply. -->
+              <do_if value="@$unittable_interrupt.keys.count" negate="true">
+                <set_value name="$resupply_units" exact="false"/>
+                <set_value name="$unittable_interrupt" exact="null"/>
+                <debug_text text="'%1 (%2) does not need nor want any units.'.[this.ship.knownname, this.ship]" chance="$debugchance_interrupt"/>
+              </do_if>
+              <do_else>
+                <debug_text text="'%1 (%2) wants %3 defence drone(s), %4 repair drone(s), %5 cargolifter(s), and %6 mining drone(s).'.[this.ship.knownname, this.ship, @$unittable_interrupt.{macro.ship_gen_s_fightingdrone_01_a_macro.ware}, @$unittable_interrupt.{macro.ship_gen_xs_repairdrone_01_a_macro.ware}, @$unittable_interrupt.{macro.ship_gen_xs_cargodrone_empty_01_a_macro.ware}, @$unittable_interrupt.{macro.ship_gen_s_miningdrone_solid_01_a_macro.ware}]" chance="$debugchance_interrupt"/>
+              </do_else>
+            </do_if>
+            <remove_value name="$loccount"/>
+            <remove_value name="$locadded"/>
+
+            <!-- have subordinates check to see if they have to resupply. -->
+            <set_value name="$subordinates_interrupt" exact="this.ship.subordinates"/>
+            <do_if value="$subordinates_interrupt.count">
+              <do_all exact="$subordinates_interrupt.count" counter="$counter_lib_subordinates">
+                <do_if value="$subordinates_interrupt.{$counter_lib_subordinates}.isclass.[class.ship_xl, class.ship_l, class.ship_m, class.ship_s] and $subordinates_interrupt.{$counter_lib_subordinates}.isoperational">
+                  <do_all exact="$subordinates_interrupt.{$counter_lib_subordinates}.orders.count + 1" counter="$counter_lib_subordinates_orders">
+                    <do_if value="$counter_lib_subordinates_orders gt $subordinates_interrupt.{$counter_lib_subordinates}.orders.count">
+                      <debug_text text="'%1 (%2) signalling %3 (%4) to resupply.'.[this.ship.knownname, this.ship, $subordinates_interrupt.{$counter_lib_subordinates}.knownname, $subordinates_interrupt.{$counter_lib_subordinates}]" chance="$debugchance_interrupt"/>
+                      <signal_objects object="$subordinates_interrupt.{$counter_lib_subordinates}" param="'resupply'" param2="[$urgent, $param_station]" param3="$debugchance_interrupt" comment="param2 = [urgent?, resupplystationID], param3 = $debugchance"/>
+                    </do_if>
+                    <do_elseif value="$subordinates_interrupt.{$counter_lib_subordinates}.orders.{$counter_lib_subordinates_orders}.id" exact="'Resupply'">
+                      <break/>
+                    </do_elseif>
+                  </do_all>
+                </do_if>
+              </do_all>
+            </do_if>
+            <remove_value name="$subordinates_interrupt"/>
+
+            <!-- if we do not have to repair or resupply, end. -->
+            <do_if value="not ($repair or $resupply_ammo or $resupply_units or $restock_subordinates)">
+              <debug_text text="'%1 (%2) needs neither repairs nor resupply. Ending.'.[this.ship.knownname, this.ship]" chance="$debugchance_interrupt"/>
+              <set_value name="$cleanup_interrupt"/>
+            </do_if>
+
+            <do_if value="not $cleanup_interrupt?">
+              <set_value name="$buildclass_interrupt" exact="null"/>
+              <do_if value="$repair">
+                <set_value name="$buildclass_interrupt" exact="this.assignedcontrolled.class"/>
+                <debug_text text="'repairs needed. class: ' + $buildclass_interrupt" chance="$debugchance_interrupt"/>
+              </do_if>
+
+              <set_value name="$resupplystations_interrupt" exact="[]"/>
+              <do_if value="@$param_station.isoperational">
+                <append_to_list name="$resupplystations_interrupt" exact="$param_station"/>
+              </do_if>
+              <do_all exact="3">
+                <!-- If we are repairing,
+                      find the nearest shipyard,
+                      and repair and resupply there. (NB: Check this if repairing and resupplying changes in the future.)
+
+                     If we are just resupplying,
+                      look for trade offers.
+                        prefer stations that have trade offers to service everything we need?
+                        just select the closest one? -->
+
+                <!-- look for a resupply station in this sector. -->
+                <!-- NB: Finding resupply stations via build module might become unreliable in the future. The searches below will have to change in that event. -->
+                <do_if value="@$pass_interrupt lt 1">
+                  <do_if value="this.sector">
+                    <do_if value="this.assignedcontrolled.commander">
+                      <do_for_each name="$locsub" in="this.assignedcontrolled.toplevelcommander.allsubordinates">
+                        <do_if value="not @$resupplystations_interrupt.indexof.{$locsub} and $locsub.cansupplyclass.{this.assignedcontrolled.class}">
+                          <do_if value="@$resupplystations_interrupt.count">
+                            <append_to_list name="$resupplystations_interrupt" exact="$locsub"/>
+                          </do_if>
+                          <do_else>
+                            <set_value name="$resupplystations_interrupt" exact="[$locsub]"/>
+                          </do_else>
+                        </do_if>
+                      </do_for_each>
+                    </do_if>
+                    <do_if value="not @$resupplystations_interrupt.count">
+                      <find_ship_by_true_owner name="$resupplystations_interrupt" cansupplyclass="this.assignedcontrolled.class" faction="this.trueowner" space="this.sector" multiple="true" append="true"/>
+                    </do_if>
+                    <do_if value="not @$onlyuseresupplierships">
+                      <do_if value="this.isplayerowned">
+                        <find_station_by_true_owner name="$resupplystations_interrupt" canequipclass="this.assignedcontrolled.class" canbuildclass="null" faction="this.owner" hascontrolentity="controlpost.shiptrader" space="this.sector" multiple="true" append="true"/>
+                      </do_if>
+                      <do_else>
+                        <find_station name="$resupplystations_interrupt" canequipclass="this.assignedcontrolled.class" canbuildclass="$buildclass_interrupt" canbuildships="$buildclass_interrupt != null" canbuildfor="this.owner" hascontrolentity="controlpost.shiptrader" space="this.sector" knownto="if $isplayerowned then faction.player else null" multiple="true" append="true">
+                          <!-- to do: changed below to be consistent with check in order.dock.
+                                    this does not allow ships with covered ownership to resupply at all unless they have their own resupply stations!
+
+                                    if cover is changed to allow this in the future, change below as appropriate.
+                                      also two more spots a couple of lines below this one. -->
+                          <match_relation_to object="this.assignedcontrolled" relation="enemy" comparison="not"/>
+                        </find_station>
+                      </do_else>
+                    </do_if>
+                    <debug_text text="'%1 (%2) found %3 resupply station(s) in the sector.'.[this.ship.knownname, this.ship, $resupplystations_interrupt.count]" chance="$debugchance_interrupt"/>
+                  </do_if>
+                  <do_else>
+                    <debug_text text="'%1 (%2) is not in a sector. Skipping sector check.'.[this.ship.knownname, this.ship]" chance="$debugchance_interrupt"/>
+                  </do_else>
+                </do_if>
+                <do_if value="@$pass_interrupt lt 2">
+                  <!-- note: $resupplystations_interrupt can be null at this point if the first pass was skipped due to not being in a sector. -->
+                  <do_if value="not @$onlyuseresupplierships and (@$resupplystations_interrupt.count lt 1) and not this.isplayerowned">
+                    <!-- if we can't find any in the sector, look through the nearest two clusters. -->
+                    <find_cluster_in_range name="$localclusters_interrupt" object="this.ship" maxdistance="2" mindistance="0" multiple="true"/>
+                    <find_station name="$resupplystations_interrupt" canequipclass="this.assignedcontrolled.class" canbuildclass="$buildclass_interrupt" canbuildships="$buildclass_interrupt != null" canbuildfor="this.owner" hascontrolentity="controlpost.shiptrader" space="$localclusters_interrupt" knownto="if $isplayerowned then faction.player else null" multiple="true" append="true">
+                      <match_relation_to object="this.assignedcontrolled" relation="enemy" comparison="not"/>
+                    </find_station>
+                    <remove_value name="$localclusters_interrupt"/>
+                    <debug_text text="'%1 (%2) found %3 resupply station(s) within two clusters.'.[this.ship.knownname, this.ship, $resupplystations_interrupt.count]" chance="$debugchance_interrupt"/>
+                  </do_if>
+                </do_if>
+                <!-- update: only do this check if we have to repair. -->
+                <do_if value="@$pass_interrupt lt 3 and @$urgent">
+                  <do_if value="not @$onlyuseresupplierships and (@$resupplystations_interrupt.count lt 1) and not this.isplayerowned">
+                    <set_value name="$thiszone" exact="this.zone"/>
+                    <find_cluster name="$allclusters_interrupt" multiple="true"/>
+                    <shuffle_list list="$allclusters_interrupt"/>
+                    <do_for_each name="$allclusters_interrupt_cluster" in="$allclusters_interrupt">
+                      <do_if value="$thiszone.gatedistance.{$allclusters_interrupt_cluster} ge 0">
+                        <!-- if we still can't find any, just find one in the whole galaxy and designate that.
+                              this had to change due to a structure change. probably extremely expensive if ai ships do this on a regular basis. they shouldn't have to. -->
+                        <find_station name="$resupplystations_interrupt" canequipclass="this.assignedcontrolled.class" canbuildclass="$buildclass_interrupt" canbuildships="$buildclass_interrupt != null" canbuildfor="this.owner" hascontrolentity="controlpost.shiptrader" space="$allclusters_interrupt_cluster" knownto="if $isplayerowned then faction.player else null" multiple="true" append="true">
+                          <match_relation_to object="this.assignedcontrolled" relation="enemy" comparison="not"/>
+                        </find_station>
+                        <do_if value="$resupplystations_interrupt.count">
+                          <break/>
+                        </do_if>
+                      </do_if>
+                    </do_for_each>
+                    <remove_value name="$thiszone"/>
+                    <remove_value name="$allclusters_interrupt"/>
+                    <debug_text text="'%1 (%2) found %3 resupply station(s) in the galaxy. Warning: it should very rarely get to this point. Hull percentage: %4'.[this.ship.knownname, this.ship, $resupplystations_interrupt.count, this.ship.hullpercentage]" chance="$debugchance_interrupt"/>
+                  </do_if>
+                </do_if>
+
+                <do_if value="@$ammotable_interrupt.keys.count">
+                  <set_value name="$evalammotable" exact="table[]"/>
+                  <do_all exact="$ammotable_interrupt.keys.count" counter="$int_i">
+                    <set_value name="$evalammotable.{$ammotable_interrupt.keys.{$int_i}}" exact="1"/>
+                  </do_all>
+                </do_if>
+                <do_if value="@$unittable_interrupt.keys.count">
+                  <set_value name="$evalunittable" exact="table[]"/>
+                  <do_all exact="$unittable_interrupt.keys.count" counter="$int_i">
+                    <set_value name="$evalunittable.{$unittable_interrupt.keys.{$int_i}}" exact="1"/>
+                  </do_all>
+                </do_if>
+                <!-- if we need repairs, find the closest repair station, and repair and resupply there.
+                      NB: this assumes that shipyards will also be able to build ammo and units so you could buy them fully outfitted.
+                            if this is not the case, the stuff in the do_else will have to be placed outside the do_else, parallel to the first do_if below. -->
+                <!-- look through the resupply stations that we found and filter out those that won't be useful. -->
+                <do_all exact="@$resupplystations_interrupt.count" counter="$counter_lib_resupplystations" reverse="true">
+                  <debug_text text="'evaluating %s %s %s'.[@$resupplystations_interrupt.{$counter_lib_resupplystations}.idcode, @$resupplystations_interrupt.{$counter_lib_resupplystations}.knownname, @$resupplystations_interrupt.{$counter_lib_resupplystations}]" chance="0"/>
+                  <do_if value="$blacklist_stations.count and $blacklist_stations.indexof.{$resupplystations_interrupt.{$counter_lib_resupplystations}}">
+                    <debug_text text="'remove 1: %s %s %s'.[@$resupplystations_interrupt.{$counter_lib_resupplystations}.idcode, @$resupplystations_interrupt.{$counter_lib_resupplystations}.knownname, @$resupplystations_interrupt.{$counter_lib_resupplystations}]" chance="0"/>
+                    <remove_value name="$resupplystations_interrupt.{$counter_lib_resupplystations}"/>
+                  </do_if>
+                  <do_elseif value="$resupplystations_interrupt.{$counter_lib_resupplystations} == this.assignedcontrolled">
+                    <debug_text text="'remove 2: %s %s %s'.[@$resupplystations_interrupt.{$counter_lib_resupplystations}.idcode, @$resupplystations_interrupt.{$counter_lib_resupplystations}.knownname, @$resupplystations_interrupt.{$counter_lib_resupplystations}]" chance="0"/>
+                    <remove_value name="$resupplystations_interrupt.{$counter_lib_resupplystations}"/>
+                  </do_elseif>
+                  <do_elseif value="($param_station != $resupplystations_interrupt.{$counter_lib_resupplystations}) and $resupplystations_interrupt.{$counter_lib_resupplystations}.isclass.ship and $resupplystations_interrupt.{$counter_lib_resupplystations}.type == shiptype.resupplier and @$resupplystations_interrupt.{$counter_lib_resupplystations}.order.id != 'SupplyFleet'">
+                    <debug_text text="'remove 3: %s %s %s'.[@$resupplystations_interrupt.{$counter_lib_resupplystations}.idcode, @$resupplystations_interrupt.{$counter_lib_resupplystations}.knownname, @$resupplystations_interrupt.{$counter_lib_resupplystations}]" chance="0"/>
+                    <remove_value name="$resupplystations_interrupt.{$counter_lib_resupplystations}"/>
+                  </do_elseif>
+                  <do_elseif value="($param_station != $resupplystations_interrupt.{$counter_lib_resupplystations}) and $resupplystations_interrupt.{$counter_lib_resupplystations}.istrafficlevel.gridlock">
+                    <debug_text text="'remove 4: %s %s %s'.[@$resupplystations_interrupt.{$counter_lib_resupplystations}.idcode, @$resupplystations_interrupt.{$counter_lib_resupplystations}.knownname, @$resupplystations_interrupt.{$counter_lib_resupplystations}]" chance="0"/>
+                    <remove_value name="$resupplystations_interrupt.{$counter_lib_resupplystations}"/>
+                  </do_elseif>
+                  <do_elseif value="$repair and not $resupplystations_interrupt.{$counter_lib_resupplystations}.canbuildclass.{this.ship.class} and not $resupplystations_interrupt.{$counter_lib_resupplystations}.cansupplyclass.{this.ship.class}">
+                    <debug_text text="'remove 5: %s %s %s'.[@$resupplystations_interrupt.{$counter_lib_resupplystations}.idcode, @$resupplystations_interrupt.{$counter_lib_resupplystations}.knownname, @$resupplystations_interrupt.{$counter_lib_resupplystations}]" chance="0"/>
+                    <remove_value name="$resupplystations_interrupt.{$counter_lib_resupplystations}"/>
+                  </do_elseif>
+                  <do_elseif value="$resupply_ammo and (not $resupplystations_interrupt.{$counter_lib_resupplystations}.canbuildequipment.{$evalammotable.keys.list} or not $resupplystations_interrupt.{$counter_lib_resupplystations}.hasresourcesfor.{$evalammotable})">
+                    <debug_text text="'remove 6: %s %s %s. canbuildequipment: %s, hasresources: %s, wanted ammo: %s'.[@$resupplystations_interrupt.{$counter_lib_resupplystations}.idcode, @$resupplystations_interrupt.{$counter_lib_resupplystations}.knownname, @$resupplystations_interrupt.{$counter_lib_resupplystations}, $resupplystations_interrupt.{$counter_lib_resupplystations}.canbuildequipment.{$evalammotable.keys.list}, $resupplystations_interrupt.{$counter_lib_resupplystations}.hasresourcesfor.{$evalammotable}, $evalammotable]" chance="0"/>
+                    <remove_value name="$resupplystations_interrupt.{$counter_lib_resupplystations}"/>
+                  </do_elseif>
+                  <do_elseif value="$resupply_units and (not $resupplystations_interrupt.{$counter_lib_resupplystations}.canbuildequipment.{$evalunittable.keys.list} or not $resupplystations_interrupt.{$counter_lib_resupplystations}.hasresourcesfor.{$evalunittable})">
+                    <debug_text text="'remove 7: %s %s %s'.[@$resupplystations_interrupt.{$counter_lib_resupplystations}.idcode, @$resupplystations_interrupt.{$counter_lib_resupplystations}.knownname, @$resupplystations_interrupt.{$counter_lib_resupplystations}]" chance="0"/>
+                    <remove_value name="$resupplystations_interrupt.{$counter_lib_resupplystations}"/>
+                  </do_elseif>
+                  <do_elseif value="(not this.assignedcontrolled.iscapitalship or ($resupplystations_interrupt.{$counter_lib_resupplystations}.isclass.ship and $resupplystations_interrupt.{$counter_lib_resupplystations}.type != shiptype.resupplier)) and not $resupplystations_interrupt.{$counter_lib_resupplystations}.dockingallowed.{this.assignedcontrolled}">
+                    <debug_text text="'remove 8: %s %s %s'.[@$resupplystations_interrupt.{$counter_lib_resupplystations}.idcode, @$resupplystations_interrupt.{$counter_lib_resupplystations}.knownname, @$resupplystations_interrupt.{$counter_lib_resupplystations}]" chance="0"/>
+                    <remove_value name="$resupplystations_interrupt.{$counter_lib_resupplystations}"/>
+                  </do_elseif>
+                </do_all>
+                <debug_text text="'%1 (%2) filtered down the list of resupply station(s) to %3. repair: %4, resupply ammo: %5, resupply units: %6.'.[this.ship.knownname, this.ship, $resupplystations_interrupt.count, $repair, $resupply_ammo, $resupply_units]" chance="$debugchance_interrupt"/>
+                <remove_value name="$evalunittable"/>
+                <remove_value name="$evalammotable"/>
+
+                <!-- in the unlikely event that we find several resupplystations, pick the closest one. in most cases, expect that $resupplystations_interrupt.count would be exactly one. -->
+                <do_if value="@$resupplystations_interrupt.count">
+                  <do_all exact="$resupplystations_interrupt.count" counter="$counter_lib_resupplystations">
+                    <do_if value="$resupplystations_interrupt.{$counter_lib_resupplystations}.dockingallowed.{this.assignedcontrolled} or (@$resupplystations_interrupt.{$counter_lib_resupplystations}.type == shiptype.resupplier)">
+                      <do_if value="$resupplystations_interrupt.{$counter_lib_resupplystations}.distanceto.{this.ship} lt @$destination_station_interrupt.distanceto.{this.ship}">
+                        <set_value name="$destination_station_interrupt" exact="$resupplystations_interrupt.{$counter_lib_resupplystations}"/>
+                      </do_if>
+                      <do_elseif value="$destination_station_interrupt?" negate="true">
+                        <set_value name="$destination_station_interrupt" exact="$resupplystations_interrupt.{$counter_lib_resupplystations}"/>
+                      </do_elseif>
+                    </do_if>
+                  </do_all>
+                </do_if>
+
+                <!-- if we still haven't found a repair station at this point, we never will. End.
+                        changed. the filters above could filter out all found stations in the space. if so, look through a wider area, but never more than 3 times total. -->
+                <do_if value="not $destination_station_interrupt?">
+                  <set_value name="$pass_interrupt" exact="@$pass_interrupt + 1"/>
+                  <do_if value="this.isplayerowned or @$onlyuseresupplierships">
+                    <!-- if we are only allowed to use resupplier ships, we should only look in the sector we're in. -->
+                    <set_value name="$pass_interrupt" exact="0"/>
+                  </do_if>
+
+                  <!-- if we got to this point, we found a station but they were all filtered out, either
+                          because there weren't any stations that could do everything we need,
+                          or because there weren't any in the space that was searched in.
+
+                       first attempt is to find a station that can do repairs and resupply all ammo and units needed by this.ship.
+                          if the first pass filtered out all stations, we'll have to do it in stages:
+
+                          if repairing, just do repair.
+                          if not repairing, but resupplying ammo, just resupply ammo.
+                          otherwise, we just need to resupply units.
+
+                          and do each successive pass over a wider area. (only for NPC ships. player-owned ships constrained to sector. we don't want them traversing multiple sectors to get ammo.)
+
+                       NB: if the resupply_ammo and resupply_units do_ifs above make it back into the do_else above those, then this shouldn't be necessary. -->
+                  <do_if value="$repair">
+                    <debug_text text="'no resupply ship or station found that can do everything we need. checking for one that can just do repairs.'" chance="$debugchance_interrupt"/>
+                    <set_value name="$resupply_ammo" exact="false"/>
+                    <set_value name="$resupply_units" exact="false"/>
+                  </do_if>
+                  <do_elseif value="$resupply_ammo">
+                    <debug_text text="'no resupply ship or station found that can do everything we need. checking for one that can just supply ammo.'" chance="$debugchance_interrupt"/>
+                    <set_value name="$resupply_units" exact="false"/>
+                  </do_elseif>
+
+                  <!-- NB: we do not need to specify a resupply station to restock subordinates. finding a station, if needed is done in order.restock.subordinates -->
+                  <do_if value="not $restock_subordinates and ($pass_interrupt gt 2)">
+                    <debug_text text="' %1 (%2) cannot find any stations from which to repair and resupply. Ending.'.[this.ship.knownname, this.ship]" chance="$debugchance_interrupt"/>
+                    <set_value name="$cleanup_interrupt"/>
+                    <break/>
+                  </do_if>
+                </do_if>
+                <do_else>
+                  <debug_text text="'%s %s %s moving to %s %s %s %s for supplies.'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, $destination_station_interrupt.class, $destination_station_interrupt.idcode, $destination_station_interrupt.knownname, $destination_station_interrupt]" chance="$debugchance_interrupt"/>
+                  <break/>
+                </do_else>
+              </do_all>
+
+              <do_if value="not $cleanup_interrupt?">
+                <do_if value="$destination_station_interrupt?">
+                  <do_if value="this.ship.sector" chance="$debugchance_interrupt">
+                    <debug_text text="'%1 (%2) in %3, %4, %5 has found and designated a repair station: %6 in %7, %8, %9. Going there.'.[this.ship.knownname, this.ship, this.ship.zone.knownname, this.ship.sector.knownname, this.ship.cluster.knownname, $destination_station_interrupt.knownname, $destination_station_interrupt.zone.knownname, $destination_station_interrupt.sector.knownname, $destination_station_interrupt.cluster.knownname]"/>
+                  </do_if>
+                  <do_elseif value="$debugchance_interrupt">
+                    <debug_text text="'%1 (%2) in %3 has found and designated a repair station: %4 in %5, %6, %7. Going there.'.[this.ship.knownname, this.ship, this.ship.zone.knownname, $destination_station_interrupt.knownname, $destination_station_interrupt.zone.knownname, $destination_station_interrupt.sector.knownname, $destination_station_interrupt.cluster.knownname]"/>
+                  </do_elseif>
+
+                  <!-- only get countermeasures if we're also going to dock to get something else. -->
+                  <do_if value="$resupply_ammo and $countermeasures_numneeded_interrupt">
+                    <set_value name="$availablecmwares_interrupt" exact="$destination_station_interrupt.buildequipment.countermeasures.list"/>
+                    <debug_text text="'%1 can build %2 types of countermeasure that this ship can use. They are:'.[$destination_station_interrupt.knownname, $availablecmwares_interrupt.count]" chance="$debugchance_interrupt"/>
+                    <do_all exact="$availablecmwares_interrupt.count" counter="$counter_lib_availablecmwares" chance="$debugchance_interrupt">
+                      <debug_text text="$availablecmwares_interrupt.{$counter_lib_availablecmwares}"/>
+                    </do_all>
+
+                    <set_value name="$selectedcmwares_interrupt" exact="[]"/>
+                    <do_all exact="$availablecmwares_interrupt.count" counter="$counter_lib_availablecmwares">
+                      <!-- we have no criteria for selection at the moment, so just add it in if we have space. -->
+                      <debug_text text="'adding %s %s to selection.'.[$availablecmwares_interrupt.{$counter_lib_availablecmwares}.objectmacro.class, $availablecmwares_interrupt.{$counter_lib_availablecmwares}]" chance="$debugchance_interrupt"/>
+                      <append_to_list name="$selectedcmwares_interrupt" exact="$availablecmwares_interrupt.{$counter_lib_availablecmwares}"/>
+                    </do_all>
+                    <remove_value name="$availablecmwares_interrupt"/>
+
+                    <do_all exact="$selectedcmwares_interrupt.count" counter="$counter_lib_selectedcmwares">
+                      <set_value name="$cmware_interrupt" exact="$selectedcmwares_interrupt.{$counter_lib_selectedcmwares}"/>
+                      <set_value name="$ammotable_interrupt.{$cmware_interrupt}" exact="($countermeasures_numneeded_interrupt / $selectedcmwares_interrupt.count)i"/>
+                      <debug_text text="'%1 (%2) selected %3. Shopping list so far: %4'.[this.ship.knownname, this.ship, $cmware_interrupt, $ammotable_interrupt]" chance="$debugchance_interrupt"/>
+                    </do_all>
+                    <remove_value name="$cmware_interrupt"/>
+                    <remove_value name="$selectedcmwares_interrupt"/>
+                  </do_if>
+
+                  <!-- moved this to first when all new orders from this script were made immediate and call to dock order was added so that the ship would first dock, then get repaired (in which case, it should not undock and redock at the same location) -->
+                  <do_if value="$repair and ($hullpercent gt this.ship.hullpercentage or $damagedcomponents.count)">
+                    <debug_text text="'%1 (%2) going in for repairs at %3 in %4, %5.'.[this.ship.knownname, this.ship, $destination_station_interrupt.knownname, $destination_station_interrupt.sector.knownname, $destination_station_interrupt.cluster.knownname]" chance="$debugchance_interrupt"/>
+                    <create_order object="this.ship" id="'Repair'" immediate="true">
+                      <param name="destination" value="$destination_station_interrupt"/>
+                      <param name="hullpercent" value="$hullpercent"/>
+                      <param name="damagedcomponents" value="$damagedcomponents"/>
+                      <param name="repairall" value="@$repairall"/>
+                      <param name="acceptedcost" value="@$repaircost"/>
+                      <param name="urgent" value="@$urgent"/>
+                      <param name="blacklist_stations" value="$blacklist_stations"/>
+                      <param name="internalorder" value="$internalorder_interrupt"/>
+                      <param name="debugchance" value="$debugchance_interrupt"/>
+                    </create_order>
+                  </do_if>
+
+                  <do_if value="$resupply_ammo or $resupply_units">
+                    <do_if value="true" chance="$debugchance_interrupt">
+                      <set_value name="$debug_ammo" exact="@$ammotable_interrupt"/>
+                      <set_value name="$debug_units" exact="@$unittable_interrupt"/>
+                    </do_if>
+                    <set_value name="$evalammotable" exact="table[]"/>
+                    <set_value name="$evalunittable" exact="table[]"/>
+                    <!-- removedunits and removedammo are the current amounts that this.assignedcontrolled has which have to be removed before amounts are clamped.
+                          they will be added back after prices are calculated, before equip orders are created. -->
+                    <set_value name="$removedammo" exact="table[]"/>
+                    <set_value name="$removedunits" exact="table[]"/>
+                    <do_if value="@$ammotable_interrupt.keys.count">
+                      <do_for_each name="$locammo" valuename="$loctableamount" in="$ammotable_interrupt">
+                        <set_value name="$removedamount" exact="this.assignedcontrolled.ammostorage.{$locammo.objectmacro}.count"/>
+                        <set_value name="$locamount" exact="$loctableamount - $removedamount"/>
+                        <do_if value="$locamount gt 0">
+                          <set_value name="$evalammotable.{$locammo}" exact="$locamount"/>
+                        </do_if>
+                        <do_if value="$removedamount">
+                          <set_value name="$removedammo.{$locammo}" exact="$removedamount"/>
+                        </do_if>
+                      </do_for_each>
+                      <remove_value name="$removedamount"/>
+                      <remove_value name="$locamount"/>
+                    </do_if>
+                    <do_if value="@$unittable_interrupt.keys.count">
+                      <do_for_each name="$locunit" valuename="$loctableamount" in="$unittable_interrupt">
+                        <set_value name="$removedamount" exact="this.assignedcontrolled.units.{$locunit.objectmacro}.count"/>
+                        <set_value name="$locamount" exact="$loctableamount - $removedamount"/>
+                        <do_if value="$locamount gt 0">
+                          <set_value name="$evalunittable.{$locunit}" exact="$locamount"/>
+                        </do_if>
+                        <do_if value="$removedamount">
+                          <set_value name="$removedunits.{$locunit}" exact="$removedamount"/>
+                        </do_if>
+                      </do_for_each>
+                      <remove_value name="$removedamount"/>
+                      <remove_value name="$locamount"/>
+                    </do_if>
+                    <clamp_equipment_amount resultammo="$ammotable_interrupt" resultunits="$unittable_interrupt" object="this.assignedcontrolled" builder="$destination_station_interrupt" ammo="$evalammotable" units="$evalunittable"/>
+                    <remove_value name="$evalunittable"/>
+                    <remove_value name="$evalammotable"/>
+
+                    <!-- do not add build if all values were clamped to 0. -->
+                    <do_if value="@$ammotable_interrupt.keys.count or @$unittable_interrupt.keys.count">
+                      <set_value name="$restockprice" exact="0Cr"/>
+
+                      <do_if value="$ammotable_interrupt">
+                        <do_all exact="$ammotable_interrupt.keys.count" counter="$ammo_i">
+                          <set_value name="$ammokey" exact="$ammotable_interrupt.keys.{$ammo_i}"/>
+                          <do_if value="typeof $ammokey == datatype.ware">
+                            <do_if value="not this.isplayerowned and $destination_station_interrupt.isplayerowned">
+                              <set_value name="$restockprice" operation="add" exact="$destination_station_interrupt.buildprice.{$ammokey} * $ammotable_interrupt.{$ammokey}"/>
+                            </do_if>
+                          </do_if>
+                          <do_elseif value="typeof $ammokey == datatype.macro and $ammokey.ware">
+                            <do_if value="not this.isplayerowned and $destination_station_interrupt.isplayerowned">
+                              <set_value name="$restockprice" operation="add" exact="$destination_station_interrupt.buildprice.{$ammokey.ware} * $ammotable_interrupt.{$ammokey}"/>
+                            </do_if>
+                          </do_elseif>
+                        </do_all>
+                      </do_if>
+                      <do_if value="@$removedammo.keys.count">
+                        <!-- add the ammo we already have back to the ammotable. had to be removed for clamp_equipment_amount and for determining price. -->
+                        <do_for_each name="$locammo" valuename="$locamount" in="$removedammo">
+                          <do_if value="$locamount gt 0">
+                            <do_if value="not $ammotable_interrupt">
+                              <!-- $ammotable_interrupt can be set to null in clamp_equipment_amount. if $removedammo is populated, they need to be added back in so that existing equipment is not removed. -->
+                              <set_value name="$ammotable_interrupt" exact="table[]"/>
+                            </do_if>
+                            <debug_text text="'adding %s %s to %s. total wanted: %s'.[$locamount, $locammo, @$ammotable_interrupt.{$locammo}, @$debug_ammo.{$locammo}]" chance="$debugchance_interrupt"/>
+                            <set_value name="$ammotable_interrupt.{$locammo}" exact="@$ammotable_interrupt.{$locammo} + $locamount"/>
+                          </do_if>
+                        </do_for_each>
+                      </do_if>
+                      <remove_value name="$removedammo"/>
+
+                      <do_if value="$unittable_interrupt">
+                        <do_all exact="$unittable_interrupt.keys.count" counter="$unit_i">
+                          <set_value name="$unitkey" exact="$unittable_interrupt.keys.{$unit_i}"/>
+                          <do_if value="typeof $unitkey == datatype.ware">
+                            <do_if value="not this.isplayerowned and $destination_station_interrupt.isplayerowned">
+                              <set_value name="$restockprice" operation="add" exact="$destination_station_interrupt.buildprice.{$unitkey} * $unittable_interrupt.{$unitkey}"/>
+                            </do_if>
+                          </do_if>
+                          <do_elseif value="typeof $unitkey == datatype.macro and $unitkey.ware">
+                            <do_if value="not this.isplayerowned and $destination_station_interrupt.isplayerowned">
+                              <set_value name="$restockprice" operation="add" exact="$destination_station_interrupt.buildprice.{$unitkey.ware} * $unittable_interrupt.{$unitkey}"/>
+                            </do_if>
+                          </do_elseif>
+                        </do_all>
+                      </do_if>
+                      <do_if value="@$removedunits.keys.count">
+                        <!-- add the units we already have back to the unittable. had to be removed for clamp_equipment_amount and for determining price. -->
+                        <do_for_each name="$locunit" valuename="$locamount" in="$removedunits">
+                          <do_if value="$locamount gt 0">
+                            <do_if value="not $unittable_interrupt">
+                              <!-- $unittable_interrupt can be set to null in clamp_equipment_amount. if $removedunits is populated, they need to be added back in so that existing equipment is not removed. -->
+                              <set_value name="$unittable_interrupt" exact="table[]"/>
+                            </do_if>
+                            <debug_text text="'adding %s %s to %s. total wanted: %s'.[$locamount, $locunit, @$unittable_interrupt.{$locunit}, @$debug_units.{$locunit}]" chance="$debugchance_interrupt"/>
+                            <set_value name="$unittable_interrupt.{$locunit}" exact="@$unittable_interrupt.{$locunit} + $locamount"/>
+                          </do_if>
+                        </do_for_each>
+                      </do_if>
+                      <remove_value name="$removedunits"/>
+
+                      <do_all exact="@$debug_ammo.keys.count" counter="$_i" chance="$debugchance_interrupt">
+                        <set_value name="$locware" exact="$debug_ammo.keys.{$_i}"/>
+                        <debug_text text="'%s clamped from %s to %s'.[$locware, $debug_ammo.{$locware}, if $ammotable_interrupt.{$locware}? then $ammotable_interrupt.{$locware} else 0]"/>
+                        <remove_value name="$locware"/>
+                      </do_all>
+                      <do_all exact="@$debug_units.keys.count" counter="$_i" chance="$debugchance_interrupt">
+                        <set_value name="$locware" exact="$debug_units.keys.{$_i}"/>
+                        <debug_text text="'%s clamped from %s to %s'.[$locware, $debug_units.{$locware}, if $unittable_interrupt.{$locware}? then $unittable_interrupt.{$locware} else 0]"/>
+                        <remove_value name="$locware"/>
+                      </do_all>
+                      <remove_value name="$debug_units"/>
+                      <remove_value name="$debug_ammo"/>
+                      <debug_text text="'Restock price for NPC build at player station is ' + $restockprice" chance="$debugchance_interrupt"/>
+                      <debug_text text="'%1 (%2) placed resupply order at %3 in %4, %5, %6 for ammo %7 and units %8'.[this.ship.knownname, this.ship, $destination_station_interrupt.knownname, $destination_station_interrupt.zone.knownname, $destination_station_interrupt.sector.knownname, $destination_station_interrupt.cluster.knownname, $ammotable_interrupt, $unittable_interrupt]" chance="$debugchance_interrupt"/>
+                      <add_build_to_modify_ship object="$destination_station_interrupt" buildobject="this.ship" ammo="$ammotable_interrupt" units="$unittable_interrupt" price="$restockprice" result="$build_interrupt" immediate="true" internal="$internalorder_interrupt"/>
+                      <do_if value="not $build_interrupt">
+                        <debug_text text="'Build not successfully generated from add_build_to_modify_ship.'" filter="error"/>
+                      </do_if>
+                    </do_if>
+                  </do_if>
+                </do_if>
+
+                <do_if value="$restock_subordinates">
+                  <debug_text text="'%1 (%2) restocking subordinates.'.[this.ship.knownname, this.ship]" chance="$debugchance_interrupt"/>
+                  <create_order object="this.ship" id="'RestockSubordinates'" immediate="true">
+                    <param name="internalorder" value="$internalorder_interrupt"/>
+                    <param name="debugchance" value="$debugchance_interrupt"/>
+                  </create_order>
+                </do_if>
+              </do_if>
+            </do_if>
+          </do_if>
+        </do_if>
+        <remove_value name="$_ammothreshold"/>
+        <remove_value name="$buildclass_interrupt"/>
+        <remove_value name="$resupplystations_interrupt"/>
+        <remove_value name="$pass_interrupt"/>
+
+        <remove_value name="$destination_station_interrupt"/>
+
+        <remove_value name="$loadoutlevel_interrupt"/>
+        <remove_value name="$weapons_interrupt"/>
+        <remove_value name="$countermeasures_numneeded_interrupt"/>
+        <remove_value name="$missiles_numneeded_interrupt"/>
+        <remove_value name="$ammotable_interrupt"/>
+        <remove_value name="$unittable_interrupt"/>
+
+        <remove_value name="$param_station"/>
+        <remove_value name="$_deployableamounttobuy"/>
+        <remove_value name="$_totaldeployableamount"/>
+        <remove_value name="$_override_deployablemacroamounts"/>
+        <remove_value name="$_override_deployablecategory"/>
+        <remove_value name="$repair"/>
+        <remove_value name="$resupply_ammo"/>
+        <remove_value name="$resupply_units"/>
+        <remove_value name="$restock_subordinates"/>
+        <remove_value name="$urgent"/>
+        <remove_value name="$cleanup_interrupt"/>
+        <remove_value name="$onlyuseresupplierships"/>
+        <remove_value name="$internalorder_interrupt"/>
+        <remove_value name="$debugchance_interrupt"/>
+      </actions>
+    </library>
+  </interrupts>
+</aiscript>

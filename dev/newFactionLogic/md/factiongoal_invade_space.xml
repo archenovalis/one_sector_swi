@@ -1,0 +1,1379 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="FactionGoal_Invade_Space" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+    <!--Add goal to global variable-->
+    <cue name="RegisterGoal">
+      <actions>
+        <do_if value="not global.$FactionGoals?">
+          <create_list name="global.$FactionGoals"/>
+        </do_if>
+        <set_value name="Start.$Name" exact="'Invade'"/>
+        <append_to_list name="global.$FactionGoals" exact="table[$EvaluationCue = Evaluate, $EvaluateEventLib = null, $TriggerCue = Start]"/>
+      </actions>
+    </cue>
+
+    <library name="EvaluateSector" purpose="run_actions">
+      <params>
+        <param name="Faction"/>
+        <param name="Sector"/>
+        <param name="DebugChance" default="0"/>
+      </params>
+      <actions>
+        <!--Check if there are any enemy factions owning or contesting this sector-->
+        <do_if value="$Sector.iscontested">
+          <set_value name="$TargetFactions" exact="$Sector.contestingfactions"/>
+          <do_for_each name="$ContestingFaction" in="$TargetFactions">
+            <do_if value="$ContestingFaction.hasrelation.killmilitary.{$Faction}">
+              <!--TODO @Owen better consideration over the other factions contesting this sector. Are allies already dealing with enemies there?-->
+              <debug_text text="$ContestingFaction.knownname + ' has killmilitary relation'" chance="$DebugChance"/>
+              <return value="true"/>
+            </do_if>
+          </do_for_each>
+        </do_if>
+        <do_else>
+          <do_if value="$Sector.owner.hasrelation.killmilitary.{$Faction}">
+            <debug_text text="$Sector.owner.knownname + ' has killmilitary relation'" chance="$DebugChance"/>
+            <return value="true"/>
+          </do_if>
+          <do_elseif value="$Sector.owner == faction.ownerless and $Sector.factionlogic">
+            <return value="true"/>
+          </do_elseif>
+        </do_else>
+        <return value="false"/>
+      </actions>
+    </library>
+
+    <library name="Evaluate">
+      <actions>
+        <set_value name="$ExpeditionCount" exact="0"/>
+        <do_for_each name="$RunningGoal" in="$Goals">
+          <do_if value="$RunningGoal.static == md.FactionGoal_Invade_Space.Start and $RunningGoal.$ExpeditionForce">
+            <set_value name="$ExpeditionCount" operation="add"/>
+          </do_if>
+        </do_for_each>
+
+        <!--Check if any adjacent sectors are owned by enemies (do not check true owner)-->
+        <do_if value="$ExpeditionEnemies.count and $ExpeditionCount lt 2">
+          <set_value name="$EvaluationSectors" exact="$AdjacentSectors.clone"/>
+          <do_if value="$ClaimedSectors.count">
+            <find_sector name="$EvaluationSectors" excluded="$AdjacentSectors" owner="$ExpeditionEnemies" reachablefrom="$ClaimedSectors.{1}" append="true"/>
+          </do_if>
+        </do_if>
+        <do_else>
+          <!--no need to clone the list-->
+          <set_value name="$EvaluationSectors" exact="$AdjacentSectors"/>
+        </do_else>
+        <shuffle_list list="$EvaluationSectors"/>
+        <do_all exact="$EvaluationSectors.count" counter="$Eval_Counter1">
+          <set_value name="$EvaluationTarget" exact="$EvaluationSectors.{$Eval_Counter1}"/>
+          <set_value name="$IsExpedition" exact="not $AdjacentSectors.indexof.{$EvaluationTarget}"/>
+          <debug_text text="'%1 evaluating %2 for invasion.'.[$Faction, $EvaluationTarget.knownname]" chance="$DebugChance2"/>
+
+          <!--Check if faction is contesting this sector. If so, it should rather get the Hold_Space goal (or it is part-way through invading)-->
+          <do_if value="not $EvaluationTarget.iscontestedby.{$Faction}">
+            <set_value name="$Valid" exact="true"/>
+            <!--Check if we are already invading the sector-->
+            <do_for_each name="$RunningGoal" in="$Goals">
+              <do_if value="$RunningGoal.static == md.FactionGoal_Invade_Space.Start">
+                <do_if value="$RunningGoal.$Target == $EvaluationTarget or ($IsExpedition and $RunningGoal.$LocalSectors.indexof.{$EvaluationTarget})">
+                  <debug_text text="'%1 evaluating %2 for invasion. Target already designated for invasion, discarding.'.[$Faction, $EvaluationTarget.knownname]" chance="$DebugChance2"/>
+                  <set_value name="$Valid" exact="false"/>
+                  <break/>
+                </do_if>
+              </do_if>
+            </do_for_each>
+
+            <do_if value="$Valid">
+              <!--Check if there are any enemy factions owning or contesting this sector-->
+              <run_actions ref="md.FactionGoal_Invade_Space.EvaluateSector" result="$Valid">
+                <param name="Faction" value="$Faction"/>
+                <param name="Sector" value="$EvaluationTarget"/>
+                <param name="DebugChance" value="$DebugChance2"/>
+              </run_actions>
+
+              <do_if value="$Valid">
+                <!--TODO: Evaluate weight-->
+                <set_value name="$EvaluatedWeight" min="0.1" max="1.0"/>
+                <debug_text text="'%1 considers %2 fair game. They want it %3 badly.'.[$Faction, $EvaluationTarget.knownname, $EvaluatedWeight]" chance="$DebugChance2"/>
+
+                <set_value name="$MatchingIntel" exact="null"/>
+                <do_all exact="$Intel.count" counter="$Intel_Counter">
+                  <do_if value="$Intel.{$Intel_Counter}.{1} == $EvaluationTarget">
+                    <set_value name="$MatchingIntel" exact="$Intel.{$Intel_Counter}"/>
+                    <break/>
+                  </do_if>
+                </do_all>
+
+                <do_if value="$MatchingIntel">
+                  <set_value name="$ReconData" exact="[$MatchingIntel.{2}, $MatchingIntel.{3}]"/>
+                  <debug_text text="'Evaluation: %1 has prior intel on %2. Recon_NumObjects: %3 Last updated: %4'.[$Faction, $EvaluationTarget.knownname, $ReconData.{1}, $ReconData.{2}]" chance="$DebugChance2"/>
+                </do_if>
+                <do_else>
+                  <set_value name="$ReconData" exact="[10, 0]"/>
+                  <debug_text text="'Evaluation: %1 has no intel on %2. Recon_NumObjects: %3 Last updated: %4'.[$Faction, $EvaluationTarget.knownname, $ReconData.{1}, $ReconData.{2}]" chance="$DebugChance2"/>
+                </do_else>
+
+                <append_to_list name="$EvaluatedGoals" exact="table[
+                                  $FactionCue = namespace,
+                                  $Faction = $Faction,
+                                  $TriggerCue = global.$FactionGoals.{$i}.$TriggerCue,
+                                  $Weight = $EvaluatedWeight,
+                                  $Target = $EvaluationTarget,
+                                  $ReconData = $ReconData,
+                                  $ExpeditionForce = $IsExpedition,
+                                  $DebugChance = $DebugChance,
+                                  $DebugChance2 = $DebugChance2]"/>
+
+                <remove_value name="$MatchingIntel"/>
+                <remove_value name="$ReconData"/>
+              </do_if>
+            </do_if>
+            <do_else>
+              <debug_text text="'%1 evaluating %2 for invasion. Target is friendly, discarding.'.[$Faction, $EvaluationTarget.knownname]" chance="0"/>
+            </do_else>
+          </do_if>
+        </do_all>
+        <remove_value name="$EvaluationSectors"/>
+        <remove_value name="$ExpeditionCount"/>
+      </actions>
+    </library>
+
+    <!--Instance the goal by passing a list.
+    This cue may be signalled with other parameters to trigger child cues e.g. event.param.{1} == 'generate_report' - See Process_Signal cue-->
+    <cue name="Start" instantiate="true" namespace="this" version="4">
+      <conditions>
+        <event_cue_signalled/>
+        <check_value value="this.state == cuestate.waiting and typeof event.param == datatype.table"/>
+      </conditions>
+      <actions>
+        <!--Params-->
+        <set_value name="$FactionCue" exact="event.param.$FactionCue"/>
+        <set_value name="$Faction" exact="event.param.$Faction"/>
+        <set_value name="$GoalWeight" exact="event.param.$Weight"/>
+        <set_value name="$Target" exact="event.param.$Target" comment="Target sector"/>
+        <set_value name="$ExpeditionForce" exact="@event.param.$ExpeditionForce" comment="Long range invasion force with no station construction"/>
+        <assert value="$Target.isclass.sector" text="$DebugText + 'Target is not a sector, not currently supported [Owen]'"/>
+
+        <!-- Recon_NumObjects is the number of hostile object "points" this faction thinks there are in the target space. If they have no clue, they assume there will be 10.
+             Recon_LastUpdate is when Recon_NumObjects was last updated. If working on an unverified assumption, this is 0.
+             IntelCurrent is set if the last time the faction got an update regarding Recon_NumObjects in the target space is less than an hour ago.
+             IntelUsed is set if Recon_NumObjects was already used to reset WantedShips.
+
+             If any new intel comes in via a mission, NewIntel is set in EvaluateEvent. This resets IntelUsed so that Faction will revise WantedShips. -->
+        <set_value name="$Recon_NumObjects" exact="event.param.$ReconData.{1}"/>
+        <set_value name="$Recon_LastUpdate" exact="event.param.$ReconData.{2}"/>
+
+        <!--***Debug***-->
+        <set_value name="$DebugChance" exact="@event.param.$DebugChance"/>
+        <set_value name="$DebugChance2" exact="@event.param.$DebugChance2"/>
+
+        <set_value name="$DebugText" exact="'(' + $Faction.id + ') ' + static.$Name + ': ' + $Target.knownname + '(' + $Target.owner.id + ') - '"/>
+        <debug_text text="$DebugText" chance="$DebugChance"/>
+        <debug_text text="$DebugText + 'weight ' + $GoalWeight" context="false" chance="$DebugChance"/>
+
+        <!--***Initialise***-->
+        <set_value name="$FeedbackValue" exact="0"/>
+        <set_value name="$Mood" exact="null"/>
+        <set_value name="$StateEvaluationDelay" exact="1ms"/>
+        <set_value name="$CurrentPhaseSubGoals" exact="[]"/>
+        <set_value name="$OldSubGoals" exact="[]"/>
+
+        <!--***Goal phase***-->
+        <set_value name="$Phase" exact="null"/>
+
+        <!--note: If accessing $PhaseParams with $Phase as the key, use {'$' + $Phase}-->
+        <set_value name="$PhaseParams" exact="table[]"/>
+        <set_value name="$PhaseParams.$prepare_for_invasion" exact="table[]"/>
+        <set_value name="$PhaseParams.$prepare_for_invasion.$MinTime" exact="10min"/>
+        <set_value name="$PhaseParams.$prepare_for_invasion.$MaxTime" exact="if $ExpeditionForce then 2h else 1h"/>
+
+        <set_value name="$PhaseParams.$beachhead" exact="table[]"/>
+        <set_value name="$PhaseParams.$beachhead.$MinTime" exact="5min"/>
+        <set_value name="$PhaseParams.$beachhead.$MaxTime" exact="if $ExpeditionForce then 60min else 10min"/>
+
+        <set_value name="$PhaseParams.$retreat" exact="table[]"/>
+        <set_value name="$PhaseParams.$retreat.$MinTime" exact="10min"/>
+        <set_value name="$PhaseParams.$retreat.$MaxTime" exact="30min"/>
+
+        <set_value name="$PhaseParams.$handoff" exact="table[]"/>
+        <set_value name="$PhaseParams.$handoff.$MinTime" exact="1min"/>
+        <set_value name="$PhaseParams.$handoff.$MaxTime" exact="2min"/>
+
+        <!--Standby Ships
+        Ships already commandeered by the factiongoal but not currently used in a subgoal-->
+        <create_group groupname="$StandbyShips"/>
+        <!--Key = Ship, Value = StandbyStartTime-->
+        <set_value name="$StandbyShipTable" exact="table[]"/>
+
+        <set_value name="$ForceStrength" exact="0"/>
+
+        <set_value name="$FindMilitaryShipTags" exact="[tag.factionlogic, tag.military]"/>
+        <do_if value="$ExpeditionForce">
+          <get_suitable_job result="$ExpeditionJob" faction="$Faction" onlycommandeerable="true" tags="tag.expedition" exceedquota="true"/>
+          <do_if value="$ExpeditionJob">
+            <set_value name="$FindMilitaryShipTags" exact="[tag.expedition]"/>
+          </do_if>
+          <remove_value name="$ExpeditionJob"/>
+        </do_if>
+
+        <!--DLC patch marker-->
+        <do_if value="$ExpeditionForce and @$ExpeditionShipTagPatchMarker">
+
+        </do_if>
+
+        <!--TODO @Owen move to library to allow updating after initialisation-->
+        <!--Find sectors to gather in before invading-->
+        <find_cluster_in_range name="$LocalClusters" object="$Target" maxdistance="2" multiple="true"/>
+        <find_sector name="$LocalSectors" space="$LocalClusters" multiple="true"/>
+        <remove_value name="$LocalClusters"/>
+
+        <!--TODO @Owen better select entry points and plan which are best to use-->
+        <!--TODO @Owen better check that entry points are actually in control of this faction before idling there-->
+        <set_value name="$StagingSectors" exact="null"/>
+        <create_group groupname="$EntryPoints"/>
+        <create_group groupname="$AlliedEntryPoints"/>
+        <find_cluster_in_range name="$AdjacentClusters" object="$Target" maxdistance="1" multiple="true"/>
+        <find_sector name="$AdjacentSectors" space="$AdjacentClusters" multiple="true"/>
+        <remove_value name="$AdjacentClusters"/>
+        <set_value name="$LocalEntryPoints" exact="[]"/>
+        <set_value name="$TargetCluster" exact="$Target.cluster"/>
+        <do_all exact="$AdjacentSectors.count" counter="$i">
+          <do_if value="$AdjacentSectors.{$i}.cluster == $TargetCluster">
+            <find_highway_entry_gate name="$LocalEntryPoints" space="$AdjacentSectors.{$i}" destination="$Target" multiple="true"/>
+          </do_if>
+          
+          <do_else>
+            <find_gate name="$LocalEntryPoints" destination="$Target" space="$AdjacentSectors.{$i}" multiple="true"/>
+          </do_else>
+          <do_if value="$LocalEntryPoints.count">
+            <add_to_group groupname="$EntryPoints" list="$LocalEntryPoints"/>
+            <do_if value="$AdjacentSectors.{$i}.hasrelation.friend.{$Faction}">
+              <add_to_group groupname="$AlliedEntryPoints" list="$LocalEntryPoints"/>
+            </do_if>
+          </do_if>
+        </do_all>
+
+        <do_if value="$ExpeditionForce">
+          <set_value name="$FindShipSpaces" exact="$LocalSectors.clone"/>
+          <!--Include some distant owned sectors-->
+          <find_sector name="$OwnedSectors" owner="$Faction" multiple="true" append="true"/>
+          <append_list_elements name="$FindShipSpaces" other="$OwnedSectors"/>
+
+          <set_value name="$StagingSectors" exact="[]"/>
+          <do_if value="$AlliedEntryPoints.count">
+            <append_to_list name="$StagingSectors" exact="$AlliedEntryPoints.random.sector"/>
+          </do_if>
+          <do_elseif value="$OwnedSectors.count">
+            <append_to_list name="$StagingSectors" exact="$OwnedSectors.random"/>
+          </do_elseif>
+          <do_else>
+            <append_to_list name="$StagingSectors" exact="$LocalSectors.random"/>
+          </do_else>
+        </do_if>
+        <do_else>
+          <set_value name="$FindShipSpaces" exact="$LocalSectors.clone"/>
+        </do_else>
+
+        <remove_value name="$TargetCluster"/>
+        <remove_value name="$LocalEntryPoints"/>
+
+        <do_if value="$EntryPoints.count">
+          <assert value="$AlliedEntryPoints.count or $ExpeditionForce" text="'Faction wants to invade but there are no entry points in allied space. Should probably rethink [Owen]\n' + $DebugText" break="1"/>
+        </do_if>
+        <do_else>
+          <assert value="$EntryPoints.count" text="'Faction wants to invade but there are no entry points into that space. Aborting [Owen]\n' + $DebugText" break="1"/>
+          <set_value name="$FeedbackValue" exact="-1"/>
+        </do_else>
+
+      </actions>
+      <patch sinceversion="3">
+        <set_value name="$PhaseParams.$handoff" exact="table[]"/>
+        <set_value name="$PhaseParams.$handoff.$MinTime" exact="1min"/>
+        <set_value name="$PhaseParams.$handoff.$MaxTime" exact="2min"/>
+      </patch>
+      <patch sinceversion="4">
+        <set_value name="$ExpeditionForce" exact="false"/>
+        <set_value name="$StagingSectors" exact="null"/>
+        <set_value name="$FindShipSpaces" exact="$LocalSectors.clone"/>
+        <set_value name="$FindMilitaryShipTags" exact="[tag.factionlogic]"/>
+      </patch>
+      <cues>
+        <cue name="Init">
+          <actions>
+            <do_if value="$FeedbackValue">
+              <!--Something happened during setup which requires this goal to be aborted-->
+              <signal_cue_instantly cue="Cleanup"/>
+            </do_if>
+            <do_else>
+              <!--Register this goal with the faction logic-->
+              <append_to_list name="$FactionCue.$Goals" exact="namespace"/>
+            </do_else>
+          </actions>
+        </cue>
+
+        <!--event.param.{1} == Signal ID
+        Other elements are custom-->
+        <cue name="Process_Signal" instantiate="true">
+          <conditions>
+            <event_cue_signalled cue="Start"/>
+          </conditions>
+          <actions>
+            <do_if value="event.param.{1} == 'evaluate_event'">
+              <signal_cue_instantly cue="Evaluate_Event" param="event.param.{2}"/>
+            </do_if>
+            <do_elseif value="event.param.{1} == 'add_subgoal'">
+              <signal_cue_instantly cue="Add_Subgoal" param="event.param.{2}"/>
+            </do_elseif>
+            <do_elseif value="event.param.{1} == 'remove_subgoal'">
+              <signal_cue_instantly cue="Remove_Subgoal" param="event.param.{2}"/>
+            </do_elseif>
+            <do_elseif value="event.param.{1} == 'reactivate_subgoal'">
+              <signal_cue_instantly cue="Reactivate_Subgoal" param="event.param.{2}"/>
+            </do_elseif>
+            <do_elseif value="event.param.{1} == 'add_standby_ship'">
+              <signal_cue_instantly cue="Add_Standby_Ship" param="event.param" comment="Pass all parameters"/>
+            </do_elseif>
+            <do_elseif value="event.param.{1} == 'remove_standby_ship'">
+              <signal_cue_instantly cue="Remove_Standby_Ship" param="event.param" comment="Pass all parameters"/>
+            </do_elseif>
+            <do_elseif value="event.param.{1} == 'generate_report'">
+              <signal_cue_instantly cue="Generate_Report"/>
+            </do_elseif>
+            <do_else>
+              <assert value="false" text="'Signal ' + event.param + ' was not recognised [Owen]\n' + $DebugText" break="1"/>
+            </do_else>
+          </actions>
+        </cue>
+
+        <!--Signal cues-->
+        <cue name="Evaluate_Event" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <assert value="typeof event.param == datatype.list and event.param.count ge 2" text="'Invalid event parameters' + event.param + ' [Owen]\n' + $DebugText" break="1"/>
+            <set_value name="$EventParams" exact="event.param"/>
+            <do_if value="$EventParams.{2} == 'recon update'">
+              <!--Faction is invading this area against that faction-->
+              <do_if value="$Target == $EventParams.{4} or $EventParams.{4}.hascontext.{$Target}">
+                <do_if value="typeof $EventParams.{5} == datatype.list and (typeof $EventParams.{5}.{1}).isnumeric">
+                  <set_value name="$Recon_NumObjects" exact="$EventParams.{5}.{1}"/>
+                  <set_value name="$Recon_LastUpdate" exact="$EventParams.{5}.{2}"/>
+                  <set_value name="$NewIntel"/>
+                  <debug_text text="'New Intel received by %1 at %3: \n OpFor numbers updated: %2'.[$Faction, $Recon_NumObjects, $Recon_LastUpdate]" chance="$DebugChance2"/>
+
+                  <!-- $Intel == [[$TargetSpace, $Recon_NumObjects, $Recon_LastUpdate], etc]
+                        to do: if/when invasions actually take ownership of space:
+                                  if invasion is successful, wipe this entry from $Intel,
+                                  if invasion is not successful, update with what the invasion actually finds there?
+
+                          Owen mentioned NPC ships reconnoitering. That could be used to update this as well if/when it gets in. -->
+                  <set_value name="$Intel" exact="$FactionCue.$Intel"/>
+                  <do_all exact="$Intel.count + 1" counter="$Intel_Counter">
+                    <do_if value="$Intel_Counter gt $Intel.count">
+                      <append_to_list name="$Intel" exact="[$Target, $EventParams.{5}.{1}, $EventParams.{5}.{2}]"/>
+                      <debug_text text="'%1 has no prior intel on %2. Updating: OpFor: %3 Last Updated: %4'.[$Faction, $Intel.{$Intel.count}.{1}.knownname, $Intel.{$Intel.count}.{2}, $Intel.{$Intel.count}.{3}]" chance="$DebugChance2"/>
+                    </do_if>
+                    <do_elseif value="$Intel.{$Intel_Counter}.{1}" exact="$Target">
+                      <set_value name="$Intel.{$Intel_Counter}.{2}" exact="$EventParams.{5}.{1}"/>
+                      <set_value name="$Intel.{$Intel_Counter}.{3}" exact="$EventParams.{5}.{2}"/>
+                      <debug_text text="'%1 updating intel on %2. Updating: OpFor: %3 Last Updated: %4'.[$Faction, $Intel.{$Intel_Counter}.{1}.knownname, $Intel.{$Intel_Counter}.{2}, $Intel.{$Intel_Counter}.{3}]" chance="$DebugChance2"/>
+                      <break/>
+                    </do_elseif>
+                  </do_all>
+                  <remove_value name="$Intel"/>
+                </do_if>
+                <do_else>
+                  <debug_text text="'Unexpected recon update passed to this goal. ' + $EventParams.{5}" filter="error"/>
+                </do_else>
+                <break/>
+              </do_if>
+            </do_if>
+            <remove_value name="$EventParams"/>
+          </actions>
+        </cue>
+
+        <cue name="Generate_Report" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <debug_text text="'Invade Space (started: ' + namespace.time + ', next phase: ' + $PhaseMinEndTime + ' (maxtime: ' + $PhaseMaxEndTime + ') remain:' + ($PhaseMinEndTime - player.age) + ') - Phase: ' + $Phase + ' - ' + $Faction.knownname + ' is attempting to invade Space: ' + $Target.knownname + ' (' + $Target.owner + ')'" context="false"/>
+
+            <debug_text text="'Has ' + $CurrentPhaseSubGoals.count + ' subgoals'" context="false"/>
+            <do_all exact="$CurrentPhaseSubGoals.count" counter="$i">
+              <do_if value="$CurrentPhaseSubGoals.{$i}.$GenerateReportCue?">
+                <signal_cue_instantly cue="$CurrentPhaseSubGoals.{$i}.$GenerateReportCue"/>
+              </do_if>
+              <do_else>
+                <debug_text text="'SUBGOAL - ' + $CurrentPhaseSubGoals.{$i}.$Cue" context="false"/>
+              </do_else>
+            </do_all>
+            <debug_text text="'Has ' + $OldSubGoals.count + ' old subgoals'" context="false"/>
+            <do_all exact="$OldSubGoals.count" counter="$i">
+              <do_if value="$OldSubGoals.{$i}.$GenerateReportCue?">
+                <signal_cue_instantly cue="$OldSubGoals.{$i}.$GenerateReportCue"/>
+              </do_if>
+              <do_else>
+                <debug_text text="'OLD SUBGOAL - ' + $OldSubGoals.{$i}.$Cue" context="false"/>
+              </do_else>
+            </do_all>
+          </actions>
+        </cue>
+
+        <!--event.param = Subgoal registry table-->
+        <cue name="Add_Subgoal" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <assert value="typeof event.param == datatype.table" text="'parameter ' + event.param + ' was not a table [Owen]'" break="1"/>
+            <set_value name="this.$IDX" exact="$CurrentPhaseSubGoals.indexof.{event.param}"/>
+            <do_if value="this.$IDX">
+              <assert value="not $CurrentPhaseSubGoals.indexof.{event.param}" text="'Subgoal ' + event.param + ' was already in $CurrentPhaseSubGoals [Owen]'" break="1"/>
+            </do_if>
+            <do_else>
+              <append_to_list name="$CurrentPhaseSubGoals" exact="event.param"/>
+              <debug_text text="$DebugText + 'Adding subgoal ' + event.param.$Cue.$DebugText + ' - now has ' + $CurrentPhaseSubGoals.count + ' subgoals'" context="false" chance="$DebugChance"/>
+            </do_else>
+          </actions>
+        </cue>
+
+        <!--event.param = Subgoal registry table-->
+        <cue name="Remove_Subgoal" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <assert value="typeof event.param == datatype.table" text="'parameter ' + event.param + ' was not a table [Owen]'" break="1"/>
+            <set_value name="this.$IDX" exact="$CurrentPhaseSubGoals.indexof.{event.param}"/>
+            <do_if value="this.$IDX">
+              <debug_text text="$DebugText + ' Removing subgoal: ' + event.param + ' from $CurrentPhaseSubGoals'" chance="$DebugChance"/>
+              <remove_value name="$CurrentPhaseSubGoals.{this.$IDX}"/>
+            </do_if>
+            <do_else>
+              <set_value name="this.$IDX" exact="$OldSubGoals.indexof.{event.param}"/>
+              <do_if value="this.$IDX">
+                <debug_text text="$DebugText + ' Removing subgoal: ' + event.param + ' from $OldSubGoals'" chance="$DebugChance"/>
+                <remove_value name="$OldSubGoals.{this.$IDX}"/>
+              </do_if>
+              <do_else>
+                <assert value="$CurrentPhaseSubGoals.indexof.{event.param} or $OldSubGoals.indexof.{event.param}" text="'Subgoal ' + event.param + ' is neither in $CurrentPhaseSubGoals nor $OldSubGoals where it is expected [Owen]'" break="1"/>
+              </do_else>
+            </do_else>
+          </actions>
+        </cue>
+
+        <!--event.param = Subgoal registry table-->
+        <cue name="Reactivate_Subgoal" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <debug_text text="$DebugText + 'Attempting to reactivate subgoal ' + event.param.$Cue.$DebugText" chance="$DebugChance"/>
+            <assert value="typeof event.param == datatype.table" text="'parameter ' + event.param + ' was not a table [Owen]'" break="1"/>
+            <set_value name="this.$IDX" exact="$OldSubGoals.indexof.{event.param}"/>
+            <do_if value="this.$IDX">
+              <debug_text text="$DebugText + ' Removing subgoal: ' + event.param + ' from $OldSubGoals so it can be reactivated'" chance="$DebugChance"/>
+              <remove_value name="$OldSubGoals.{this.$IDX}"/>
+            </do_if>
+            <do_else>
+              <assert value="$OldSubGoals.indexof.{event.param}" text="'Subgoal ' + event.param + ' is not in $OldSubGoals where it is expected [Owen]'" break="1"/>
+            </do_else>
+
+            <set_value name="this.$IDX" exact="$CurrentPhaseSubGoals.indexof.{event.param}"/>
+            <do_if value="this.$IDX">
+              <assert value="not $CurrentPhaseSubGoals.indexof.{event.param}" text="'Subgoal ' + event.param + ' was already in $CurrentPhaseSubGoals [Owen]'" break="1"/>
+            </do_if>
+            <do_else>
+              <debug_text text="$DebugText + ' Adding subgoal: ' + event.param + ' from $CurrentPhaseSubGoals'" chance="$DebugChance"/>
+              <append_to_list name="$CurrentPhaseSubGoals" exact="event.param"/>
+            </do_else>
+          </actions>
+        </cue>
+
+        <!--
+        event.param.{1} = signal ID 'add_standby_ship'
+        event.param.{2} = Ship
+        event.param.{3} = Result feedback list ref. Element 1 set to true if ship added as standby ship-->
+        <cue name="Add_Standby_Ship" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <set_value name="this.$Ship" exact="event.param.{2}"/>
+            <do_if value="typeof this.$Ship == datatype.component and this.$Ship.isclass.ship">
+              <assert value="this.$Ship.iscommandeered" text="'Standby ship ' + this.$Ship + ' ' + this.$Ship.knownname + ' is not commandeered [Owen]'"/>
+              <debug_text text="$DebugText + 'Adding ship ' + this.$Ship.knownname + ' ' + this.$Ship + ' as a standby ship. $StandbyShips: ' + $StandbyShips.count + ' $StandbyShipTable: ' + $StandbyShipTable.keys.count" context="false" chance="$DebugChance"/>
+
+              <assert value="not $StandbyShips.indexof.{this.$Ship}" text="'Object ' + this.$Ship + ' ' + this.$Ship.knownname + ' is already in group $StandbyShips [Owen]\n' + $DebugText" break="1"/>
+              <add_to_group groupname="$StandbyShips" object="this.$Ship"/>
+
+              <assert value="not $StandbyShipTable.{this.$Ship}?" text="'Object ' + this.$Ship + ' ' + this.$Ship.knownname + ' is already in $StandbyShipTable [Owen]\n' + $DebugText" break="1"/>
+              <set_value name="$StandbyShipTable.{this.$Ship}" exact="player.age"/>
+
+              <assert value="$StandbyShips.count == $StandbyShipTable.keys.count" text="'Counts of $StandbyShips and $StandbyShipTable do not match [Owen]\n' + $DebugText" break="1"/>
+              <set_value name="event.param.{3}.{1}" exact="true"/>
+            </do_if>
+            <do_else>
+              <assert value="typeof this.$Ship == datatype.component" text="'Invalid event parameters ' + this.$Ship + ' [Owen]\n' + $DebugText" break="1"/>
+            </do_else>
+          </actions>
+        </cue>
+
+        <!--
+        event.param.{1} = signal ID 'remove_standby_ship' (optional)
+        event.param.{2} = Ship
+        event.param.{3} = Uncommandeer?-->
+        <cue name="Remove_Standby_Ship" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <set_value name="this.$Ship" exact="event.param.{2}"/>
+            <do_if value="typeof this.$Ship == datatype.component">
+              <debug_text text="$DebugText + 'Removing ship ' + this.$Ship.knownname + ' ' + this.$Ship + ' as a standby ship. $StandbyShips: ' + $StandbyShips.count + ' $StandbyShipTable: ' + $StandbyShipTable.keys.count" context="false" chance="$DebugChance"/>
+
+              <do_if value="$StandbyShips.indexof.{this.$Ship}">
+                <remove_from_group group="$StandbyShips" object="this.$Ship"/>
+              </do_if>
+              <do_else>
+                <assert value="$StandbyShips.indexof.{this.$Ship}" text="'Object ' + this.$Ship + ' ' + this.$Ship.knownname + ' is not in group $StandbyShips [Owen]\n' + $DebugText" break="1"/>
+              </do_else>
+              <do_if value="$StandbyShipTable.{this.$Ship}?">
+                <remove_value name="$StandbyShipTable.{this.$Ship}"/>
+              </do_if>
+              <do_else>
+                <assert value="$StandbyShipTable.{this.$Ship}?" text="'Object ' + this.$Ship + ' ' + this.$Ship.knownname + ' is not in $StandbyShipTable [Owen]\n' + $DebugText" break="1"/>
+              </do_else>
+
+              <assert value="$StandbyShips.count == $StandbyShipTable.keys.count" text="'Counts of $StandbyShips and $StandbyShipTable do not match [Owen]\n' + $DebugText" break="1"/>
+              <do_if value="event.param.{3}">
+                <release_commandeered_object object="this.$Ship"/>
+              </do_if>
+            </do_if>
+            <do_else>
+              <assert value="typeof this.$Ship == datatype.component" text="'Invalid event parameters ' + this.$Ship + ' [Owen]\n' + $DebugText" break="1"/>
+            </do_else>
+          </actions>
+        </cue>
+
+        <cue name="Standby_Ship_Lost" instantiate="true">
+          <conditions>
+            <check_any>
+              <event_object_destroyed group="$StandbyShips"/>
+              <event_object_changed_owner group="$StandbyShips"/>
+              <event_object_changed_true_owner group="$StandbyShips"/>
+            </check_any>
+          </conditions>
+          <actions>
+            <debug_text text="$DebugText + 'Standby ship ' + event.param.knownname + ' ' + event.param + ' lost due to ' + event.name + ' $StandbyShips: ' + $StandbyShips.count + ' $StandbyShipTable: ' + $StandbyShipTable.keys.count" context="false" chance="$DebugChance"/>
+            <!-- TODO @Ownen: please review this // is it correct that the ship is removed from the list upon each triggered owner change event (i.e. even if it "changed" to the faction for which standby ships were added?) -->
+            <do_if value="event.name == 'event_object_changed_true_owner' or event.name == 'event_object_changed_owner'">
+              <remove_from_group group="$StandbyShips" object="event.object"/>
+            </do_if>
+
+            <do_if value="$StandbyShipTable.{event.object}?">
+              <remove_value name="$StandbyShipTable.{event.object}"/>
+            </do_if>
+            <do_else>
+              <assert value="$StandbyShipTable.{event.object}?" text="'Object ' + event.object + ' ' + event.object.knownname + ' is not in $StandbyShipTable [Owen]\n' + $DebugText" break="1"/>
+            </do_else>
+          </actions>
+        </cue>
+
+        <library name="UpdateMoodValues">
+          <actions>
+            <!--As this goal is active, the faction has already to decide to take this action. Aggression is now used to check how much they want to commit.
+            Very Low:  Commit as little as possible but only invade if relatively sure of victory
+            Very High: Commit much, but potentially go with a lesser force
+            
+            $MinimumStrengthFactor - the minimum strength relative to the known enemy strength. if this faction is this much weaker than the enemy, the invasion will be cancelled
+            $MaximumStrengthFactor - the maximum strength relative to the known enemy strength. if this faction is this much stronger than the enemy, no other ships will be requested
+            $MinimumStrength       - the minimum strength value to begin the invasion, regardless of intel
+            Note: strength is analogous to 'threatscore'-->
+            <set_value name="$Mood" exact="$Faction.mood.aggression"/>
+            <do_if value="$Mood == moodlevel.verylow">
+              <set_value name="$MinimumStrengthFactor" exact="1.2f"/>
+              <set_value name="$MaximumStrengthFactor" exact="1.3f"/>
+              <do_if value="$ExpeditionForce">
+                <get_threat_score result="$MinimumStrength" class="class.ship_l" purpose="purpose.fight"/>
+                <set_value name="$MinimumStrength" exact="$MinimumStrength * 2"/>
+              </do_if>
+              <do_else>
+                <get_threat_score result="$MinimumStrength" class="class.ship_xl" purpose="purpose.fight"/>
+                <set_value name="$MinimumStrength" exact="$MinimumStrength * 2"/>
+              </do_else>
+            </do_if>
+            <do_elseif value="$Mood == moodlevel.low">
+              <set_value name="$MinimumStrengthFactor" exact="1.1f"/>
+              <set_value name="$MaximumStrengthFactor" exact="1.3f"/>
+              <do_if value="$ExpeditionForce">
+                <get_threat_score result="$MinimumStrength" class="class.ship_l" purpose="purpose.fight"/>
+                <set_value name="$MinimumStrength" exact="$MinimumStrength * 2"/>
+              </do_if>
+              <do_else>
+                <set_value name="$MinimumStrength" exact="46"/>
+              </do_else>
+            </do_elseif>
+            <do_elseif value="$Mood == moodlevel.normal">
+              <set_value name="$MinimumStrengthFactor" exact="1.0f"/>
+              <set_value name="$MaximumStrengthFactor" exact="1.4f"/>
+              <do_if value="$ExpeditionForce">
+                <get_threat_score result="$MinimumStrength" class="class.ship_l" purpose="purpose.fight"/>
+                <set_value name="$MinimumStrength" exact="$MinimumStrength * 2"/>
+              </do_if>
+              <do_else>
+                <get_threat_score result="$MinimumStrength" class="class.ship_xl" purpose="purpose.fight"/>
+                <set_value name="$MinimumStrength" exact="$MinimumStrength * 2"/>
+              </do_else>
+            </do_elseif>
+            <do_elseif value="$Mood == moodlevel.high">
+              <set_value name="$MinimumStrengthFactor" exact="0.9f"/>
+              <set_value name="$MaximumStrengthFactor" exact="1.8f"/>
+              <do_if value="$ExpeditionForce">
+                <get_threat_score result="$MinimumStrength" class="class.ship_l" purpose="purpose.fight"/>
+                <set_value name="$MinimumStrength" exact="$MinimumStrength * 2"/>
+              </do_if>
+              <do_else>
+                <get_threat_score result="$MinimumStrength" class="class.ship_xl" purpose="purpose.fight"/>
+                <set_value name="$MinimumStrength" exact="$MinimumStrength * 2"/>
+              </do_else>
+            </do_elseif>
+            <do_elseif value="$Mood == moodlevel.veryhigh">
+              <set_value name="$MinimumStrengthFactor" exact="0.8f"/>
+              <set_value name="$MaximumStrengthFactor" exact="2.0f"/>
+              <do_if value="$ExpeditionForce">
+                <get_threat_score result="$MinimumStrength" class="class.ship_l" purpose="purpose.fight"/>
+                <set_value name="$MinimumStrength" exact="$MinimumStrength * 2"/>
+              </do_if>
+              <do_else>
+                <get_threat_score result="$MinimumStrength" class="class.ship_xl" purpose="purpose.fight"/>
+                <set_value name="$MinimumStrength" exact="$MinimumStrength * 2"/>
+              </do_else>
+            </do_elseif>
+          </actions>
+        </library>
+
+        <library name="EvaluateForceStrength">
+          <actions>
+            <!--TODO @Owen base strength on other factors.-->
+            <set_value name="$ForceStrength" exact="0"/>
+
+            <do_all exact="$CurrentPhaseSubGoals.count" counter="$i">
+              <set_value name="$CurrentSubGoal" exact="$CurrentPhaseSubGoals.{$i}"/>
+
+              <!--Current Prepare_Staging_Area Subgoal-->
+              <do_if value="$CurrentSubGoal.$Cue.$Descriptor == '$SUBGOAL_Prepare_Staging_Area'">
+                <do_if value="$CurrentSubGoal.$EvaluateShipsCue?">
+                  <signal_cue_instantly cue="$CurrentSubGoal.$EvaluateShipStrengthCue"/>
+                  <set_value name="$ForceStrength" operation="add" exact="$CurrentSubGoal.$ShipStrength"/>
+                </do_if>
+              </do_if>
+
+              <!--Current Recon Subgoal-->
+              <do_elseif value="$CurrentSubGoal.$Cue.$Descriptor == '$SUBGOAL_Recon'">
+                <do_if value="$CurrentSubGoal.$EvaluateShipsCue?">
+                  <signal_cue_instantly cue="$CurrentSubGoal.$EvaluateShipStrengthCue"/>
+                  <set_value name="$ForceStrength" operation="add" exact="$CurrentSubGoal.$ShipStrength"/>
+                </do_if>
+              </do_elseif>
+
+              <!--Current Defend Area Subgoal-->
+              <do_elseif value="$CurrentSubGoal.$Cue.$Descriptor == '$SUBGOAL_DefendArea'">
+                <do_if value="$CurrentSubGoal.$EvaluateShipsCue?">
+                  <signal_cue_instantly cue="$CurrentSubGoal.$EvaluateShipStrengthCue"/>
+                  <set_value name="$ForceStrength" operation="add" exact="$CurrentSubGoal.$ShipStrength"/>
+                </do_if>
+              </do_elseif>
+
+              <!--Current Build Station Subgoal - Do nothing-->
+            </do_all>
+          </actions>
+        </library>
+
+        <cue name="EvaluateState">
+          <delay exact="$StateEvaluationDelay"/>
+          <actions>
+            <set_value name="$StateEvaluationDelay" exact="0s"/>
+            <set_value name="$NewPhase" exact="null"/>
+            <set_value name="$ForceStrength" exact="0"/>
+
+            <do_if value="@$NewIntel">
+              <remove_value name="$IntelUsed"/>
+              <remove_value name="$NewIntel"/>
+            </do_if>
+
+            <!--Release any commandeered standby ships which have not been requested by a subgoal-->
+            <do_all exact="$StandbyShips.count" counter="$i" reverse="true">
+              <do_if value="player.age gt $StandbyShipTable.{$StandbyShips.{$i}} + 2min">
+                <signal_cue_instantly cue="Remove_Standby_Ship" param="[null, $StandbyShips.{$i}, true]"/>
+              </do_if>
+            </do_all>
+
+            <do_if value="not $Phase">
+              <!--prepare_for_invasion is the initial phase-->
+              <set_value name="$NewPhase" exact="'prepare_for_invasion'"/>
+              <set_value name="$NewPhaseReason" exact="'initial phase'"/>
+            </do_if>
+            <do_else>
+              <!--Evaluate all current goals, checking their states. This may lead to the faction goal changing phase.-->
+              <set_value name="$CurrentGoalStates" exact="table[]"/>
+              <set_value name="$CurrentSubGoalDescriptor" exact="null"/>
+              <set_value name="$PrepareStagingAreaStrength" exact="0"/>
+              <do_all exact="$CurrentPhaseSubGoals.count" counter="$i" reverse="true">
+                <set_value name="$CurrentSubGoal" exact="$CurrentPhaseSubGoals.{$i}"/>
+                <do_if value="$CurrentSubGoal.$EvaluateCue?">
+                  <signal_cue_instantly cue="$CurrentSubGoal.$EvaluateCue"/>
+                  <do_if value="$CurrentSubGoal.$EvaluationResult?">
+                    <set_value name="$CurrentSubGoalDescriptor" exact="$CurrentSubGoal.$Cue.$Descriptor"/>
+                    <set_value name="$Handoff" exact="false"/>
+                    <do_if value="not $CurrentGoalStates.{$CurrentSubGoalDescriptor}?">
+                      <set_value name="$CurrentGoalStates.{$CurrentSubGoalDescriptor}" exact="table[]"/>
+                    </do_if>
+                    <do_if value="$CurrentSubGoalDescriptor == '$SUBGOAL_Prepare_Staging_Area'">
+                      <!--Legacy-->
+                      <do_if value="$CurrentSubGoal.$EvaluationResult == 'failed'">
+                        <set_value name="$Handoff" exact="true"/>
+                      </do_if>
+                      <do_else>
+                        <set_value name="$CurrentGoalStates.{$CurrentSubGoalDescriptor}.$DesiredShipStrength" operation="add" exact="$CurrentSubGoal.$DesiredShipStrength"/>
+                        <do_if value="$CurrentSubGoal.$EvaluationResult == 'performing'">
+                          <set_value name="$CurrentGoalStates.{$CurrentSubGoalDescriptor}.$ReadyShipStrength" operation="add" exact="$CurrentSubGoal.$ShipStrength"/>
+                        </do_if>
+                        <do_else>
+                          <set_value name="$CurrentGoalStates.{$CurrentSubGoalDescriptor}.$UnreadyShipStrength" operation="add" exact="$CurrentSubGoal.$ShipStrength"/>
+                        </do_else>
+                      </do_else>
+                    </do_if>
+                    <do_elseif value="$CurrentSubGoalDescriptor == '$SUBGOAL_Recon'">
+                      <do_if value="$CurrentSubGoal.$EvaluationResult == 'failed'">
+                        <set_value name="$Handoff" exact="true"/>
+                      </do_if>
+                      <do_else>
+                        <set_value name="$CurrentGoalStates.{$CurrentSubGoalDescriptor}.$DesiredShipStrength" operation="add" exact="$CurrentSubGoal.$DesiredShipStrength"/>
+                        <do_if value="$CurrentSubGoal.$EvaluationResult == 'performing'">
+                          <set_value name="$CurrentGoalStates.{$CurrentSubGoalDescriptor}.$ReadyShipStrength" operation="add" exact="$CurrentSubGoal.$ShipStrength"/>
+                        </do_if>
+                        <do_else>
+                          <set_value name="$CurrentGoalStates.{$CurrentSubGoalDescriptor}.$UnreadyShipStrength" operation="add" exact="$CurrentSubGoal.$ShipStrength"/>
+                        </do_else>
+                      </do_else>
+                    </do_elseif>
+                    <do_elseif value="$CurrentSubGoalDescriptor == '$SUBGOAL_DefendArea'">
+                      <do_if value="$CurrentSubGoal.$EvaluationResult == 'failed'">
+                        <set_value name="$Handoff" exact="true"/>
+                      </do_if>
+                      <do_else>
+                        <set_value name="$CurrentGoalStates.{$CurrentSubGoalDescriptor}.$DesiredShipStrength" operation="add" exact="$CurrentSubGoal.$DesiredShipStrength"/>
+                        <do_if value="$CurrentSubGoal.$EvaluationResult == 'performing'">
+                          <set_value name="$CurrentGoalStates.{$CurrentSubGoalDescriptor}.$ReadyShipStrength" operation="add" exact="$CurrentSubGoal.$ShipStrength"/>
+                        </do_if>
+                        <do_else>
+                          <set_value name="$CurrentGoalStates.{$CurrentSubGoalDescriptor}.$UnreadyShipStrength" operation="add" exact="$CurrentSubGoal.$ShipStrength"/>
+                        </do_else>
+                      </do_else>
+                    </do_elseif>
+                    <do_elseif value="$CurrentSubGoalDescriptor == '$SUBGOAL_BuildStation'">
+                      <!--TODO @Owen-->
+                      <do_if value="$CurrentSubGoal.$EvaluationResult == 'failed'">
+                        <set_value name="$Handoff" exact="true"/>
+                      </do_if>
+                      <do_elseif value="$CurrentSubGoal.$EvaluationResult == 'achieved'">
+                        <set_value name="$Handoff" exact="true"/>
+                      </do_elseif>
+                      <do_else>
+
+                      </do_else>
+                    </do_elseif>
+                    <do_else>
+                      <assert value="false" text="'Faction Subgoal ' + [$CurrentSubGoal.$Cue] +' was not recognised for this Faction Goal [Owen]\n' + $DebugText"/>
+                    </do_else>
+                    <do_if value="$Handoff">
+                      <signal_cue_instantly cue="$CurrentPhaseSubGoals.{$i}.$UpdateSubgoalCue" param="['handoff']"/>
+                    </do_if>
+                    <do_else>
+                      <set_value name="$CurrentGoalStates.{$CurrentSubGoalDescriptor}.$Counter" operation="add"/>
+                      <!--The evaluation result phase is used as table key where the value is the number of subgoals in that phase-->
+                      <set_value name="$CurrentGoalStates.{$CurrentSubGoalDescriptor}.{'$' + $CurrentSubGoal.$EvaluationResult}" operation="add"/>
+                    </do_else>
+                  </do_if>
+                </do_if>
+              </do_all>
+              <remove_value name="$CurrentSubGoalDescriptor"/>
+
+              <include_actions ref="UpdateMoodValues"/>
+              <!--TODO @Owen check what $Recon_NumObjects actually is ->threat-level -->
+              <set_value name="$MinimumStrength" exact="[$MinimumStrength, $MinimumStrengthFactor * $Recon_NumObjects].max"/>
+              <set_value name="$MaximumStrength" exact="[$MinimumStrength, $MaximumStrengthFactor * $Recon_NumObjects].max"/>
+              <set_value name="$IntelUsed"/>
+
+              <!--EVALUATE IF PHASE SHOULD CHANGE-->
+
+              <!--Check that the conditions for invasion are still valid.-->
+              <do_if value="$Phase != 'handoff'">
+                <run_actions ref="md.FactionGoal_Invade_Space.EvaluateSector" result="$InvasionValid">
+                  <param name="Faction" value="$Faction"/>
+                  <param name="Sector" value="$Target"/>
+                  <param name="DebugChance" value="$DebugChance"/>
+                </run_actions>
+
+                <do_if value="not $InvasionValid">
+                  <set_value name="$NewPhase" exact="'handoff'"/>
+                  <set_value name="$NewPhaseReason" exact="'Invasion target no longer valid'"/>
+                </do_if>
+                <do_elseif value="player.age ge $PhaseMinEndTime">
+                  <!--The minimum amount of time to remain in this phase has elapsed.
+                  Check if the subgoals are in a acceptable state to change this faction goals phase-->
+
+                  <do_if value="$Phase == 'prepare_for_invasion'">
+                    <!--TODO @Owen evaluate other subgoals e.g. recon or build station to make sure it's sensible to change phase-->
+                    <do_if value="player.age gt $PhaseMaxEndTime">
+                      <!--Past max end time for the phase. Now or never.-->
+                      <do_if value="(@$CurrentGoalStates.$SUBGOAL_Prepare_Staging_Area.$ReadyShipStrength + @$CurrentGoalStates.$SUBGOAL_DefendArea.$ReadyShipStrength) ge $MinimumStrength">
+                        <set_value name="$NewPhase" exact="'beachhead'"/>
+                        <set_value name="$NewPhaseReason" exact="'$PhaseMaxEndTime and $ReadyShipStrength ge $MinimumStrength'"/>
+                      </do_if>
+                      <do_else>
+                        <!--Not enough ships have gathered. Enter handoff phase to release the ships. (No need to retreat as they never got sent anywhere)-->
+                        <set_value name="$NewPhase" exact="'handoff'"/>
+                        <set_value name="$NewPhaseReason" exact="'$PhaseMaxEndTime and $ReadyShipStrength lt $MinimumStrength'"/>
+                      </do_else>
+                    </do_if>
+                    <do_elseif value="@$CurrentGoalStates.$SUBGOAL_Prepare_Staging_Area.$overtime or @$CurrentGoalStates.$SUBGOAL_Prepare_Staging_Area.$preparing or @$CurrentGoalStates.$SUBGOAL_DefendArea.$preparing">
+                      <!--a 'prepare_staging_area' or 'defend_area' subgoal is in a state which requires more time. Allow it time to finish.-->
+                    </do_elseif>
+                    <do_elseif value="@$CurrentGoalStates.$SUBGOAL_BuildStation.$overtime or @$CurrentGoalStates.$SUBGOAL_BuildStation.$preparing">
+                      <!--a 'build_station' subgoal is in a state which requires more time. Allow it time to finish.-->
+                    </do_elseif>
+                    <do_elseif value="(@$CurrentGoalStates.$SUBGOAL_Prepare_Staging_Area.$ReadyShipStrength + @$CurrentGoalStates.$SUBGOAL_DefendArea.$ReadyShipStrength) ge $MinimumStrength">
+                      <set_value name="$NewPhase" exact="'beachhead'"/>
+                      <set_value name="$NewPhaseReason" exact="'$ReadyShipStrength ge $MinimumStrength'"/>
+                    </do_elseif>
+                  </do_if>
+
+                  <do_elseif value="$Phase == 'beachhead'">
+                    <find_station_by_true_owner name="$ClaimingStation" canclaimownership="true" faction="$Faction" space="$Target"/>
+                    <do_if value="$ClaimingStation">
+                      <!--Prepare to hand off ships for use by the Hold Space faction goal.-->
+                      <set_value name="$NewPhase" exact="'handoff'"/>
+                      <set_value name="$NewPhaseReason" exact="'Claiming station is present'"/>
+                    </do_if>
+                    <do_elseif value="player.age gt $PhaseMaxEndTime">
+                      <!--Past max end time for the phase and no operational claiming station is present. Retreat.-->
+
+                      <!--This goal will now attempt to pull back forces before ending-->
+                      <set_value name="$NewPhase" exact="'retreat'"/>
+                      <set_value name="$NewPhaseReason" exact="'$PhaseMaxEndTime reached'"/>
+                    </do_elseif>
+                  </do_elseif>
+                  <do_elseif value="$Phase == 'retreat'">
+                    <!--Prepare to shutdown the goal. Released ships may be picked up by other goals such as HoldSpace-->
+                    <set_value name="$NewPhase" exact="'handoff'"/>
+                  </do_elseif>
+                </do_elseif>
+                <remove_value name="$InvasionValid"/>
+              </do_if>
+
+              <do_if value="not $NewPhase">
+                <!--Check if new subgoals should be requested for this phase-->
+
+                <!--PHASE - Prepare for invasion-->
+                <do_if value="$Phase == 'prepare_for_invasion'">
+
+                  <!--Start with the minimum number of each subgoal-->
+                  <set_value name="$DesiredSubgoals" exact="table[]"/>
+
+                  <!--How many of each goal is desired?-->
+                  <set_value name="this.$WantedDefendAreaSubgoals" exact="if $ExpeditionForce then 1 else 3"/>
+                  <do_if value="@$CurrentGoalStates.$SUBGOAL_DefendArea.$DesiredShipStrength lt $MinimumStrength and @$CurrentGoalStates.$SUBGOAL_DefendArea.$Counter lt this.$WantedDefendAreaSubgoals">
+                    <set_value name="$DesiredSubgoals.$SUBGOAL_DefendArea" exact="this.$WantedDefendAreaSubgoals - @$CurrentGoalStates.$SUBGOAL_DefendArea.$Counter"/>
+                  </do_if>
+
+                  <!--TODO @Owen if recon data is very out of data, increase the number of desired recon subgoals-->
+                  <do_if value="not @$CurrentGoalStates.$SUBGOAL_Recon.$Counter">
+                    <set_value name="$DesiredSubgoals.$SUBGOAL_Recon" exact="1"/>
+                  </do_if>
+
+                  <!--Do not build attempt to build defence stations in the prepare_for_invasion phase-->
+                  <set_value name="$DesiredSubgoals.$SUBGOAL_BuildStation" exact="0"/>
+                  <!--TODO @Owen do something with existing defence stations. Defend their area?-->
+                  <find_station_by_true_owner name="this.$DefenceStations" faction="$Faction" planneddefencestation="true" plannedshipyard="false" plannedwharf="false" plannedequipmentdock="false" plannedtradestation="false" space="$Target" checkoperational="false" multiple="true"/>
+
+                  <do_for_each name="$DesiredSubgoalsKey" valuename="$DesiredSubgoalAmount" in="$DesiredSubgoals">
+                    <do_if value="$DesiredSubgoalAmount gt 0">
+                      <do_all exact="$DesiredSubgoalAmount">
+                        <debug_text text="$DebugText + ' desires ' + $DesiredSubgoalAmount" chance="$DebugChance2"/>
+                        <!--TODO @Owen - look at old subgoals and see if any of those can be re-purposed-->
+                        <do_if value="$DesiredSubgoalsKey == '$SUBGOAL_DefendArea'">
+                          <set_value name="this.$DefendAreaDefinition" exact="null"/>
+                          <set_value name="this.$EntryPoint" exact="if $AlliedEntryPoints.count then $AlliedEntryPoints.random else $EntryPoints.random"/>
+                          <do_if value="this.$EntryPoint">
+                            <set_value name="this.$DefendAreaDefinition" exact="table[]"/>
+                            <set_value name="this.$DefendAreaDefinition.$Sector" exact="this.$EntryPoint.sector"/>
+                            <get_safe_pos result="this.$DefendAreaDefinition.$Position" sector="this.$EntryPoint.sector" radius="500m" object="this.$EntryPoint" z="10km" allowyaxis="false"/>
+                            <set_value name="this.$DefendAreaDefinition.$Range" exact="10km"/>
+                          </do_if>
+
+                          <do_if value="this.$DefendAreaDefinition">
+                            <set_value name="this.$StagingAreaDefinition" exact="null"/>
+                            <do_if value="$ExpeditionForce">
+                              <set_value name="this.$StagingAreaDefinition" exact="table[]"/>
+                              <shuffle_list list="$LocalSectors"/>
+                              <do_for_each name="$LocalSector" in="$LocalSectors">
+                                <do_if value="not $LocalSector.owner.hasrelation.killmilitary.{$Faction}">
+                                  <set_value name="this.$StagingAreaDefinition.$Sector" exact="$LocalSector"/>
+                                  <break/>
+                                </do_if>
+                              </do_for_each>
+                              <do_if value="not this.$StagingAreaDefinition.$Sector?">
+                                <set_value name="this.$StagingAreaDefinition.$Sector" exact="$LocalSectors.random"/>
+                              </do_if>
+                              <set_value name="this.$X" min="-200km" max="200km"/>
+                              <set_value name="this.$Z" min="-200km" max="200km"/>
+                              <get_safe_pos result="this.$StagingAreaDefinition.$Position" sector="this.$StagingAreaDefinition.$Sector" radius="500m" x="this.$X" z="this.$Z" allowyaxis="false"/>
+                              <set_value name="this.$StagingAreaDefinition.$Range" exact="10km"/>
+                            </do_if>
+
+                            <set_value name="$NewSubgoalTable" exact="table[]"/>
+                            <set_value name="$NewSubgoalTable.$OwnerGoal"                 exact="namespace"/>
+                            <set_value name="$NewSubgoalTable.$Descriptor"                exact="$DesiredSubgoalsKey"/>
+                            <set_value name="$NewSubgoalTable.$PrepareEndTime"            exact="$PhaseMaxEndTime"/>
+                            <set_value name="$NewSubgoalTable.$DesiredEndTime"            exact="$PhaseMaxEndTime + 5min"/>
+                            <set_value name="$NewSubgoalTable.$OwnerStandbyShipsTable"    exact="$StandbyShipTable"/>
+                            <set_value name="this.$WantedDefenceStrength"                 exact="$MinimumStrength / this.$WantedDefendAreaSubgoals"/>
+                            <get_threat_score result="this.$Ship_M_Threat" class="class.ship_m" purpose="purpose.fight"/>
+                            <set_value name="$NewSubgoalTable.$DesiredShipStrength"       min="this.$WantedDefenceStrength" max="this.$WantedDefenceStrength + (this.$Ship_M_Threat * 2)"/>
+                            <do_if value="$ExpeditionForce">
+                              <set_value name="$NewSubgoalTable.$RequestStrengthAllowance" exact="0" comment="Make do with the existing ships"/>
+                            </do_if>
+                            <do_else>
+                              <set_value name="$NewSubgoalTable.$RequestStrengthAllowance"  exact="$NewSubgoalTable.$DesiredShipStrength / 4" comment="Quarter of the forces can be requested to be built"/>
+                            </do_else>
+                            <!--TODO @Owen find scope of search area for commandeering ships-->
+                            <set_value name="$NewSubgoalTable.$FindShipSpaces"            exact="$FindShipSpaces.clone"/>
+                            <set_value name="$NewSubgoalTable.$FindShipTags"              exact="$FindMilitaryShipTags.clone"/>
+                            <set_value name="$NewSubgoalTable.$StagingArea"               exact="this.$StagingAreaDefinition"/>
+                            <set_value name="$NewSubgoalTable.$DefendArea"                exact="this.$DefendAreaDefinition"/>
+                            <set_value name="$NewSubgoalTable.$DebugChance"               exact="$DebugChance"/>
+                            <set_value name="$NewSubgoalTable.$DebugChance2"              exact="$DebugChance2"/>
+
+                            <signal_cue_instantly cue="md.FactionSubgoal_DefendArea.Start" param="$NewSubgoalTable"/>
+                          </do_if>
+                          <do_else>
+                            <debug_text text="$DebugText + 'Unable to find entry point to build forces around'" context="false" chance="$DebugChance2"/>
+                          </do_else>
+                        </do_if>
+
+                        <do_elseif value="$DesiredSubgoalsKey == '$SUBGOAL_Recon'">
+                          <!--Trigger new Recon Subgoal-->
+                          <do_if value="$EntryPoints.count">
+                            <set_value name="$EntryPoint" exact="$EntryPoints.random"/>
+                            <find_zone name="$HomeZone" normalzone="true" space="$EntryPoint.sector" />
+                            <set_value name="$ReconTarget" exact="$EntryPoint.destination"/>
+                          </do_if>
+                          <do_else>
+                            <find_zone name="$HomeZone" normalzone="true" space="$Target" />
+                            <find_zone name="$ReconTarget" normalzone="true" space="$Target" />
+                          </do_else>
+
+                          <do_if value="$HomeZone and $ReconTarget">
+                            <set_value name="$NewSubgoalTable" exact="table[]"/>
+                            <set_value name="$NewSubgoalTable.$OwnerGoal"                 exact="namespace"/>
+                            <set_value name="$NewSubgoalTable.$Descriptor"                exact="$DesiredSubgoalsKey"/>
+                            <set_value name="$NewSubgoalTable.$DesiredEndTime"            exact="$PhaseMaxEndTime"/>
+                            <get_threat_score result="this.$Ship_S_Threat" class="class.ship_s" purpose="purpose.fight"/>
+                            <set_value name="$NewSubgoalTable.$DesiredShipStrength"       exact="this.$Ship_S_Threat"/>
+                            <!--TODO @Owen find scope of search area for commandeering ships-->
+                            <set_value name="$NewSubgoalTable.$FindShipSpaces"            exact="$FindShipSpaces.clone"/>
+                            <set_value name="$NewSubgoalTable.$Target"                    exact="$ReconTarget"/>
+                            <set_value name="$NewSubgoalTable.$Home"                      exact="$HomeZone"/>
+                            <set_value name="$NewSubgoalTable.$DebugChance"               exact="$DebugChance"/>
+                            <set_value name="$NewSubgoalTable.$DebugChance2"              exact="$DebugChance2"/>
+
+                            <signal_cue_instantly cue="md.FactionSubgoal_Recon.Start" param="$NewSubgoalTable"/>
+                          </do_if>
+                        </do_elseif>
+
+                        <do_elseif value="$DesiredSubgoalsKey == '$SUBGOAL_BuildStation'">
+                          <!--Currently unused for prepare_for_invasion-->
+                          <set_value name="$StationTag" exact="tag.defence"/>
+                          <set_value name="$StationType" exact="'defence'"/>
+                          <get_construction_plan result="$ConstructionPlan" faction="$Faction" tags="$StationTag" rawname="$StationRawName"/>
+                          <do_if value="$ConstructionPlan">
+                            <get_module_set_macro result="$StationMacro" race="$Faction.primaryrace" type="$StationType"/>
+                            <do_if value="not $StationMacro and $Faction.primaryrace != race.xenon">
+                              <get_module_set_macro result="$StationMacro" race="$Faction.primaryrace" type="'factory'" comment="Note: non-Xenon races use the 'factory' set"/>
+                            </do_if>
+                            <do_if value="$StationMacro">
+                              <!--Trigger new BuildStation Subgoal-->
+                              <set_value name="$NewSubgoalTable" exact="table[]"/>
+                              <set_value name="$NewSubgoalTable.$OwnerGoal"                 exact="namespace"/>
+                              <set_value name="$NewSubgoalTable.$Descriptor"                exact="$DesiredSubgoalsKey"/>
+                              <!--TODO @Owen better end time for subgoals which persist over multiple phases?-->
+                              <set_value name="$NewSubgoalTable.$DesiredEndTime"            exact="$PhaseMaxEndTime"/>
+                              <set_value name="$NewSubgoalTable.$StationMacro"              exact="$StationMacro"/>
+                              <set_value name="$NewSubgoalTable.$ConstructionPlan"          exact="$ConstructionPlan"/>
+                              <set_value name="$NewSubgoalTable.$StationRawName"            exact="$StationRawName"/>
+                              <set_value name="$NewSubgoalTable.$DeployImmediate"           exact="false"/>
+                              <!--TODO @Owen - better select entry point, perhaps share entry point info with other subgoals-->
+                              <!--TODO @Owen - have a 'exit point' to explicitly link the route of attack between the start sector and the target?-->
+                              <set_value name="$NewSubgoalTable.$EntryPoint"                exact="if $AlliedEntryPoints.count then $AlliedEntryPoints.random else $EntryPoints.random"/>
+
+                              <set_value name="$NewSubgoalTable.$Target"                    exact="$NewSubgoalTable.$EntryPoint.destination.sector"/>
+                              <!--TODO @Owen better radius based on plot size-->
+                              <!--TODO @Owen better positioning-->
+                              <get_safe_pos result="$NewSubgoalTable.$Position"             sector="$NewSubgoalTable.$Target" radius="5km" object="$NewSubgoalTable.$EntryPoint.destination" max="10km" allowyaxis="false"/>
+                              <!--TODO @Owen create a better position in front of the gate, taking into account other subgoals/safepos-->
+                              <create_position name="$NewSubgoalTable.$EntryPointPosition"  object="$NewSubgoalTable.$EntryPoint" z="-15km" max="7km"/>
+                              <set_value name="$NewSubgoalTable.$DebugChance"               exact="$DebugChance"/>
+                              <set_value name="$NewSubgoalTable.$DebugChance2"              exact="$DebugChance2"/>
+
+                              <signal_cue_instantly cue="md.FactionSubgoal_BuildStation.Start" param="$NewSubgoalTable"/>
+                            </do_if>
+                            <do_else>
+                              <debug_text text="$DebugText + 'Unable to find suitable station macro for ' + $Faction.primaryrace + ' ' + $StationType" context="false" chance="$DebugChance2"/>
+                            </do_else>
+                            <remove_value name="$StationMacro"/>
+                          </do_if>
+                          <do_else>
+                            <debug_text text="$DebugText + 'Unable to find suitable station macro for ' + $Faction + ' ' + $StationTag" context="false" chance="$DebugChance2"/>
+                          </do_else>
+                          <remove_value name="$StationTag"/>
+                          <remove_value name="$StationType"/>
+                          <remove_value name="$ConstructionPlan"/>
+                        </do_elseif>
+                      </do_all>
+                    </do_if>
+                  </do_for_each>
+
+                  <remove_value name="$DesiredSubgoals"/>
+
+                  <do_if value="$NewSubgoalTable?">
+                    <!--A new subgoal was triggered-->
+                    <remove_value name="$NewSubgoalTable"/>
+                  </do_if>
+                </do_if>
+
+                <!--PHASE - Beachhead-->
+                <do_elseif value="$Phase == 'beachhead'">
+                  <!--Check old subgoals to see if any can be re-purposed for this phase-->
+                  <set_value name="this.$ReactivatedSubGoals" exact="[]"/>
+                  <do_all exact="$OldSubGoals.count" counter="$i" reverse="true">
+                    <set_value name="this.$OldSubgoal" exact="$OldSubGoals.{$i}"/>
+                    <!--Handoff ships from Prepare Staging Area or Defend Area subgoals for use by other subgoals-->
+                    <set_value name="this.$OldSubgoalDescriptor" exact="this.$OldSubgoal.$Cue.$Descriptor"/>
+                    <do_if value="this.$OldSubgoalDescriptor == '$SUBGOAL_Prepare_Staging_Area' or this.$OldSubgoalDescriptor == '$SUBGOAL_DefendArea'">
+                      <signal_cue_instantly cue="this.$OldSubgoal.$UpdateSubgoalCue" param="['handoff']"/>
+                      <do_if value="$OldSubGoals.indexof.{this.$OldSubgoal}">
+                        <assert value="not $OldSubGoals.indexof.{this.$OldSubgoal}" text="'Dismissed subgoal ' + this.$OldSubgoal +' was not correctly removed as an old subgoal [Owen]'"/>
+                        <remove_value name="$OldSubGoals.{$i}"/>
+                      </do_if>
+                    </do_if>
+
+                    <do_elseif value="this.$OldSubgoalDescriptor == '$SUBGOAL_Recon'">
+                      <do_if value="this.$OldSubgoal.$EvaluationResult != 'failed'">
+                        <do_if value="not $CurrentGoalStates.$SUBGOAL_Recon?">
+                          <set_value name="$CurrentGoalStates.$SUBGOAL_Recon" exact="table[]"/>
+                        </do_if>
+                        <set_value name="$CurrentGoalStates.$SUBGOAL_Recon.$Counter" operation="add"/>
+                        <signal_cue_instantly cue="this.$OldSubgoal.$UpdateSubgoalCue" param="['reactivate']"/>
+                        <do_if value="$OldSubGoals.indexof.{this.$OldSubgoal}">
+                          <assert value="not $OldSubGoals.indexof.{this.$OldSubgoal}" text="'Reactivated subgoal ' + this.$OldSubgoal.$Cue +' was not correctly removed as an old subgoal [Owen]'"/>
+                          <remove_value name="$OldSubGoals.{$i}"/>
+                        </do_if>
+                      </do_if>
+                    </do_elseif>
+
+                    <do_elseif value="this.$OldSubgoalDescriptor == '$SUBGOAL_BuildStation'">
+                      <do_if value="this.$OldSubgoal.$EvaluationResult != 'failed'">
+                        <do_if value="not $CurrentGoalStates.$SUBGOAL_BuildStation?">
+                          <set_value name="$CurrentGoalStates.$SUBGOAL_BuildStation" exact="table[]"/>
+                        </do_if>
+                        <set_value name="$CurrentGoalStates.$SUBGOAL_BuildStation.$Counter" operation="add"/>
+                        <signal_cue_instantly cue="this.$OldSubgoal.$UpdateSubgoalCue" param="['reactivate', 'build']"/>
+                        <do_if value="$OldSubGoals.indexof.{this.$OldSubgoal}">
+                          <assert value="not $OldSubGoals.indexof.{this.$OldSubgoal}" text="'Reactivated subgoal ' + thisthis.$DefenceDefinition.$OldSubgoal.$Cue +' was not correctly removed as an old subgoal [Owen]'"/>
+                          <remove_value name="$OldSubGoals.{$i}"/>
+                        </do_if>
+                      </do_if>
+                    </do_elseif>
+                  </do_all>
+
+                  <!--How many of each goal is desired?-->
+                  <set_value name="$DesiredSubgoals" exact="table[]"/>
+
+                  <!--Defend Area SubGoals-->
+                  <!--TODO @Owen Base on number of enemies and size of area to hold-->
+                  <set_value name="this.$WantedDefendAreaSubgoals" exact="if $ExpeditionForce then 1 else 3"/>
+                  <do_if value="@$CurrentGoalStates.$SUBGOAL_DefendArea.$DesiredShipStrength lt $MinimumStrength and @$CurrentGoalStates.$SUBGOAL_DefendArea.$Counter lt this.$WantedDefendAreaSubgoals">
+                    <set_value name="$DesiredSubgoals.$SUBGOAL_DefendArea" exact="this.$WantedDefendAreaSubgoals - @$CurrentGoalStates.$SUBGOAL_DefendArea.$Counter"/>
+                  </do_if>
+
+                  <!--Recon SubGoals-->
+                  <do_if value="not @$CurrentGoalStates.$SUBGOAL_Recon.$Counter">
+                    <set_value name="$DesiredSubgoals.$SUBGOAL_Recon" exact="1"/>
+                  </do_if>
+
+                  <!--Build Station SubGoals-->
+                  <!--TODO @Owen Better decide how many and what stations should be built-->
+                  <do_if value="not @$CurrentGoalStates.$SUBGOAL_BuildStation.$Counter and not $ExpeditionForce">
+                    <find_station_by_true_owner name="this.$DefenceStations" faction="$Faction" planneddefencestation="true" plannedshipyard="false" plannedwharf="false" plannedequipmentdock="false" plannedtradestation="false" space="$Target" checkoperational="false" multiple="true"/>
+                    <do_if value="not this.$DefenceStations.count">
+                      <set_value name="$DesiredSubgoals.$SUBGOAL_BuildStation" exact="1"/>
+                    </do_if>
+                  </do_if>
+
+                  <set_value name="$DesiredSubgoalsKeys" exact="$DesiredSubgoals.keys.list"/>
+                  <do_all exact="$DesiredSubgoalsKeys.count" counter="$i">
+                    <do_if value="$DesiredSubgoals.{$DesiredSubgoalsKeys.{$i}} gt 0">
+                      <do_all exact="$DesiredSubgoals.{$DesiredSubgoalsKeys.{$i}}">
+                        <debug_text text="$DebugText + ' desires ' + $DesiredSubgoals.{$DesiredSubgoalsKeys.{$i}}" chance="$DebugChance2"/>
+
+                        <do_if value="$DesiredSubgoalsKeys.{$i} == '$SUBGOAL_DefendArea'">
+                          <!--Trigger new Defend Area Subgoal-->
+
+                          <!--TODO @Owen defend stations under construction-->
+                          <set_value name="this.$DefendAreaDefinition" exact="null"/>
+                          <set_value name="this.$EntryPoint" exact="if $AlliedEntryPoints.count then $AlliedEntryPoints.random else $EntryPoints.random"/>
+                          <do_if value="this.$EntryPoint and this.$EntryPoint.exit.hascontext.{$Target}">
+                            <set_value name="this.$DefendAreaDefinition" exact="table[]"/>
+                            <set_value name="this.$DefendAreaDefinition.$Sector" exact="$Target"/>
+                            <get_safe_pos result="this.$DefendAreaDefinition.$Position" sector="$Target" radius="500m" object="this.$EntryPoint.exit" z="10km" allowyaxis="false"/>
+                            <set_value name="this.$DefendAreaDefinition.$Range" exact="10km"/>
+                          </do_if>
+
+                          <!--#HACK# @Owen For now simply find any enemy station so we can test invasion missions-->
+                          <find_station name="this.$EnemyStation" space="$Target">
+                            <match_relation_of faction="$Faction" comparison="le" relation="enemy"/>
+                            <match_distance space="$Target" value="$Target.coreposition" max="($Target.coresize / 2) + 50km"/>
+                          </find_station>
+                          <do_if value="this.$EnemyStation">
+                            <debug_text text="$DebugText + 'Will attempt to clear the area which contains enemy station ' + this.$EnemyStation + ' ' + this.$EnemyStation.knownname" chance="$DebugChance"/>
+                            <set_value name="this.$DefendAreaDefinition" exact="table[]"/>
+                            <set_value name="this.$DefendAreaDefinition.$Sector" exact="$Target"/>
+                            <create_position name="this.$DefendAreaDefinition.$Position" space="$Target" object="this.$EnemyStation"/>
+                            <set_value name="this.$DefendAreaDefinition.$Range" exact="10km"/>
+                          </do_if>
+
+                          <do_if value="this.$DefendAreaDefinition">
+                            <set_value name="$NewSubgoalTable" exact="table[]"/>
+                            <set_value name="$NewSubgoalTable.$OwnerGoal"                 exact="namespace"/>
+                            <set_value name="$NewSubgoalTable.$Descriptor"                exact="$DesiredSubgoalsKeys.{$i}"/>
+                            <set_value name="$NewSubgoalTable.$PrepareEndTime"            exact="$PhaseMaxEndTime"/>
+                            <set_value name="$NewSubgoalTable.$DesiredEndTime"            exact="$PhaseMaxEndTime + 5min"/>
+                            <set_value name="$NewSubgoalTable.$OwnerStandbyShipsTable"    exact="$StandbyShipTable"/>
+                            <set_value name="this.$WantedDefenceStrength"                 exact="$MinimumStrength / this.$WantedDefendAreaSubgoals"/>
+                            <get_threat_score result="this.$Ship_M_Threat" class="class.ship_m" purpose="purpose.fight"/>
+                            <set_value name="$NewSubgoalTable.$DesiredShipStrength"       min="this.$WantedDefenceStrength" max="this.$WantedDefenceStrength + (this.$Ship_M_Threat * 2)"/>
+                            <set_value name="$NewSubgoalTable.$RequestStrengthAllowance"  exact="$NewSubgoalTable.$DesiredShipStrength / 4" comment="Quarter of the forces can be requested to be built"/>
+                            <!--TODO @Owen find scope of search area for commandeering ships-->
+                            <set_value name="$NewSubgoalTable.$FindShipSpaces"            exact="$FindShipSpaces.clone"/>
+                            <set_value name="$NewSubgoalTable.$FindShipTags"              exact="$FindMilitaryShipTags.clone"/>
+                            <set_value name="$NewSubgoalTable.$DefendArea"                exact="this.$DefendAreaDefinition"/>
+                            <set_value name="$NewSubgoalTable.$DebugChance"               exact="$DebugChance"/>
+                            <set_value name="$NewSubgoalTable.$DebugChance2"              exact="$DebugChance2"/>
+
+                            <signal_cue_instantly cue="md.FactionSubgoal_DefendArea.Start" param="$NewSubgoalTable"/>
+                          </do_if>
+                          <do_else>
+                            <debug_text text="$DebugText + 'Unable to find suitable areas to defend'" context="false" chance="$DebugChance2"/>
+                          </do_else>
+                        </do_if>
+
+                        <do_elseif value="$DesiredSubgoalsKeys.{$i} == '$SUBGOAL_Recon'">
+                          <!--Trigger new Recon Subgoal-->
+                          <do_if value="$EntryPoints.count">
+                            <set_value name="$EntryPoint" exact="$EntryPoints.random"/>
+                            <find_zone name="$HomeZone" normalzone="true" space="$EntryPoint.sector" />
+                            <set_value name="$ReconTarget" exact="$EntryPoint.destination"/>
+                          </do_if>
+                          <do_else>
+                            <find_zone name="$HomeZone" normalzone="true" space="$Target" />
+                            <find_zone name="$ReconTarget" normalzone="true" space="$Target" />
+                          </do_else>
+
+                          <do_if value="$HomeZone and $ReconTarget">
+                            <set_value name="$NewSubgoalTable" exact="table[]"/>
+                            <set_value name="$NewSubgoalTable.$OwnerGoal"                 exact="namespace"/>
+                            <set_value name="$NewSubgoalTable.$Descriptor"                exact="$DesiredSubgoalsKeys.{$i}"/>
+                            <set_value name="$NewSubgoalTable.$DesiredEndTime"            exact="$PhaseMaxEndTime"/>
+                            <get_threat_score result="this.$Ship_S_Threat" class="class.ship_s" purpose="purpose.fight"/>
+                            <set_value name="$NewSubgoalTable.$DesiredShipStrength"       exact="this.$Ship_S_Threat"/>
+                            <!--TODO @Owen find scope of search area for commandeering ships-->
+                            <set_value name="$NewSubgoalTable.$FindShipSpaces"            exact="$FindShipSpaces.clone"/>
+                            <set_value name="$NewSubgoalTable.$Target"                    exact="$ReconTarget"/>
+                            <set_value name="$NewSubgoalTable.$Home"                      exact="$HomeZone"/>
+                            <set_value name="$NewSubgoalTable.$DebugChance"               exact="$DebugChance"/>
+                            <set_value name="$NewSubgoalTable.$DebugChance2"              exact="$DebugChance2"/>
+
+                            <signal_cue_instantly cue="md.FactionSubgoal_Recon.Start" param="$NewSubgoalTable"/>
+                          </do_if>
+                        </do_elseif>
+
+                        <do_elseif value="$DesiredSubgoalsKeys.{$i} == '$SUBGOAL_BuildStation'">
+                          <!--TODO @Owen better selection-->
+                          <set_value name="$StationTag" exact="tag.defence"/>
+                          <set_value name="$StationType" exact="'defence'"/>
+                          <get_construction_plan result="$ConstructionPlan" faction="$Faction" tags="$StationTag" rawname="$StationRawName"/>
+                          <do_if value="$ConstructionPlan">
+                            <get_module_set_macro result="$StationMacro" race="$Faction.primaryrace" type="$StationType"/>
+                            <do_if value="not $StationMacro and $Faction.primaryrace != race.xenon">
+                              <get_module_set_macro result="$StationMacro" race="$Faction.primaryrace" type="'factory'" comment="Note: non-Xenon races use the 'factory' set"/>
+                            </do_if>
+                            <do_if value="$StationMacro">
+                              <!--Trigger new BuildStation Subgoal-->
+                              <set_value name="$NewSubgoalTable" exact="table[]"/>
+                              <set_value name="$NewSubgoalTable.$OwnerGoal"                 exact="namespace"/>
+                              <set_value name="$NewSubgoalTable.$Descriptor"                exact="$DesiredSubgoalsKeys.{$i}"/>
+                              <!--TODO @Owen better end time for subgoals which persist over multiple phases?-->
+                              <set_value name="$NewSubgoalTable.$DesiredEndTime"            exact="$PhaseMaxEndTime"/>
+                              <set_value name="$NewSubgoalTable.$StationMacro"              exact="$StationMacro"/>
+                              <set_value name="$NewSubgoalTable.$ConstructionPlan"          exact="$ConstructionPlan"/>
+                              <set_value name="$NewSubgoalTable.$StationRawName"            exact="$StationRawName"/>
+                              <set_value name="$NewSubgoalTable.$DeployImmediate"           exact="true"/>
+                              <!--TODO @Owen - better select entry point, perhaps share entry point info with other subgoals-->
+                              <!--TODO @Owen - have a 'exit point' to explicitly link the route of attack between the start sector and the target?-->
+                              <set_value name="$NewSubgoalTable.$EntryPoint"                exact="if $AlliedEntryPoints.count then $AlliedEntryPoints.random else $EntryPoints.random"/>
+                              <set_value name="$NewSubgoalTable.$Target"                    exact="$NewSubgoalTable.$EntryPoint.destination.sector"/>
+                              <!--TODO @Owen better radius based on plot size-->
+                              <!--TODO @Owen better positioning-->
+                              <get_safe_pos result="$NewSubgoalTable.$Position"             sector="$NewSubgoalTable.$Target" radius="5km" object="$NewSubgoalTable.$EntryPoint.destination" z="5km" max="10km" allowyaxis="false"/>
+                              <!--TODO @Owen create a better position in front of the gate, taking into account other subgoals/safepos-->
+                              <create_position name="$NewSubgoalTable.$EntryPointPosition"  object="$NewSubgoalTable.$EntryPoint" z="-15km" max="7km"/>
+                              <set_value name="$NewSubgoalTable.$DebugChance"               exact="$DebugChance"/>
+                              <set_value name="$NewSubgoalTable.$DebugChance2"              exact="$DebugChance2"/>
+
+                              <signal_cue_instantly cue="md.FactionSubgoal_BuildStation.Start" param="$NewSubgoalTable"/>
+                            </do_if>
+                            <do_else>
+                              <debug_text text="$DebugText + 'Unable to find suitable station macro for ' + $Faction.primaryrace + ' ' + $StationType" context="false" chance="$DebugChance2"/>
+                            </do_else>
+                            <remove_value name="$StationMacro"/>
+                          </do_if>
+                          <do_else>
+                            <debug_text text="$DebugText + 'Unable to find suitable station macro for ' + $Faction + ' ' + $StationTag" context="false" chance="$DebugChance2"/>
+                          </do_else>
+                          <remove_value name="$StationTag"/>
+                          <remove_value name="$StationType"/>
+                          <remove_value name="$ConstructionPlan"/>
+                        </do_elseif>
+                      </do_all>
+                    </do_if>
+                  </do_all>
+
+                  <remove_value name="$DesiredSubgoals"/>
+
+                  <do_if value="$NewSubgoalTable?">
+                    <!--A new subgoal was triggered-->
+                    <remove_value name="$NewSubgoalTable"/>
+                  </do_if>
+                </do_elseif>
+
+                <do_elseif value="$Phase == 'retreat'">
+                  <!--TODO @Owen - Have the ships fall back (if they were sent through) and then release them when safe. Deploy things like mines? Subgoals should cancel ordered ships.-->
+                </do_elseif>
+
+                <do_elseif value="$Phase == 'handoff'">
+                  <do_all exact="$OldSubGoals.count" counter="$i" reverse="true">
+                    <do_if value="$OldSubGoals.{$i}.$UpdateSubgoalCue.exists">
+                      <signal_cue_instantly cue="$OldSubGoals.{$i}.$UpdateSubgoalCue" param="['handoff']"/>
+                    </do_if>
+                  </do_all>
+                  <signal_cue cue="Cleanup"/>
+                </do_elseif>
+
+                <do_else>
+                  <assert value="false" text="'Unknown phase: ' + $Phase + ' [Owen]\n' + $DebugText" break="1"/>
+                </do_else>
+              </do_if>
+            </do_else>
+
+            <do_if value="$NewPhase">
+              <include_actions ref="ProcessPhaseChange"/>
+            </do_if>
+            <do_elseif value="not $StateEvaluationDelay">
+              <set_value name="$StateEvaluationDelay" min="10s" max="15s"/>
+            </do_elseif>
+            <reset_cue cue="EvaluateState"/>
+          </actions>
+        </cue>
+
+        <library name="ProcessPhaseChange">
+          <actions>
+            <set_value name="$PhaseDuration" exact="if @$PhaseStartTime then player.age-$PhaseStartTime else 0"/>
+            <debug_text text="'############\n' + $DebugText + 'Phase changed from (' + $Phase + ' d=' + $PhaseDuration + ') to (' + $NewPhase + '), reason: ' + @$NewPhaseReason + '\n############'" context="false" chance="$DebugChance"/>
+            <substitute_text source="'' + [namespace]" text="$DebugGoalText">
+              <replace string="'['" with="''"/>
+              <replace string="']'" with="''"/>
+            </substitute_text>
+            <!--curtime, output_id, goal_id, subgoal_id, object_name, object_idcode, sector_name, faction_id, target_owner_id-->
+            <debug_text filter="economy_verbose" text="'#FL#;%1;%2;%3;%4;%5;%6;%7;%8;%9'.[player.age, $NewPhase, $DebugGoalText, null, null, null, $Target.knownname, $Faction.id, $Target.owner.id]" context="false"/>
+            <remove_value name="$PhaseDuration"/>
+            <remove_value name="$PhaseChangeReason"/>
+            <set_value name="$Phase" exact="$NewPhase"/>
+            <set_value name="$PhaseStartTime" exact="player.age"/>
+            <set_value name="$PhaseMinEndTime" exact="player.age + $PhaseParams.{'$' + $Phase}.$MinTime"/>
+            <set_value name="$PhaseMaxEndTime" exact="player.age + $PhaseParams.{'$' + $Phase}.$MaxTime"/>
+
+            <do_all exact="$CurrentPhaseSubGoals.count" counter="$i">
+              <do_if value="$CurrentPhaseSubGoals.{$i}.$UpdateSubgoalCue?">
+                <!--Subgoal was initialised. Set it to standby and add to $OldSubGoals-->
+                <debug_text text="'Subgoal ' + $CurrentPhaseSubGoals.{$i}.$Cue.$DebugText + 'set as old goal'" context="false" chance="$DebugChance"/>
+                <append_to_list name="$OldSubGoals" exact="$CurrentPhaseSubGoals.{$i}"/>
+                <signal_cue_instantly cue="$CurrentPhaseSubGoals.{$i}.$UpdateSubgoalCue" param="['standby']"/>
+              </do_if>
+              <do_else>
+                <!--Subgoal was created but not yet initialised. Should be safe to simply cancel and forget about.-->
+                <debug_text text="'Subgoal ' + $CurrentPhaseSubGoals.{$i}.$Cue.$DebugText + 'was not yet initialised so it will be cancelled instead of being set as an old goal'" context="false" chance="$DebugChance"/>
+                <set_value name="$CurrentPhaseSubGoals.{$i}.$Cue.$SetToShutdown" exact="true" comment="This value is set to prevent the initialisation from running"/>
+                <cancel_cue cue="$CurrentPhaseSubGoals.{$i}.$Cue"/>
+              </do_else>
+            </do_all>
+            <clear_list list="$CurrentPhaseSubGoals"/>
+
+            <set_value name="$StateEvaluationDelay" exact="1s"/>
+            <set_value name="$NewPhase" exact="null"/>
+            <signal_objects object="$Target" param="'faction_logic_goal_event'" param2="namespace"/>
+          </actions>
+        </library>
+
+        <!--TODO @Owen - update end cue-->
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <!--<delay min="10s" max="1min"/>-->
+          <actions>
+            <debug_text text="$DebugText + 'Ending'" context="false" chance="$DebugChance"/>
+            <substitute_text source="'' + [namespace]" text="$DebugGoalText">
+              <replace string="'['" with="''"/>
+              <replace string="']'" with="''"/>
+            </substitute_text>
+            <!--curtime, output_id, goal_id, subgoal_id, object_name, object_idcode, sector_name, faction_id, target_owner_id-->
+            <debug_text filter="economy_verbose" text="'#FL#;%1;%2;%3;%4;%5;%6;%7;%8;%9'.[player.age, 'cleanup', $DebugGoalText, null, null, null, $Target.knownname, $Faction.id, $Target.owner.id]" context="false"/>
+
+            <do_if value="$FeedbackValue == -1">
+              <debug_text text="$DebugText + 'Feedback: ' + $FeedbackValue + ' - Unable to find entry point.'" context="false" chance="$DebugChance"/>
+            </do_if>
+            <do_all exact="$StandbyShips.count" counter="$i">
+              <debug_text text="$DebugText + 'Releaseing Standby ships'" context="false" chance="if $i == 1 then $DebugChance else 0"/>
+              <debug_text text="$DebugText + '%1 resuming prior orders.'.[$StandbyShips.{$i}.knownname]" context="false" chance="$DebugChance"/>
+              <release_commandeered_object object="$StandbyShips.{$i}"/>
+            </do_all>
+
+            <debug_text text="$DebugText + 'Ended'" context="false" chance="$DebugChance"/>
+            <set_value name="$IDX" exact="$FactionCue.$Goals.indexof.{namespace}"/>
+            <do_if value="$IDX">
+              <remove_value name="$FactionCue.$Goals.{$IDX}"/>
+              <!--TODO @Owen signal the faction logic? Store the result for future decisions?-->
+              <!--<signal_cue_instantly cue="md.FactionLogic.FactionSignalled" param="[$Faction, namespace]"/>-->
+            </do_if>
+            <cancel_cue cue="Start"/>
+          </actions>
+        </cue>
+      </cues>
+    </cue>
+
+  </cues>
+</mdscript>

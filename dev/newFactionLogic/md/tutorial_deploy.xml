@@ -1,0 +1,457 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="Tutorial_deploy" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+    <cue name="Start" namespace="this">
+      <conditions>
+        <event_cue_signalled cue="md.Setup.Start"/>
+      </conditions>
+      <actions>
+        <do_if value="not md.$TutorialRegister?">
+          <set_value name="md.$TutorialRegister" exact="[]" />
+        </do_if>
+        <append_to_list name="md.$TutorialRegister" exact="Start" />
+      </actions>
+      <cues>
+        <cue name="PlayerDied">
+          <conditions>
+            <event_object_destroyed object="player.entity" />
+          </conditions>
+          <actions>
+            <cancel_cue cue="Start" />
+          </actions>
+        </cue>
+
+        <cue name="Trigger" checkinterval="5s" version="2">
+          <conditions>
+            <check_value value="not md.$SurpressTutorials?" />
+            <check_value value="player.computer" />
+          </conditions>
+          <actions>
+            <set_value name="$DebugChance" exact="0"/>
+            <set_value name="$MissionName" exact="' 5) ' + readtext.{30192}.{1}" />
+            <set_value name="$Guide" exact="player.computer" />
+            <create_offer cue="Start" actor="$Guide" name="$MissionName" description="readtext.{30192}.{2}" difficulty="level.trivial" faction="faction.player" type="missiontype.tutorial">
+              <briefing>
+                <objective step="1" action="objective.custom" customaction="{30192,20}" comment="Deploy Satellite"/>
+                <objective step="2" action="objective.custom" customaction="{30192,21}" comment="Collect Satellite"/>
+              </briefing>
+            </create_offer>
+          </actions>
+          <patch sinceversion="2">
+            <do_if value="Start.hasmissionoffer">
+              <set_value name="$MissionName" exact="' 5) ' + readtext.{30192}.{1}" />
+              <update_offer cue="Start" name="$MissionName"/>
+            </do_if>
+          </patch>
+          <cues>
+            <cue name="Offer">
+              <cues>
+                <cue name="ConversationStarted" instantiate="true">
+                  <conditions>
+                    <event_conversation_started actor="$Guide" conversation="mission" convparam="Start" />
+                  </conditions>
+                  <actions>
+                    <remove_help all="true" />
+                    <open_conversation_menu menu="MissionBriefingMenu" param="[0, 0, Start, true]" />
+                  </actions>
+                  <cues>
+                    <cue name="ConversationNextSection" instantiate="true">
+                      <conditions>
+                        <event_conversation_next_section actor="$Guide" choiceparam="Start" />
+                      </conditions>
+                      <actions>
+                        <!-- Accept case -->
+                        <do_if value="event.param == 'c_mission_accept'">
+                          <signal_cue cue="Tutorial" />
+                        </do_if>
+                      </actions>
+                    </cue>
+
+                    <cue name="ConversationFinished">
+                      <conditions>
+                        <event_conversation_finished actor="$Guide" />
+                      </conditions>
+                      <actions>
+                        <cancel_cue cue="ConversationStarted" />
+                      </actions>
+                    </cue>
+
+                    <cue name="AcceptMission">
+                      <conditions>
+                        <event_object_signalled object="$Guide" param="'accept'" />
+                      </conditions>
+                      <actions>
+                        <signal_cue cue="Tutorial" />
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="Tutorial">
+              <conditions>
+                <check_any>
+                  <event_cue_signalled />
+                  <event_object_signalled object="player.entity" param="'start'" param2="Start" />
+                </check_any>
+              </conditions>
+              <actions>
+                <debug_text text="'Tutorial can begin'" chance="$DebugChance" />
+                <cancel_cue cue="Offer" />
+                <signal_cue_instantly cue="md.Tutorials.NewTutorialTriggered" param="Start" />
+                <set_value name="$TutorialStartTime" exact="player.age" />
+                <create_mission cue="Start" offercue="Start" />
+                <cancel_conversation actor="$Guide" />
+                <remove_offer cue="Start" />
+                <remove_help all="true" />
+                <set_value name="$StartDelay" exact="2s"/>
+
+                <do_if value="(player.ship) and (not player.ship.ammostorage.{deployablecategory.satellite}.count)">
+                  <show_help_multi position="1" force="true" allowclose="false">
+                    <text line="8001" comment="For this tutorial you need..."/>
+                    <text line="8002" comment="Buy deployable satellites in equipment docks"/>
+                  </show_help_multi>
+                  <!--show_notification text="{1015,409}" sound="notification_warning" comment="need satellite"/-->
+                  <remove_mission cue="Start" type="aborted" />
+                  <signal_cue cue="Cleanup" />
+                </do_if>
+                <do_elseif value="not player.ship">
+                  <show_help line="1021" duration="7s" position="1" force="true" comment="This tutorial must be started from a ship in space."/>
+                  <show_notification text="{1015,406}" sound="notification_warning" comment="need to be in ship" />
+                  <remove_mission cue="Start" type="aborted" />
+                  <signal_cue cue="Cleanup" />
+                </do_elseif>
+                <do_else>
+                  <show_help line="1001" duration="7s" position="1" force="true" comment="You can abort this tutorial in the Active Missions menu " />
+                </do_else>
+
+              </actions>
+              <cues>
+
+                <cue name="Abort">
+                  <conditions>
+                    <event_mission_aborted cue="Start" />
+                  </conditions>
+                  <actions>
+                    <remove_help all="true"/>
+                    <remove_mission cue="Start" type="aborted" />
+                    <signal_cue cue="Cleanup" />
+                  </actions>
+                </cue>
+
+                <cue name="Abort_OtherTutorialStarted">
+                  <conditions>
+                    <event_cue_signalled cue="md.Tutorials.NewTutorialTriggered" />
+                    <check_value value="event.param != Start" />
+                  </conditions>
+                  <actions>
+                    <remove_help all="true"/>
+                    <show_notification text="{1015,400}" sound="notification_warning" comment="Tutorial aborted" />
+                    <remove_mission cue="Start" type="aborted"/>
+                    <signal_cue cue="Cleanup" />
+                  </actions>
+                </cue>
+
+                <cue name="Tutorial_Init">
+                  <delay exact="$StartDelay"/>
+                  <actions>
+                    <!--Create a list of tutorial cues to trigger in what order, and what briefing step they point to-->
+                    <set_value name="$SignalList" exact="[
+                                [Tutorial_ReturnToShip, 1],
+                                [Tutorial_Deploy, 1],
+                    ]"/>
+
+                    <set_value name="$Index" exact="0"/>
+                    <signal_cue cue="Tutorial_TriggerNext"/>
+                  </actions>
+                </cue>
+
+                <cue name="Tutorial_TriggerNext" instantiate="true">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <set_value name="$Index" operation="add"/>
+                    <do_if value="$Index gt $SignalList.count">
+                      <remove_help all="true"/>
+                      <debug_text text="'Deploy tutorial has been completed'" chance="$DebugChance" />
+                      <show_help line="1002" position="1" force="true" comment="Tutorial Completed!"/>
+                      <show_help line="1003" position="1" force="true" comment="Press $INPUT_ACTION_HELP$ to try other tutorials."/>
+                      <remove_mission cue="Start" type="tutorialcompleted" />
+                      <signal_cue cue="Cleanup" />
+                    </do_if>
+                    <do_else>
+                      <signal_cue cue="$SignalList.{$Index}.{1}"/>
+                      <set_value name="$CurrentStep" exact="$SignalList.{$Index}.{2}"/>
+                      <set_objective_from_briefing cue="Start" step="$CurrentStep"/>
+                    </do_else>
+                  </actions>
+                </cue>
+
+                <cue name="Tutorial_ReturnToShip">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <do_if value="player.ship and not player.ship.dock and player.occupiedship" comment="skip this part of the tutorial">
+                      <signal_cue cue="Tutorial_TriggerNext"/>
+                      <cancel_cue cue="Tutorial_ReturnToShip"/>
+                    </do_if>
+                    <do_else>
+                      <set_value name="$NextHint1" exact="player.age"/>
+                      <set_value name="$NextHint2" exact="player.age"/>
+                      <set_value name="$NextHint3" exact="player.age"/>
+                    </do_else>
+                  </actions>
+                  <cues>
+
+                    <cue name="Tutorial_ReturnToShip_SitDown" checkinterval="1s" instantiate="true">
+                      <conditions>
+                        <check_value value="(player.ship) and (not player.occupiedship) and (player.ship.isplayerowned)"/>
+                      </conditions>
+                      <actions>
+                        <set_value name="$NextHint1" exact="player.age"/>
+                        <set_value name="$NextHint3" exact="player.age"/>
+                        <do_if value="$NextHint2 lt player.age" comment="don't spam hints">
+                          <show_help line="if player.input.controller or player.input.joystick then 1042 else 1040" duration="10s" position="1" force="true" comment="To sit down in your chair"/>
+                          <set_value name="$NextHint2" exact="player.age + 25s"/>
+                        </do_if>
+                      </actions>
+                    </cue>
+
+                    <cue name="Tutorial_ReturnToShip_Wait" checkinterval="1s">
+                      <conditions>
+                        <check_value value="player.ship"/>
+                        <check_value value="player.occupiedship"/>
+                        <check_value value="not player.ship.dock"/>
+                        <check_value value="player.ship.isplayerowned" comment="avoid hitchhiking"/>
+                      </conditions>
+                      <actions>
+                        <remove_help all="true" />
+                        <signal_cue cue="Tutorial_TriggerNext"/>
+                        <cancel_cue cue="Tutorial_ReturnToShip"/>
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="Tutorial_Deploy">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <set_value name="$DeployWasOpen" exact="false"/>
+                    <set_value name="$DeployedSat" exact="false"/>
+                    <set_value name="$SelectedSat" exact="false"/>
+                    <set_value name="$NearSatellite" exact="false"/>
+                    <set_value name="$InteractMenuWasOpen" exact="false"/>
+                    <set_value name="$InteractedSatellite" exact="false"/>
+                    <set_objective step="1" cue="Start" action="objective.custom" customaction="{30192,20}" comment="Deploy Satellite"/>
+                    <!--add_ammo object="player.ship" macro="macro.eq_arg_satellite_02_macro" amount="3" /-->
+                  </actions>
+                  <delay exact="0.5s"/>
+                  <actions>
+                    <show_help_multi position="1" force="true" allowclose="false">
+                      <text line="992" log="false" comment="These yellow-framed boxes are tips. Click the arrow after you have read them to proceed to the next one."/>
+                    </show_help_multi>
+                    <show_help line="8010"  position="1" force="true" duration="10s" comment="Open the SHIP MENU and select the deploy sub menu." allowclose="false" timeout="false"/>
+                  </actions>
+                  <cues>
+
+                    <cue name="Tutorial_Deploy_OpenMenu">
+                      <conditions>
+                        <event_ui_triggered screen="'DockedMenu'"/>
+                      </conditions>
+                      <actions>
+                        <remove_help all="true"/>
+                        <set_value name="$DeployWasOpen" exact="true"/>
+                        <show_help_multi position="18" force="true" allowclose="false">
+                          <text line="8024" comment="Objects like satellites, beacons or mines can be deployed from this menu. Your ship will drop the item from its XS dock." />
+                          <text line="8022" comment="You can also order other ships to deploy objects remotely from the map interface." />
+                          <text line="8023" comment="Deployed objects can also be retrieved again later." />
+                        </show_help_multi>
+                      </actions>
+                      <cues>
+                        <cue name="Tutorial_Deploy_HintClose">
+                          <conditions>
+                            <event_ui_triggered screen="'hintclosed'" control="'8024'"/>
+                          </conditions>
+                          <actions>
+                            <show_help_overlay id="'docked_deploy_civ'" highlightonly="true"/>
+                            <show_help line="8100" position="18" force="true" comment="Deploy a satellite now" allowclose="false" timeout="false"/>
+                          </actions>
+                        </cue>
+
+                        <cue name="Tutorial_Deploy_DeployedSatellite" version="2">
+                          <conditions>
+                            <event_satellite_launched space="player.sector"/>
+                            <check_value value="event.param2.isplayerowned"/>
+                          </conditions>
+                          <actions>
+                            <set_value name="$HintClosed" exact="false"/>
+                            <remove_help all="true"/>
+                            <remove_help_overlay id="'docked_deploy_civ'"/>
+                            <set_value name="$DeployedSat" exact="true"/>
+                            <set_value name="$ObjectEntering" exact="event.param2"/>
+                            <show_help_multi position="18" force="true" allowclose="false">
+                              <text line="8101" comment="Like remote ships that you own, the satellite scans its surrounding live." />
+                              <text line="8102" comment="The map therefore shows this area live, and allows remote interactions." />
+                            </show_help_multi>
+                            <show_help line="1010" position="18" force="true" comment="Close the menu by pressing $INPUT_ACTION_WIDGET_QUIT$." allowclose="false" timeout="false"/>
+                          </actions>
+                          <patch sinceversion="2">
+                            <set_value name="$HintClosed" exact="false"/>
+                          </patch>
+                          <cues>
+                            <cue name="Tutorial_Deploy_HintClosed">
+                              <conditions>
+                                <event_ui_triggered screen="'DockedMenu'" control="'menu_close'"/>
+                              </conditions>
+                              <actions>
+                                <remove_help all="true"/>
+                                <set_value name="$HintClosed" exact="true"/>
+                              </actions>
+                              <delay exact="0.5s"/>
+                              <actions>
+                                <set_objective step="2" cue="Start" action="objective.custom" customaction="{30192,21}" comment="Collect Satellite" object="$ObjectEntering"/>
+                                <show_help line="8200" position="1" force="true" comment="Turn towards the deployed satellite and slowly fly very close." allowclose="false" timeout="false"/>
+                              </actions>
+                            </cue>
+
+                            <cue name="Tutorial_Deploy_NearSatDetect" checkinterval="1s" instantiate="true">
+                              <conditions>
+                                <check_value value="$ObjectEntering.exists and not $NearSatellite"/>
+                                <check_value value="player.entity.distanceto.{$ObjectEntering} lt 100"/>
+                                <check_value value="$HintClosed"/>
+                              </conditions>
+                              <actions>
+                                <remove_help all="true"/>
+                                <set_value name="$NearSatellite" exact="true"/>
+                                <signal_cue cue="Tutorial_Deploy_NearSat"/>
+                              </actions>
+                            </cue>
+
+                            <cue name="Tutorial_Deploy_FarSatDetect" checkinterval="1s" instantiate="true">
+                              <conditions>
+                                <check_value value="$HintClosed"/>
+                                <check_value value="$ObjectEntering.exists and $NearSatellite"/>
+                                <check_value value="player.entity.distanceto.{$ObjectEntering} ge 100"/>
+                              </conditions>
+                              <actions>
+                                <remove_help all="true"/>
+                                <set_value name="$NearSatellite" exact="false"/>
+                                <show_help line="8200" position="1" force="true" comment="Turn towards the deployed satellite and slowly fly very close." allowclose="false" timeout="false"/>
+                              </actions>
+                            </cue>
+
+                            <cue name="Tutorial_Deploy_NearSat" instantiate="true">
+                              <conditions>
+                                <event_cue_signalled/>
+                              </conditions>
+                              <cues>
+                                <cue name="Tutorial_Deploy_SelectSatRehint" checkinterval="14s" instantiate="true">
+                                  <conditions>
+                                    <check_value value="$NearSatellite and not $SelectedSat"/>
+                                  </conditions>
+                                  <actions>
+                                    <show_help line="8213" position="18" duration="7s" force="true" comment="Select the satellite as your target." />
+                                  </actions>
+                                </cue>
+
+                                <cue name="Tutorial_Deploy_SelectedSatDebug" instantiate="true">
+                                  <conditions>
+                                    <event_player_changed_target/>
+                                    <check_value value="event.param"/>
+                                  </conditions>
+                                  <actions>
+                                    <!--debug_text text="'checking: ' + event.param + ' == ' + $ObjectEntering"/-->
+                                  </actions>
+                                </cue>
+
+                                <cue name="Tutorial_Deploy_SelectedSat" instantiate="true">
+                                  <conditions>
+                                    <event_player_changed_target/>
+                                    <check_value value="event.param and (event.param == $ObjectEntering) and $NearSatellite"/>
+                                  </conditions>
+                                  <actions>
+                                    <remove_help all="true"/>
+                                    <set_value name="$SelectedSat" exact="true"/>
+                                    <show_help line="8221" position="1" force="true" comment="Press $INPUT_STATE_INTERACTION_MENU$ to open the interact menu." allowclose="false" timeout="false"/>
+                                  </actions>
+                                  <cues>
+
+                                    <cue name="Tutorial_Deploy_Interacted">
+                                      <conditions>
+                                        <event_ui_triggered screen="'InteractMenu'" control="''"/>
+                                      </conditions>
+                                      <actions>
+                                        <remove_help all="true"/>
+                                        <set_value name="$InteractMenuWasOpen" exact="true"/>
+                                        <show_help_overlay id="'interactmenu_deactivatesatellite'" highlightonly="true"/>
+                                        <show_help line="8230" position="1" force="true" comment="Deactivate the satellite." allowclose="false" timeout="false"/>
+                                      </actions>
+                                      <cues>
+
+                                        <cue name="Tutorial_Deploy_Deployed">
+                                          <conditions>
+                                            <event_ui_triggered screen="'InteractMenu'" control="'perform'"/>
+                                            <check_value value="event.param3 == 'detach'"/>
+                                          </conditions>
+                                          <actions>
+                                            <remove_help all="true"/>
+                                            <remove_help_overlay id="'interactmenu_deactivatesatellite'"/>
+                                            <set_value name="$InteractedSatellite" exact="true"/>
+                                            <show_help line="8240" position="1" force="true" comment="You can now pick the satellite up by flying over it or using the magnet \($INPUT_STATE_LOOTMAGNET$\)." />
+                                          </actions>
+                                          <cues>
+                                            <cue name="Tutorial_Deploy_DoneDelayed">
+                                              <delay exact="5s"/>
+                                              <actions>
+                                                <signal_cue cue="Tutorial_TriggerNext"/>
+                                                <cancel_cue cue="Tutorial_Deploy"/>
+                                              </actions>
+                                            </cue>
+                                          </cues>
+                                        </cue>
+                                      </cues>
+                                    </cue>
+                                  </cues>
+                                </cue>
+                              </cues>
+                            </cue>
+                          </cues>
+                        </cue>
+                      </cues>
+                    </cue>
+                  </cues>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="Cleanup">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <remove_help_overlay all="true"/>
+                <debug_text text="'cleanup'" chance="$DebugChance"/>
+                <do_if value="$BriefingCutsceneStarted?">
+                  <stop_cutscene key="$CutsceneKey"/>
+                </do_if>
+                <do_if value="$Beacons?">
+                  <destroy_group group="$Beacons"/>
+                </do_if>
+                <remove_offer cue="Start"/>
+                <remove_mission cue="Start" />
+                <reset_cue cue="Trigger"/>
+              </actions>
+            </cue>
+
+          </cues>
+        </cue>
+
+      </cues>
+    </cue>
+  </cues>
+</mdscript>

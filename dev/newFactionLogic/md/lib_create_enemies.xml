@@ -1,0 +1,347 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="LIB_Create_Enemies" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--cue_signalled_instantly event.param = [$ResultCue, $Difficulty, $MissionLevel]-->
+    <!--Result saved to: $ResultCue.$EnemyPoints-->
+    <cue name="CalculatePoints" instantiate="true">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <set_value name="$DebugChance" exact="0"/>
+        <include_actions ref="md.LIB_Reward_Balancing.GetValue"/>
+        <set_value name="event.param.{1}.$EnemyPoints" min="($Value * 0.8)i" max="($Value * 0.9)i"/>
+        <!--<set_value name="event.param.{1}.$EnemyPoints" exact="($EnemyPoints)i" comment="convert to int"/>-->
+      </actions>
+    </cue>
+
+    <!--
+    $errorvalue:
+    -102: No suitable ship faction
+    -101: Not enough points to create a ship-->
+
+    <library name="Start" namespace="this">
+      <params>
+        <param name="EndSignalCue" default="null"/>
+        <param name="GroupCue" comment="Ship group is saved to '$GroupCue.$LIB_Create_Enemies_Result'"/>
+
+        <!--Generation Info-->
+        <param name="Difficulty" default="level.medium" comment="Mission difficulty level"/>
+        <param name="MissionLevel" default="3" comment="1 to 10. Pseudo value of mission epicness. e.g. Deliver Energy = 1, Repel Invasion = 10"/>
+        <!--<param name="PlayerProgression" default="1" comment="1 to 5. Pseudo value of player progression. Used to calculate range of EnemyPoints (Was fight rank in X3) TODO"/>-->
+        <param name="EnemyPoints" default="0" comment="Provide the EnemyPoints (int) instead of calculating it from the above parameters"/>
+
+        <!--Ship Info-->
+        <param name="Ship_Faction" comment="Overriding faction for the ship and created NPCs"/>
+        <!--Use category filters sparingly as it can limit creation of the enemy fleet-->
+        <param name="Ship_CategoryFaction" default="null" comment="faction or list of factions"/>
+        <param name="Ship_AdditionalTags" default="null" comment="list of tags"/>
+        <param name="GetSuitableFaction" default="true" comment="Get suitable Ship_CategoryFaction if null"/>
+
+
+        <!--Location Info - Note: Check $AllowHighways and $AllowBoostingIn as these may override location params-->
+        <param name="Zone" default="null"/>
+        <param name="Sector" default="null"/>
+        <param name="PositionObject" default="'use zone'" comment="Object to anchor $Position value. Default is 'use zone' which will then be replaced with the $Zone value (if one is defined)"/>
+        <param name="Position" default="position.[0,0,0]"/>
+        <param name="SafePosFireRange" default="true" comment="Avoid the firing range of the safepos PositionObject"/>
+        <param name="MinRange" default="1km"/>
+        <param name="MaxRange" default="3km"/>
+
+        <param name="AllowHighways" default="100" comment="Chance for small ship to spawn in highway. Ignored if $Dock is set"/>
+        <param name="AllowBoostingIn" default="100" comment="Chance for capship to boost in. Ignored if $Dock is set"/>
+
+        <!--TODO: Take account of existing enemies-->
+        <param name="DebugChance" default="0"/>
+      </params>
+      <actions>
+        <create_list name="$ErrorList"/>
+        <create_group groupname="$GroupCue.$LIB_Create_Enemies_Result"/>
+
+        <do_if value="not $PositionObject">
+          <set_value name="$PositionObject" exact="'use zone'"/>
+        </do_if>
+
+        <do_if value="$PositionObject" exact="'use zone'">
+          <do_if value="$Zone.exists">
+            <set_value name="$PositionObject" exact="$Zone"/>
+          </do_if>
+          <do_elseif value="$Sector.exists">
+            <set_value name="$PositionObject" exact="$Sector"/>
+          </do_elseif>
+          <do_else>
+            <set_value name="$PositionObject" exact="null"/>
+          </do_else>
+        </do_if>
+
+        <do_if value="not $Zone and not $Sector">
+          <set_value name="$Zone" exact="player.zone"/>
+        </do_if>
+
+        <do_if value="$GetSuitableFaction and not $Ship_CategoryFaction">
+          <signal_cue_instantly cue="md.LIB_Factions.Get_Suitable_Ship_Faction" param="[Start, $Ship_Faction, $PositionObject.cluster, false]"/>
+          <set_value name="$Ship_CategoryFaction" exact="$Suitable_Ship_Faction"/>
+          <do_if value="not $Ship_CategoryFaction">
+            <append_to_list name="$ErrorList" exact="-102"/>
+          </do_if>
+        </do_if>
+
+        <debug_text text="'Ship_Faction ' + $Ship_Faction.id" chance="$DebugChance"/>
+        <debug_text text="'Ship_CategoryFaction ' + $Ship_CategoryFaction" chance="$DebugChance"/>
+
+        <!--Ship definitions-->
+        <!--[$PointsCost, $Amount, $ShipSize, [$Tags]]-->
+        <set_value name="$SmallFighter"       exact="[5, 1, class.ship_s, [tag.military, tag.mission]]"/>
+        <set_value name="$SmallFighterGroup"  exact="[10, 2, class.ship_s, [tag.military, tag.mission]]"/>
+        <set_value name="$MediumFighter"      exact="[18, 1, class.ship_m, [tag.military, tag.mission]]"/>
+        <set_value name="$MediumFighterGroup" exact="[25, 2, class.ship_m, [tag.military, tag.mission]]"/>
+        <set_value name="$LargeShip"          exact="[55, 1, class.ship_l, [tag.military, tag.mission]]"/>
+        <set_value name="$ExtraLargeShip"     exact="[130, 1, class.ship_xl, [tag.military, tag.mission]]"/>
+        <set_value name="$InvalidDefinition"  exact="[10, 0, class.ship_s, [tag.military, tag.mission]]"/>
+
+        <set_value name="$Definition_Cost"    exact="1"/>
+        <set_value name="$Definition_Amount"  exact="2"/>
+        <set_value name="$Definition_Size"    exact="3"/>
+        <set_value name="$Definition_Tags"    exact="4"/>
+
+        <create_group groupname="$Ships"/>
+
+        <do_if value="$EnemyPoints" max="0">
+          <!--<signal_cue_instantly cue="md.LIB_Create_Enemies.CalculatePoints" param="[Start, $Difficulty, $MissionLevel, $PlayerProgression]"/>-->
+          <signal_cue_instantly cue="md.LIB_Create_Enemies.CalculatePoints" param="[Start, $Difficulty, $MissionLevel]"/>
+          <do_if value="$EnemyPoints" max="0">
+            <append_to_list name="$ErrorList" exact="-101"/>
+          </do_if>
+        </do_if>
+
+      </actions>
+      <cues>
+
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="1"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup"/>
+          </actions>
+        </cue>
+
+        <cue name="Do_Start" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" exact="0"/>
+          </conditions>
+          <actions>
+            <set_value name="$Tries" exact="0"/>
+            <set_value name="$BestSpentPoints" exact="0"/>
+            <set_value name="$PointsOverflow" exact="0"/>
+            <debug_text text="'Initial EnemyPoints: ' + $EnemyPoints" chance="$DebugChance"/>
+          </actions>
+          <cues>
+            <!-- This 'loops' back until all points are spent (see <reset_cue cue="Choose_Ships"/>) -->
+            <cue name="Choose_Ships">
+              <actions>
+                <set_value name="$ShipDefinition" exact="$InvalidDefinition"/>
+
+                <do_if value="$EnemyPoints" min="1">
+                  <set_value name="$Tries" operation="add"/>
+                  <!--Set own category params-->
+                  <do_if value="$EnemyPoints" min="$ExtraLargeShip.{$Definition_Cost}">
+                    <do_any>
+                      <set_value name="$ShipDefinition" exact="$ExtraLargeShip" weight="70"/>
+                      <set_value name="$ShipDefinition" exact="$LargeShip" weight="25 * $Tries"/>
+                    </do_any>
+                  </do_if>
+                  <do_elseif value="$EnemyPoints" min="$LargeShip.{$Definition_Cost}" max="$ExtraLargeShip.{$Definition_Cost} - 1">
+                    <do_any>
+                      <set_value name="$ShipDefinition" exact="$LargeShip" weight="70"/>
+                      <set_value name="$ShipDefinition" exact="$MediumFighterGroup" weight="25 * $Tries"/>
+                    </do_any>
+                  </do_elseif>
+                  <do_elseif value="$EnemyPoints" min="$MediumFighterGroup.{$Definition_Cost}" max="$LargeShip.{$Definition_Cost} - 1">
+                    <do_any>
+                      <set_value name="$ShipDefinition" exact="$MediumFighterGroup" weight="70"/>
+                      <set_value name="$ShipDefinition" exact="$MediumFighter" weight="25 * $Tries"/>
+                    </do_any>
+                  </do_elseif>
+                  <do_elseif value="$EnemyPoints" min="$MediumFighter.{$Definition_Cost}" max="$MediumFighterGroup.{$Definition_Cost} - 1">
+                    <do_any>
+                      <set_value name="$ShipDefinition" exact="$MediumFighter" weight="70"/>
+                      <set_value name="$ShipDefinition" exact="$SmallFighterGroup" weight="25 * $Tries"/>
+                    </do_any>
+                  </do_elseif>
+                  <do_elseif value="$EnemyPoints" min="$SmallFighterGroup.{$Definition_Cost}" max="$MediumFighter.{$Definition_Cost} - 1">
+                    <do_any>
+                      <set_value name="$ShipDefinition" exact="$SmallFighterGroup" weight="70"/>
+                      <set_value name="$ShipDefinition" exact="$SmallFighter" weight="25 * $Tries"/>
+                    </do_any>
+                  </do_elseif>
+                  <do_else>
+                    <set_value name="$ShipDefinition" exact="$SmallFighter"/>
+                  </do_else>
+
+                  <!--TODO: Support ships for big ships-->
+                  <debug_text text="'$ShipDefinition ' + $ShipDefinition" chance="$DebugChance"/>
+                  <debug_text text="'$EnemyPoints ' + $EnemyPoints" chance="$DebugChance"/>
+                  <debug_text text="'$PointsOverflow ' + $PointsOverflow" chance="$DebugChance"/>
+
+                  <do_if value="$Ship_AdditionalTags">
+                    <do_all exact="$Ship_AdditionalTags.count" counter="$Counter">
+                      <append_to_list name="$ShipDefinition.{$Definition_Tags}" exact="$Ship_AdditionalTags.{$Counter}"/>
+                      <debug_text text="$ShipDefinition.{$Definition_Tags}" chance="$DebugChance"/>
+                    </do_all>
+                  </do_if>
+
+                  <set_value name="$SafePosRadius" exact="null"/>
+                  <do_if value="$ShipDefinition.{$Definition_Size} == class.ship_xs or $ShipDefinition.{$Definition_Size} == class.ship_s or $ShipDefinition.{$Definition_Size} == class.ship_m">
+                    <set_value name="$SafePosRadius" exact="5km"/>
+                  </do_if>
+                  <do_elseif value="$ShipDefinition.{$Definition_Size} == class.ship_l or $ShipDefinition.{$Definition_Size} == class.ship_xl">
+                    <set_value name="$SafePosRadius" exact="10km"/>
+                  </do_elseif>
+                </do_if>
+                <do_else>
+                  <signal_cue cue="Cleanup"/>
+                  <cancel_cue cue="Do_Start"/>
+                </do_else>
+              </actions>
+              <cues>
+                <!-- Calls LIB_Create_Ships.xml to spawn 1 ship with the specified parameters -->
+                <cue name="Create_Ships" ref="md.LIB_Create_Ships.Start">
+                  <param name="EndSignalCue" value="Ship_Created" comment="When md.LIB_Create_Ships.Start is done it triggers 'Ship_Created'-callback"/>
+                  <param name="GroupCue" value="Start" comment="Ship group is saved to '$GroupCue.$LIB_Create_Ships_Result'"/>
+
+                  <!--Ship Info-->
+                  <param name="Ship_Amount" value="$ShipDefinition.{$Definition_Amount}"/>
+
+                  <param name="Ship_Faction" value="$Ship_Faction"/>
+                  <param name="Ship_Class" value="$ShipDefinition.{$Definition_Size}"/>
+
+                  <param name="Ship_CategoryFaction" value="$Ship_CategoryFaction" comment="faction or list of factions"/>
+                  <param name="Ship_Category_Size" value="$ShipDefinition.{$Definition_Size}"/>
+                  <param name="Ship_CategoryTags" value="$ShipDefinition.{$Definition_Tags}"/>
+
+                  <!--Location Info-->
+                  <param name="Zone" value="$Zone"/>
+                  <param name="Sector" value="$Sector"/>
+                  <param name="PositionObject" value="$PositionObject"/>
+                  <param name="Position" value="$Position"/>
+                  <param name="SafePosRadius" value="$SafePosRadius"/>
+                  <param name="SafePosFireRange" value="$SafePosFireRange"/>
+                  <param name="MinRange" value="$MinRange"/>
+                  <param name="MaxRange" value="$MaxRange"/>
+
+                  <param name="AllowHighways" value="$AllowHighways"/>
+                  <param name="AllowBoostingIn" value="$AllowBoostingIn"/>
+
+                  <param name="DebugChance" value="$DebugChance"/>
+                </cue>
+                <cue name="Ship_Created">
+                  <!-- md.LIB_Create_Ships.Start finished and triggered callback to 'Ship_Created' -->
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <!--We use do_all here so that we can use <break/> later, after a reset_cue so that the rest of the actions do not get performed-->
+                    <do_all exact="1">
+                      <do_if value="$LIB_Create_Ships_Result.count" min="1">
+                        <set_value name="$Tries" exact="0"/>
+                        <do_if value="$EnemyPoints gt $BestSpentPoints">
+                          <set_value name="$BestSpentPoints" exact="$EnemyPoints"/>
+                          <debug_text text="'The best points spent were now ' + $BestSpentPoints" chance="$DebugChance"/>
+                        </do_if>
+                        <set_value name="$EnemyPoints" operation="subtract" exact="$ShipDefinition.{$Definition_Cost}"/>
+                        <debug_text text="$ShipDefinition.{$Definition_Cost} + ' points were spent. $EnemyPoints is now ' + $EnemyPoints" chance="$DebugChance"/>
+                        <do_if value="$PointsOverflow gt 0">
+                          <!--Attempt to add the $PointsOverflow to $EnemyPoints up to $BestSpentPoints-->
+                          <set_value name="$EnemyPoints" operation="add" exact="$PointsOverflow"/>
+                          <set_value name="$PointsOverflow" exact="0"/>
+
+                          <do_if value="$EnemyPoints gt $BestSpentPoints">
+                            <set_value name="$PointsOverflow" exact="$EnemyPoints - $BestSpentPoints"/>
+                            <set_value name="$EnemyPoints" operation="subtract" exact="$PointsOverflow"/>
+                          </do_if>
+                          <debug_text text="'Attempted to add $PointsOverflow back to $EnemyPoints. $PointsOverflow: ' + $PointsOverflow + '; $EnemyPoints: ' + $EnemyPoints" chance="$DebugChance"/>
+                        </do_if>
+                        <add_to_group groupname="$GroupCue.$LIB_Create_Enemies_Result" group="$LIB_Create_Ships_Result"/>
+                        <clear_group group="$LIB_Create_Ships_Result"/>
+                      </do_if>
+                      <do_elseif value="$ShipDefinition.{$Definition_Amount}" min="1">
+                        <do_if value="$EnemyPoints + $PointsOverflow" min="1">
+                          <do_if value="$Tries" min="3">
+                            <!--Could not create ship, try next tier-->
+                            <set_value name="$PointDiff" exact="$EnemyPoints - ($ShipDefinition.{$Definition_Cost} - 1)"/>
+                            <do_if value="$PointDiff">
+                              <set_value name="$EnemyPoints" operation="subtract" exact="$PointDiff"/>
+                              <set_value name="$PointsOverflow" operation="add" exact="$PointDiff"/>
+                              <debug_text text="'Attempting next tier by reducing $EnemyPoints to ' + $EnemyPoints + '. Points overflow is now ' + $PointsOverflow" chance="$DebugChance"/>
+                              <set_value name="$Tries" exact="0"/>
+                            </do_if>
+                            <do_else>
+                              <debug_text text="'Unable to spawn any ships below this definition. Unspent points: ' + $EnemyPoints + $PointsOverflow" chance="$DebugChance"/>
+                              <set_value name="$EnemyPoints" exact="0"/>
+                              <set_value name="$PointsOverflow" exact="0"/>
+                            </do_else>
+                          </do_if>
+                          <do_else>
+                            <reset_cue cue="Choose_Ships"/>
+                            <!--Break so that no other actions perform before the reset-->
+                            <break/>
+                          </do_else>
+                        </do_if>
+                      </do_elseif>
+
+                      <debug_text text="'EnemyPoints: ' + $EnemyPoints" chance="$DebugChance"/>
+
+                      <!-- Any points remaining to spawn another ship? If so choose another ship, otherwise trigger Cleanup-cue -->
+                      <do_if value="$EnemyPoints" min="1">
+                        <reset_cue cue="Choose_Ships"/>
+                      </do_if>
+                      <do_elseif value="$PointsOverflow gt 0 and $BestSpentPoints gt 0">
+                        <reset_cue cue="Choose_Ships"/>
+                      </do_elseif>
+                      <do_else>
+                        <signal_cue cue="Cleanup"/>
+                        <cancel_cue cue="Do_Start"/>
+                      </do_else>
+                    </do_all>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <do_if value="md.$RML_Debugging">
+              <do_all exact="$ErrorList.count" counter="$Counter">
+                <do_if value="$ErrorList.{$Counter}" exact="-101">
+                  <set_value name="$FeedbackText" exact="'No enemy points calculated'"/>
+                </do_if>
+                <do_elseif value="$ErrorList.{$Counter}" exact="-102">
+                  <set_value name="$FeedbackText" exact="'No suitable ship faction'"/>
+                </do_elseif>
+                <do_else>
+                  <set_value name="$FeedbackText" exact="'Error: Not enough points to create a ship'"/>
+                </do_else>
+
+                <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+              </do_all>
+            </do_if>
+
+            <!-- Callback to the cue which was passed into md.LIB_Create_Ships.Start as a parameter -->
+            <do_if value="$EndSignalCue">
+              <signal_cue cue="$EndSignalCue"/>
+            </do_if>
+            <cancel_cue cue="Start"/>
+          </actions>
+
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

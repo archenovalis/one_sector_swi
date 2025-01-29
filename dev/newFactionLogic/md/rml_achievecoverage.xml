@@ -1,0 +1,281 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_AchieveCoverage" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+    
+    <!--
+    This RML is intended for use in Master-Missions. 
+    It handles checking if the player achieved satellite coverage for a specified area.
+    
+    $feedbackvalue:
+    -105 $CoverageSector parameter left undefined
+    -104 $Faction parameter left undefined
+    -103 $CoverageRadius is incorrectly defined.
+    -102 $CoverageOffset is incorrectly defined.
+    -101 Cue parameters not defined
+    -100: Undefined failure. Defaulted to -100
+    1: Coverage Achieved -->
+
+
+    <library name="AchieveCoverage">
+      <params>
+        <param name="EndSignalCue"/>
+        <param name="MissionCue"/>
+        <param name="StartStep" default="1" comment="Briefing step to start the mission on"/>
+        <param name="UpdateBriefing" default="true" comment="Update the briefing objective step when the objective is updated"/>
+        <param name="DebugChance" default="0" />
+
+        <param name="ObjectiveText"                     comment="The text for the mission objective when far away"/>
+        <param name="ObjectiveText_InRange"             comment="The text for the mission objective when inside target area"/>
+        <param name="CoverageSector"                    comment="Sector in which we need coverage"/>
+        <param name="CoverageOffset"                    comment="Offset within the sector"/>
+        <param name="CoverageRadius"                    comment="Radius which need to be covered"/>
+        <param name="CoveragePercent"  default="100"    comment="How much of the area needs to have coverage"/>
+        <param name="Faction"                           comment="The faction which is asking for satellite coverage"/>
+      </params>
+      <actions>
+        <set_value name="$feedbackvalue" exact="0"/>
+        <create_list name="$ErrorList"/>
+        
+        <do_if value="not $EndSignalCue or not $MissionCue">
+          <append_to_list name="$ErrorList" exact="-101"/>
+        </do_if>
+        <do_if value="not $CoverageOffset">
+          <append_to_list name="$ErrorList" exact="-102"/>
+        </do_if>
+        <do_if value="not $CoverageRadius">
+          <append_to_list name="$ErrorList" exact="-103"/>
+        </do_if>
+        <do_if value="not $Faction">
+          <append_to_list name="$ErrorList" exact="-104"/>
+        </do_if>
+        <do_if value="not $CoverageSector">
+          <append_to_list name="$ErrorList" exact="-105"/>
+        </do_if>
+
+      </actions>
+      <cues>
+
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="1"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup"/>
+          </actions>
+        </cue>
+
+        <cue name="StartMission" onfail="cancel" version="2">
+          <conditions>
+            <check_value value="$ErrorList.count" min="0"/>
+          </conditions>
+          <actions>
+            <set_value name="$CoverageCurrent" exact="0"/>
+            <set_value name="$InTargetArea" exact="0"/>
+            <signal_cue cue="UpdateBriefing"/>
+          </actions>
+          <patch sinceversion="2">
+            <!-- transfer ownership of all relevant satellites back to player (get_satellite_coverage only works for player-owned satellites) -->
+            <find_object groupname="$SatellitesInArea" deployablecategory="deployablecategory.satellite" multiple="true" space="$CoverageSector" owner="$Faction">
+              <match_distance space="$CoverageSector" value="$CoverageOffset" max="$CoverageRadius"/>
+            </find_object>
+            <do_all exact="$SatellitesInArea.count" counter="$i">
+              <set_owner object="$SatellitesInArea.{$i}" faction="faction.player"/>
+            </do_all>
+          </patch>
+          <cues>
+           
+            <cue name="DebugLaunchSatellite" instantiate="true">
+              <conditions>
+                <event_cue_signalled comment="manually trigger for testing TradeCompleted-cue"/>
+              </conditions>
+              <actions>
+                <add_ammo object="player.ship" macro="macro.eq_arg_satellite_02_macro" amount="1" />
+                <launch_satellite object="player.ship" macro="macro.eq_arg_satellite_02_macro"/>
+              </actions>
+            </cue>
+
+            <cue name="CheckMissionStatus" instantiate="true">
+              <conditions>
+                <event_satellite_launched space="$CoverageSector" comment="If any satellite was launched in the galaxy, we need to do a coverage check"/>
+              </conditions>
+              <actions>
+                <set_value name="$CoveragePrevious" exact="$CoverageCurrent"/>
+                <get_satellite_coverage result="$CoverageCurrent" sector="$CoverageSector" radius="$CoverageRadius">
+                  <position value="$CoverageOffset"/>
+                </get_satellite_coverage>
+                <debug_text text="'Coverage: ' + $CoverageCurrent" chance="$DebugChance"/>
+
+                <!-- Did we achieve full coverage? -->
+                <do_if value="$CoverageCurrent ge $CoveragePercent">
+
+                  <!-- transfer ownership of all relevant satellites to $Faction-->
+                  <find_object groupname="$SatellitesInArea" deployablecategory="deployablecategory.satellite" multiple="true" space="$CoverageSector" owner="faction.player">
+                    <match_distance space="$CoverageSector" value="$CoverageOffset" max="$CoverageRadius"/>
+                  </find_object>
+                  <do_all exact="$SatellitesInArea.count" counter="$i">
+                    <set_owner object="$SatellitesInArea.{$i}" faction="$Faction"/>
+                  </do_all>
+
+                  <!-- display ownership-transfer notification -->
+                  <substitute_text text="$message" source="{1015,300}" comment="Mission Update:">
+                    <replace string="'$REASON$'" with="'\n' + readtext.{30004}.{7001}" comment="Satellite Ownership transferred"/>
+                  </substitute_text>
+                  <show_notification text="$message"/>
+
+                  <signal_cue cue="MissionSuccess"/>
+                </do_if>
+                <do_else>
+                  <signal_cue cue="UpdateBriefing"/>
+                </do_else>
+
+              </actions>
+            </cue>
+
+            <cue name="MissionSuccess">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <delay exact="5s"/>
+              <actions>
+                <set_value name="$feedbackvalue" exact="1" comment="success"/>
+                <signal_cue cue="Cleanup"/>
+              </actions>
+            </cue>
+
+          </cues>
+        </cue>
+
+        <cue name="ReachedArea" checkinterval="5s" instantiate="true">
+          <conditions>
+            <check_all>
+              <check_value value="player.sector == $CoverageSector"/>
+              <check_value value="$CoverageOffset and player.entity.distanceto.[$CoverageSector, $CoverageOffset] le $CoverageRadius"/>
+            </check_all>
+          </conditions>
+          <actions>
+            <do_if value="$InTargetArea == 0">
+              <set_value name="$InTargetArea" exact="1"/>
+              <signal_cue cue="UpdateBriefing"/>
+            </do_if>
+          </actions>
+        </cue>
+
+        <cue name="LeftArea" checkinterval="5s" instantiate="true">
+          <conditions>
+            <check_any>
+              <check_value value="player.sector != $CoverageSector"/>
+              <check_value value="$CoverageOffset and player.entity.distanceto.[$CoverageSector, $CoverageOffset] gt $CoverageRadius"/>
+            </check_any>
+          </conditions>
+          <actions>
+            <do_if value="$InTargetArea == 1">
+              <set_value name="$InTargetArea" exact="0"/>
+              <signal_cue cue="UpdateBriefing"/>
+            </do_if>
+          </actions>
+        </cue>
+        
+        <cue name="UpdateBriefing" instantiate="true" comment="Called each time a briefing-update is needed">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+
+            <do_if value="$UpdateBriefing">
+
+              <do_if value="$InTargetArea">
+                <update_mission cue="$MissionCue">
+                  <briefing>
+                    <objective step="$StartStep" action="objective.achieve_coverage" text="$ObjectiveText_InRange"/>
+                  </briefing>
+                </update_mission>
+                <set_objective cue="$MissionCue" step="$StartStep" action="objective.achieve_coverage" text="$ObjectiveText_InRange" object="$CoverageSector" offset="$CoverageOffset" radius="$CoverageRadius">
+                  <progress progress="($CoverageCurrent)i" max="$CoveragePercent" text="{30102,9}" comment="Coverage: "/>
+                </set_objective>
+              </do_if>
+              <do_else>
+                <update_mission cue="$MissionCue">
+                  <briefing>
+                    <objective step="$StartStep" action="objective.achieve_coverage" text="$ObjectiveText"/>
+                  </briefing>
+                </update_mission>
+                <set_objective cue="$MissionCue" step="$StartStep" action="objective.achieve_coverage" text="$ObjectiveText" object="$CoverageSector" offset="$CoverageOffset" radius="$CoverageRadius"/>
+              </do_else>
+
+            </do_if>
+
+          </actions>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <!--TODO remove_objective-->
+
+            <do_if value="$feedbackvalue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'ERROR: Feedback value is 0 and no error values were set. Defaulting to -100'"/>
+                <set_value name="$feedbackvalue" exact="-100"/>
+              </do_if>
+              <do_else>
+                <set_value name="$feedbackvalue" exact="$ErrorList.{1}"/>
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+                    <do_if value="$ErrorList.{$Counter}" exact="-105">
+                      <set_value name="$FeedbackText" exact="'$CoverageSector parameter left undefined'"/>
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-104">
+                      <set_value name="$FeedbackText" exact="'$Faction parameter left undefined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-103">
+                      <set_value name="$FeedbackText" exact="'$CoverageRadius parameter left undefined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-102">
+                      <set_value name="$FeedbackText" exact="'$CoverageOffset parameter left undefined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'Cue parameters not defined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-100">
+                      <set_value name="$FeedbackText" exact="'Undefined failure. Defaulted to -100'"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                    </do_else>
+
+                    <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+                </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+              <do_if value="$feedbackvalue" exact="1">
+                <set_value name="$FeedbackText" exact="'AchieveCoverage success'"/>
+              </do_if>
+
+              <do_if value="$feedbackvalue" min="1">
+                <debug_text text="'Mission Successful. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_if>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission Failed. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" />
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+            <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$feedbackvalue"/>
+            <signal_cue cue="$EndSignalCue"/>
+            <cancel_cue cue="AchieveCoverage"/>
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

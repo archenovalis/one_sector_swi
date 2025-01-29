@@ -1,0 +1,328 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<aiscript name="order.fight.protect.position" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" version="3">
+  <!--
+
+  by Adrian
+  -->
+  <order id="ProtectPosition" name="{1041, 381}" description="{1041, 382}" category="combat" allowinloop="false">
+    <params>
+      <param name="destination" type="position" text="{1041, 10008}" comment="Area to protect. Position">
+        <input_param name="class" value="class.sector"/>
+      </param>
+      <param name="radius" type="length" default="this.ship.maxradarrange" text="{1041, 10093}" comment="Radius">
+        <input_param name="min" value="1km"/>
+        <input_param name="max" value="[this.ship.maxradarrange, 1km].max"/>
+        <input_param name="step" value="1km"/>
+      </param>
+      <param name="pursuetargets" default="false" type="bool" text="{1041, 10091}" advanced="true" comment="Pursue targets"/>
+      <param name="attackonsight" default="true" type="bool" text="Attack on Sight" advanced="true" comment="Attack hostile targets on sight. If false, only responds to attacks. Default true.">
+        <patch sinceversion="1" value="true"/>
+      </param>
+      <param name="reinforcefleet" default="false" type="bool" text="Reinforce Fleet" advanced="true" comment="Leave position to reinforce other groups if they engage. Only valid if in a fleet with other subordinate groups. Default false.">
+        <patch sinceversion="1" value="false"/>
+      </param>
+      <param name="resupplyatfleet" default="false" type="bool" text="Resupply at Fleet" advanced="true" comment="Repairs and resupplies at fleet as needed. Only valid if in a fleet with a carrier or a fleet auxiliary ship. Default false.">
+        <patch sinceversion="1" value="false"/>
+      </param>
+      <param name="flagship" default="null" type="object" text="Flagship" advanced="true" comment="Ship of the Fleet Admiral coordinating the defence. Defence will be dissolved upon destruction of $flagship.">
+        <patch sinceversion="1" value="null"/>
+      </param>
+      <param name="timeout" type="time" default="0s" infinitevalue="0s" text="{1041, 10034}" advanced="true" comment="Duration">
+        <input_param name="max" value="1h" />
+        <input_param name="step" value="30s" />
+      </param>
+      <param name="targetclasses" default="[]" type="internal" comment="Target classes. List of classes considered valid for attack.">
+        <patch value="[]" sinceversion="2"/>
+      </param>
+      <param name="enforceradius" default="if this.ship.isplayerowned then true else false" type="internal" comment="Disengages hostile targets outside radius.">
+        <patch value="if this.ship.isplayerowned then true else false" sinceversion="3"/>
+      </param>
+      <param name="debugchance" type="bool" default="0" advanced="true" text="{1041, 10086}" comment="Print debug output">
+        <input_param name="truevalue" value="100"/>
+      </param>
+    </params>
+    <requires>
+      <match shiptype="shiptype.lasertower" negate="true"/>
+      <match class="class.spacesuit" negate="true"/>
+    </requires>
+    <location object="$destination.{1}" position="$destination.{2}" radius="$radius" />
+  </order>
+  <interrupts>
+    <handler ref="SectorChangeHandler"/>
+    <handler ref="ScannedHandler"/>
+    <handler ref="InspectedHandler"/>
+    <handler ref="FoundAbandonedHandler"/>
+    <handler ref="FoundLockboxHandler"/>
+    <handler ref="TargetInvalidHandler"/>
+    <handler ref="ResupplyHandler" />
+    <handler ref="TideHandler"/>
+    <handler>
+      <conditions>
+        <check_any>
+          <event_object_destroyed object="$flagship" check="false"/>
+          <event_object_abandoned object="$flagship" check="false"/>
+          <event_object_docked object="$flagship" check="false"/>
+          <check_all>
+            <event_object_changed_true_owner object="$flagship" check="false"/>
+            <check_value value="event.param != this.assignedcontrolled.trueowner"/>
+          </check_all>
+        </check_any>
+      </conditions>
+      <actions>
+        <debug_text text="'flagship rendered invalid. abandoning defence.'" chance="$debugchance"/>
+        <abort_called_scripts resume="finish"/>
+      </actions>
+    </handler>
+    <handler>
+      <conditions>
+        <!-- param2 == [$sector, $pos], param3 == calling subordinategroupid -->
+        <event_object_signalled object="$flagship" param="'intersector_reinforce'" check="false"/>
+        <check_value value="$reinforcefleet"/>
+        <check_value value="not $alreadyreinforcing?"/>
+        <check_value value="not event.param3 or (event.param3 != this.assignedcontrolled.subordinategroupid)"/>
+        <check_value value="event.param2 and (event.param2 != $destination)"/>
+        <set_value name="$alreadyreinforcing"/>
+      </conditions>
+      <actions>
+        <debug_text text="'responding to request to reinforce position %s at sector %s.'.[@event.param2.{2}, @event.param2.{1}]" chance="$debugchance"/>
+        <create_order object="this.assignedcontrolled" id="'AttackInRange'">
+          <param name="destination" value="event.param2"/>
+          <param name="radius" value="$radius"/>
+          <param name="debugchance" value="$debugchance"/>
+        </create_order>
+      </actions>
+    </handler>
+    <handler>
+      <conditions>
+        <event_object_changed_assignment object="this.assignedcontrolled"/>
+        <check_value value="event.param == this.assignedcontrolled"/>
+      </conditions>
+      <actions>
+        <do_if value="(event.param3 == assignment.positiondefence) and this.assignedcontrolled.subordinategroupprotectedsector and this.assignedcontrolled.subordinategroupprotectedposition">
+          <abort_called_scripts resume="start"/>
+        </do_if>
+        <abort_called_scripts resume="finish"/>
+      </actions>
+    </handler>
+  </interrupts>
+  <init>
+
+    <set_command command="command.patrol" />
+    <do_if value="$destination.{1}.isclass.sector">
+      <set_value name="$targetsector" exact="$destination.{1}" />
+    </do_if>
+    <do_elseif value="$destination.{1}.isclass.zone">
+      <do_if value="$destination.{1}.isclass.highway">
+        <debug_text text="'%1 (%2) was sent to protect an area inside a highway. This is not supported.  Destination Space: %3 (%4), Position: %5'.[this.ship.knownname, this.ship, $destination.{1}.knownname, $destination.{1}, $destination.{2}]" filter="error"/>
+        <set_value name="$abort"/>
+      </do_if>
+      <do_elseif value="$destination.{1}.sector">
+        <set_value name="$targetsector" exact="$destination.{1}.sector"/>
+        <create_position name="$position" space="$targetsector" value="$destination.{2}" object="$destination.{1}"/>
+      </do_elseif>
+      <do_else>
+        <debug_text text="'This situation where a zone is not in a sector is unaccounted for. Destination Space: %1 (%2), Position: %3'.[$destination.{1}.knownname, $destination.{1}, $destination.{2}]" filter="error"/>
+        <set_value name="$abort"/>
+      </do_else>
+    </do_elseif>
+    <do_else>
+      <debug_text text="'Input destination is not in a valid space. Destination Space: %1 (%2), Position: %3'.[@$destination.{1}.knownname, $destination.{1}, $destination.{2}]" filter="error"/>
+      <set_value name="$abort"/>
+    </do_else>
+    <do_if value="not $position?">
+      <set_value name="$position" exact="$destination.{2}" />
+    </do_if>
+    <set_value name="$inittime" exact="player.age" />
+
+  </init>
+  <patch sinceversion="1" early="true">
+    <set_value name="$attackonsight" exact="true"/>
+    <set_value name="$reinforcefleet" exact="false"/>
+    <set_value name="$resupplyatfleet" exact="false"/>
+    <set_value name="$flagship" exact="null"/>
+  </patch>
+  <patch sinceversion="2">
+    <set_value name="$targetclasses" exact="[]"/>
+  </patch>
+  <patch sinceversion="3">
+    <set_value name="$enforceradius" exact="this.isplayerowned"/>
+  </patch>
+  <attention min="unknown">
+    <actions>
+      <do_if value="($timeout gt 0s) and (@this.assignedcontrolled.order.id == 'ProtectPosition') and (this.assignedcontrolled.order == this.assignedcontrolled.defaultorder)">
+        <debug_text text="'order ProtectPosition created as a default order but is not infinite. timeout: %ss'.[$timeout]" filter="error"/>
+      </do_if>
+
+      <do_if value="$abort?">
+        <resume label="finish"/>
+      </do_if>
+
+      <do_if value="($flagship != null) and (not $flagship.isoperational or ($flagship.trueowner != this.trueowner))">
+        <resume label="finish"/>
+      </do_if>
+
+      <do_if value="@this.assignedcontrolled.commander.isclass.ship and this.assignedcontrolled.order == this.assignedcontrolled.defaultorder and this.assignedcontrolled.assignment != assignment.positiondefence and this.assignedcontrolled.assignment != assignment.assist">
+        <debug_text text="'assignment changed while we were doing something else. resetting default order.'" chance="$debugchance"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <!-- Initial checks -->
+      <label name="start" />
+
+      <do_if value="this.assignedcontrolled.assignment == assignment.positiondefence">
+        <do_if value="(this.assignedcontrolled.subordinategroupprotectedsector != $destination.{1}) or (this.assignedcontrolled.subordinategroupprotectedposition != $destination.{2})">
+          <edit_order_param order="this.assignedcontrolled.order" param="'destination'" value="[this.assignedcontrolled.subordinategroupprotectedsector, this.assignedcontrolled.subordinategroupprotectedposition]"/>
+        </do_if>
+        <do_if value="this.assignedcontrolled.subordinategroupreinforcefleet != $reinforcefleet">
+          <edit_order_param order="this.assignedcontrolled.order" param="'reinforcefleet'" value="this.assignedcontrolled.subordinategroupreinforcefleet"/>
+        </do_if>
+        <do_if value="this.assignedcontrolled.subordinategroupresupplyatfleet != $resupplyatfleet">
+          <edit_order_param order="this.assignedcontrolled.order" param="'resupplyatfleet'" value="this.assignedcontrolled.subordinategroupresupplyatfleet"/>
+        </do_if>
+        <do_if value="this.assignedcontrolled.subordinategroupattackonsight != $attackonsight">
+          <edit_order_param order="this.assignedcontrolled.order" param="'attackonsight'" value="this.assignedcontrolled.subordinategroupattackonsight"/>
+        </do_if>
+      </do_if>
+
+      <do_if value="$resupplyatfleet">
+        <!-- in order.fight.escort -->
+        <include_interrupt_actions ref="CheckToRestock"/>
+      </do_if>
+
+      <!-- if different zone, go there -->
+      <do_if value="(this.sector != $targetsector) or (this.ship.distanceto.[$targetsector, $position] gt $radius)">
+        <run_script name="'move.generic'" result="$movesuccess">
+          <param name="destination" value="$targetsector" />
+          <param name="position" value="$position"/>
+          <param name="endintargetzone" value="true" />
+          <param name="activepatrol" value="true"/>
+          <param name="targetclasses" value="$targetclasses"/>
+          <param name="radius" value="$radius"/>
+          <param name="radiusanchorpos" value="$position"/>
+          <param name="radiusanchorspace" value="$targetsector"/>
+          <param name="recallsubordinates" value="(this.sector != $targetsector) or (this.assignedcontrolled.distanceto.[$targetsector, $position] gt ($radius * 2m))"/>
+          <param name="enforceradius" value="$enforceradius"/>
+          <param name="debugchance" value="$debugchance"/>
+        </run_script>
+        <do_if value="not $movesuccess">
+          <do_if value="@this.assignedcontrolled.order.isrunning">
+            <set_order_failed order="this.assignedcontrolled.order" text="{1045, 101}" comment="Unable to reach destination."/>
+          </do_if>
+          <debug_text text="'Unable to reach destination. Aborting.'" chance="$debugchance"/>
+          <resume label="finish"/>
+        </do_if>
+      </do_if>
+
+      <get_zone_at_position name="$targetzone" sector="$targetsector" value="$position"/>
+
+      <do_if value="not $targetzone">
+        <!-- If there is still no zone at the position, the position is unobstructed and we are fairly close. Move straight there. -->
+        <move_to object="this.ship" destination="$targetsector" uselocalhighways="false" finishonapproach="true">
+          <position value="$position"/>
+        </move_to>
+        <!-- at this point, we should be at the destination, so there should now be a zone. -->
+        <get_zone_at_position name="$targetzone" sector="$targetsector" value="$position"/>
+        <do_if value="not $targetzone.exists">
+          <debug_text text="'Error: %1 (%2) should be at the destination zone, but there still is no zone at the destination. present location: %3, %4, %5. destination: %6'.[this.ship.knownname, this.ship, this.ship.zone.knownname, this.ship.sector.knownname, this.ship.cluster.knownname, $destination]" filter="error"/>
+          <resume label="finish"/>
+        </do_if>
+      </do_if>
+
+      <!-- Translate sector coordinates to zone coordinates. Dealing with zones is still necessary due to needing a safepos further down. -->
+      <do_if value="$targetzone">
+        <!-- Input: $position relative to $targetsector. Output: $zoneposition relative to $targetzone. -->
+        <create_position name="$zoneposition" space="$targetzone" value="$position" object="$targetsector"/>
+        <debug_text text="'%1 (%2) destination coordinates are now: %3 in %4 (%5), %6, %7'.[this.ship.knownname, this.ship, $zoneposition, $targetzone.knownname, $targetzone.macro, $targetzone.sector.knownname, $targetzone.cluster.knownname]" chance="$debugchance"/>
+      </do_if>
+
+      <!-- Required for all infinite orders, no effect in case of finite timeout -->
+      <set_order_syncpoint_reached order="this.ship.order" />
+
+      <do_while value="$targetzone.exists">
+        <!-- Evaluate exit condition -->
+        <do_if value="$timeout and (player.age ge $inittime + $timeout)">
+          <resume label="finish" />
+        </do_if>
+
+        <do_if value="$resupplyatfleet">
+          <!-- in order.fight.escort -->
+          <include_interrupt_actions ref="CheckToRestock"/>
+        </do_if>
+        <do_elseif value="player.age gt @$next_resupply_check" chance="30">
+          <debug_text text="'%1 (%2) ready to resupply.'.[this.ship.knownname, this.ship]" chance="$debugchance"/>
+          <signal_objects object="this.ship" param="'resupply'" param2="[false]" param3="$debugchance" comment="param2 = [urgent?, resupplystationID], param3 = $debugchance"/>
+          <set_value name="$next_resupply_check" exact="player.age + 30min"/>
+        </do_elseif>
+
+        <!-- initial random position in zone -->
+        <get_safe_pos result="$pos" zone="$targetzone" radius="this.ship.size/2f" max="$radius" value="$zoneposition"  />
+
+        <run_script name="'move.seekenemies'" >
+          <param name="destination" value="$targetzone" />
+          <param name="pos" value="$pos" />
+          <param name="pursuetargets" value="$pursuetargets" />
+          <param name="pursuedistance" value="$radius" />
+          <param name="targetclasses" value="$targetclasses"/>
+          <param name="radius" value="$radius"/>
+          <param name="radiusanchorpos" value="$position"/>
+          <param name="radiusanchorspace" value="$targetsector"/>
+          <param name="engageonsight" value="$attackonsight"/>
+          <param name="enforceradius" value="$enforceradius"/>
+          <param name="internalorder" value="true"/>
+          <param name="debugchance" value="$debugchance" />
+        </run_script>
+
+        <wait exact="500ms" />
+      </do_while>
+
+      <do_if value="not $targetzone.exists">
+        <debug_text text="'targetzone of %s %s %s %s no longer exists.'.[@this.assignedcontrolled.job, @this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled]" chance="$debugchance"/>
+        <resume label="start"/>
+      </do_if>
+
+      <do_if value="this.isplayerowned and not this.isclass.computer and not this.assignedcontrolled.nextorder and (not this.assignedcontrolled.commander or (this.assignedcontrolled.commander == player.occupiedship)) and notification.npc_await_orders.active">
+        <!-- Player notification -->
+        <set_value name="$speakline" exact="10304" comment="Awaiting orders."/>
+        <run_script name="'player.interaction'">
+          <param name="Line" value="$speakline"/>
+          <param name="MaxQueueDelay" value="10s"/>
+          <param name="caption" value="{1016,6}.[this.assignedcontrolled.knownname, this.assignedcontrolled.idcode]"/>
+          <param name="interactive" value="false"/>
+          <param name="debugchance" value="$debugchance"/>
+        </run_script>
+      </do_if>
+
+      <!-- Required for sync point handler -->
+      <label name="finish" />
+
+      <do_if value="this.assignedcontrolled.order and (this.assignedcontrolled.order == this.assignedcontrolled.defaultorder)">
+        <!-- defaultorder is no longer valid or was allowed to finish. should get a new default order. -->
+        <cancel_order order="this.assignedcontrolled.defaultorder"/>
+        <debug_text text="'defaultorder is no longer valid or was allowed to finish. getting a new default order.'" chance="$debugchance"/>
+      </do_if>
+
+    </actions>
+  </attention>
+  <on_abort>
+    <!-- if we are attacking, are in a fleet, and have assignment.positiondefence, signal other subordinategroups. -->
+    <do_if value="this.assignedcontrolled.isoperational">
+      <remove_value name="$alreadyreinforcing"/>
+      <do_if value="(this.assignedcontrolled.assignment == assignment.positiondefence) and (@this.assignedcontrolled.order.id == 'Attack') and @$flagship.isoperational">
+        <debug_text text="'%s %s %s engaging. calling for reinforcements.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled]" chance="$debugchance"/>
+        <!-- param2 == [$sector, $pos], param3 == calling subordinategroupid -->
+        <signal_objects object="$flagship" param="'intersector_reinforce'" param2="$destination" param3="this.assignedcontrolled.subordinategroupid"/>
+        <do_if value="true" chance="$debugchance">
+          <set_value name="$loccommander" exact="this.assignedcontrolled.commander"/>
+          <do_for_each name="$locgroupid" in="$loccommander.activesubordinategroupids">
+            <do_if value="($locgroupid != this.assignedcontrolled.subordinategroupid) and ($loccommander.subordinategroupassignment.{$locgroupid} == assignment.positiondefence)">
+              <do_for_each name="$locship" in="$loccommander.subordinatesingroup.{$locgroupid}">
+                <debug_text text="'signalling %s %s %s to reinforce current position.'.[@$locship.idcode, @$locship.knownname, $locship]" chance="$debugchance"/>
+                <!--<signal_objects object="$locship" param="'intersector_reinforce'" param2="$destination"/>-->
+              </do_for_each>
+            </do_if>
+          </do_for_each>
+        </do_if>
+      </do_if>
+    </do_if>
+  </on_abort>
+</aiscript>

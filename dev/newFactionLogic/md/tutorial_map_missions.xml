@@ -1,0 +1,627 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="Tutorial_map_missions" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+    <cue name="Start" namespace="this">
+      <conditions>
+        <event_cue_signalled cue="md.Setup.Start" />
+      </conditions>
+      <actions>
+        <do_if value="not md.$TutorialRegister?">
+          <set_value name="md.$TutorialRegister" exact="[]" />
+        </do_if>
+        <append_to_list name="md.$TutorialRegister" exact="Start" />
+      </actions>
+      <cues>
+        <cue name="PlayerDied">
+          <conditions>
+            <event_object_destroyed object="player.entity" />
+          </conditions>
+          <actions>
+            <cancel_cue cue="Start" />
+          </actions>
+        </cue>
+
+        <cue name="Trigger" checkinterval="5s" version="2">
+          <conditions>
+            <check_value value="not md.$SurpressTutorials?" />
+            <check_value value="player.computer" />
+          </conditions>
+          <actions>
+            <set_value name="$DebugChance" exact="100"/>
+            <set_value name="$MissionName" exact="' 4) ' + readtext.{30190}.{5}" />
+            <set_value name="$Guide" exact="player.computer" />
+            <create_offer cue="Start" actor="$Guide" name="$MissionName" description="readtext.{30190}.{2}" difficulty="level.trivial" faction="faction.player" type="missiontype.tutorial">
+              <briefing>
+                <objective step="1" action="objective.custom" customaction="{30190,20}"/>
+              </briefing>
+            </create_offer>
+          </actions>
+          <patch sinceversion="2">
+            <do_if value="Start.hasmissionoffer">
+              <set_value name="$MissionName" exact="' 4) ' + readtext.{30190}.{5}" />
+              <update_offer cue="Start" name="$MissionName"/>
+            </do_if>
+          </patch>
+          <cues>
+            <cue name="Offer">
+              <cues>
+                <cue name="ConversationStarted" instantiate="true">
+                  <conditions>
+                    <event_conversation_started actor="$Guide" conversation="mission" convparam="Start" />
+                  </conditions>
+                  <actions>
+                    <remove_help all="true" />
+                    <open_conversation_menu menu="MissionBriefingMenu" param="[0, 0, Start, true]" />
+                  </actions>
+                  <cues>
+                    <cue name="ConversationNextSection" instantiate="true">
+                      <conditions>
+                        <event_conversation_next_section actor="$Guide" choiceparam="Start" />
+                      </conditions>
+                      <actions>
+                        <!-- Accept case -->
+                        <do_if value="event.param == 'c_mission_accept'">
+                          <signal_cue cue="Tutorial" />
+                        </do_if>
+                      </actions>
+                    </cue>
+
+                    <cue name="ConversationFinished">
+                      <conditions>
+                        <event_conversation_finished actor="$Guide" />
+                      </conditions>
+                      <actions>
+                        <cancel_cue cue="ConversationStarted" />
+                      </actions>
+                    </cue>
+
+                    <cue name="AcceptMission">
+                      <conditions>
+                        <event_object_signalled object="$Guide" param="'accept'" />
+                      </conditions>
+                      <actions>
+                        <signal_cue cue="Tutorial" />
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="Tutorial">
+              <conditions>
+                <check_any>
+                  <event_cue_signalled />
+                  <event_object_signalled object="player.entity" param="'start'" param2="Start" />
+                </check_any>
+              </conditions>
+              <actions>
+                <debug_text text="'Tutorial can begin'" chance="$DebugChance" />
+                <cancel_cue cue="Offer" />
+                <signal_cue_instantly cue="md.Tutorials.NewTutorialTriggered" param="Start" />
+                <set_value name="$TutorialStartTime" exact="player.age" />
+                <create_mission cue="Start" offercue="Start" />
+                <cancel_conversation actor="$Guide" />
+                <remove_offer cue="Start" />
+                <remove_help all="true" />
+                <set_value name="$StartDelay" exact="2s"/>
+                <remove_help all="true"/>
+
+                <do_if value="not player.ship">
+                  <show_help line="1021" duration="7s" position="1" force="true" comment="This tutorial must be started from a ship in space."/>
+                  <show_notification text="{1015,404}" sound="notification_warning" />
+                  <remove_mission cue="Start" type="aborted" />
+                  <signal_cue cue="Cleanup" />
+                </do_if>
+                <do_else>
+                  <show_help line="1001" duration="7s" position="1" force="true" width="140" comment="You can abort this tutorial in the Active Missions menu " />
+                </do_else>
+              </actions>
+              <cues>
+
+                <cue name="Abort">
+                  <conditions>
+                    <event_mission_aborted cue="Start" />
+                  </conditions>
+                  <actions>
+                    <remove_help all="true"/>
+                    <remove_mission cue="Start" type="aborted" />
+                    <signal_cue cue="Cleanup" />
+                  </actions>
+                </cue>
+
+                <cue name="Abort_OtherTutorialStarted">
+                  <conditions>
+                    <event_cue_signalled cue="md.Tutorials.NewTutorialTriggered" />
+                    <check_value value="event.param != Start" />
+                  </conditions>
+                  <actions>
+                    <remove_help all="true"/>
+                    <show_notification text="{1015,400}" sound="notification_warning" comment="Tutorial aborted" />
+                    <remove_mission cue="Start" type="aborted"/>
+                    <signal_cue cue="Cleanup" />
+                  </actions>
+                </cue>
+
+                <cue name="Tutorial_Init">
+                  <delay exact="$StartDelay"/>
+                  <actions>
+                    <!--Create a list of tutorial cues to trigger in what order, and what briefing step they point to-->
+                    <!-- -->
+                    <set_value name="$SignalList" exact="[
+                                [Tutorial_Missions, 1],
+                                [Tutorial_Missions2, 1],
+                    ]"/>
+
+                    <set_value name="$Index" exact="0"/>
+                    <signal_cue cue="Tutorial_TriggerNext"/>
+
+                  </actions>
+                </cue>
+
+                <cue name="Tutorial_TriggerNext" instantiate="true">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <set_value name="$Index" operation="add"/>
+                    <do_if value="$Index gt $SignalList.count">
+                      <remove_help all="true"/>
+                      <debug_text text="'Missions tutorial has been completed'" chance="$DebugChance" />
+                      <show_help line="1002" position="1" force="true" comment="Tutorial Completed!"/>
+                      <show_help line="1003" position="1" force="true" comment="Press $INPUT_ACTION_HELP$ to try other tutorials."/>
+                      <remove_mission cue="Start" type="tutorialcompleted" />
+                      <signal_cue cue="Cleanup" />
+                    </do_if>
+                    <do_else>
+                      <signal_cue cue="$SignalList.{$Index}.{1}"/>
+                      <set_value name="$CurrentStep" exact="$SignalList.{$Index}.{2}"/>
+                      <set_objective_from_briefing cue="Start" step="$CurrentStep"/>
+                    </do_else>
+                  </actions>
+                </cue>
+
+                <cue name="Tutorial_Missions">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <!-- notification values-->
+                    <set_value name="$Event_Timeout" exact="120s"/>
+                    <set_value name="$Guide1" exact="player.computer" />
+                    <set_value name="$OfferCue1" exact="Tutorial_Missions" />
+                    <!-- disable rehinting -->
+                    <set_value name="$AcceptedMission" exact="false"/>
+                    <set_value name="$MapWasShown" exact="false"/>
+                    <set_value name="$ActiveMissionShown" exact="false"/>
+                    <set_value name="$StandaloneTabShown" exact="false"/>
+                    <set_value name="$MissionCancelled" exact="false"/>
+                    <!-- hints -->
+                    <show_help_multi position="1" force="true" allowclose="false" width="200">
+                      <text line="992" comment="These yellow-framed boxes are tips. Click the arrow after you have read them to proceed to the next one."/>
+                      <text line="10001" comment="You can accept and play many missions at a time"/>
+                      <text line="10002" comment="Sometimes missions are offered by people, from ships or through signals"/>
+                      <text line="if player.input.controller then 10011 else 10010" comment="Open a conversation by ..."/>
+                    </show_help_multi>
+                    <show_help position="1" force="true" duration="7s" line="10015" comment="Accept this tutorial mission" allowclose="false" timeout="false"/>
+                  </actions>
+                  <cues>
+
+                    <cue name="Tutorial_Missions_Mission_Offer">
+                      <conditions>
+                        <check_any>
+                          <event_ui_triggered screen="'hintclosed'" control="'992'"/>
+                        </check_any>
+                      </conditions>
+                      <delay exact="1s"/>
+                      <actions>
+                        <create_offer cue="$OfferCue1" actor="$Guide1" name="{30190,2000}" description="{30190,2001}" difficulty="level.trivial"
+                                      faction="faction.player" type="missiontype.fight" hidden="false" space="player.sector" reward="1Cr">
+                          <briefing>
+                            <objective step="1" action="objective.none"/>
+                          </briefing>
+                        </create_offer>
+
+                        <!-- Setup notification on monitor -->
+                        <create_cue_actor name="$TutorialActor" cue="namespace">
+                          <select race="[race.argon, race.teladi, race.paranid]" tags="tag.crew"/>
+                        </create_cue_actor>
+                        <play_cutscene result="this.$CutsceneID" key="'ShowPilot'" targetmonitor="true" timeout="$Event_Timeout">
+                          <interaction text="{30190,2000}" param="$TutorialActor" param2="'accept_interaction'"/>
+                          <param name="npcref" object="$TutorialActor" />
+                        </play_cutscene>
+                        <!-- end notification -->
+
+                      </actions>
+                      <cues>
+
+                        <cue name="Tutorial_Missions_NotificationInteraction_v2">
+                          <conditions>
+                            <event_player_interaction param="$TutorialActor" param2="'accept_interaction'"/>
+                          </conditions>
+                          <actions>
+                            <stop_cutscene cutscene="parent.$CutsceneID"/>
+                            <signal_cue cue="Tutorial_Missions_AcceptedMission"/>
+                          </actions>
+                        </cue>
+
+                        <cue name="Tutorial_Missions_Cutscene_Stopped">
+                          <conditions>
+                            <event_cutscene_stopped cutscene="parent.$CutsceneID"/>
+                          </conditions>
+                          <actions>
+                            <do_if value="Tutorial_Missions_NotificationInteraction_v2.state == cuestate.waiting">
+                              <show_notification text="{1015,402}" sound="notification_warning" comment="aborted due to inactivity"/>
+                              <remove_mission cue="Start" type="aborted" />
+                              <signal_cue cue="Cleanup" />
+                            </do_if>
+                          </actions>
+                        </cue>
+
+                      </cues>
+                    </cue>
+
+                    <cue name="Tutorial_Missions_AcceptedMission">
+                      <conditions>
+                        <event_cue_signalled/>
+                      </conditions>
+                      <actions>
+                        <!--remove_help all="true" /-->
+                        <show_help line="10020" position="1" force="true" comment="You have now accepted a mission"/>
+                        <create_mission cue="$OfferCue1" offercue="$OfferCue1" activate="true"/>
+                        <set_value name="$AcceptedMission" exact="true"/>
+                        <remove_help all="true" />
+                        <do_if value="player.input.controller">
+                              <show_help line="5004" position="1" force="true" comment="Open the map (controller)" allowclose="false" timeout="false"/>
+                            </do_if>
+                            <do_else comment="Keyboard">
+                              <show_help line="10021" position="1" force="true" comment="Open the map" allowclose="false" timeout="false"/>
+                            </do_else>
+                      </actions>
+                      <cues>
+
+                        <cue name="Tutorial_MapOpen">
+                          <conditions>
+                            <event_ui_triggered screen="'MapMenu'" control="''"/>
+                          </conditions>
+                          <actions>
+                            <set_value name="$MapWasShown" exact="true"/>
+                            <remove_help all="true" />
+                          </actions>
+                          <delay exact="0.5s"/>
+                          <actions>
+                            <show_help line="10035" position="1" duration="7s" force="true" comment="The left menu bar has two mission related tabs."/>
+                            <show_help_overlay id="'map_sidebar_mission_accepted'" highlightonly="true"/>
+                            <show_help_overlay id="'map_sidebar_mission_offers'" highlightonly="true"/>
+                          </actions>
+                          <delay exact="7s"/>
+                          <actions>
+                            <remove_help_overlay id="'map_sidebar_mission_offers'"/>
+                            <show_help line="10036" position="1" force="true" comment="Select the MISSION MANAGER tab." allowclose="false" timeout="false"/>
+                          </actions>
+                          <cues>
+
+                            <cue name="Tutorial_MissionTabOpen">
+                              <conditions>
+                                <event_ui_triggered screen="'MapMenu'" control="'mission'"/>
+                              </conditions>
+                              <actions>
+                                <set_value name="$ActiveMissionShown" exact="true"/>
+                                <remove_help all="true" />
+                                <remove_help_overlay id="'map_sidebar_mission_accepted'"/>
+                                <show_help_multi position="1" force="true" allowclose="false">
+                                  <text line="10040" comment="This tab shows all currently accepted missions"/>
+                                  <text line="10500" comment="The Mission Manager tab has three categories: 'Important Missions', 'Upkeep Missions' and 'Guidance Mission'."/>
+                                </show_help_multi>
+                                <show_help_multi position="1" force="true" allowclose="false">
+                                  <text line="10510" comment="'Important Missions' is divided into three groups:"/>
+                                  <text line="10520" comment="The first group, 'Important Missions', lists missions that are part of an ongoing effort to navigate the universe and experience its stories."/>
+                                  <text line="10046" comment="'Guild Missions' are specialised jobs offered by various factions after you reach a certain reputation with them."/>
+                                  <text line="10530" comment="The 'Other Missions' section will list missions encountered during your travels. Keep an eye on your 'Mission Offers' tab for any jobs nearby."/>
+                                </show_help_multi>
+                                <show_help_multi position="1" force="true" allowclose="false">
+                                  <text line="10048" comment="'Upkeep Missions' are tasks to help notify you when there are issues with a ship or station."/>
+                                </show_help_multi>
+                                <show_help_multi position="1" force="true" allowclose="false">
+                                  <text line="10049" comment="And if you have set guidance to an object or position, the 'Guidance Mission' tab will show the current destination."/>
+                                </show_help_multi>
+                                <!--<show_help line="10101" position="1" force="true" comment="Select the OTHER MISSIONS tab." allowclose="false" timeout="false"/>-->
+                              </actions>
+                              <cues>
+
+                                <cue name="Tutorial_GuildHighlight">
+                                  <conditions>
+                                    <event_ui_triggered screen="'hintclosed'" control="'10040'"/>
+                                  </conditions>
+                                  <delay exact="0.5s"/>
+                                  <actions>
+                                    <show_help_overlay id="'mapst_mission_active_guild'" highlightonly="true"/>
+                                  </actions>
+                                </cue>
+
+                       
+                                <cue name="Tutorial_UpkeepHighlight">
+                                  <conditions>
+                                    <event_ui_triggered screen="'hintclosed'" control="'10510'"/>
+                                  </conditions>
+                                  <actions>
+                                    <remove_help_overlay id="'mapst_mission_active_guild'"/>
+                                  </actions>
+                                  <delay exact="0.5s"/>
+                                  <actions>
+                                    <show_help_overlay id="'mapst_mission_active_upkeep'" highlightonly="true"/>
+                                  </actions>
+                                </cue>
+
+                                <cue name="Tutorial_GuidanceHighlight">
+                                  <conditions>
+                                    <event_ui_triggered screen="'hintclosed'" control="'10048'"/>
+                                  </conditions>
+                                  <actions>
+                                    <remove_help_overlay id="'mapst_mission_active_upkeep'"/>
+                                  </actions>
+                                  <delay exact="0.5s"/>
+                                  <actions>
+                                    <show_help_overlay id="'mapst_mission_active_guidance'" highlightonly="true"/>
+                                  </actions>
+                                </cue>
+
+                                <cue name="Tutorial_StandaloneTabOpen">
+                                  <conditions>
+                                    <event_ui_triggered screen="'hintclosed'" control="'10049'"/>
+                                  </conditions>
+                                  <actions>
+                                    <set_value name="$StandaloneTabShown" exact="true"/>
+                                    <remove_help_overlay id="'mapst_mission_active_guidance'"/>
+                                    <remove_help all="true" />
+                                    <show_help_multi position="18" force="true" allowclose="false" width="200">
+                                      <text line="10106" comment="Select the Tutorial Notification mission."/>
+                                      <text line="10111" comment="The Tutorial Notification mission is now also the ACTIVE mission because it was the last one accepted."/>
+                                      <text line="10131" comment="You can always change which of you accepted missions you set to ACTIVE. Only the active mission will show MISSION GUIDANCE"/>
+                                    </show_help_multi>
+                                    <show_help line="10141" position="18" force="true" comment="Abort the Tutorial Notification mission." allowclose="false" timeout="false"/>
+                                  </actions>
+                                  <cues>
+                                    <cue name="Tutorial_RemoveHighlight">
+                                      <conditions>
+                                        <event_ui_triggered screen="'hintclosed'" control="'10106'"/>
+                                      </conditions>
+                                      <actions>
+                                        <show_help_overlay id="'map_abortmission'" highlightonly="true"/>
+                                      </actions>
+                                    </cue>
+                                    
+                                    <cue name="Tutorial_MissionCancelled">
+                                      <conditions>
+                                        <event_ui_triggered screen="'MapMenu'" control="'missionabort'"/>
+                                      </conditions>
+                                      <actions>
+                                        <remove_help_overlay id="'map_abortmission'"/>
+                                        <remove_help all="true"/>
+                                      </actions>
+                                      <cues>
+                                        <cue name="Tutorial_Mission_DoneDelayed">
+                                          <delay exact="1s"/>
+                                          <actions>
+                                            <signal_cue cue="Tutorial_TriggerNext"/>
+                                            <cancel_cue cue="Tutorial_Missions"/>
+                                          </actions>
+                                        </cue>
+                                      </cues>
+                                    </cue>
+                                  </cues>
+                                </cue>
+                              </cues>
+                            </cue>
+                          </cues>
+                        </cue>
+                      </cues>
+                    </cue>
+                  </cues>
+                </cue>
+
+
+                <cue name="Tutorial_Missions2">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <set_value name="$MissionOffersShown" exact="false"/>
+                    <set_value name="$AcceptedMission2" exact="false"/>
+
+                    <set_value name="$Guide2" exact="player.computer" />
+                    <set_value name="$OfferCue2" exact="Tutorial_Missions2" />
+                  </actions>
+                  <cues>
+
+                    <!-- Tutorial Mission Block -->
+                    <cue name="Tutorial_SetupTutorialMission">
+                      <actions>
+                        <create_offer cue="$OfferCue2" actor="$Guide2" name="{30190,1000}" description="{30190,1001}" difficulty="level.trivial"
+                                      faction="faction.player" type="missiontype.fight" hidden="false" space="player.sector" reward="1Cr">
+                          <briefing>
+                            <objective step="1" action="objective.destroy" text="{30190,1010}"/>
+                          </briefing>
+                        </create_offer>
+                        <show_help_overlay id="'map_sidebar_mission_offers'" highlightonly="true"/>
+
+                      </actions>
+                    </cue>
+
+                    <!-- End Tutorial Mission Block -->
+
+                    <cue name="Tutorial_OfferTabRehint">
+                      <actions>
+                        <show_help line="10200" position="1" force="true" comment="Select the MISSION OFFERS tab." allowclose="false" timeout="false"/>
+                      </actions>
+                    </cue>
+
+                    <cue name="Tutorial_OfferTabOpen">
+                      <conditions>
+                        <event_ui_triggered screen="'MapMenu'" control="'missionoffer'"/>
+                      </conditions>
+                      <actions>
+                        <set_value name="$MissionOffersShown" exact="true"/>
+                        <remove_help_overlay id="'map_sidebar_mission_offers'"/>
+                        <remove_help all="true" />
+                        <show_help_overlay id="'mapst_mission_offer_other'" highlightonly="true"/>
+                        <show_help line="10221" position="18" force="true" comment="Look for the tutorial mission offer in the OTHER MISSION OFFERS group and accept it." allowclose="false" timeout="false"/>
+                        <show_help_overlay id="'map_acceptmission'" highlightonly="true"/>                      
+                      </actions>
+                      <cues>
+
+                        <!--<cue name="Tutorial_OffersOVerlayRemove">
+                          <conditions>
+                            <event_ui_triggered screen="'MapMenu'" control="'other'"/>
+                          </conditions>
+                          <actions>
+                            <remove_help_overlay id="'mapst_mission_offer_other'"/>
+                          </actions>
+                        </cue>-->
+
+                        <cue name="Tutorial_Missions_AcceptMission" instantiate="true">
+                          <conditions>
+                            <event_object_signalled object="$Guide2" param="'accept'"/>
+                          </conditions>
+                          <actions>
+                            <remove_help_overlay id="'map_acceptmission'"/>
+                            <signal_cue_instantly cue="Tutorial_Missions_Accepted"/>
+                            <remove_offer cue="$OfferCue2"/>
+                          </actions>
+                        </cue>
+
+                        <cue name="Tutorial_Missions_Accepted">
+                          <conditions>
+                            <event_cue_signalled />
+                          </conditions>
+                          <actions>
+                            <create_mission cue="$OfferCue2" offercue="$OfferCue2" activate="true" abortable="false"/>
+                            <set_value name="$AcceptedMission2" exact="true"/>
+                            <remove_help all="true" />
+                          </actions>
+                          <cues>
+                            <cue name="ActivateImmediately">
+                              <actions>
+                                <signal_cue cue="Tutorial_Missions_ActivateMission"/>
+                              </actions>
+                            </cue>
+                          </cues>
+                        </cue>
+
+                        <cue name="Tutorial_Missions_ActivateMission">
+                          <conditions>
+                            <event_cue_signalled/>
+                          </conditions>
+                          <actions>
+                            <show_help line="10300" position="1" force="true" comment="Now that this mission is accepted and ACTIVE, close the map." allowclose="false" timeout="false"/>
+                            <set_value name="$MapClosed" exact="false"/>
+
+                            <set_value name="$StartZone" exact="player.zone"/>
+                            <create_group groupname="$Beacons"/>
+                            <do_all exact="3">
+                              <create_object name="$Beacon" macro="macro.eq_arg_satellite_01_macro" zone="$StartZone" owner="faction.ownerless">
+                                <safepos object="player.ship" z="3km" max="300m"/>
+                              </create_object>
+                              <add_to_group groupname="$Beacons" object="$Beacon"/>
+                            </do_all>
+
+                            <set_objective cue="$OfferCue2" action="objective.destroy" group="$Beacons" text="readtext.{30190}.{1020}"/>
+                            <set_value name="$TargetsDestroyed" exact="0"/>
+                            <set_value name="$TargetsTotal" exact="$Beacons.count"/>
+                            
+                          </actions>
+                          <cues>
+
+                            <cue name="Tutorial_Missions_CloseMap">
+                              <conditions>
+                                <event_ui_triggered screen="'MapMenu'" control="'menu_close'"/>
+                              </conditions>
+                              <delay exact="0.5s"/>
+                              <actions>
+                                <set_value name="$MapClosed" exact="true"/>
+                                <remove_help all="true" />
+                                <show_help_multi position="1" force="true" allowclose="false" width="200">
+                                  <text line="10310" comment="You see your current OBJECTIVE at the bottom of the ticker monitor.."/>
+                                  <text line="10314" comment="The OBJECTIVE is often related to a location or object in space. These are marked with ORANGE indicators in your HUD."/>
+                                  <text line="10313" comment="Now follow the instructions to finish this mission."/>
+                                </show_help_multi>
+                                <do_if value="player.ship.dps.primary == 0">
+                                  <destroy_group group="$Beacons"/>
+                                </do_if>
+                              </actions>
+                            </cue>
+
+                            <cue name="Tutorial_Missions_DestroyedTargets" instantiate="true">
+                              <conditions>
+                                <event_object_destroyed group="$Beacons"/>
+                              </conditions>
+                              <delay exact="1s"/>
+                              <actions>
+                                <do_if value="$Beacons.count le 0">
+                                  <remove_help all="true"/>
+                                  <set_value name="$TargetsDestroyed" operation="add"/>
+                                  <set_objective cue="$OfferCue2" action="objective.destroy" group="$Beacons" text="readtext.{30190}.{1020}">
+                                    <progress progress="$TargetsDestroyed" max="$TargetsTotal"/>
+                                  </set_objective>
+                                  <show_help_multi position="1" force="true" allowclose="false" width="200">
+                                    <text line="10350" comment="Accept many missions and play them parallel to maximise your progress."/>
+                                    <text line="10361" comment="Find larger plot missions by befriending a faction above level 10 and join one of their organisations, or find secret missions with your scanner."/>
+                                    <text line="10372" comment="Upkeep missions for your stations are often only a suggestion, only a blocking task or a threat like an attack on one of your stations, would have a high priority."/>
+                                  </show_help_multi>
+                                </do_if>
+                                <do_else>
+                                  <set_value name="$TargetsDestroyed" operation="add"/>
+                                  <set_objective cue="$OfferCue2" action="objective.destroy" group="$Beacons" text="readtext.{30190}.{1020}">
+                                    <progress progress="$TargetsDestroyed" max="$TargetsTotal"/>
+                                  </set_objective>
+                                </do_else>
+                              </actions>
+                            </cue>
+
+                            <cue name="Tutorial_Missions_DoneDelayed">
+                              <conditions>
+                                <event_ui_triggered screen="'hintclosed'" control="'10350'"/>
+                              </conditions>
+                              <actions>
+                                <signal_cue cue="Tutorial_TriggerNext"/>
+                                <cancel_cue cue="Tutorial_Missions2"/>
+                              </actions>
+                            </cue>
+
+                          </cues>
+                        </cue>
+
+                      </cues>
+                    </cue>
+
+                  </cues>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="Cleanup">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <remove_help_overlay all="true"/>
+                <debug_text text="'cleanup'" chance="$DebugChance"/>
+                <do_if value="$BriefingCutsceneStarted?">
+                  <stop_cutscene key="$CutsceneKey"/>
+                </do_if>
+                <do_if value="$Beacons?">
+                  <destroy_group group="$Beacons"/>
+                </do_if>
+                <remove_offer cue="Start"/>
+                <remove_mission cue="Start" />
+                <reset_cue cue="Trigger"/>
+              </actions>
+            </cue>
+
+          </cues>
+        </cue>
+
+      </cues>
+    </cue>
+  </cues>
+</mdscript>

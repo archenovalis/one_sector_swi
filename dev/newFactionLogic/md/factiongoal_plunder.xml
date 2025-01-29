@@ -1,0 +1,375 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="FactionGoal_Plunder" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+    <!-- 
+      hook into signals from friendly stations for needed resources and urgency.
+      tendency to resort to piracy to be urgency * avarice? 
+      
+      No instances actively running at gamestart (when there are sufficient resources available); 
+      when stations are running our of resources they can resort to hiring someone for plundering
+    -->
+
+    <!--Add goal to global variable-->
+    <cue name="RegisterGoal">
+      <actions>
+        <do_if value="not global.$FactionGoals?">
+          <create_list name="global.$FactionGoals"/>
+        </do_if>
+        <set_value name="Start.$Name" exact="'Plunder'"/>
+        <append_to_list name="global.$FactionGoals" exact="table[$EvaluationCue = Evaluate, $EvaluateEventLib = EvaluateEvent, $TriggerCue = Start]"/>
+      </actions>
+    </cue>
+
+    <cue name="PlunderNetwork">
+      <actions>
+        <!-- $MasterList_Opportunities == [[$Fence, $Ware, time recorded], [$Fence, $Ware, time recorded], etc] -->
+        <set_value name="$MasterList_Opportunities" exact="table[]"/>
+
+        <set_value name="$TrimInterval" exact="430s"/>
+        <set_value name="$Time_DataObsolete" exact="3600s"/>
+        <set_value name="$DebugChance" exact="0"/>
+
+        <debug_text text="'MasterList_Opportunities initialized. This should only happen once.'" chance="$DebugChance"/>
+      </actions>
+      <cues>
+
+        <cue name="Register_Factions" instantiate="true">
+          <conditions>
+            <event_cue_signalled/>
+            <check_value value="typeof event.param" exact="datatype.cue"/>
+          </conditions>
+          <actions>
+            <set_value name="event.param.$PlunderNet" exact="namespace"/>
+            <debug_text text="event.param.$Faction.knownname + ' registered with the PlunderNet.'" chance="$DebugChance"/>
+          </actions>
+        </cue>
+
+        <cue name="Listen_Opportunities" instantiate="true">
+          <conditions>
+            <event_cue_signalled cue="md.FactionLogic.FactionSignalled"/>
+            <check_value value="@event.param.{2} == 'shortages evaluated' and typeof @event.param.{3} == datatype.cue"/>
+          </conditions>
+          <actions>
+            <!--Get the new econ shortage tables and update our opportunities list-->
+            <set_value name="$Econ_Tables" exact="[event.param.{3}.$InsufficientProductsTable, event.param.{3}.$InsufficientWorkforceTable, event.param.{3}.$InsufficientBuildTable]"/>
+            <do_all exact="$Econ_Tables.count" counter="$k">
+              <set_value name="$TableRef" exact="$Econ_Tables.{$k}"/>
+              <do_if value="$TableRef.keys.count">
+                <set_value name="$TableRefKeys" exact="$TableRef.keys.list"/>
+                <do_all exact="$TableRefKeys.count" counter="$h">
+                  <!--TODO @Owen - move to params. This is the total amount of time this station has had trouble with this ware (inc multiple productions). Only care after a certain amount of time.-->
+                  <do_if value="$TableRefKeys.{$h} ge 2000">
+                    <set_value name="$Report" exact="$TableRef.{$TableRefKeys.{$h}}"/>
+                    <set_value name="$Ware" exact="$Report.{'$Ware'}"/>
+                    <set_value name="$Station" exact="$Report.{'$Station'}"/>
+                    <!--Check if the station is already in the table-->
+                    <do_if value="not $MasterList_Opportunities.{$Station}?">
+                      <set_value name="$MasterList_Opportunities.{$Station}" exact="table[]"/>
+                    </do_if>
+                    <set_value name="$MasterList_Opportunities.{$Station}.{$Ware}" exact="player.age"/>
+                    <debug_text text="'Report received. %1 (%2) in %3, %4 needs %5.'.[$Station.knownname, $Station, $Station.sector.knownname, $Station.cluster.knownname, $Ware.name]" chance="$DebugChance"/>
+                  </do_if>
+                </do_all>
+              </do_if>
+            </do_all>
+          </actions>
+        </cue>
+        <cue name="Trim_MasterList" checktime="$Time_DataObsolete" checkinterval="775s">
+          <conditions>
+            <check_value value="(player.age - @$LastTrimmed) gt $TrimInterval"/>
+          </conditions>
+          <actions>
+            <set_value name="$LastTrimmed" exact="player.age"/>
+            <set_value name="$MasterList_Opportunities_Keys" exact="$MasterList_Opportunities.keys.list"/>
+            <do_all exact="$MasterList_Opportunities_Keys.count" counter="$StationCounter_Trim" reverse="true">
+              <set_value name="$Station" exact="$MasterList_Opportunities_Keys.{$StationCounter_Trim}"/>
+              <set_value name="$WareTable" exact="$MasterList_Opportunities.{$Station}"/>
+              <set_value name="$MasterList_Opportunities_Ware_Keys" exact="$WareTable.keys.list"/>
+              <do_all exact="$MasterList_Opportunities_Ware_Keys.count" counter="$WareCounter_Trim" reverse="true">
+                <set_value name="$Ware" exact="$MasterList_Opportunities_Ware_Keys.{$WareCounter_Trim}"/>
+                <do_if value="(player.age - $WareTable.{$Ware}) gt $Time_DataObsolete">
+                  <debug_text text="'MasterList_Opportunities trimmed. Removing %1 %2 from the table.'.[$Station, $Ware]" chance="$DebugChance"/>
+                  <remove_value name="$WareTable.{$Ware}"/>
+                </do_if>
+              </do_all>
+              <do_if value="$WareTable.keys.count == 0">
+                <remove_value name="$MasterList_Opportunities.{$Station}"/>
+              </do_if>
+            </do_all>
+            <debug_text text="'MasterList_Opportunities trimmed. Complete MasterList: ' + $MasterList_Opportunities" chance="$DebugChance"/>
+            <reset_cue cue="this"/>
+          </actions>
+        </cue>
+      </cues>
+    </cue>
+
+    <library name="Evaluate">
+      <actions>
+        <!-- TODO: determine need and urgency
+              and weigh against predilection -->
+        <set_value name="$TempHasEvaluated" exact="false"/>
+        <set_value name="$TempTableKeys" exact="$PlunderNet.$MasterList_Opportunities.keys.list"/>
+        <do_all exact="$TempTableKeys.count" counter="$Counter_Opportunities_Stations">
+          <do_if value="$TempTableKeys.{$Counter_Opportunities_Stations}.exists and $Faction == $TempTableKeys.{$Counter_Opportunities_Stations}.owner">
+            <set_value name="$TempStation" exact="$TempTableKeys.{$Counter_Opportunities_Stations}"/>
+            <set_value name="$TempWareTable" exact="$PlunderNet.$MasterList_Opportunities.{$TempStation}"/>
+            <set_value name="$TempWareTableKeys" exact="$TempWareTable.keys.list"/>
+            <do_all exact="$TempWareTableKeys.count" counter="$Counter_Opportunities_Wares">
+              <set_value name="$TempWare" exact="$TempWareTableKeys.{$Counter_Opportunities_Wares}"/>
+
+              <set_value name="$EvaluatedWeight" exact="1.0"/>
+              <do_if value="$BaseLawfulness?">
+                <set_value name="$EvaluatedWeight" exact="[[$EvaluatedWeight - $BaseLawfulness, 0].max, 1.0].min"/>
+              </do_if>
+
+              <set_value name="$TempHasEvaluated" exact="true"/>
+              <append_to_list name="$EvaluatedGoals" exact="table[
+                                  $FactionCue = namespace,
+                                  $Faction = $Faction,
+                                  $TriggerCue = global.$FactionGoals.{$i}.$TriggerCue,
+                                  $Weight = $EvaluatedWeight,
+                                  $TempStation = $TempStation,
+                                  $TempWare = $TempWare,
+                                  $DebugChance = $DebugChance,
+                                  $DebugChance2 = $DebugChance2]"/>
+              <!--<append_to_list name="$EvaluatedGoals" exact="[$EvaluatedWeight, global.$FactionGoals.{$i}.$TriggerCue, $TempStation, $TempWare]"/>-->
+              <remove_value name="$PlunderNet.$MasterList_Opportunities.{$TempStation}.{$TempWare}"/>
+              <debug_text text="'%s considering contract to supply %s (%s) in %s, %s with %s.'.[$Faction.knownname, $TempStation.knownname, $TempStation, $TempStation.sector.knownname, $TempStation.cluster.knownname, $TempWare]" chance="$DebugChance"/>
+
+              <remove_value name="$TempWare"/>
+              <break/>
+            </do_all>
+            <remove_value name="$TempStation"/>
+            <remove_value name="$TempWareTable"/>
+            <remove_value name="$TempWareTableKeys"/>
+          </do_if>
+          <do_if value="$TempHasEvaluated">
+            <break/>
+          </do_if>
+        </do_all>
+        <remove_value name="$TempHasEvaluated"/>
+        <remove_value name="$TempTableKeys"/>
+      </actions>
+    </library>
+
+    <library name="EvaluateEvent">
+      <actions>
+      </actions>
+    </library>
+
+    <!--<library name="Execute">
+      <actions>
+        <signal_cue_instantly cue="md.FactionGoal_Plunder.Start" param="[namespace, $Faction, $CurrentGoal.{1}, $CurrentGoal.{3}, $CurrentGoal.{4}]"/>
+      </actions>
+    </library>-->
+
+    <cue name="Start" instantiate="true" namespace="this" version="2">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <set_value name="$FactionCue" exact="event.param.$FactionCue"/>
+        <set_value name="$Faction" exact="event.param.$Faction"/>
+        <set_value name="$GoalWeight" exact="event.param.$Weight"/>
+        <set_value name="$DebugChance" exact="@event.param.$DebugChance"/>
+        <set_value name="$DebugChance2" exact="@event.param.$DebugChance2"/>
+
+        <do_if value="not event.param.$TempWare">
+          <debug_text text="'Error: Contract offer received by %s but no ware was passed in. Cancelling.'.[$Faction]" filter="error"/>
+          <cancel_cue cue="this"/>
+        </do_if>
+
+        <do_if value="not event.param.$TempStation or not event.param.$TempStation.isoperational">
+          <debug_text text="'Contract offer received by %s but fence is apparently nowhere to be found. Cancelling.'.[$Faction]" chance="$DebugChance"/>
+          <cancel_cue cue="this"/>
+        </do_if>
+
+        <set_value name="$FenceStation" exact="event.param.$TempStation"/>
+        <set_value name="$Ware" exact="event.param.$TempWare"/>
+
+        <set_value name="$DebugText" exact="'(' + $Faction.id + ') ' + static.$Name + ': for ' + $FenceStation + ' ' + $FenceStation.knownname + ' '"/>
+        <debug_text text="$DebugText" chance="$DebugChance"/>
+        <debug_text text="$DebugText + 'weight ' + $GoalWeight" context="false" chance="$DebugChance"/>
+
+        <debug_text text="$DebugText + 'Contract offer received by %s. %s (%s) in %s, %s needs %s.'.[$Faction.knownname, $FenceStation.knownname, $FenceStation, $FenceStation.sector.knownname, $FenceStation.cluster.knownname, $Ware.name]" chance="$DebugChance"/>
+      </actions>
+      <patch sinceversion="1">
+        <signal_cue cue="CleanUp"/>
+      </patch>
+      <patch sinceversion="2">
+        <do_if value="HireContractor.state == cuestate.complete and not Done.isinstance">
+          <debug_text text="'PATCH: cleaning up dead instance ' + this"/>
+          <signal_cue cue="CleanUp"/>
+        </do_if>
+      </patch>
+      <cues>
+        <cue name="FindMark">
+          <actions>
+            <!-- find source of needed/wanted resource close by.
+                  close to what? if signals come from stations, we can pass the station in and use it as a point of reference. -->
+            <find_cluster_in_range name="$Clusters" object="$FenceStation" maxdistance="1" multiple="true"/>
+            <shuffle_list list="$Clusters"/>
+            <sort_list list="$Clusters" sortbyvalue="loop.element.gatedistance.{$FenceStation}"/>
+
+            <do_all exact="$Clusters.count" counter="$Counter_Clusters">
+              <find_station name="$Station"
+                space="$Clusters.{$Counter_Clusters}"
+                checkoperational="true">
+                <match_selloffer wares="$Ware"/>
+                <match_relation_to faction="$Faction" comparison="lt" relation="friend"/>
+              </find_station>
+              <do_if value="$Station">
+                <break/>
+              </do_if>
+            </do_all>
+            <remove_value name="$Clusters"/>
+
+            <do_if value="not $Station">
+              <!--TODO @Owen @Nick find stations at greater distances? Have the goal in a cooldown so it's not going to be re-triggered as soon as this one ends?-->
+              <debug_text text="$DebugText + '%s found no stations with %s in the clusters surrounding fence %s (%s) in %s, %s.'.[$Faction.knownname, $Ware.name, $FenceStation.knownname, $FenceStation, $FenceStation.sector.knownname, $FenceStation.cluster.knownname]" chance="$DebugChance"/>
+              <signal_cue cue="CleanUp"/>
+            </do_if>
+            <do_else>
+              <set_value name="$Mark" exact="$Station"/>
+              <debug_text text="$DebugText + 'Mark found. %s attempting to acquire %s from %s (%s) in %s, %s.'.[$Faction.knownname, $Ware.name, $Mark.knownname, $Mark, $Mark.sector.knownname, $Mark.cluster.knownname]" chance="$DebugChance2"/>
+            </do_else>
+          </actions>
+        </cue>
+        <cue name="FindContractor">
+          <conditions>
+            <event_cue_completed cue="FindMark"/>
+            <check_value value="$Mark?"/>
+          </conditions>
+          <actions>
+            <find_cluster_in_range name="$Clusters" object="$Mark" maxdistance="10" multiple="true"/>
+            <set_value name="$TempTable_Clusters" exact="table[]"/>
+            <do_all exact="$Clusters.count" counter="$Counter_Clusters">
+              <set_value name="$TempTable_Clusters.{$Clusters.{$Counter_Clusters}}" exact="$Clusters.{$Counter_Clusters}.gatedistance.{$Mark}"/>
+            </do_all>
+            <set_value name="$Clusters" exact="$TempTable_Clusters.keys.sorted"/>
+            <remove_value name="$TempTable_Clusters"/>
+
+            <set_value name="$Contractor" exact="null"/>
+            <debug_text text="$DebugText + '%s looking for contractor to hit %s.'.[$Faction.knownname, $Mark.knownname]" chance="$DebugChance2"/>
+            <do_all exact="$Clusters.count" counter="$Counter_Clusters">
+              <!-- TODO: Redefine ship selection. A ship belongs to PlunderNet if:
+                it is able to carry the ware needed,
+                it is a job ship,
+                and it has Plunder as its default order (?),
+
+                and be able to dock at our stations (? they could use cover to deliver their respective packages.)
+
+                Note that the faction to which they are aligned is not important unless we restrict candidates to those able to dock (which has other benefits. ex: factions that are not on decent terms with any piraty factions won't be able to find any contractors willing to work for them.). -->
+              <!-- NB: 1.50: all pirates belong to the Scaleplate Pact, and their relations are locked at -0.032 or worse with everyone else which will result in PlunderNet always only getting pirates to work for Scaleplate stations, concentrating them. -->
+              <!--<find_ship name="$Contractor" space="$Clusters.{$Counter_Clusters}" owner="$Faction" checkoperational="true" validjobship="true" commandeerable="true"/>-->
+              <!-- TODO: change below if/when we get a filter for default orders. -->
+              <find_ship name="$AllJobShips" space="$Clusters.{$Counter_Clusters}" checkoperational="true" validjobship="true" commandeerable="true" multiple="true">
+                <!-- yes, i know these overlap. -->
+                <match_relation_of faction="$Faction" relation="killmilitary" comparison="gt"/>
+                <match_relation_to object="$Mark" relation="friend" comparison="lt"/>
+              </find_ship>
+              <debug_text text="$DebugText + '%s found %s job ships in %s, %s gates away from the Mark.'.[$Faction.knownname, $AllJobShips.count, $Clusters.{$Counter_Clusters}.knownname, $Mark.gatedistance.{$Clusters.{$Counter_Clusters}}]" chance="$DebugChance2"/>
+              <do_all exact="$AllJobShips.count" counter="$Counter_AllJobShips">
+                <do_if value="$AllJobShips.{$Counter_AllJobShips}.defaultorder.id == 'Plunder'">
+                  <set_value name="$Contractor" exact="$AllJobShips.{$Counter_AllJobShips}"/>
+                  <break/>
+                </do_if>
+              </do_all>
+              <remove_value name="$AllJobShips"/>
+
+              <do_if value="$Contractor.isoperational">
+                <break/>
+              </do_if>
+            </do_all>
+
+            <do_if value="not $Contractor">
+              <debug_text text="$DebugText + '%s found no free contractors willing to acquire %s in the clusters surrounding mark %s (%s) in %s, %s.'.[$Faction.knownname, $Ware.name, $Mark.knownname, $Mark, $Mark.sector.knownname, $Mark.cluster.knownname]" chance="$DebugChance"/>
+              <signal_cue cue="CleanUp"/>
+            </do_if>
+            <do_else>
+              <debug_text text="$DebugText + '%s is considering %s (%s) for target acquisition.'.[$Faction.knownname, $Contractor.knownname, $Contractor]" chance="$DebugChance2"/>
+            </do_else>
+
+          </actions>
+        </cue>
+        <!-- commandeer ship and have ship plunder. (equip?) -->
+        <!-- release ship. (unequip? recycle the ship? destroy the evidence?) -->
+        <cue name="HireContractor">
+          <conditions>
+            <event_cue_completed cue="FindContractor"/>
+            <check_value value="$Contractor"/>
+          </conditions>
+          <actions>
+            <debug_text text="$DebugText + '%s has contracted %s (%s) to acquire %s from %s (%s) in %s, %s for %s (%s) in %s, %s.'.[$Faction.knownname, $Contractor.knownname, $Contractor, $Ware.name, $Mark.knownname, $Mark, $Mark.sector.knownname, $Mark.cluster.knownname, $FenceStation.knownname, $FenceStation, $FenceStation.sector.knownname, $FenceStation.cluster.knownname]" chance="$DebugChance"/>
+            <commandeer_object object="$Contractor"/>
+
+            <create_order name="$Order_Contractor" id="'Plunder'" object="$Contractor">
+              <param name="space" value="$Mark"/>
+              <param name="base" value="$FenceStation"/>
+              <param name="returntobase" value="true"/>
+              <param name="basebasket" value="[$Ware]"/>
+              <param name="plundermode" value="1"/>
+              <param name="debugchance" value="$DebugChance"/>
+            </create_order>
+          </actions>
+          <cues>
+            <cue name="Failed">
+              <conditions>
+                <check_any>
+                  <event_object_destroyed object="$Contractor"/>
+                  <event_object_destroyed object="$FenceStation"/>
+                  <event_object_abandoned object="$Contractor"/>
+                  <event_object_changed_true_owner object="$Contractor"/>
+                </check_any>
+              </conditions>
+              <actions>
+                <debug_text text="$DebugText + 'Contractor hired by %s was %s. Mission failed.'.[$Faction.knownname, event.name]" chance="$DebugChance"/>
+                <signal_cue cue="CleanUp"/>
+              </actions>
+            </cue>
+
+            <cue name="Done">
+              <conditions>
+                <event_object_signalled object="$FenceStation" param="'plunder done'" param2="$Contractor"/>
+
+                <!-- and this won't work because default orders don't go through the ready state. -->
+                <!--<event_object_order_ready object="$Contractor"/>
+                <check_value value="event.param == $Contractor.defaultorder"/>-->
+
+                <!-- this won't work because the order isn't cancelled when it actually finishes. -->
+                <!--<event_object_order_cancelled object="$Contractor"/>
+                <check_value value="event.param == $Order_Contractor"/>
+                <check_value value="not $Contractor.orders.indexof.{$Order_Contractor}"/>-->
+              </conditions>
+              <actions>
+                <debug_text text="$DebugText + '%s received report that the job done by %s (%s) has ended.'.[$Faction.knownname, $Contractor.knownname, $Contractor]" chance="$DebugChance"/>
+                <release_commandeered_object object="$Contractor"/>
+                <signal_cue cue="CleanUp"/>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="CleanUp">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <debug_text text="$DebugText + 'Cleaning up'" chance="$DebugChance"/>
+
+            <do_if value="$Contractor? and $Contractor.exists">
+              <release_commandeered_object object="$Contractor"/>
+            </do_if>
+
+            <set_value name="this.$IDX" exact="$FactionCue.$Goals.indexof.{namespace}"/>
+            <do_if value="this.$IDX">
+              <remove_value name="$FactionCue.$Goals.{this.$IDX}"/>
+            </do_if>
+
+            <cancel_cue cue="namespace"/>
+          </actions>
+        </cue>
+      </cues>
+    </cue>
+  </cues>
+</mdscript>

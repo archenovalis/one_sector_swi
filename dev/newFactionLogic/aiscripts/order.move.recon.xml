@@ -1,0 +1,1854 @@
+<?xml version="1.0" encoding="utf-8"?>
+<aiscript name="order.move.recon" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" version="17">
+  <order id="Recon" name="{1041, 291}" description="{1041, 292}" category="internal">
+    <params>
+      <param name="targetspace" required="true" type="object" default="null" text="{1041, 10117}" comment="Space. Space to reconnoiter">
+        <input_param name="class" value="[class.sector, class.gate, class.highwayentrygate]"/>
+      </param>
+      <param name="radius" type="length" default="null" text="{1041, 10093}" advanced="true" comment="Radius. only used by blindtourist."/>
+      <param name="timeout" type="time" default="0s" infinitevalue="-1s" text="{1041, 10034}" advanced="true" comment="Duration. timeout -1s interpreted as infinite. timeout 0s interpreted as finish after one cycle.">
+        <input_param name="min" value="0s"/>
+        <input_param name="max" value="24h"/>
+        <input_param name="step" value="10min"/>
+      </param>
+      <param name="hq" type="object" default="null" text="{1041, 10045}" advanced="true" comment="Headquarters. Station or ship this ship will report back to after doing reconnaissance. Only used by normal recon or police.">
+        <input_param name="class" value="[class.station, class.ship]"/>
+        <input_param name="canbecommanderof" value="this.ship"/>
+      </param>
+      <param name="targetclasses" type="internal" default="[class.ship, class.station]" comment="Target object classes"/>
+      <param name="targetpurposes" type="internal" default="[]" comment="Target object purposes"/>
+      <param name="police" type="internal" default="false" text="{1041, 10084}" comment="Police investigation. Look for disguised criminals or smuggled goods? Otherwise, default behavior is to identify potential threats to our faction in $targetspace."/>
+      <param name="exploreupdate" type="internal" default="false" text="{1041, 10137}" comment="Update known space. Refresh information on known stations in $targetspace."/>
+      <param name="resourcescout" type="internal" default="false" text="{1041, 10109}" comment="Scout for resources. Look for valuable asteroids, collectables, or lockboxes in $targetspace."/>
+      <param name="blindtourist" type="internal" default="false" text="{1041, 10039}" comment="Explore blind with no cheating"/>
+      <param name="deploysatellites" type="bool" default="false" advanced="true" text="Deploy Satellites" comment="deploy satellites at points of interest if any are available. will get more satellites if possible.">
+        <patch value="false" sinceversion="8"/>
+      </param>
+      <param name="cannotdock" type="internal" default="false" text="{1041, 10133}" comment="Unable to dock. used for error handling in case of inability to dock"/>
+      <param name="debugchance" type="bool" default="0" advanced="true" text="{1041, 10086}" comment="Print debug output">
+        <input_param name="truevalue" value="100"/>
+      </param>
+    </params>
+    <skill min="40"/>
+    <requires>
+      <match shiptype="shiptype.lasertower" negate="true"/>
+      <match class="class.spacesuit" negate="true"/>
+    </requires>
+  </order>
+  <interrupts>
+    <library>
+      <actions name="FindTargetspace_Police">
+        <do_if value="$police">
+          <do_if value="not $targetspace or (@$targetspace.policefaction != this.trueowner)">
+
+            <set_value name="$targetspace" exact="null"/>
+
+            <find_cluster_in_range distances="$clusterstable" multiple="true" object="this.assignedcontrolled" maxdistance="30"/>
+            <!-- sort them -->
+            <set_value name="$sortedclusters" exact="$clusterstable.keys.sorted" />
+            <do_all exact="$sortedclusters.count" counter="$i">
+              <find_sector name="$clustersectors" space="$sortedclusters.{$i}" multiple="true"/>
+              <do_all exact="$clustersectors.count" counter="$j">
+                <do_if value="$clustersectors.{$j}.policefaction == this.trueowner and (not this.assignedcontrolled.job or $clustersectors.{$j}.issuitableforjob.{this.assignedcontrolled.job})">
+                  <set_value name="$targetspace" exact="$clustersectors.{$j}"/>
+                  <debug_text text="'targetspace is now %s %s'.[$targetspace.class, $targetspace.knownname]" chance="$debugchance"/>
+                  <break/>
+                </do_if>
+              </do_all>
+              <do_if value="$targetspace">
+                <do_if value="this.assignedcontrolled.isjobship">
+                  <debug_text text="this.assignedcontrolled + ' ' + this.assignedcontrolled.knownname + ' setting job main sector to ' + $targetspace.knownname + ' ' + $targetspace + ' previous: ' + this.assignedcontrolled.jobmainsector + ' ' + @this.assignedcontrolled.jobmainsector.knownname" chance="$debugchance"/>
+                  <set_job_ship_mainsector ship="this.assignedcontrolled" sector="$targetspace"/>
+                </do_if>
+                <do_if value="@this.assignedcontrolled.order.id == 'Police'">
+                  <edit_order_param order="this.assignedcontrolled.order" param="'targetspace'" value="$targetspace" comment="will cause script to restart"/>
+                </do_if>
+                <debug_text text="'targetspace successfully set.'" chance="$debugchance"/>
+                <break/>
+              </do_if>
+            </do_all>
+
+            <do_if value="not $targetspace">
+              <debug_text text="'no sectors found where we are police. boo hoo.'" chance="$debugchance"/>
+
+              <cancel_all_orders object="this.assignedcontrolled"/>
+
+              <do_if value="this.isplayerowned">
+                <debug_text text="'%s %s %s is player-owned. Waiting for instructions.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled]" chance="$debugchance"/>
+                <create_order id="'Wait'" object="this.assignedcontrolled" default="true" chance="(@this.assignedcontrolled.defaultorder.id == 'Police' or @this.assignedcontrolled.defaultorder.id == 'Recon') * 100">
+                  <param name="debugchance" value="$debugchance"/>
+                </create_order>
+              </do_if>
+              <do_else>
+                <do_if value="this.trueowner == faction.xenon">
+                  <debug_text text="'Xenon ship %s %s %s self-destructing.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled]" chance="$debugchance"/>
+                  <destroy_object object="this.assignedcontrolled" explosion="true"/>
+                </do_if>
+                <do_elseif value="this.trueowner != faction.khaak" chance="if (this.trueowner == faction.ministry) or (this.trueowner == faction.teladi) then 100 else 20">
+                  <debug_text text="'%s %s %s joining the pirates.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled]" chance="$debugchance"/>
+                  <!-- commandeer yourself first so that MD can't grab you. -->
+                  <commandeer_object object="this.assignedcontrolled" chance="this.assignedcontrolled.iscommandeerable * 100"/>
+                  <set_owner object="this.assignedcontrolled" faction="faction.scaleplate" overridenpc="true"/>
+                  <create_order id="'Plunder'" object="this.assignedcontrolled" default="true">
+                    <param name="deepspace" value="true"/>
+                    <param name="debugchance" value="$debugchance"/>
+                  </create_order>
+                </do_elseif>
+                <do_else>
+                  <debug_text text="'%s %s %s going civilian.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled]" chance="$debugchance"/>
+                  <commandeer_object object="this.assignedcontrolled" chance="this.assignedcontrolled.iscommandeerable * 100"/>
+                  <create_order id="'Wait'" object="this.assignedcontrolled" default="true">
+                    <param name="debugchance" value="$debugchance"/>
+                  </create_order>
+                  <create_order id="'MoveDie'" object="this.assignedcontrolled" immediate="true">
+                    <param name="debugchance" value="$debugchance"/>
+                  </create_order>
+                </do_else>
+              </do_else>
+            </do_if>
+            <remove_value name="$clustersectors"/>
+            <remove_value name="$sortedclusters"/>
+            <remove_value name="$clusterstable"/>
+          </do_if>
+          <debug_text text="'starting in sector %s. local police: %s. our faction: %s. target space: %s %s (targetspace may be null)'.[this.sector.knownname, @this.sector.policefaction, this.trueowner, @$targetspace.class, @$targetspace.knownname]" chance="@$targetspace.exists * $debugchance"/>
+        </do_if>
+      </actions>
+      <actions name="Police_HandleIllegalCrates">
+        <do_if value="$police and @$localtarget and $police_response and ($police_response != 'ignore')">
+          <find_object name="$crates" class="[class.collectable, class.lockbox]" space="this.ship.sector" multiple="true">
+            <match_distance object="$localtarget" max="($localtarget.size / 2.0) + 1km"/>
+          </find_object>
+          <do_for_each name="$crate" in="$crates" reverse="true">
+            <do_if value="$crate.exists">
+              <set_value name="$cratewares" exact="$crate.wares.list"/>
+              <do_for_each name="$crateware" in="$cratewares">
+                <debug_text text="'%s, illegal? %s'.[$crateware, $crateware.illegalto.{this.zone.policefaction}.{$localtarget.owner}]" chance="$debugchance"/>
+                <do_if value="$crateware.illegalto.{this.zone.policefaction}.{$localtarget.owner}">
+                  <do_if value="$police_response == 'destroy'">
+                    <debug_text text="'\n%s %s %s\napprehending %s %s %s\ndestroying crate containing %s.'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, $localtarget.idcode, $localtarget.knownname, $localtarget, $crateware]" chance="$debugchance"/>
+                    <destroy_object object="$crate" explosion="true"/>
+                  </do_if>
+                  <do_elseif value="$police_response == 'collect'">
+                    <debug_text text="'\n%s %s %s\napprehending %s %s %s\ncollecting crate containing %s.'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, $localtarget.idcode, $localtarget.knownname, $localtarget, $crateware]" chance="$debugchance"/>
+                    <add_to_group groupname="$cratestocollect" object="$crate"/>
+                  </do_elseif>
+                  <break/>
+                </do_if>
+              </do_for_each>
+              <remove_value name="$cratewares"/>
+            </do_if>
+          </do_for_each>
+          <remove_value name="$crates"/>
+        </do_if>
+
+        <do_if value="@$cratestocollect.count">
+          <debug_text text="'%s %s %s collecting %s crates with illegal wares'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, $cratestocollect.count]" chance="$debugchance"/>
+          <create_order id="'Collect'" object="this.assignedcontrolled" immediate="true">
+            <param name="targetlist" value="$cratestocollect.list"/>
+            <param name="debugchance" value="$debugchance"/>
+          </create_order>
+        </do_if>
+        <remove_value name="$cratestocollect"/>
+      </actions>
+    </library>
+    <handler ref="SectorChangeHandler"/>
+    <handler ref="TargetInvalidHandler"/>
+    <handler ref="AttackHandler"/>
+    <handler ref="MissileLockHandler" />
+    <handler ref="ScannedHandler"/>
+    <handler ref="InspectedHandler"/>
+    <handler ref="FoundAbandonedHandler"/>
+    <handler ref="FoundLockboxHandler"/>
+    <handler ref="ResupplyHandler"/>
+    <handler ref="TideHandler"/>
+    <handler>
+      <conditions>
+        <check_any>
+          <event_object_attacked group="$localtargetgroup"/>
+          <check_all>
+            <event_object_signalled object="this.sector" param="'police'" check="false"/>
+            <check_value value="event.param3 != this.assignedcontrolled"/>
+          </check_all>
+        </check_any>
+        <check_value value="$police"/>
+        <check_value value="this.sector.exists"/>
+        <set_value name="$attacker" exact="if (event.name == 'event_object_attacked') then event.param else event.param2"/>
+        <set_value name="$attacked" exact="if (event.name == 'event_object_attacked') then event.object else event.param3"/>
+        <check_value value="$attacker.isoperational"/>
+        <check_value value="$attacker.zone.policefaction"/>
+        <check_value value="not this.hasrelation.enemy.{$attacker.zone.policefaction}" comment="Check that the police faction is not an enemy"/>
+        <check_value value="$attacker.owner != this.owner" />
+        <check_value value="$attacker.owner != $attacked.owner"/>
+        <check_value value="not this.assignedcontrolled.mayattack.{$attacked}"/>
+        <check_value value="not this.isplayerowned or this.assignedcontrolled.mayattack.{$attacker}"/>
+        <check_value value="this.relationto.{$attacked} gt this.relationto.{$attacker}"/>
+      </conditions>
+      <actions>
+        <!-- NB: actions are deferred so if event is triggered by multiple events in the same frame, this will only act on the first trigger that passes all conditions which should be fine since it changes the behavior. -->
+        <do_if value="@$attacker.isoperational">
+          <do_if value="event.name == 'event_object_attacked'">
+            <debug_text text="'%s %s attacking attacker %s %s of scanned ship in sector %s. interdicted ship cleared.'.[this.ship.knownname, this.ship, $attacker.knownname, $attacker, this.sector.knownname]" chance="$debugchance"/>
+          </do_if>
+          <do_else>
+            <debug_text text="'%s %s called to attack %s %s in sector %s. interdicted ship cleared.'.[this.ship.knownname, this.ship, $attacker.knownname, $attacker, this.sector.knownname]" chance="$debugchance"/>
+          </do_else>
+
+          <do_if value="@$localtarget">
+            <debug_text text="'called to attack. clearing %s %s %s'.[@$localtarget.idcode, @$localtarget.knownname, $localtarget]" chance="$debugchance"/>
+            <do_if value="$localtarget == player.occupiedship and $attacker != player.occupiedship">
+              <!-- NB: has to stay a conversation. cannot call player.interaction from an interrupt, and this is fairly important. -->
+              <start_conversation actor="this" conversation="Speak_Scan" type="unqueued" convparam="11204" priority="80" comment="(ship scan result - nothing found)."/>
+            </do_if>
+            <do_if value="$localtarget.isclass.ship">
+              <!-- $haltedby can be cleared if $localtarget was already running a Wait order before WaitForSignal was added. but if it exists, serves as a fast positive means to identify. -->
+              <do_if value="@$localtarget.pilot.$haltedby == this.assignedcontrolled">
+                <!-- cleaned up in order.wait.signal by $localtarget's pilot -->
+                <set_value name="this.$police_cleared.{$localtarget}" exact="player.age"/>
+              </do_if>
+              <do_else>
+                <debug_text text="'interrupt: was about to clear ship that we have not halted.\ntarget: %s %s %s (%s)\norder: %s\nsignaller: %s %s %s is me: %s'.[@$localtarget.idcode, @$localtarget.knownname, $localtarget, @$localtarget.pilot, @$localtarget.order.id, @$localtarget.order.$signaller.idcode, @$localtarget.order.$signaller.knownname, @$localtarget.order.$signaller, @$localtarget.order.$signaller == this.assignedcontrolled]" chance="0"/>
+                <do_for_each name="$locorder" in="@$localtarget.orders" reverse="true">
+                  <do_if value="$locorder != $localtarget.order and $locorder.id == 'WaitForSignal' and $locorder.$signaller == this.assignedcontrolled">
+                    <!-- cancel $locorder rather than setting $police_cleared in case $localtarget is later inspected by this same ship before $locorder has had a chance to run -->
+                    <cancel_order order="$locorder"/>
+                  </do_if>
+                </do_for_each>
+              </do_else>
+            </do_if>
+            <set_value name="$cleared.{$localtarget}" exact="player.age"/>
+            <signal_objects object="$localtarget" param="'proceed'" param2="this.assignedcontrolled"/>
+          </do_if>
+
+          <do_if value="this.trueowner != $attacker.trueowner">
+            <do_if value="not this.isplayerowned">
+              <set_relation_boost object="this" otherobject="$attacker" value="-1.0" decay="1" delay="5min" reason="relationchangereason.attackedobject"/>
+            </do_if>
+            <do_else>
+              <set_relation_boost object="$attacker" otherobject="this" value="-1.0" decay="1" delay="5min"/>
+            </do_else>
+            <create_order id="'Attack'" object="this.assignedcontrolled" immediate="true">
+              <param name="primarytarget" value="$attacker"/>
+              <param name="allowothertargets" value="true"/>
+              <param name="pursuetargets" value="false"/>
+              <param name="debugchance" value="$debugchance"/>
+            </create_order>
+            <do_if value="not this.assignedcontrolled.cansee.{$attacker}">
+              <create_order id="'MoveGeneric'" object="this.assignedcontrolled" immediate="true">
+                <param name="destination" value="$attacker"/>
+                <param name="stopondetect" value="$attacker"/>
+                <param name="debugchance" value="$debugchance"/>
+              </create_order>
+            </do_if>
+          </do_if>
+        </do_if>
+        <remove_value name="$attacked"/>
+        <remove_value name="$attacker"/>
+      </actions>
+    </handler>
+    <handler>
+      <conditions>
+        <check_any>
+          <!-- for this handler to be valid, the script has to be restarted whenever targetspace changes. restart done via edit_order_param. -->
+          <event_object_changed_true_owner object="$targetspace" check="false"/>
+          <event_faction_police_changed faction="$targetspace.owner"/>
+        </check_any>
+        <check_value value="$police"/>
+        <check_value value="@$targetspace.policefaction != this.trueowner"/>
+      </conditions>
+      <actions>
+        <include_interrupt_actions ref="FindTargetspace_Police"/>
+      </actions>
+    </handler>
+    <handler>
+      <conditions>
+        <!-- param2 == [target, sender]. only active if $targetspace is populated on start or init -->
+        <event_object_signalled object="$targetspace" param="'police_istargetcleared'" check="false"/>
+        <check_value value="$police"/>
+        <check_value value="event.param2.{1}.isoperational"/>
+        <check_value value="event.param2.{2}.isoperational"/>
+        <check_value value="@event.param2.{2}.pilot.$listeningfor == 'police_cleared'"/>
+        <check_value value="$cleared.{event.param2.{1}}? and ((player.age - $cleared.{event.param2.{1}}) le $threshold_cleared)"/>
+        <check_value value="event.param2.{2}.owner == this.owner"/>
+      </conditions>
+      <actions>
+        <debug_text text="'confirming %s %s %s was already cleared %s seconds ago.'.[@event.param2.{1}.idcode, @event.param2.{1}.knownname, event.param2.{1}, player.age - $cleared.{event.param2.{1}}]" chance="$debugchance"/>
+        <signal_objects object="event.param2.{2}" param="'police_cleared'" param2="$cleared.{event.param2.{1}}"/>
+      </actions>
+    </handler>
+  </interrupts>
+  <init>
+    <do_if value="this.assignedcontrolled.isonlineobject and not $targetspace" comment="for venture support where we cannot define targetspace beforehand">
+      <do_if value="this.sector">
+        <set_value name="$targetspace" exact="this.sector"/>
+      </do_if>
+      <do_else>
+        <!-- assumes that if this.sector is null, we are in a superhighway -->
+        <do_if value="this.zone.issuperhighway">
+          <set_value name="$targetspace" exact="this.zone.destination.sector"/>
+        </do_if>
+        <do_else>
+          <debug_text text="'%s %s %s is neither in a sector nor in a superhighway. zone: %s %s. aborting.'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, this.zone.knownname, this.zone]" filter="error"/>
+          <return/>
+        </do_else>
+      </do_else>
+      <do_if value="$targetspace">
+        <edit_order_param order="this.assignedcontrolled.order" param="'targetspace'" value="$targetspace" comment="will cause script to restart"/>
+      </do_if>
+    </do_if>
+
+    <do_if value="$targetspace.isclass.gate">
+      <do_if value="not $targetspace.isactive">
+        <debug_text text="'selected gate is inactive. no space to reconnoiter. aborting.'"/>
+        <return/>
+      </do_if>
+      <do_else>
+        <debug_text text="'switching targetspace from %s %s %s to %s %s %s.'.[$targetspace.class, $targetspace.knownname, $targetspace, $targetspace.destination.sector.class, $targetspace.destination.sector.knownname, $targetspace.destination.sector]" chance="$debugchance"/>
+        <set_value name="$targetspace" exact="$targetspace.destination.sector"/>
+      </do_else>
+    </do_if>
+    <do_elseif value="$targetspace.isclass.highwayentrygate">
+      <do_if value="$targetspace.highway.destination.sector">
+        <debug_text text="'switching targetspace from %s %s %s to %s %s %s.'.[$targetspace.class, $targetspace.knownname, $targetspace, $targetspace.highway.destination.sector.class, $targetspace.highway.destination.sector.knownname, $targetspace.highway.destination.sector]" chance="$debugchance"/>
+        <set_value name="$targetspace" exact="$targetspace.highway.destination.sector"/>
+      </do_if>
+      <do_else>
+        <debug_text text="'Highway entry gate: %s has no destination or destination is not in a sector. Destination: %s %s'.[$targetspace, @$targetspace.highway.destination.knownname, @$targetspace.highway.destination]" filter="error"/>
+        <return/>
+      </do_else>
+    </do_elseif>
+    <do_elseif value="$targetspace.isclass.zone and not $targetspace.istempzone and not $targetspace.isclass.highway">
+      <!-- valid case -->
+    </do_elseif>
+    <!-- also handles case where targetspace is null -->
+    <do_elseif value="not @$targetspace.isclass.sector">
+      <debug_text text="'Warning: targetspace %1 %2 (%3) is neither a sector, a gate, nor a highway entry gate. Attempting to recover.'.[@$targetspace.class, @$targetspace.knownname, $targetspace]" chance="$debugchance"/>
+      <do_if value="$police">
+        <do_if value="@this.assignedcontrolled.jobmainsector and (this.assignedcontrolled.jobmainsector.policefaction == this.trueowner)">
+          <set_value name="$targetspace" exact="this.assignedcontrolled.jobmainsector"/>
+        </do_if>
+        <do_elseif value="@this.sector.policefaction == this.trueowner">
+          <set_value name="$targetspace" exact="this.sector"/>
+        </do_elseif>
+        <do_else>
+          <do_if value="this.assignedcontrolled.jobmainsector">
+            <debug_text text="'police ship %s %s has jobmainsector set to an area where they are not police. Check job definition: %s. jobmainsector: %s %s with local police %s'.[this.assignedcontrolled.knownname, this.assignedcontrolled, this.assignedcontrolled.job, this.assignedcontrolled.jobmainsector.knownname, this.assignedcontrolled.jobmainsector, this.assignedcontrolled.jobmainsector.policefaction]" chance="$debugchance"/>
+          </do_if>
+          <!-- in this case, do not set $targetspace here. will need to set it after the script starts where we could have blocking actions. -->
+          <debug_text text="'police ship %s %s cannot set a target space at init. initializing after script starts'.[this.assignedcontrolled.knownname, this.assignedcontrolled]" chance="$debugchance"/>
+        </do_else>
+      </do_if>
+      <do_elseif value="@$targetspace.sector">
+        <set_value name="$targetspace" exact="$targetspace.sector"/>
+      </do_elseif>
+      <do_elseif value="this.sector">
+        <set_value name="$targetspace" exact="this.sector"/>
+      </do_elseif>
+      <do_elseif value="this.zone.isclass.highway">
+        <set_value name="$targetspace" exact="this.zone.destination.sector"/>
+      </do_elseif>
+      <do_else>
+        <debug_text text="'targetspace %1 %2 (%3) is neither a sector nor in a sector. Attempt to recover failed. Stopping reconnaissance. (This can go very badly if this is my default order. Is it? %4)'.[@$targetspace.class, @$targetspace.knownname, $targetspace, this.ship.order == this.ship.defaultorder]" filter="error"/>
+        <return/>
+      </do_else>
+      <debug_text text="'Recovered. targetspace is now: %1 %2 (%3)'.[$targetspace.class, $targetspace.knownname, $targetspace]" chance="$debugchance"/>
+    </do_elseif>
+
+    <create_group groupname="$localtargetgroup"/>
+
+    <do_if value="$police">
+      <set_value name="$threshold_cleared" exact="1h"/>
+      <!-- persists as long as script runs. entries more than 1h old occasionally cleaned up. -->
+      <set_value name="$cleared" exact="table[]"/>
+      <do_if value="this.$police_cleared2?">
+        <do_for_each name="$locobject" valuename="$loctime" in="this.$police_cleared2">
+          <!-- clean up cleared table as we repopulate it. -->
+          <do_if value="$locobject.isoperational and (player.age - $loctime) le $threshold_cleared">
+            <set_value name="$cleared.{$locobject}" exact="$loctime"/>
+          </do_if>
+        </do_for_each>
+        <remove_value name="this.$police_cleared2"/>
+      </do_if>
+      <!-- entries cleaned up by target in order.wait.signal. only used for confirmation in case signal is missed. -->
+      <!-- always initialize to implicitly clean up stale entries. -->
+      <set_value name="this.$police_cleared" exact="table[]"/>
+    </do_if>
+
+    <do_if value="$blindtourist and not this.isplayerowned">
+      <debug_text text="'blind tourist called on someone who does not belong to the player faction. this is not supported. reverting to normal recon.'" chance="$debugchance"/>
+      <set_value name="$blindtourist" exact="false"/>
+      <edit_order_param order="this.assignedcontrolled.order" param="'blindtourist'" value="false"/>
+    </do_if>
+
+    <do_if value="$blindtourist">
+      <set_value name="$anchorpos" exact="$targetspace.coreposition"/>
+      <do_if value="this.hascontext.{$targetspace}">
+        <set_value name="$refpos" exact="this.assignedcontrolled.position"/>
+        <set_value name="$refzone" exact="this.zone"/>
+      </do_if>
+      <do_elseif value="this.zone.isclass.highway and (this.zone.destination.sector == $targetspace)">
+        <set_value name="$refpos" exact="position.[0, 0, 0]"/>
+        <set_value name="$refzone" exact="this.zone.destination"/>
+      </do_elseif>
+
+      <do_if value="not this.$time_start?" chance="0">
+        <set_value name="this.$time_start" exact="player.age"/>
+      </do_if>
+
+      <do_if value="$refpos? and $refzone?">
+        <create_position name="$anchorpos" space="$targetspace" value="$refpos" object="$refzone"/>
+      </do_if>
+      <remove_value name="$refzone"/>
+      <remove_value name="$refpos"/>
+    </do_if>
+  </init>
+  <patch sinceversion="2">
+    <do_if value="$police and @this.assignedcontrolled.jobmainzone.sector and ($targetspace != this.assignedcontrolled.jobmainzone.sector) and (this.assignedcontrolled.jobmainzone.policefaction == this.trueowner)">
+      <set_value name="$targetspace" exact="this.assignedcontrolled.jobmainzone.sector"/>
+      <do_if value="this.assignedcontrolled.order.id == 'Recon'">
+        <edit_order_param order="this.assignedcontrolled.order" param="'targetspace'" value="$targetspace" comment="will cause script to restart"/>
+      </do_if>
+    </do_if>
+  </patch>
+  <patch sinceversion="7">
+    <do_if value="$police and (not $targetspace or (@$targetspace.policefaction != this.trueowner))">
+      <include_interrupt_actions ref="FindTargetspace_Police"/>
+      <debug_text text="'PATCH: targetspace changed to %s %s'.[@$targetspace.class, $targetspace.knownname]" filter="savegame"/>
+    </do_if>
+  </patch>
+  <patch sinceversion="9">
+    <set_value name="$deploysatellites" exact="false"/>
+  </patch>
+  <patch sinceversion="10">
+    <!-- NB: was 100m + size/2. collision detection can mess with movement if ships get too close. -->
+    <set_value name="$scanningrange" exact="[this.ship.maxradarrange, (this.assignedcontrolled.size / 2.0 + 300m)].min"/>
+  </patch>
+  <patch sinceversion="12">
+    <do_if value="$hq and (not this.assignedcontrolled.order.$hq? or this.assignedcontrolled.isplayerowned)">
+      <set_value name="$hq" exact="null"/>
+      <do_if value="@this.assignedcontrolled.order.$targetspace">
+        <edit_order_param order="this.assignedcontrolled.order" param="'targetspace'" value="this.assignedcontrolled.order.$targetspace"/>
+      </do_if>
+    </do_if>
+  </patch>
+  <patch sinceversion="13">
+    <do_if value="$police">
+      <set_value name="$cleared" exact="table[]"/>
+    </do_if>
+  </patch>
+  <patch sinceversion="14">
+    <do_if value="$police">
+      <set_value name="$threshold_cleared" exact="1h"/>
+    </do_if>
+  </patch>
+  <patch sinceversion="16">
+    <!-- at least one case where signal complying with challenge is missed -->
+    <do_if value="$police and @$localtarget.isplayerowned and not $waited? and not $trouble?">
+      <do_if value="$localtarget.order.id == 'WaitForSignal' and $localtarget.order.$signaller == this.assignedcontrolled">
+        <!-- $localtarget is waiting for us and we have not started scanning. clear the target but do not register as cleared, then restart the order. -->
+        <signal_objects object="$localtarget" param="'proceed'" param2="this.assignedcontrolled"/>
+        <edit_order_param order="this.assignedcontrolled.order" param="'debugchance'" value="$debugchance"/>
+        <debug_text text="'PATCH: police signal missed. clearing %s %s %s'.[$localtarget.idcode, $localtarget.knownname, $localtarget]" filter="savegame"/>
+      </do_if>
+    </do_if>
+  </patch>
+  <patch sinceversion="17">
+    <do_if value="@this.$police_cleared.keys.count">
+      <do_for_each name="$locsuspect" valuename="$loctime" in="this.$police_cleared" reverse="true">
+        <do_if value="$locsuspect.isclass.ship">
+          <do_all exact="@$locsuspect.orders.count + 1" counter="$_i">
+            <do_if value="$_i gt $locsuspect.orders.count">
+              <debug_text text="'PATCH: police cleared %s %s %s %ss ago no longer waiting. clearing entry.'.[@$locsuspect.idcode, @$locsuspect.knownname, $locsuspect, player.age - $loctime]" filter="savegame"/>
+              <remove_value name="this.$police_cleared.{$locsuspect}"/>
+            </do_if>
+            <do_elseif value="$locsuspect.orders.{$_i}.id == 'WaitForSignal' and $locsuspect.orders.{$_i}.$signaller == this.assignedcontrolled">
+              <break/>
+            </do_elseif>
+          </do_all>
+        </do_if>
+        <do_else>
+          <debug_text text="'PATCH: %s %s %s does not use orders. clearing entry.'.[@$locsuspect.idcode, @$locsuspect.knownname, $locsuspect]" filter="savegame"/>
+          <remove_value name="this.$police_cleared.{$locsuspect}"/>
+        </do_else>
+      </do_for_each>
+    </do_if>
+  </patch>
+  <attention min="unknown">
+    <actions>
+      <set_command_action commandaction="commandaction.calculating"/>
+
+      <label name="start"/>
+
+      <include_interrupt_actions ref="FindTargetspace_Police"/>
+
+      <!-- checks: will we need any special equipment? if we don't, should we go get it? could we just assume that we have it? if we have it now, will we always have it? -->
+      <do_if value="not $targetspace and this.ship.isjobship">
+        <do_if value="this.zone.isclass.highway">
+          <debug_text text="'%1 %2 is in a highway. waiting to exit.'.[this.ship.idcode, this.ship.knownname]" chance="$debugchance"/>
+          <wait>
+            <interrupt>
+              <conditions>
+                <event_object_changed_zone object="this.ship"/>
+                <check_value value="not this.zone.isclass.highway"/>
+              </conditions>
+            </interrupt>
+          </wait>
+        </do_if>
+        <set_value name="$targetspace" exact="this.sector"/>
+      </do_if>
+
+      <set_order_syncpoint_reached order="this.ship.order"/>
+
+      <label name="prep"/>
+
+      <set_value name="$num_timesreset" exact="@$num_timesreset + 1"/>
+      <!--<do_if value="$num_timesreset gt 1 and (player.age - $time_lastreset) lt 2s">
+        <debug_text text="'reset after %s seconds.\n in player sector? %s\n police? %s\n resourcescout? %s\n exploreupdate? %s\n blindtourist? %s'.[player.age - $time_lastreset, this.ship.attention ge attention.insector, $police, $resourcescout, $exploreupdate, $blindtourist]"/>
+        <do_if value="not $init_debugchance?">
+          <set_value name="$init_debugchance" exact="$debugchance"/>
+        </do_if>
+        <set_value name="$debugchance" exact="100"/>
+      </do_if>-->
+      <set_value name="$time_lastreset" exact="player.age"/>
+
+      <!-- NB: this would be more efficient in init, but moved here in case we decide to change $targetspace dynamically via Faction Logic or by other means. -->
+      <do_if value="$police">
+        <set_command command="command.investigate"/>
+        <set_value name="$scanningrange" exact="[this.ship.maxradarrange, (this.assignedcontrolled.size / 2.0 + 1km)].min"/>
+      </do_if>
+      <do_elseif value="$resourcescout">
+        <set_command command="command.searchresources"/>
+        <!-- NB: was 100m + size/2. collision detection can mess with movement if ships get too close. -->
+        <set_value name="$scanningrange" exact="[this.ship.maxradarrange, (this.assignedcontrolled.size / 2.0 + 300m)].min"/>
+      </do_elseif>
+      <do_else>
+        <do_if value="this.ship.relationto.{$targetspace.owner} lt 0">
+          <set_command command="command.recon"/>
+        </do_if>
+        <do_else>
+          <set_command command="command.explore"/>
+        </do_else>
+        <set_value name="$scanningrange" exact="this.ship.maxradarrange"/>
+      </do_else>
+
+      <do_if value="$deploysatellites">
+        <set_value name="$scanningrange" exact="[30km, $scanningrange].min"/>
+      </do_if>
+
+      <do_if value="this.assignedcontrolled.jobexpired or (($timeout gt 0s) and $time_init? and (player.age ge ($time_init + $timeout)))">
+        <resume label="end"/>
+      </do_if>
+      <do_elseif value="$timeout ge 0s and not $time_init?">
+        <set_value name="$time_init" exact="player.age"/>
+      </do_elseif>
+
+      <!-- reset all recon data. we should only be back here if we're starting fresh. -->
+      <set_value name="$list_objectsscanned" exact="[]"/>
+      <set_value name="$list_threats" exact="[]"/>
+      <set_value name="$list_nonthreats" exact="[]"/>
+      <set_value name="$table_factionthreatlevels" exact="table[]"/>
+
+      <do_if value="$exploreupdate">
+        <create_list name="$list_zonestoinvestigate"/>
+        <find_station name="$list_knownstations" space="$targetspace" checkoperational="true" knownto="this.owner" multiple="true"/>
+        <!--<find_station name="$list_knownstations" space="$targetspace" checkoperational="true" canhaveofferlocation="true" knownto="this.owner" multiple="true"/>-->
+        <do_all exact="$list_knownstations.count" counter="$i">
+          <do_if value="not $list_zonestoinvestigate.indexof.{$list_knownstations.{$i}.zone}">
+            <append_to_list name="$list_zonestoinvestigate" exact="$list_knownstations.{$i}.zone"/>
+          </do_if>
+        </do_all>
+        <remove_value name="$list_knownstations"/>
+      </do_if>
+      <do_elseif value="$resourcescout">
+        <!-- resourcescout should be called from order.mining.routine after we are already in a resource-rich area, so we shouldn't wander off at this point. -->
+        <create_list name="$list_zonestoinvestigate"/>
+        <!-- $resourcezones populated only in high attention -->
+        <find_zone name="$resourcezones" space="this.sector" multiple="true">
+          <match_content class="class.asteroid"/>
+        </find_zone>
+        <do_if value="$resourcezones.count">
+          <shuffle_list list="$resourcezones"/>
+          <do_all exact="$resourcezones.count" counter="$i">
+            <do_if value="$resourcezones.{$i}.exists and not $resourcezones.{$i}.isclass.highway">
+              <append_to_list name="$list_zonestoinvestigate" exact="$resourcezones.{$i}"/>
+            </do_if>
+          </do_all>
+        </do_if>
+        <do_else>
+          <set_value name="$locsectorresources" exact="this.sector.resources.list"/>
+          <shuffle_list list="$locsectorresources"/>
+          <do_for_each name="$locware" in="$locsectorresources">
+            <find_closest_resource zone="$locresourcezone" position="$locpos" ware="$locware" minamount="this.sector.averagemaxyield.{$locware}.count" refobject="this.sector">
+              <!-- NB: coresize is core diameter. -->
+              <refposition value="this.sector.coreposition" object="this.sector" max="this.sector.coresize"/>
+            </find_closest_resource>
+            <debug_text text="'found zone with %s, %skm away, %skm away from sector core.'.[$locware, (this.assignedcontrolled.distanceto.[$locresourcezone, $locpos]/1000m)i, ($locresourcezone.distanceto.[this.sector, this.sector.coreposition]/1000m)i]" chance="$debugchance"/>
+            <do_if value="$locresourcezone.exists and not $locresourcezone.isclass.highway">
+              <append_to_list name="$list_zonestoinvestigate" exact="$locresourcezone"/>
+              <break/>
+            </do_if>
+          </do_for_each>
+          <remove_value name="$locpos"/>
+          <remove_value name="$locresourcezone"/>
+          <remove_value name="$locsectorresources"/>
+        </do_else>
+        <do_if value="not $list_zonestoinvestigate.count">
+          <append_to_list name="$list_zonestoinvestigate" exact="this.zone"/>
+        </do_if>
+        <debug_text text="'resourcescout: found %s zones with resources (only works in high attention). %s zones to explore.'.[$resourcezones.count, $list_zonestoinvestigate.count]" chance="$debugchance"/>
+      </do_elseif>
+      <!-- blind tourist explores each zone as they are found, so no list of zones to explore. -->
+      <do_elseif value="$blindtourist">
+
+      </do_elseif>
+      <do_else>
+        <do_if value="not $targetspace.isclass.zone">
+          <!-- make a sorted list of zones in targetspace. -->
+          <!-- zones can stay normal zones for a while after stations are destroyed. discard if zone does not contain at least one station or one gate. -->
+          <find_zone name="$list_zonestoinvestigate" space="$targetspace" normalzone="true" multiple="true">
+            <match_child class="[class.station, class.gate, class.highwayentrygate, class.highwayexitgate]" checkoperational="true"/>
+          </find_zone>
+          <do_for_each name="$loczone" in="$list_zonestoinvestigate" reverse="true">
+            <do_if value="$loczone.distanceto.[$loczone.sector, $loczone.sector.coreposition] gt $loczone.sector.coresize / 2m" chance="90">
+              <remove_from_list name="$list_zonestoinvestigate" exact="$loczone"/>
+            </do_if>
+          </do_for_each>
+        </do_if>
+        <do_else>
+          <set_value name="$list_zonestoinvestigate" exact="[$targetspace]"/>
+        </do_else>
+      </do_else>
+
+      <do_if value="@$list_zonestoinvestigate.count">
+        <debug_text text="'found %1 zones in %2'.[$list_zonestoinvestigate.count, $targetspace.knownname]" chance="$debugchance"/>
+        <do_for_each name="$loczone" in="$list_zonestoinvestigate" reverse="true">
+          <do_if value="not $loczone.exists">
+            <remove_from_list name="$list_zonestoinvestigate" exact="$loczone"/>
+          </do_if>
+          <do_elseif value="$loczone.isclass.highway">
+            <remove_from_list name="$list_zonestoinvestigate" exact="$loczone"/>
+            <debug_text text="'recon ship has a highway in the list of zones to investigate.\npolice? %s\nresourcescout? %s\nexploreupdate? %s\nblindtourist? %s'.[$police, $resourcescout, $exploreupdate, $blindtourist]" filter="error"/>
+          </do_elseif>
+        </do_for_each>
+        <sort_list list="$list_zonestoinvestigate" sortbyvalue="this.assignedcontrolled.distanceto.{loop.element}"/>
+      </do_if>
+
+      <debug_text text="'%1 %2 starting reconnaissance mission:\n to %3 %4\n owned by %5.\n relation: %6\n police investigation? %7'.[this.ship.idcode, this.ship.knownname, $targetspace.class, $targetspace.knownname, $targetspace.owner, this.ship.relationto.{$targetspace.owner}, $police]" chance="$debugchance"/>
+
+      <label name="gothere"/>
+
+      <!-- are we there yet? if not, go there. (note: what is "there"? targetspace? an interim zone?) -->
+      <do_if value="not this.hascontext.{$targetspace}">
+        <debug_text text="'%1 %2 moving to %3 %4, %5.'.[this.ship.idcode, this.ship.knownname, $targetspace.class, $targetspace.knownname, $targetspace.cluster.knownname]" chance="$debugchance"/>
+        <run_script name="'move.generic'" result="$movesuccess">
+          <param name="destination" value="$targetspace"/>
+          <param name="endintargetzone" value="true"/>
+          <param name="debugchance" value="$debugchance"/>
+        </run_script>
+        <do_if value="not $movesuccess">
+          <do_if value="@this.assignedcontrolled.order.isrunning">
+            <set_order_failed order="this.assignedcontrolled.order" text="{1045, 101}" comment="Unable to reach destination."/>
+          </do_if>
+          <debug_text text="'Unable to reach destination. Aborting.'" chance="$debugchance"/>
+          <resume label="end"/>
+        </do_if>
+      </do_if>
+
+      <do_if value="(this.sector != $targetspace) and (this.sector != @$targetspace.sector)">
+        <debug_text text="'%1 %2 did not arrive at targetspace.\n targetspace: %3, %4\n at: %5, %6'.[this.ship.idcode, this.ship.knownname, $targetspace.knownname, $targetspace.cluster.knownname, this.sector.knownname, this.cluster.knownname]" filter="error"/>
+        <resume label="gothere"/>
+      </do_if>
+
+      <do_if value="$police and (@this.zone.policefaction != this.trueowner)">
+        <debug_text text="'police ship %s %s at targetspace but we are not the police faction here. attempting to recover.\nlocal police: %s, our faction: %s\nat: %s %s owned by %s'.[this.controlled.knownname, this.controlled, @this.zone.policefaction, this.trueowner, this.zone.knownname, this.zone, this.zone.trueowner]" chance="$debugchance"/>
+        <resume label="start"/>
+      </do_if>
+
+      <!-- determine the zone we want to go to, -->
+      <label name="proceedtonextzone"/>
+
+      <do_if value="this.assignedcontrolled.jobexpired or (($timeout gt 0s) and (player.age ge ($time_init + $timeout)))">
+        <resume label="end"/>
+      </do_if>
+
+      <set_value name="$destination" exact="null"/>
+
+      <set_value name="$idletime" min="1min" max="5min"/>
+      <!-- resource scouts have a longer movement further down. -->
+      <do_if value="this.isplayerowned or $resourcescout">
+        <set_value name="$idletime" min="1s" max="3s"/>
+      </do_if>
+
+      <!-- Idle for a while. Important to prevent infinite loops in cases where there is absolutely nothing to explore. Shouldn't happen in normal game setup except for resource scout in low attention. -->
+      <run_script name="'move.idle'">
+        <param name="TimeOut" value="$idletime"/>
+      </run_script>
+      <remove_value name="$idletime"/>
+
+      <do_if value="$blindtourist">
+        <!-- try to find an undiscovered spot that's fairly close to me and is toward the sector center. -->
+        <find_closest_undiscovered_position result="$pos_target" sector="$targetspace" range="this.ship.maxradarrange * 2" chance="this.assignedcontrolled.combinedskill">
+          <position value="$targetspace.coreposition"/>
+          <rangecenter object="this.assignedcontrolled"/>
+        </find_closest_undiscovered_position>
+        <do_if value="not @$pos_target or $pos_target.distanceto.{$anchorpos} gt $radius">
+          <debug_text text="'no close undiscovered areas found. widening search.'" chance="$debugchance"/>
+          <!-- if there aren't any, find the closest undiscovered spot to me. cap at a sensible distance.
+                  fallback pos changed back to unknown closest to me to mitigate multiple ships going to the same position. -->
+          <!-- NB: translating distances to hexes is imprecise. limit range to below radius so we don't find positions beyond radius and erroneously conclude that there's nothing left to explore. -->
+          <find_closest_undiscovered_position result="$pos_target" sector="$targetspace" range="$radius / 2">
+            <position value="$targetspace.coreposition"/>
+            <rangecenter value="$anchorpos"/>
+          </find_closest_undiscovered_position>
+          <do_if value="$pos_target and $pos_target.distanceto.{$anchorpos} gt ($radius * 1.5)">
+            <!-- NB: happens when there are no undiscovered positions left within radius -->
+            <debug_text text="'position returned by find_closest_undiscovered_position is %sm away from anchorpos which is greater than the radius: %sm. Area fully explored. Idling.'.[$pos_target.distanceto.{$anchorpos}, $radius]" chance="$debugchance"/>
+            <debug_text text="'pos: %s, anchorpos: %s, distance to anchor: %s, radius: %s'.[$pos_target, $anchorpos, $pos_target.distanceto.{$anchorpos}, $radius]" chance="0"/>
+            <remove_value name="$pos_target"/>
+          </do_if>
+        </do_if>
+
+        <do_if value="@$pos_target">
+          <set_value name="$destination" exact="$targetspace"/>
+          <create_position name="$temp_sectorpos" space="$targetspace" value="this.position" object="this.zone" chance="$debugchance"/>
+          <debug_text text="'blind tourist is going to %s in %s %s %s.\npresent position: %s\nmy distance to new pos: %s\nanchor distance to new pos: %s\nradius: %s\nsector center distance to new pos: %s'.[$pos_target, $destination.class, $destination.knownname, $destination, $temp_sectorpos, this.ship.distanceto.[$targetspace, $pos_target], $pos_target.distanceto.{$anchorpos}, $radius, $targetspace.distanceto.[$targetspace, $pos_target]]" chance="$debugchance"/>
+          <remove_value name="$temp_sectorpos"/>
+        </do_if>
+        <do_else>
+          <do_if value="not this.isplayerowned">
+            <!-- no infinite blind tourist -->
+            <do_if value="player.age ge ($time_init + $timeout)">
+              <debug_text text="'blind tourist is done exploring.'" chance="$debugchance"/>
+              <resume label="end"/>
+            </do_if>
+
+            <debug_text text="'blind tourist has nothing left to explore. reverting to normal reconnaisance.'" chance="$debugchance"/>
+            <do_if value="this.assignedcontrolled.order.id == 'Recon'">
+              <edit_order_param order="this.assignedcontrolled.order" param="'blindtourist'" value="false"/>
+            </do_if>
+            <do_else>
+              <set_value name="$blindtourist" exact="false"/>
+            </do_else>
+          </do_if>
+          <do_else>
+            <set_value name="$idletime" exact="0s"/>
+            <do_if value="$timeout">
+              <set_value name="$idletime" exact="[$timeout - (player.age - $time_init), 0s].max"/>
+            </do_if>
+
+            <do_if value="$idletime gt 0s">
+              <debug_text text="'blind tourist has nothing left to explore. idling within radius for %s seconds.'.[$idletime]" chance="$debugchance"/>
+              <run_script name="'move.idle'" sinceversion="1">
+                <param name="TimeOut" value="$idletime"/>
+                <param name="anchorpos_sector" value="$anchorpos"/>
+                <param name="MaxDistance" value="$radius"/>
+              </run_script>
+            </do_if>
+            <debug_text text="'blind tourist finished exploring %s %s in %s minutes.'.[$targetspace.class, $targetspace.knownname, (player.age - @$time_init) / 60s]" chance="$debugchance"/>
+            <resume label="end"/>
+          </do_else>
+        </do_else>
+      </do_if>
+      <do_elseif value="@$list_zonestoinvestigate.{1}">
+        <do_if value="$list_zonestoinvestigate.{1}.exists">
+          <set_value name="$destination" exact="$list_zonestoinvestigate.{1}"/>
+        </do_if>
+        <do_else>
+          <do_all exact="$list_zonestoinvestigate.count" counter="$i" reverse="true">
+            <do_if value="not $list_zonestoinvestigate.{$i}.exists">
+              <remove_value name="$list_zonestoinvestigate.{$i}"/>
+            </do_if>
+          </do_all>
+          <do_if value="@$list_zonestoinvestigate.{1}">
+            <set_value name="$destination" exact="$list_zonestoinvestigate.{1}"/>
+          </do_if>
+        </do_else>
+      </do_elseif>
+
+      <!-- if we're there, move around looking for trouble. -->
+      <label name="lookfortrouble"/>
+
+      <set_value name="$resupplyparam2" exact="[false]"/>
+      <do_if value="$deploysatellites">
+        <set_value name="$resupplyparam2" exact="[this.assignedcontrolled.ammostorage.{deployablecategory.satellite}.count lt 1, null, deployablecategory.satellite]"/>
+      </do_if>
+      <do_elseif value="$resourcescout">
+        <set_value name="$resupplyparam2" exact="[this.assignedcontrolled.ammostorage.{deployablecategory.resourceprobe}.count lt 1, null, deployablecategory.resourceprobe]"/>
+      </do_elseif>
+      <signal_objects object="this.ship" param="'resupply'" param2="$resupplyparam2" param3="$debugchance" comment="param2 = [urgent?, resupplystationID, $override_deployablecategory], param3 = $debugchance"/>
+      <remove_value name="$resupplyparam2"/>
+
+      <do_if value="@$destination.exists">
+        <!-- pos_target is only used by blindtourist at the moment. -->
+        <do_if value="$pos_target?">
+          <get_safe_pos result="$safepos" sector="$destination" radius="this.ship.size / 2" value="$pos_target" space="$destination"/>
+          <do_if value="true" chance="$debugchance">
+            <!-- below optimistically assumes that safepos is fairly close to pos_target, close enough that one of the two distances checked is the hypotenuse. if we are very very close to either the safepos or pos_target, or if safepos is way off, then the distance to safepos calculation will be inaccurate. only used for debug output for now. -->
+            <do_if value="this.ship.distanceto.[$destination, $safepos] gt this.ship.distanceto.[$destination, $pos_target]">
+              <set_value name="$dist_hyp" exact="this.ship.distanceto.[$destination, $safepos]"/>
+              <set_value name="$dist_nothyp" exact="this.ship.distanceto.[$destination, $pos_target]"/>
+            </do_if>
+            <do_else>
+              <set_value name="$dist_hyp" exact="this.ship.distanceto.[$destination, $pos_target]"/>
+              <set_value name="$dist_nothyp" exact="this.ship.distanceto.[$destination, $safepos]"/>
+            </do_else>
+            <debug_text text="'safepos is:\n%s meters away from pos_target\n%s meters away from us\nand %s meters away from sector center.'.[sqrt(($dist_hyp^2)-($dist_nothyp^2)), this.ship.distanceto.[$destination, $safepos], $destination.distanceto.[$destination, $safepos]]"/>
+            <remove_value name="$dist_nothyp"/>
+            <remove_value name="$dist_hyp"/>
+          </do_if>
+          <remove_value name="$pos_target"/>
+        </do_if>
+        <do_else>
+          <get_safe_pos result="$safepos" zone="$destination" radius="this.ship.size / 2" min="this.ship.maxradarrange" max="$destination.size / 3"/>
+          <debug_text text="'next safe pos is %s km from the center of %s %s.\nzone radius: %s km.\nradar range: %s km\npos: %s'.[$destination.distanceto.[$destination, $safepos] / 1000, $destination.class, $destination.knownname, $destination.size / 2 / 1000, this.ship.maxradarrange / 1000, $safepos]" chance="$debugchance"/>
+        </do_else>
+        <debug_text text="'going to investigate %1 %2 (%3) in %4'.[$destination.class, $destination.knownname, $destination, $targetspace.knownname]" chance="$debugchance"/>
+      </do_if>
+      <do_else>
+        <debug_text text="'went through all of the zones.'" chance="$debugchance"/>
+        <resume label="report"/>
+      </do_else>
+
+      <!-- it's possible to wander to a different sector entirely while scanning a ship. in that case, go back to the targetspace. -->
+      <do_if value="not this.hascontext.{$targetspace}">
+        <debug_text text="'%1 %2 wandered out of target space. Going back.\n am in: %3\n target space: %4'.[this.ship.idcode, this.ship.knownname, this.sector.knownname, $targetspace.knownname]" chance="$debugchance"/>
+        <resume label="gothere"/>
+      </do_if>
+
+      <do_if value="$police and $destination.isclass.[class.sector, class.zone] and (@$destination.policefaction != this.trueowner)">
+        <debug_text text="'police ship %s %s about to patrol area where they are not police. Check jobs setup (location) or faction logic assignment (targetspace), whichever applies. Attempting to recover.'.[this.controlled.knownname, this.controlled]" chance="$debugchance"/>
+        <resume label="start"/>
+        <!--<assert value="@$destination.policefaction == this.trueowner" text="'police ship %s %s about to patrol area where they are not police. Check jobs setup (location) or faction logic assignment (targetspace), whichever applies.'.[this.controlled.knownname, this.controlled]"/>-->
+      </do_if>
+
+      <do_if value="$resourcescout">
+        <!-- we skip move.seekenemies at this point since gravidar doesn't find asteroids which are our primary items of interest. move.seekenemies later used for long-distance movement to next $destination if in low attention and no items of interest are found. -->
+        <find_object name="$list_potentialtargets" class="[class.asteroid, class.lockbox, class.collectable]" space="this.sector" multiple="true">
+          <match_distance object="this.assignedcontrolled" max="this.assignedcontrolled.maxradarrange * 2"/>
+        </find_object>
+
+        <do_if value="not $list_potentialtargets.count">
+          <do_if value="this.assignedcontrolled.attention ge attention.visible">
+            <debug_text text="'in high attention and no items of interest found. returning to caller.'" chance="$debugchance"/>
+            <!-- if we don't find anything in high attention, there's nothing to do here. go elsewhere. -->
+            <return/>
+          </do_if>
+          <!-- in low attention, there's a big chance that nothing will be found since asteroids are culled.
+            with a shift to high attention, asteroids will exist and we want this ship to operate in the general vicinity.
+            resource scout only ever has one zone in its list so, if we want it to shift spaces at this point, resume to label "end" and have order.mining.routine give us a new space. -->
+          <debug_text text="'resource scout %s %s did not find anything and we are in low attention. simulating asteroid scanning.'.[this.assignedcontrolled.knownname, this.assignedcontrolled]" chance="$debugchance"/>
+          <!-- random movement to simulate asteroid scanning. -->
+          <run_script name="'move.idle'">
+            <param name="Min" value="7min"/>
+            <param name="Max" value="17min"/>
+            <param name="untilattentionchangeto" value="attention.visible"/>
+            <param name="debugchance" value="$debugchance"/>
+          </run_script>
+          <wait exact="1s"/>
+          <do_if value="this.assignedcontrolled.attention ge attention.visible">
+            <!-- idle is interrupted due to attention change. -->
+            <do_if value="$destination.exists">
+              <resume label="lookfortrouble"/>
+            </do_if>
+            <do_else>
+              <resume label="proceedtonextzone"/>
+            </do_else>
+          </do_if>
+        </do_if>
+        <debug_text text="'resource scout %s %s found %s items of interest in sector %s.'.[this.assignedcontrolled.knownname, this.assignedcontrolled, $list_potentialtargets.count, this.sector.knownname]" chance="$debugchance"/>
+
+        <!-- in position. deploy a probe. more probes will be deployed if high-yield asteroids are found away from this probe. -->
+        <find_object name="$locdeployable" space="this.sector" trueowner="this.trueowner" deployablecategory="deployablecategory.resourceprobe">
+          <match_distance object="this.assignedcontrolled" max="64km"/>
+        </find_object>
+        <do_if value="not $locdeployable.isoperational and this.assignedcontrolled.ammostorage.{deployablecategory.resourceprobe}.count and (not @this.assignedcontrolled.sector.policefaction or not this.assignedcontrolled.sector.resources.illegalto.{this.assignedcontrolled.sector.policefaction})">
+          <launch_resourceprobe name="$locdeployable" object="this.assignedcontrolled"/>
+          <debug_text text="'%s %s %s deploying resource probe in sector %s.'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, this.sector.knownname]" chance="@$locdeployable.isoperational * $debugchance"/>
+          <!-- if we want to keep track of these things, add to group here. -->
+        </do_if>
+        <remove_value name="$locdeployable"/>
+
+        <do_if value="not $destination.exists">
+          <resume label="proceedtonextzone"/>
+        </do_if>
+      </do_if>
+
+      <do_if value="not $resourcescout or not @$list_potentialtargets.count">
+        <do_if value="this.ship.distanceto.[$destination, $safepos] gt (this.ship.maxspeed * 60)">
+          <debug_text text="'destination to next position very far away. moving quickly to a point close to it.\n max speed: %s m/s\n distance: %s m\n time to traverse: %s s'.[this.ship.maxspeed, this.ship.distanceto.[$destination, $safepos], this.ship.distanceto.[$destination, $safepos] / [this.ship.maxspeed, 1m].max]" chance="$debugchance"/>
+          <set_value name="$travel"/>
+        </do_if>
+
+        <!-- and go there while scanning for trouble. -->
+        <run_script name="'move.seekenemies'">
+          <param name="destination" value="$destination"/>
+          <param name="pos" value="$safepos"/>
+          <!--<param name="pursuedistance" value="$scanningrange"/>-->
+          <param name="targetclasses" value="$targetclasses"/>
+          <param name="targetpurposes" value="$targetpurposes"/>
+          <param name="recon" value="true"/>
+          <param name="travel" value="$travel?"/>
+          <param name="list_objectstoignore" value="$list_objectsscanned"/>
+          <param name="internalorder" value="true"/>
+          <param name="checkrelation" value="false"/>
+          <param name="debugchance" value="$debugchance"/>
+          <save_retval name="target" variable="$localtarget"/>
+          <save_retval name="list_targets" variable="$list_potentialtargets"/>
+        </run_script>
+        <remove_value name="$travel"/>
+        <do_if value="@$localtarget.container">
+          <set_value name="$localtarget" exact="$localtarget.container"/>
+        </do_if>
+        <!-- add to end of list and unset local target to re-evaluate below. end of list evaluated first. -->
+        <remove_from_list name="$list_potentialtargets" exact="$localtarget"/>
+        <append_to_list name="$list_potentialtargets" exact="$localtarget"/>
+        <remove_value name="$localtarget"/>
+      </do_if>
+
+      <label name="scan"/>
+
+      <!-- if we have not selected a target, but we are tracking potential targets, select one.
+        it has to: -->
+      <do_if value="not @$localtarget.exists and @$list_potentialtargets.count">
+        <do_for_each name="$locobject" in="$list_potentialtargets" reverse="true">
+          <do_if value="not $locobject.isoperational">
+            <remove_from_list name="$list_potentialtargets" exact="$locobject"/>
+            <continue/>
+          </do_if>
+
+          <do_if value="$police">
+            <do_if value="this.mayattack.{$locobject}">
+              <set_value name="$localtarget" exact="$locobject"/>
+              <add_to_group groupname="$localtargetgroup" object="$localtarget"/>
+              <remove_from_list name="$list_potentialtargets" exact="$locobject"/>
+              <set_value name="$trouble"/>
+              <break/>
+            </do_if>
+          </do_if>
+
+          <do_if value="not @$localtarget">
+            <do_if value="$police and not $cleared.{$locobject}?">
+              <set_value name="this.$listeningfor" exact="'police_cleared'" comment="to limit the number of replies sent"/>
+              <signal_objects object="$targetspace" param="'police_istargetcleared'" param2="[$locobject, this.assignedcontrolled]"/>
+              <debug_text text="'checking to see if %s %s %s was already cleared.'.[@$locobject.idcode, @$locobject.knownname, $locobject]" chance="$debugchance"/>
+              <wait exact="1s" sinceversion="13">
+                <interrupt>
+                  <conditions>
+                    <!-- param2 = when last cleared -->
+                    <event_object_signalled object="this.assignedcontrolled" param="'police_cleared'"/>
+                    <check_value value="(player.age - event.param2) le $threshold_cleared"/>
+                  </conditions>
+                  <actions>
+                    <debug_text text="'confirmed %s %s %s was cleared by police %s seconds ago.'.[@$locobject.idcode, @$locobject.knownname, $locobject, player.age - event.param2]" chance="$debugchance"/>
+                    <set_value name="$cleared.{$locobject}" exact="event.param2"/>
+                  </actions>
+                </interrupt>
+              </wait>
+              <remove_value name="this.$listeningfor"/>
+              <!-- short wait to limit the number of signals sent and received per frame. -->
+              <wait exact="1ms" sinceversion="14"/>
+            </do_if>
+
+            <!-- exist, (doesn't matter if it's a wreck or not.)
+                  will have to disallow wrecks. too many cases where it could break.
+                not be docked, (we can't do much with docked ships)
+                belong to any faction other than mine,
+                not have already been scanned,
+                and be in the target space. -->
+            <set_value name="$isvalid" exact="$locobject.isoperational
+                     and not @$locobject.dock
+                     and not @$locobject.isclass.spacesuit
+                     and ($locobject.owner != this.trueowner)
+                     and not $list_objectsscanned.indexof.{$locobject}
+                     and not @$locobject.pilot.$donotscan
+                     and $locobject.hascontext.{$targetspace}
+                     and not $locobject.zone.isclass.highway"/>
+            <do_if value="$isvalid and $police">
+              <do_if value="$cleared.{$locobject}? and $cleared.{$locobject} gt $threshold_cleared">
+                <remove_value name="$cleared.{$locobject}"/>
+              </do_if>
+              <set_value name="$isvalid" exact="$locobject.isclass.defensible
+                       and (not @$locobject.pilot.$haltedby or (@$locobject.pilot.$haltedby == this.assignedcontrolled))
+                       and (not $cleared.{$locobject}?)
+                       and not @$locobject.isunit"/>
+              <do_if value="$isvalid and this.hasrelation.friend.{$locobject}" chance="80">
+                <set_value name="$isvalid" exact="false"/>
+              </do_if>
+            </do_if>
+            <do_if value="$isvalid">
+              <set_value name="$localtarget" exact="$locobject"/>
+              <add_to_group groupname="$localtargetgroup" object="$localtarget"/>
+              <remove_from_list name="$list_potentialtargets" exact="$locobject"/>
+              <do_if value="not $police">
+                <!-- in the police case, keep iterating over found objects in case something is hostile, but skip this more elaborate set of checks. -->
+                <break/>
+              </do_if>
+            </do_if>
+            <do_else>
+              <remove_from_list name="$list_potentialtargets" exact="$locobject"/>
+            </do_else>
+          </do_if>
+        </do_for_each>
+        <remove_value name="$isvalid"/>
+      </do_if>
+
+      <debug_text text="'about to halt target %s %s %s but target already halted!\nhalted by us: %s\nhalted by: %s %s %s'.[$localtarget.idcode, $localtarget.knownname, $localtarget, $localtarget.pilot.$haltedby == this.assignedcontrolled, @$localtarget.pilot.$haltedby.idcode, @$localtarget.pilot.$haltedby.knownname, @$localtarget.pilot.$haltedby]" chance="($police and @$localtarget.pilot.$haltedby and ($localtarget.pilot.$haltedby != this.assignedcontrolled) and not this.mayattack.{$localtarget}) * 100" filter="error"/>
+
+      <!-- if potential trouble found, are we within scanner range? -->
+      <do_if value="@$localtarget">
+        <!-- this assert is only really useful if debug output is active for this ship from before it happens. -->
+        <!--<assert value="not @$localtarget.dock" text="'localtarget %s %s %s is docked. review log of entity %s %s'.[$localtarget.idcode, $localtarget.knownname, $localtarget, this.knownname, this]" break="always"/>-->
+        <!-- now that we have a target, we can adjust the scanningrange to account for target size. more important for police and resource scout behaviors which have to go in pretty close. -->
+        <set_value name="$effectivescanningrange" exact="$scanningrange + $localtarget.size / 2.0"/>
+        <debug_text text="'adjusted scanning range to %sm to account for target size. was %sm. target size: %sm'.[$effectivescanningrange, $scanningrange, $localtarget.size]" chance="$debugchance"/>
+
+        <debug_text text="'%1 %2 found %3 %4. moving to investigate.\n distance to target: %5 meters\n scanner range: %6 meters'.[this.ship.idcode, this.ship.knownname, $localtarget.idcode, $localtarget.knownname, this.ship.distanceto.{$localtarget}, $effectivescanningrange]" chance="$debugchance"/>
+
+        <do_if value="not $resourcescout">
+          <set_command_action commandaction="commandaction.investigating" param="$localtarget"/>
+        </do_if>
+
+        <do_if value="$police and @$localtarget.cargo.illegalto.{this.zone.policefaction} and not @$localtarget.hidecargochance">
+          <set_value name="$police_onlycargo"/>
+        </do_if>
+
+        <do_while value="not $trouble? and (($resourcescout and $localtarget.exists and (not $time_scandone? or player.age lt $time_scandone)) or ($localtarget.isoperational and (not $time_scandone? or player.age lt $time_scandone) and (not @$localtarget.order or $localtarget.order.state != orderstate.critical) and (not @$localtarget.pilot.command or $localtarget.pilot.command.value != command.attackenemies or $localtarget.pilot.command.value != command.attackobject)))">
+          <do_if value="$time_scandone?">
+            <debug_text text="'loop.\n time done: %1\n time now: %2\n time remaining: %3'.[@$time_scandone, player.age, @$time_scandone - player.age]" chance="$debugchance"/>
+          </do_if>
+          <set_value name="$localsector" exact="$localtarget.sector"/>
+          <do_if value="not $localsector">
+            <set_value name="$break"/>
+            <break/>
+          </do_if>
+          <!--<do_if value="$localtarget.isclass.gate">
+            <debug_text text="'found a gate in sector %s %s leading to sector %s %s'.[$localtarget.sector.knownname, $localtarget.sector, $localtarget.destination.sector.knownname, $localtarget.destination.sector]" chance="100"/>
+            <get_safe_pos result="$safepos" sector="$localsector" object="$localtarget" min="$effectivescanningrange * 0.01" max="$effectivescanningrange * 0.02" radius="this.ship.size / 2"/>
+          </do_if>
+          <do_else>
+            <get_safe_pos result="$safepos" sector="$localsector" object="$localtarget" min="$effectivescanningrange / 2" max="$effectivescanningrange" radius="this.ship.size / 2"/>
+          </do_else>-->
+          <get_safe_pos result="$sectorpos" sector="$localsector" object="$localtarget" min="$effectivescanningrange / 2" max="$effectivescanningrange" radius="this.ship.size / 2"/>
+          <create_orientation name="$rot" refobject="$localtarget" orientation="look_at">
+            <position value="$sectorpos" space="$localsector"/>
+          </create_orientation>
+          <!-- if not, get to within scanner range. -->
+          <do_if value="this.assignedcontrolled.distanceto.{$localtarget} gt $effectivescanningrange">
+            <do_if value="$time_scandone?">
+              <remove_value name="$time_scandone"/>
+            </do_if>
+            <debug_text text="'%1 %2 moving to within %5 meters of %3 %4.\n distance to target: %6m\n effective scanning range: %5m\n distance of sectorpos to target: %7m'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, $localtarget.idcode, $localtarget.knownname, $effectivescanningrange, this.assignedcontrolled.distanceto.{$localtarget}, $localtarget.distanceto.[$localsector, $sectorpos]]" chance="$debugchance"/>
+            <set_value name="$debug_targetname" exact="$localtarget.knownname"/>
+            <move_to destination="$localsector" object="this.assignedcontrolled" travel="true">
+              <position value="$sectorpos"/>
+              <rotation value="$rot"/>
+              <interrupt>
+                <conditions>
+                  <check_any>
+                    <event_object_destroyed object="$localtarget"/>
+                    <check_all>
+                      <event_masstraffic_ship_removed object="$localtarget.zone"/>
+                      <check_value value="event.param == $localtarget"/>
+                    </check_all>
+                    <check_all>
+                      <event_object_changed_zone object="$localtarget"/>
+                      <check_value value="event.param.isclass.highway"/>
+                    </check_all>
+                  </check_any>
+                </conditions>
+                <actions>
+                  <debug_text text="'movement interrupted by %1.'.[event.name]" chance="$debugchance"/>
+                  <set_value name="$break"/>
+                </actions>
+              </interrupt>
+              <interrupt_after_time time="31s" comment="movement sometimes stalls due to collision avoidance"/>
+            </move_to>
+            <do_if value="not $localtarget.exists and not $break?">
+              <debug_text text="'%1 no longer exists and was not destroyed.'.[$debug_targetname]" filter="error"/>
+            </do_if>
+            <remove_value name="$debug_targetname"/>
+          </do_if>
+          <!-- when within scanner range, hover at this range and scan the target. (if scanning the player, do we let him know? only if police? always?) -->
+          <do_else>
+            <do_if value="not $time_scandone?">
+              <do_if value="this.assignedcontrolled.isplayerowned and not $police">
+                <set_value name="$time_scandone" exact="player.age + (101 - this.assignedcontrolled.combinedskill)s"/>
+              </do_if>
+              <do_elseif value="$localtarget == player.occupiedship">
+                <set_value name="$time_scandone" exact="player.age + 10s"/>
+              </do_elseif>
+              <do_else>
+                <set_value name="$time_scandone" exact="player.age + 30s"/>
+              </do_else>
+            </do_if>
+            <debug_text text="'%1 %2 scanning %3 %4. done in %5 seconds.'.[this.ship.idcode, this.ship.knownname, $localtarget.idcode, $localtarget.knownname, $time_scandone - player.age]" chance="$debugchance"/>
+            <do_if value="$police">
+              <do_if value="not @$localtarget.dock and (not @$localtarget.pilot.$donotscan) and (not $localtarget.zone.isclass.highway) and (not $localtarget.pilot.$haltedby? or @$localtarget.pilot.$haltedby == this.assignedcontrolled)">
+                <debug_text text="'%s %s %s ordering %s %s %s to halt.\ntarget has cargo: %s'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, $localtarget.idcode, $localtarget.knownname, $localtarget, @$localtarget.cargo.count gt 0]" chance="$debugchance"/>
+                <signal_objects object="$localtarget" param="'halt'" param2="this.assignedcontrolled" param3="'policehalt'"/>
+                <!--<set_value name="$initdebugchance" exact="$debugchance"/>
+                <set_value name="$debugchance" exact="100"/>-->
+                <do_if value="$localtarget == player.occupiedship">
+                  <set_value name="player.entity.$haltedby" exact="this.assignedcontrolled"/>
+                  <do_if value="this.$override_policescanline?">
+                    <set_value name="$locline" exact="this.$override_policescanline" comment="Overriding line set on the pilot blackboard"/>
+                    <debug_text text="'%1 %2 to speak override line %3'.[this.ship.idcode, this.ship.knownname, $locline]" chance="$debugchance"/>
+                  </do_if>
+                  <do_else>
+                    <set_value name="$locline" exact="11202" comment="(ship scan warning - cargo)"/>
+                    <do_if value="not $police_onlycargo?">
+                      <set_value name="$locline" exact="11203" comment="(ship scan warning - inventory)"/>
+                    </do_if>
+                  </do_else>
+                  <run_script name="'player.interaction'">
+                    <param name="Line" value="$locline"/>
+                    <param name="MaxQueueDelay" value="10s"/>
+                    <param name="caption" value="{1016,6}.[this.assignedcontrolled.knownname, this.assignedcontrolled.idcode]"/>
+                    <param name="interactive" value="false"/>
+                    <param name="debugchance" value="$debugchance"/>
+                  </run_script>
+                  <remove_value name="$locline"/>
+                </do_if>
+                <!-- following should only be true if targetobject is player-owned and was told to wait for the player. -->
+                <do_elseif value="not $waited? and $localtarget.isplayerowned and (@$localtarget.order.id != 'WaitForSignal' or $localtarget.order.$signaller != this.assignedcontrolled)">
+                  <wait min="1min" max="2min">
+                    <interrupt>
+                      <conditions>
+                        <check_any>
+                          <!-- signal sent from lib.respond.inspected. responses: 'comply', 'wait', 'attack', or 'flee'. for any responses other than 'wait', we'll pretend we didn't hear anything.
+                            if event.param2 == 'wait', expects event.param3 to be a duration. -->
+                          <event_object_signalled object="this.ship" param="'player halt response'"/>
+                          <check_all>
+                            <event_object_order_ready object="$localtarget"/>
+                            <check_value value="$localtarget.order.id == 'WaitForSignal' and $localtarget.order.$signaller == this.assignedcontrolled"/>
+                          </check_all>
+                        </check_any>
+                      </conditions>
+                      <actions>
+                        <do_if value="event.name == 'event_object_signalled'">
+                          <set_value name="$response" exact="event.param2"/>
+                          <do_if value="event.param3">
+                            <set_value name="$waitduration" exact="event.param3"/>
+                          </do_if>
+                          <do_else>
+                            <set_value name="$waitduration" exact="1min"/>
+                          </do_else>
+                        </do_if>
+                        <do_else>
+                          <set_value name="$response" exact="'comply'"/>
+                        </do_else>
+                      </actions>
+                    </interrupt>
+                  </wait>
+
+                  <set_value name="$waited"/>
+
+                  <do_if value="@$response == 'wait'">
+                    <wait exact="$waitduration">
+                      <interrupt>
+                        <conditions>
+                          <event_control_entity_added object="$localtarget"/>
+                          <check_value value="event.param == player.entity"/>
+                        </conditions>
+                      </interrupt>
+                    </wait>
+                    <remove_value name="$response"/>
+                    <remove_value name="$waitduration"/>
+                    <resume label="scan"/>
+                  </do_if>
+                  <do_else>
+                    <remove_value name="$response"/>
+                    <remove_value name="$waitduration"/>
+                  </do_else>
+                </do_elseif>
+                <remove_value name="$waited"/>
+              </do_if>
+              <do_else>
+                <debug_text text="'target has already been halted. looping back and selecting a new target.'" chance="$debugchance"/>
+                <set_value name="$cleared.{$localtarget}" exact="player.age"/>
+                <clear_group group="$localtargetgroup"/>
+                <remove_value name="$localtarget"/>
+                <resume label="scan"/>
+              </do_else>
+            </do_if>
+
+            <do_if value="this.zone.isclass.highway">
+              <!-- leave the highway -->
+              <move_to destination="$localtarget" object="this.assignedcontrolled" sinceversion="4">
+                <interrupt>
+                  <conditions>
+                    <event_object_changed_zone object="this.assignedcontrolled"/>
+                    <check_value value="not event.param.isclass.highway"/>
+                  </conditions>
+                </interrupt>
+              </move_to>
+            </do_if>
+
+            <create_orientation name="$rot" refobject="$localtarget" orientation="look_at">
+              <position object="this.ship"/>
+            </create_orientation>
+            <move_to destination="this.zone" object="this.ship" chance="0">
+              <interrupt_after_time time="0s"/>
+            </move_to>
+            <!-- forcesteering since we're moving a very small distance and only the rotation is absolutely important. -->
+            <move_to destination="this.zone" object="this.assignedcontrolled" forcerotation="true" forcesteering="true" sinceversion="5">
+              <position x="this.assignedcontrolled.position.x" y="this.assignedcontrolled.position.y" z="this.assignedcontrolled.position.z + 10m"/>
+              <rotation value="$rot"/>
+            </move_to>
+            <!-- WORKAROUND. move_to with forcesteering should revert forcesteering implicitly when it finishes but not yet safe to do so in 3.20. Workaround needed in this case since this could result in two ships being stuck indefinitely. -->
+            <set_to_default_flight_control_model object="this.assignedcontrolled"/>
+
+            <!-- only do the scanning movement if we're still within scanning range. -->
+            <do_if value="$localtarget.isoperational and this.ship.distanceto.{$localtarget} le $effectivescanningrange">
+              <debug_text text="'scanning %s %s'.[$localtarget.knownname, $localtarget]" chance="$debugchance"/>
+              <move_strafe destination="$localsector" object="this.ship" forcerotation="true">
+                <position value="$sectorpos"/>
+                <rotation value="$rot"/>
+                <interrupt_after_time time="1s"/>
+              </move_strafe>
+              <do_if value="$localtarget.isoperational">
+                <wait exact="[$time_scandone - player.age, 1s].max">
+                  <interrupt>
+                    <conditions>
+                      <check_any>
+                        <event_object_destroyed object="$localtarget"/>
+                        <event_object_docked object="$localtarget"/>
+                        <check_all>
+                          <event_object_attacked object="this.ship"/>
+                          <check_value value="event.param.owner == $localtarget.owner"/>
+                        </check_all>
+                        <check_all>
+                          <event_object_changed_zone object="$localtarget"/>
+                          <check_any>
+                            <check_all>
+                              <check_value value="$police"/>
+                              <!-- NB: changing the distance check to cansee could prove frustrating to the player since contact could be broken by our movement even if target is standing still. -->
+                              <check_value value="this.ship.distanceto.{$localtarget} gt this.ship.maxradarrange"/>
+                              <!--<check_value value="this.ship.distanceto.{$localtarget} gt $effectivescanningrange"/>-->
+                            </check_all>
+                            <check_value value="event.param.isclass.highway"/>
+                          </check_any>
+                        </check_all>
+                      </check_any>
+                    </conditions>
+                    <actions>
+                      <debug_text text="'scan interrupted by %1.'.[event.name]" chance="$debugchance"/>
+                      <set_value name="$break"/>
+                      <do_if value="$police and event.name != 'event_object_destroyed'">
+                        <do_if value="event.name != 'event_object_changed_zone' or $localtarget.sector == this.sector or $localtarget == player.occupiedship">
+                          <set_value name="$trouble"/>
+                          <debug_text text="'%s %s interdicting %s %s. interdicted ship not complying. attacking. event: %s\ntarget speed: %s, in highway: %s\ntarget order: %s\ndistance: %sm\ncansee: %s'.[this.ship.knownname, this.ship, $localtarget.knownname, $localtarget, event.name, $localtarget.speed, $localtarget.zone.isclass.highway, @$localtarget.order.id, this.assignedcontrolled.distanceto.{$localtarget}, this.assignedcontrolled.cansee.{$localtarget}]" chance="$debugchance"/>
+                          <do_if value="$localtarget == player.occupiedship">
+                            <set_value name="$locreport"/>
+                          </do_if>
+                        </do_if>
+                        <do_else>
+                          <!-- ships can accidentally cross gates -->
+                          <debug_text text="'localtarget %s %s %s crossed a gate. disengaging.'.[@$localtarget.idcode, @$localtarget.knownname, $localtarget]" chance="$debugchance"/>
+                        </do_else>
+                      </do_if>
+                    </actions>
+                  </interrupt>
+                </wait>
+                <do_if value="$locreport?">
+                  <run_script name="'player.interaction'">
+                    <param name="Line" value="8003" comment="(reporting)This is sector security reporting criminal activity."/>
+                    <param name="MaxQueueDelay" value="10s"/>
+                    <param name="caption" value="{1016,6}.[this.assignedcontrolled.knownname, this.assignedcontrolled.idcode]"/>
+                    <param name="interactive" value="false"/>
+                    <param name="debugchance" value="$debugchance"/>
+                  </run_script>
+                  <remove_value name="$locreport"/>
+                </do_if>
+              </do_if>
+              <do_else>
+                <debug_text text="'target stopped being operational in the one second between starting the scan and waiting to handle the target being destroyed.'" chance="$debugchance"/>
+                <set_value name="$break"/>
+              </do_else>
+            </do_if>
+            <!--<do_else>
+              <debug_text text="'scan skipped for some strange reason.\ntarget operational? %s\ndistance to target: %s\nscanning range: %s'.[$localtarget.isoperational, this.ship.distanceto.{$localtarget}, $effectivescanningrange]" chance="100"/>
+            </do_else>-->
+          </do_else>
+          <do_if value="$break?">
+            <break/>
+          </do_if>
+          <wait min="131ms" max="1s" sinceversion="11" comment="preceding movements can fail without blocking"/>
+        </do_while>
+
+        <!-- scan done. -->
+        <do_if value="$localtarget.isoperational and ($trouble? or (not $break? and $time_scandone? and player.age ge $time_scandone))">
+          <do_if value="$localtarget.isoperational">
+            <do_if value="$deploysatellites and not $localtarget.isclass.ship">
+              <set_value name="$locdeployablecategory" exact="deployablecategory.satellite"/>
+              <!-- pessimistic estimate. satellites have radar ranges of either 30km or 75km. -->
+              <set_value name="$locdist" exact="30km"/>
+            </do_if>
+            <do_elseif value="$resourcescout">
+              <set_value name="$locdeployablecategory" exact="deployablecategory.resourceprobe"/>
+              <set_value name="$locdist" exact="64km"/>
+            </do_elseif>
+
+            <do_if value="$locdeployablecategory?">
+              <find_object name="$locdeployable" space="$localtarget.sector" trueowner="this.trueowner" deployablecategory="$locdeployablecategory">
+                <match_distance object="$localtarget" max="$locdist"/>
+              </find_object>
+              <do_if value="not $locdeployable.isoperational and this.assignedcontrolled.ammostorage.{$locdeployablecategory}.count">
+                <do_if value="$locdeployablecategory == deployablecategory.satellite">
+                  <launch_satellite name="$locdeployable" object="this.assignedcontrolled"/>
+                </do_if>
+                <do_elseif value="$locdeployablecategory == deployablecategory.resourceprobe">
+                  <launch_resourceprobe name="$locdeployable" object="this.assignedcontrolled"/>
+                </do_elseif>
+                <debug_text text="'%s %s %s deploying %s close to %s %s %s in sector %s.'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, $locdeployablecategory, $localtarget.idcode, $localtarget.knownname, $localtarget, this.sector.knownname]" chance="@$locdeployable.isoperational * $debugchance"/>
+                <!-- if we want to keep track of these things, add to group here. -->
+              </do_if>
+              <remove_value name="$locdeployable"/>
+            </do_if>
+            <remove_value name="$locdist"/>
+            <remove_value name="$locdeployablecategory"/>
+          </do_if>
+
+          <do_if value="$blindtourist">
+            <do_if value="$localtarget.isclass.station">
+              <set_value name="$xpcat" exact="'ship_discovered_station'"/>
+              <do_if value="$localtarget.isfactionheadquarters">
+                <set_value name="$xpcat" exact="'ship_discovered_station_hq'"/>
+              </do_if>
+              <do_elseif value="$localtarget.istradestation or $localtarget.isshipyard or $localtarget.iswharf or $localtarget.isequipmentdock or $localtarget.ispiratebase or ($localtarget.owner == faction.xenon) or ($localtarget.owner == faction.khaak)">
+                <set_value name="$xpcat" exact="'ship_discovered_station_important'"/>
+              </do_elseif>
+            </do_if>
+            <do_elseif value="$localtarget.isclass.gate">
+              <set_value name="$xpcat" exact="'ship_discovered_gate'"/>
+            </do_elseif>
+
+            <do_if value="$xpcat?">
+              <apply_experience entity="this" experience="$xpcat" factor="1.0"/>
+              <apply_experience object="this.assignedcontrolled" role="entityrole.service" experience="$xpcat" factor="1.0"/>
+              <remove_value name="$xpcat"/>
+            </do_if>
+          </do_if>
+
+          <debug_text text="'scan done.\ntrouble? %s,\nscan complete? %s'.[$trouble?, player.age ge $time_scandone]" chance="$debugchance"/>
+          <do_if value="$localtarget.isplayerowned">
+            <do_if value="$localtarget.isclass.station and (this.trueowner == $localtarget.sector.policefaction) and (not @$localtarget.paidbuildplot.exists or ($localtarget.buildplot.max.length gt $localtarget.paidbuildplot.max.length) or ($localtarget.paidbuildplot.haspositionchanged and ($localtarget.paidbuildplot.payment lt $localtarget.buildplot.price)))">
+              <debug_text text="'found player-owned station with illegal build plot: %s %s %s in sector %s'.[$localtarget.idcode, $localtarget.knownname, $localtarget, $localtarget.sector.knownname]" chance="$debugchance"/>
+              <add_faction_relation faction="faction.player" otherfaction="this.owner" value="-0.001" reason="relationchangereason.illegalplot"/>
+              <substitute_text text="$notificationtext" source="{1016, 121}" comment="Station plot for $STATION$ in sector $SECTOR$ is not paid for and was detected.">
+                <replace string="'$STATION$'" with="$localtarget.name"/>
+                <replace string="'$SECTOR$'" with="$localtarget.sector.name"/>
+              </substitute_text>
+              <do_if value="notification.illegal_plot_detected.active">
+                <show_notification text="$notificationtext" priority="7"/>
+              </do_if>
+              <write_to_logbook title="{1016, 120}" text="$notificationtext" faction="this.owner" category="general" interaction="showonmap" object="$localtarget"/>
+            </do_if>
+            <debug_text text="'%s %s done scanning player-owned object %s %s.'.[this.ship.knownname, this.ship, $localtarget.knownname, $localtarget]" chance="$debugchance"/>
+          </do_if>
+
+          <set_value name="$reportchance" exact="100"/>
+          <do_if value="$police and (this.owner != faction.paranid) and (this.owner != faction.holyorder) and (this.owner != faction.trinity) and not this.isplayerowned">
+            <!-- bribery! only report pirate bases 10% of the time. -->
+            <do_if value="$localtarget.isclass.station and ($localtarget.trueowner == faction.hatikvah or $localtarget.trueowner == faction.scaleplate)">
+              <debug_text text="'%s %s found pirate base %s %s in sector %s'.[this.ship.knownname, this.ship, $localtarget.knownname, $localtarget, $localtarget.sector.knownname]" chance="$debugchance"/>
+              <set_value name="$reportchance" exact="10"/>
+            </do_if>
+            <do_else>
+              <set_value name="$reportchance" exact="this.combinedskill"/>
+            </do_else>
+          </do_if>
+
+          <!-- if thing found is trouble, do something about it. -->
+          <!-- if military scan, catalogue. send intel back to faction? when? -->
+          <!-- redundant since, at this point, localtarget would be stored in two lists.
+                TODO: when this script is done, including interaction with faction logic, review. -->
+          <append_to_list name="$list_objectsscanned" exact="$localtarget"/>
+          <do_if value="$localtarget.exists and this.mayattack.{$localtarget}">
+            <append_to_list name="$list_threats" exact="$localtarget"/>
+
+            <do_if value="$localtarget.isclass.ship">
+              <set_value name="$table_factionthreatlevels.{$localtarget.owner}" operation="add" exact="$localtarget.threatscore"/>
+            </do_if>
+            <do_elseif value="$localtarget.isclass.station">
+              <set_value name="$table_factionthreatlevels.{$localtarget.owner}" operation="add" exact="$localtarget.threatscore" chance="$reportchance"/>
+            </do_elseif>
+            <do_else>
+              <debug_text text="'%1 %2 is hostile, but is neither a ship nor a station.'.[$localtarget.class, $localtarget.knownname]" chance="$debugchance"/>
+            </do_else>
+          </do_if>
+          <do_else>
+            <append_to_list name="$list_nonthreats" exact="$localtarget"/>
+          </do_else>
+          <debug_text text="'%1 %2 done scanning %3 %4. Scanned:'.[this.ship.idcode, this.ship.knownname, $localtarget.idcode, $localtarget.knownname]" chance="$debugchance"/>
+          <do_all exact="$list_objectsscanned.count" counter="$i" chance="$debugchance">
+            <debug_text text="@$list_objectsscanned.{$i}.idcode + ' ' + @$list_objectsscanned.{$i}.knownname"/>
+          </do_all>
+
+          <!-- if police scan: -->
+          <do_if value="$police">
+            <!-- if trouble is troublesome or is carrying illegal goods -->
+            <do_if value="@$localtarget.cargo.illegalto.{this.zone.policefaction}" chance="100.0 - @$localtarget.hidecargochance">
+              <set_value name="$illegalcargofound"/>
+            </do_if>
+            <do_if value="$illegalcargofound? or (not $police_onlycargo? and @$localtarget.pilot.inventory.illegalto.{this.zone.policefaction})" chance="$reportchance">
+              <set_value name="$illegalfound"/>
+            </do_if>
+            <remove_value name="$illegalcargofound"/>
+            <do_if value="$trouble? or this.mayattack.{$localtarget} or $illegalfound?">
+              <debug_text text="'found trouble.\nnon-compliant? %s\nhostile? %s\nillegal inventory wares? %s\nillegal cargo? %s'.[$trouble?, this.mayattack.{$localtarget}, @$localtarget.pilot.inventory.illegalto.{this.zone.policefaction}, @$localtarget.cargo.illegalto.{this.zone.policefaction}]" chance="$debugchance"/>
+              <!-- if trouble is covered, uncover (always? only if illegal?) -->
+              <do_if value="$localtarget.coverowner">
+                <signal_objects object="$localtarget" param="'LoseCover'" param2="true"/>
+                <do_if value="this.ship.relationto.{$localtarget.trueowner} lt 0">
+                  <set_value name="$trouble"/>
+                </do_if>
+              </do_if>
+
+              <!-- if $trouble is already set at this point, localtarget either fled, attacked, or just had cover blown. -->
+              <do_if value="not $trouble?">
+                <!-- if player is flying the ship, player is not hostile, and player is carrying contraband, add interactive conversation. last chance to comply. -->
+                <do_if value="($localtarget == player.occupiedship) and not this.mayattack.{$localtarget} and $illegalfound?">
+                  <set_value name="$police_convparam" exact="'g_playership_illegalcargo'"/>
+                  <do_if value="not $police_onlycargo?">
+                    <set_value name="$police_convparam" exact="'g_playership_illegalinventory'"/>
+                  </do_if>
+                  <signal_objects object="$localtarget" param="'police_illegalfound_player'" param2="this.assignedcontrolled"/>
+                  <!-- INTERACTION: police found player carrying contraband -->
+                  <run_script name="'player.interaction'" result="$response">
+                    <param name="Line" value="if this.$override_policecontrabandline? then this.$override_policecontrabandline else 11205" comment="(ship scan result - something found)We've detected contraband."/>
+                    <param name="UIText" value="{20217, 900}" comment="Illegal Cargo Discovered"/>
+                    <param name="ConversationParam" value="$police_convparam"/>
+                    <param name="MaxQueueDelay" value="10s"/>
+                    <param name="caption" value="{20217, 900}" comment="Illegal Cargo Discovered"/>
+                    <param name="debugchance" value="$debugchance"/>
+                  </run_script>
+                  <remove_value name="$police_convparam"/>
+
+                  <do_if value="@$response != 'notcomply'">
+                    <do_if value="@$response == 'comply'">
+                      <!-- MenuMap triggered via player.interaction from Conversations.xml -->
+                      <wait>
+                        <interrupt>
+                          <conditions>
+                            <event_conversation_finished actor="this"/>
+                          </conditions>
+                          <actions>
+                            <debug_text text="player.age + ': player done interacting with map menu. actor: %s %s, outcome: %s, param2: %s'.[event.object.knownname, event.object, @event.param, @event.param2]" chance="$debugchance"/>
+                          </actions>
+                        </interrupt>
+                      </wait>
+                    </do_if>
+                    <do_else>
+                      <wait exact="2min">
+                        <interrupt>
+                          <conditions>
+                            <event_object_dropped_objects object="$localtarget"/>
+                            <check_any>
+                              <!-- in case player is manually dropping cargo, may have to drop stuff multiple times. allow the full two minutes until no illegal cargo is left. -->
+                              <check_value value="not @$localtarget.cargo.illegalto.{this.zone.policefaction}"/>
+                              <check_all>
+                                <check_value value="not $police_onlycargo?"/>
+                                <check_value value="not @$localtarget.pilot.inventory.illegalto.{this.zone.policefaction}"/>
+                              </check_all>
+                            </check_any>
+                          </conditions>
+                          <actions>
+                            <debug_text text="player.age + ': player dropped something. checking to see if the player dropped all contraband found.'" chance="$debugchance"/>
+                          </actions>
+                        </interrupt>
+                      </wait>
+                    </do_else>
+
+                    <!-- whether player complied or not, destroy any crates with illegal stuff in the player's vicinity. -->
+                    <set_value name="$police_response" exact="this.assignedcontrolled.signal.{'policefoundcontraband'}.response.id"/>
+                    <include_interrupt_actions ref="Police_HandleIllegalCrates"/>
+                    <remove_value name="$police_response"/>
+
+                    <!-- did the player actually comply? if not, deal with it. -->
+                    <do_if value="@$localtarget.cargo.illegalto.{this.zone.policefaction} or (not $police_onlycargo? and @$localtarget.pilot.inventory.illegalto.{this.zone.policefaction})">
+                      <set_value name="$trouble"/>
+                    </do_if>
+                    <do_else>
+                      <run_script name="'player.interaction'">
+                        <param name="Line" value="8001" comment="(ship complies with police instructions)Smart move. Don't let us catch you again."/>
+                        <param name="MaxQueueDelay" value="10s"/>
+                        <param name="caption" value="{1016,6}.[this.assignedcontrolled.knownname, this.assignedcontrolled.idcode]"/>
+                        <param name="interactive" value="false"/>
+                        <param name="debugchance" value="$debugchance"/>
+                      </run_script>
+                    </do_else>
+                  </do_if>
+                  <do_else>
+                    <set_value name="$trouble"/>
+                  </do_else>
+                </do_if>
+                <do_else>
+                  <set_value name="$trouble"/>
+                </do_else>
+              </do_if>
+              <do_elseif value="$localtarget == player.occupiedship">
+                <signal_objects object="$localtarget" param="'police_scannoncompliance_player'" param2="this.assignedcontrolled"/>
+              </do_elseif>
+            </do_if>
+            <do_if value="$localtarget == player.occupiedship and @player.entity.$haltedby == this.assignedcontrolled">
+              <remove_value name="player.entity.$haltedby"/>
+            </do_if>
+            <remove_value name="$illegalfound"/>
+            <remove_value name="$police_onlycargo"/>
+
+            <do_if value="$trouble?">
+              <do_if value="($localtarget.trueowner != this.trueowner) and ($localtarget.trueowner != this.zone.trueowner)">
+                <do_if value="not this.isplayerowned">
+                  <debug_text text="'%s %s found player-owned ship %s %s doing something illegal. reporting ship and moving to engage.'.[this.ship.knownname, this.ship, $localtarget.knownname, $localtarget]" chance="$localtarget.isplayerowned * $debugchance"/>
+                  <set_relation_boost object="this" otherobject="$localtarget" value="-1.0" decay="1" delay="5min" reason="relationchangereason.illegalcargo"/>
+                  <do_if value="$localtarget == player.occupiedship">
+                    <!-- TODO: string together if/when support for stringing together multiple t lines is added. -->
+                    <do_any>
+                      <set_value name="$locline" exact="7004" comment="(warning of consequences - opening fire)You are now being targeted."/>
+                      <set_value name="$locline" exact="7005" comment="(warning of consequences - sending ships)Ships are now being dispatched."/>
+                    </do_any>
+                    <run_script name="'player.interaction'">
+                      <param name="Line" value="$locline"/>
+                      <param name="MaxQueueDelay" value="10s"/>
+                      <param name="caption" value="{1016,6}.[this.assignedcontrolled.knownname, this.assignedcontrolled.idcode]"/>
+                      <param name="interactive" value="false"/>
+                      <param name="debugchance" value="$debugchance"/>
+                    </run_script>
+                    <remove_value name="$locline"/>
+                  </do_if>
+                </do_if>
+                <do_else>
+                  <set_relation_boost object="$localtarget" otherobject="this" value="-1.0" decay="1" delay="5min"/>
+                </do_else>
+                <!-- and call for help? attack? both? -->
+                <signal_objects object="player.galaxy" param="'ship_in_distress'" param2="this.assignedcontrolled" param3="$localtarget"/>
+                <do_if value="this.sector">
+                  <signal_objects object="this.sector" param="'ship_in_distress'" param2="this.assignedcontrolled" param3="$localtarget"/>
+                  <signal_objects object="this.sector" param="'police'" param2="$localtarget" param3="this.ship"/>
+                </do_if>
+                <create_order id="'Attack'" object="this.ship" immediate="true">
+                  <param name="primarytarget" value="$localtarget"/>
+                  <param name="allowothertargets" value="false"/>
+                  <param name="debugchance" value="$debugchance"/>
+                </create_order>
+              </do_if>
+            </do_if>
+            <do_else>
+              <debug_text text="'clearing %s %s %s'.[@$localtarget.idcode, @$localtarget.knownname, $localtarget]" chance="$debugchance"/>
+              <do_if value="$localtarget.isclass.ship">
+                <!-- $haltedby can be cleared if $localtarget was already running a Wait order before WaitForSignal was added. but if it exists, serves as a fast positive means to identify. -->
+                <do_if value="@$localtarget.pilot.$haltedby == this.assignedcontrolled">
+                  <!-- cleaned up in order.wait.signal by $localtarget's pilot -->
+                  <set_value name="this.$police_cleared.{$localtarget}" exact="player.age"/>
+                </do_if>
+                <do_else>
+                  <debug_text text="'was about to clear ship that we have not halted.\ntarget: %s %s %s (%s)\norder: %s\nsignaller: %s %s %s is me: %s'.[@$localtarget.idcode, @$localtarget.knownname, $localtarget, @$localtarget.pilot, @$localtarget.order.id, @$localtarget.order.$signaller.idcode, @$localtarget.order.$signaller.knownname, @$localtarget.order.$signaller, @$localtarget.order.$signaller == this.assignedcontrolled]" chance="0"/>
+                  <do_for_each name="$locorder" in="@$localtarget.orders" reverse="true">
+                    <do_if value="$locorder != $localtarget.order and $locorder.id == 'WaitForSignal' and $locorder.$signaller == this.assignedcontrolled">
+                      <!-- cancel $locorder rather than setting $police_cleared in case $localtarget is later inspected by this same ship before $locorder has had a chance to run -->
+                      <cancel_order order="$locorder"/>
+                    </do_if>
+                  </do_for_each>
+                </do_else>
+              </do_if>
+              <set_value name="$cleared.{$localtarget}" exact="player.age"/>
+              <signal_objects object="$localtarget" param="'proceed'" param2="this.assignedcontrolled"/>
+              <do_if value="$localtarget and $localtarget == player.occupiedship">
+                <debug_text text="'interdicted player ship cleared.'" chance="$debugchance"/>
+                <run_script name="'player.interaction'">
+                  <param name="Line" value="11204" comment="(ship scan result - nothing found)"/>
+                  <param name="MaxQueueDelay" value="10s"/>
+                  <param name="caption" value="{1016,6}.[this.assignedcontrolled.knownname, this.assignedcontrolled.idcode]"/>
+                  <param name="interactive" value="false"/>
+                  <param name="debugchance" value="$debugchance"/>
+                </run_script>
+              </do_if>
+
+              <set_value name="$police_response" exact="this.assignedcontrolled.signal.{'policefoundcontraband'}.response.id"/>
+              <do_if value="this.isplayerowned and this.assignedcontrolled.signal.{'policefoundcontraband'}.shouldaskplayer">
+                <!-- find illegal crates
+                      then ask
+                      then act. -->
+                <find_object name="$crates" class="[class.collectable, class.lockbox]" space="this.ship.sector" multiple="true">
+                  <match_distance object="$localtarget" max="($localtarget.size / 2.0) + 1km"/>
+                </find_object>
+                <do_for_each name="$crate" in="$crates" reverse="true">
+                  <do_if value="$crate.exists">
+                    <set_value name="$cratewares" exact="$crate.wares.list"/>
+                    <do_for_each name="$crateware" in="$cratewares">
+                      <debug_text text="'%s, illegal? %s'.[$crateware, $crateware.illegalto.{this.zone.policefaction}.{$localtarget.owner}]" chance="$debugchance"/>
+                      <do_if value="$crateware.illegalto.{this.zone.policefaction}.{$localtarget.owner}">
+                        <add_to_group groupname="$cratestocollect" object="$crate"/>
+                        <set_value name="$droppedware" exact="$crateware"/>
+                        <set_value name="$droppedamount" exact="$crate.wares.{$crateware}.count"/>
+                        <break/>
+                      </do_if>
+                    </do_for_each>
+                    <remove_value name="$cratewares"/>
+                  </do_if>
+                </do_for_each>
+                <remove_value name="$crates"/>
+
+                <do_if value="@$cratestocollect.count">
+                  <debug_text text="'\n%s %s %s\napprehending %s %s %s\nresponse: %s'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, $localtarget.idcode, $localtarget.knownname, $localtarget, $police_response]" chance="$debugchance"/>
+                  <!-- ask -->
+                  <!-- + notification -->
+                  <!-- + logbook -->
+                  <set_value name="$police_title" exact="{1036, 151}" comment="Found Contraband"/>
+                  <set_value name="$police_text" exact="{1036, 153}.[$localtarget.name, $droppedamount, $droppedware]" comment="%s(ship name) dropped %s(number) %s(ware) as ordered."/>
+                  <set_value name="$police_caption" exact="{1036, 152} + ' - ' + {1016,6}.[this.assignedcontrolled.knownname, this.assignedcontrolled.idcode]" comment="Smuggler dropped contraband"/>
+                  <set_value name="$police_line" exact="11205" comment="(ship scan result - something found)We've detected contraband."/>
+                  <show_notification text="$police_title + '\n' + $police_text" priority="1"/>
+                  <run_script name="'player.interaction'" result="$police_responseresult" sinceversion="6">
+                    <param name="Line" value="$police_line"/>
+                    <param name="UIText" value="{1015, 35}.[this.assignedcontrolled.idcode, this.assignedcontrolled.name]" comment="Requesting Orders"/>
+                    <param name="ConversationParam" value="'g_playerownedship_foundcontraband'"/>
+                    <param name="MaxQueueDelay" value="10s"/>
+                    <param name="caption" value="$police_caption"/>
+                    <param name="debugchance" value="$debugchance"/>
+                  </run_script>
+                  <do_if value="@$police_responseresult.{1} and $police_responseresult.{2}">
+                    <set_value name="$police_response" exact="$police_responseresult.{1}"/>
+                    <set_value name="$police_responsename" exact="$police_responseresult.{2}"/>
+                  </do_if>
+                  <write_to_logbook category="general" title="$police_title" faction="this.trueowner" text="$police_text + '\n' + {1001, 9322} + {1001, 120} + ' ' + $police_responsename"/>
+                  <remove_value name="$police_responsename"/>
+                  <remove_value name="$police_responseresult"/>
+                  <remove_value name="$police_line"/>
+                  <remove_value name="$police_caption"/>
+                  <remove_value name="$police_text"/>
+                  <remove_value name="$police_title"/>
+
+                  <!-- act -->
+                  <do_if value="$police_response != 'ignore'">
+                    <do_if value="$police_response == 'destroy'">
+                      <do_for_each name="$crate" in="$cratestocollect" reverse="true">
+                        <destroy_object object="$crate" explosion="true"/>
+                      </do_for_each>
+                    </do_if>
+                    <do_elseif value="$police_response == 'collect'">
+                      <create_order id="'Collect'" object="this.assignedcontrolled" immediate="true">
+                        <param name="targetlist" value="$cratestocollect.list"/>
+                        <param name="debugchance" value="$debugchance"/>
+                      </create_order>
+                    </do_elseif>
+                    <do_else>
+                      <debug_text text="'unhandled response to signal policefoundcontraband: %s'.[$police_response]" filter="error"/>
+                    </do_else>
+                  </do_if>
+                </do_if>
+                <remove_value name="$cratestocollect"/>
+              </do_if>
+              <do_else>
+                <debug_text text="'\n%s %s %s \napprehending %s %s %s\nresponse: %s'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, $localtarget.idcode, $localtarget.knownname, $localtarget, $police_response]" chance="$debugchance"/>
+                <!-- add convo if player owned and set to ask for response -->
+                <include_interrupt_actions ref="Police_HandleIllegalCrates"/>
+              </do_else>
+              <remove_value name="$police_response"/>
+            </do_else>
+          </do_if>
+          <remove_value name="$trouble"/>
+
+          <remove_value name="$time_scandone"/>
+        </do_if>
+        <do_elseif value="$police">
+          <do_if value="$localtarget.isoperational and (not @$localtarget.order or $localtarget.order.state != orderstate.critical) and (not @$localtarget.pilot.command or $localtarget.pilot.command.value != command.attackenemies or $localtarget.pilot.command.value != command.attackobject) and $time_scandone? and not $trouble? and not $break?">
+            <!-- valid cases:
+              target entered a highway while still approaching ($time_scandone == null),
+              target no longer operational,
+              target attacked (trouble),
+              target ignored interdiction (trouble),
+              target order is critical,
+              target is attacking something,
+              TEMP: target got away (break) -->
+            <debug_text text="'scan has stopped but is NOT done.\ntarget operational? %s\ntrouble? %s,\ntime scan done: %s\ntime remaining: %s\nbreak? %s'.[$localtarget.isoperational, $trouble?, @$time_scandone, player.age - @$time_scandone, $break?]" chance="$debugchance"/>
+          </do_if>
+        </do_elseif>
+        <clear_group group="$localtargetgroup"/>
+        <remove_value name="$localtarget"/>
+        <remove_value name="$break"/>
+        <!--<do_if value="$initdebugchance?">
+          <set_value name="$debugchance" exact="$initdebugchance"/>
+          <remove_value name="$initdebugchance"/>
+        </do_if>-->
+
+        <do_if value="@$list_potentialtargets.count" chance="if $blindtourist then (100 - this.assignedcontrolled.combinedskill) else this.assignedcontrolled.combinedskill">
+          <!-- if we are tracking more objects that have not been scanned yet, scan them. thoroughness of sector scan will tend to be proportional to the captain's skill, lazy buggers. -->
+          <debug_text text="'%1 %2 selecting next mark.'.[this.ship.idcode, this.ship.knownname]" chance="$debugchance"/>
+          <resume label="scan"/>
+        </do_if>
+        <do_elseif value="$blindtourist">
+          <debug_text text="'blind tourist proceeding to next zone'" chance="$debugchance"/>
+          <resume label="proceedtonextzone"/>
+        </do_elseif>
+        <do_else>
+          <!-- if thing found is not trouble, loop back to lookfortrouble. -->
+          <debug_text text="'%1 %2 looking for trouble.'.[this.ship.idcode, this.ship.knownname]" chance="$debugchance"/>
+          <resume label="lookfortrouble"/>
+        </do_else>
+      </do_if>
+      <do_else>
+        <!-- if we didn't find anything, look again or proceed to the next zone. -->
+        <debug_text text="'no targets found.'" chance="$debugchance"/>
+        <do_if value="@$list_zonestoinvestigate.count and ($list_zonestoinvestigate.{1} == $destination or $list_zonestoinvestigate.{1} == this.zone)">
+          <remove_value name="$list_zonestoinvestigate.{1}"/>
+        </do_if>
+
+        <do_if value="$blindtourist">
+          <debug_text text="'blind tourist proceeding to next zone'" chance="$debugchance"/>
+          <resume label="proceedtonextzone"/>
+        </do_if>
+        <do_elseif value="$resourcescout">
+          <!--TODO @Owen @Nick This wait was added to prevent a loop. Debug output:
+          *** aicontext<order.move.recon,0x1e003>: resourcescout: found 2 zones with resources (only works in high attention). 3 zones to explore.
+          *** aicontext<order.move.recon,0x1e003>: found 3 zones in Silent Witness XI
+          *** aicontext<order.move.recon,0x1e003>: DKX-782 HAT Prospector Kestrel Sentinel starting reconnaissance mission:
+           to sector Silent Witness XI
+           owned by .
+           relation: 0
+           police investigation? 0
+          *** aicontext<order.move.recon,0x1e003>: next safe pos is 39.984 km from the center of zone Empty Space.
+          zone radius: 50 km.
+          radar range: 40 km
+          pos: position.[39951.062500m, -931.790527m, 1744.828247m]
+          *** aicontext<order.move.recon,0x1e003>: going to investigate zone Empty Space in Silent Witness XI
+          *** aicontext<order.move.recon,0x1e003>: resource scout HAT Prospector Kestrel Sentinel 0x1dffe found 12 items of interest in sector Silent Witness XI.
+          *** aicontext<order.move.recon,0x1e003>: no targets found.-->
+          <wait exact="5s"/>
+          <resume label="prep"/>
+        </do_elseif>
+        <do_else>
+          <do_any>
+            <do_all weight="1">
+              <set_value name="$timeslooked" exact="@$timeslooked + 1"/>
+              <debug_text text="'%1 %2 looking for trouble. weight: %s. times looked: %s'.[this.ship.idcode, this.ship.knownname, 1 / ($timeslooked)f, $timeslooked]" chance="$debugchance"/>
+              <resume label="lookfortrouble"/>
+            </do_all>
+            <do_all weight="@$timeslooked - 1">
+              <debug_text text="'%1 %2 proceeding to next zone. weight: %s. times looked: %s'.[this.ship.idcode, this.ship.knownname, ($timeslooked - 1) / ($timeslooked)f, $timeslooked]" chance="$debugchance"/>
+              <set_value name="$timeslooked" exact="0"/>
+              <resume label="proceedtonextzone"/>
+            </do_all>
+          </do_any>
+        </do_else>
+      </do_else>
+
+      <label name="report"/>
+
+      <!-- everything (we know of) in target space scanned. -->
+      <do_if value="$table_factionthreatlevels.keys.count and not this.assignedcontrolled.isonlineobject">
+        <debug_text text="'%1 %2 found:\n %3 threats and\n %4 non-threats\n in %5 %6'.[this.ship.idcode, this.ship.knownname, $list_threats.count, $list_nonthreats.count, $targetspace.class, $targetspace.knownname]" chance="$debugchance"/>
+
+        <do_if value="not @$hq.isoperational and this.assignedcontrolled.order.$hq? and not this.assignedcontrolled.isplayerowned">
+          <do_if value="this.assignedcontrolled.jobmainsector">
+            <find_station_by_true_owner name="$hq" space="this.assignedcontrolled.jobmainsector" faction="this.trueowner"/>
+          </do_if>
+          <do_if value="not $hq">
+            <find_station_by_true_owner name="$hq" space="player.galaxy" faction="this.trueowner" reachablefrom="this.zone"/>
+          </do_if>
+          <do_if value="not $hq">
+            <debug_text text="'%1 %2 was not able to find a station owned by %3 anywhere in the galaxy.'.[this.ship.idcode, this.ship.knownname, this.ship.trueowner]" chance="$debugchance"/>
+          </do_if>
+          <do_else>
+            <debug_text text="'%1 %2 assigned to report to %3 in sector %4, %5 gates away.'.[this.ship.idcode, this.ship.knownname, $hq.knownname, $hq.sector.knownname, this.ship.gatedistance.{$hq}]" chance="$debugchance"/>
+          </do_else>
+        </do_if>
+
+        <!-- if military scan, report back for orders? rinse and repeat? arbitrarily select some other space? -->
+        <do_if value="$hq.isoperational">
+          <debug_text text="'reporting to headquarters.\n HQ: %1 %2,\n gate distance: %3,\n this ship class: %4'.[$hq.class, $hq.knownname, this.ship.gatedistance.{$hq}, this.ship.class]" chance="$debugchance"/>
+          <!-- handling for nopath not necessary -->
+          <run_script name="'move.generic'">
+            <param name="destination" value="$hq"/>
+            <param name="debugchance" value="$debugchance"/>
+          </run_script>
+
+          <!-- TODO: player-owned case -->
+
+          <do_if value="not $cannotdock and this.ship.isclass.ship_s and $hq.isclass.[class.station, class.ship_xl, class.ship_l]">
+            <set_value name="$time_dock" min="1min" max="5min"/>
+            <create_order object="this.ship" id="'DockAndWait'" immediate="true">
+              <param name="destination" value="$hq"/>
+              <param name="timeout" value="$time_dock"/>
+              <param name="callerid" value="this.ship.order"/>
+              <param name="debugchance" value="$debugchance"/>
+            </create_order>
+            <remove_value name="$time_dock"/>
+          </do_if>
+          <do_else>
+            <do_if value="$cannotdock">
+              <!-- reset $cannotdock in case we can in the future. important here since this can be a default order. -->
+              <set_value name="$cannotdock" exact="false"/>
+            </do_if>
+            <run_script name="'move.idle'">
+              <param name="Min" value="1min"/>
+              <param name="Max" value="5min"/>
+              <param name="MaxDistance" value="1km + this.ship.size"/>
+              <param name="debugchance" value="$debugchance"/>
+            </run_script>
+          </do_else>
+
+          <!-- report -->
+          <!-- NB: the order of $table.keys may change in between save-load cycles. as long as this is done in a single frame, we should be fine. -->
+          <!-- IMPORTANT: review FactionGoal_Invade_Space to see if the faction logic can handle multiple reports coming in on a single space regarding multiple hostile factions. <library name="EvaluateEvent"> -->
+          <do_all exact="$table_factionthreatlevels.keys.count" counter="$i">
+            <debug_text text="'sending recon data on %1 in %2. threat level: %3'.[$table_factionthreatlevels.keys.{$i}, $targetspace.knownname, $table_factionthreatlevels.{$table_factionthreatlevels.keys.{$i}}]" chance="$debugchance"/>
+            <set_value name="$reconresult" exact="[this.ship.trueowner, 'recon update', $table_factionthreatlevels.keys.{$i}, $targetspace, [$table_factionthreatlevels.{$table_factionthreatlevels.keys.{$i}}, player.age]]"/>
+            <signal_objects object="player.galaxy" param="$reconresult.clone" param2="this.ship.trueowner" comment="Fire for faction logic"/>
+            <signal_objects object="this.ship" param="$reconresult" comment="Also fire on the ship itself"/>
+          </do_all>
+        </do_if>
+      </do_if>
+      <do_elseif value="not $blindtourist and not $exploreupdate">
+        <debug_text text="'%1 %2 found absolutely nothing of interest in %3 %4.'.[this.ship.idcode, this.ship.knownname, $targetspace.class, $targetspace.knownname]" chance="$debugchance"/>
+      </do_elseif>
+
+      <!-- if police scan, rinse and repeat. -->
+      <!-- if sent by the player, send to player? -->
+
+      <debug_text text="'recon mission should end'" chance="0"/>
+
+      <!-- section is bypassed by blindtourist -->
+      <do_if value="(this.assignedcontrolled.order == this.assignedcontrolled.defaultorder) or ($timeout lt 0s) or (player.age lt ($time_init + $timeout))">
+        <!-- go back and monitor the same sector? change it here? wait for new orders? proceed as previously ordered until orders change? -->
+        <debug_text text="'order is default order: %s, is infinite: %s, or has not yet timed out: %s. looping back.'.[this.assignedcontrolled.order == this.assignedcontrolled.defaultorder, this.assignedcontrolled.order.isinfinite, (player.age - $time_init) lt $timeout]" chance="$debugchance"/>
+        <wait exact="0s" />
+        <resume label="prep"/>
+      </do_if>
+
+      <label name="end"/>
+
+      <do_if value="$init_debugchance?">
+        <set_value name="$debugchance" exact="$init_debugchance"/>
+      </do_if>
+
+      <!-- check if this is a jobship at the end of its lifetime -->
+      <do_if value="this.ship.jobexpired">
+        <debug_text text="'%1 doing job %2 has expired. die!'.[this.ship.knownname, this.ship.job]" chance="$debugchance"/>
+        <create_order object="this.ship" id="'MoveDie'" immediate="true">
+          <param name="byhighway" value="not this.ship.isclass.[class.ship_l, class.ship_xl]" />
+          <param name="byhostile" value="true" />
+        </create_order>
+      </do_if>
+
+      <do_if value="$time_init?">
+        <debug_text text="'ending %s after %s seconds. timeout: %ss'.[@this.assignedcontrolled.order.id, player.age - $time_init, $timeout]" chance="$debugchance"/>
+      </do_if>
+      <debug_text text="'recon mission ending'" chance="$debugchance"/>
+
+      <remove_value name="this.$police_cleared"/>
+      <remove_value name="this.$police_cleared2"/>
+
+      <wait exact="1ms"/>
+
+    </actions>
+  </attention>
+  <on_abort>
+    <do_if value="$police and this.assignedcontrolled.isoperational">
+      <do_if value="@$cleared.keys.count">
+        <!-- record cleared objects so we don't forget about them when we restart policing. -->
+        <set_value name="this.$police_cleared2" exact="$cleared"/>
+      </do_if>
+    </do_if>
+  </on_abort>
+</aiscript>

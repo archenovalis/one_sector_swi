@@ -1,0 +1,799 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<aiscript name="fight.attack.object.fighter" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" version="16">
+  <!--
+  Fighter vs Fighter  
+  Attack of a small ship (xs, s, m) against other/s small ships.
+  Makes an initial target selection based on priority:
+	- Main target
+	- Distance and distance to escort (if exists)
+	- potencial vs time to destroy it
+  Attack run:
+	1 - Select primary/secondary weapon (NPC skill)
+	2 - Fly with a selected behavior (NPC skill)
+	3 - Gain distance (after time)
+		3.1 - Evade under attack (NPC skill)
+	4 - Go to 1
+	Will break the attack when:
+	- target destroyed/docked/not enemy
+	- far away from escort (if escort)
+	- far away from this (if not pursuetargets)	
+  -->
+  <params>
+    <param name="target" comment="Group of objects to destroy before moving on to other nearby targets" />
+    <param name="escort" comment="Objects to escort - stay at 'pursuedistance' and shoot enemies attacking this" />
+    <param name="pursuedistance" comment="Distance to pursue/escort (if pursuetargets true or 'escort' provided). Default: 50km" />
+    <param name="pursuetargets" comment="Pursue the target no matter what. Default: false" />
+    <param name="allowothertargets" comment="Whether the script shall keep running when all primary targets have been destroyed. Default: true" />
+    <param name="checkrelation" />
+    <param name="disable" default="false" comment="Instructs this ship to only try to disable the target or targets without destroying it. Nonfunctional in this script since we cannot disable m and s ships."/>
+    <param name="disablehullpercentagethreshold" default="20" comment="If disable is set, this ship will stop firing if the hull of the target is at or below this percentage. Nonfunctional in this script since we cannot disable m and s ships."/>
+    <param name="maintaindistance" comment="If a carrier, use radar range instead of weapon range to determine range thresholds. Only used in capital ship combat movement script. Default: false"/>
+    <param name="boardingbehavior" comment="If not null, the behavior assigned to this ship while boarding primarytarget. Nonfunctional in this script since we cannot board m and s ships."/>
+    <param name="behaviortargetclasses" comment="Target classes associated with boardingbehavior. disablehullpercentagethreshold will be ignored if current target is a behavior target. (Otherwise, we could have a situation where the hull threshold is reached but the boarding phase threshold has not been reached thus stalling the boarding operation.)"/>
+    <param name="allowboost" default="true" comment="Allow use of boost while in combat."/>
+
+    <param name="radius" default="null" comment="disengage if target goes beyond this distance relative to radiusanchorpos in radiusanchorspace"/>
+    <param name="radiusanchorpos" default="null"/>
+    <param name="radiusanchorspace" default="null"/>
+
+    <param name="forceprimarytarget" default="false"/>
+    <param name="enforceradius" default="this.isplayerowned" comment="Disengages hostile targets outside radius if a radius is defined."/>
+    <param name="debugchance" default="0"/>
+  </params>
+  <interrupts>
+    <handler ref="DisengageHandler"/>
+    <handler ref="TargetInvalidHandler"/>
+  </interrupts>
+  <init>
+    <set_value name="this.$attacktarget" exact="$target" />
+    <set_value name="$nexttargetselecttime" exact="player.age + 10" />
+    <do_if value="not this.assignedcontrolled.dps.lasers.all and this.assignedcontrolled.dps.missiles.all">
+      <set_value name="$needsammo"/>
+    </do_if>
+  </init>
+  <patch sinceversion="1">
+    <set_value name="$duration_movement" exact="[((this.assignedcontrolled.bboxdistanceto.{$target} + this.assignedcontrolled.size) / [this.assignedcontrolled.maxspeed, 1m].max)s, 40s].max"/>
+    <debug_text text="'PATCH: duration of attack movement: %ss'.[$duration_movement]" filter="savegame"/>
+  </patch>
+  <patch sinceversion="2">
+    <do_if value="not @$radius">
+      <set_value name="$radius" exact="null"/>
+      <set_value name="$radiusanchorpos" exact="null"/>
+      <set_value name="$radiusanchorspace" exact="null"/>
+    </do_if>
+  </patch>
+  <patch sinceversion="3">
+    <do_if value="not $target.isoperational or (not $target.isclass.defensible and not $target.container)">
+      <debug_text text="'PATCH: cleared invalid target %s %s.'.[@$target.knownname, $target]" filter="savegame"/>
+      <set_value name="$target" exact="null"/>
+      <remove_value name="this.$attacktarget"/>
+    </do_if>
+  </patch>
+  <patch sinceversion="5" early="true">
+    <set_value name="$moveduration" exact="30s"/>
+    <do_if value="@$boost">
+      <set_value name="$moveduration" exact="(this.assignedcontrolled.boost.maxduration * (this.assignedcontrolled.shieldpercentage / 100.0) * 0.5)s"/>
+    </do_if>
+  </patch>
+  <patch sinceversion="6">
+    <do_if value="not $allowboost?">
+      <set_value name="$allowboost" exact="true"/>
+    </do_if>
+  </patch>
+  <patch sinceversion="7">
+    <do_if value="$result? and $target.isoperational and (this.attention lt attention.visible)">
+      <get_attackstrength object="this.assignedcontrolled" target="$target" usedrones="false">
+        <result hullshield="$result_hullshield" hullonly="$result_hullonly" shieldonly="$result_shieldonly" hullnoshield="$result_hullnoshield"/>
+      </get_attackstrength>
+      <remove_value name="$result"/>
+    </do_if>
+  </patch>
+  <patch sinceversion="8">
+    <!--removed for version 12-->
+  </patch>
+  <patch sinceversion="9">
+    <do_if value="this.assignedcontrolled.attention lt attention.visible">
+      <set_value name="$MinGainDistance" exact="$MaxGainDistance * 0.5"/>
+    </do_if>
+  </patch>
+  <patch sinceversion="12" early="true">
+    <do_if value="$locpos? and (this.attention lt attention.visible)">
+      <set_value name="$gain_dist_time" min="3s" max="8s"/>
+    </do_if>
+  </patch>
+  <patch sinceversion="12">
+    <do_if value="this.attention lt attention.visible">
+      <set_value name="$guidedmissilelaunched" exact="false"/>
+      <!--Set these two counters to different values so they don't match in the existing loops-->
+      <set_value name="$attackcounter" exact="1"/>
+      <set_value name="$attack_i" exact="2"/>
+      <set_value name="$impactingammotable" exact="table[]"/>
+    </do_if>
+    <remove_value name="$table_ammousage"/>
+  </patch>
+  <patch sinceversion="13">
+    <do_if value="@$moveduration and this.assignedcontrolled.isclass.ship_xs">
+      <debug_text text="'moveduration pre: %ss'.[$moveduration]"/>
+      <set_value name="$moveduration" exact="$moveduration / 10s"/>
+      <debug_text text="'moveduration post: %ss'.[$moveduration]"/>
+    </do_if>
+  </patch>
+  <patch sinceversion="14">
+    <do_if value="$target.canbeattacked and this.attention lt attention.visible">
+      <set_value name="$duration_movement" exact="[((this.assignedcontrolled.bboxdistanceto.{$target} + this.assignedcontrolled.size) / [this.assignedcontrolled.maxspeed, 1m].max)s, 40s].max"/>
+    </do_if>
+  </patch>
+  <patch sinceversion="15">
+    <set_value name="$enforceradius" exact="this.isplayerowned"/>
+  </patch>
+  <patch sinceversion="16">
+    <remove_value name="$ToleranceWeapon1"/>
+  </patch>
+  <attention min="visible">
+    <actions>
+      <do_if value="not $target.isoperational">
+        <debug_text text="'target not operational'" chance="$debugchance" />
+        <resume label="finish" />
+      </do_if>
+
+      <set_flight_behaviour object="this.ship" flightbehaviour="flightbehaviour.default" />
+
+      <label name="fight"/>
+
+      <do_if value="@$target.zone.isclass.highway">
+        <!-- DisengageHandler will land us here. -->
+        <debug_text text="'target now in a highway. disengaging.'" chance="$debugchance"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <!-- Set alert level -->
+      <set_alert_level object="this.ship" level="red" />
+
+      <!-- Setting shooting and flight values  -->
+      <set_value name="$ToleranceWeapon2" exact="5.0deg" />
+      <select_flight_behaviour entity="this" evasive="false" result="$Behaviour" />
+      <set_value name="$MinGainDistance" exact="700m" />
+      <set_value name="$MaxGainDistance" exact="1400m" />
+      <!-- set an initial delay for fire missiles based on piloting skill. [10, 20] with skill 5. [60, 120] skill 0-->
+      <set_value name="$delaymissiles" min="player.age + 10s * (6 - (this.skill.piloting / 3))" max="player.age + 20s * (6 - (this.skill.piloting / 3))"/>
+      <!-- Evasion flag -->
+      <set_value name="$doevade" exact="false" />
+
+      <!-- More possible enemies -->
+      <do_if value="$allowothertargets and this.sector">
+        <find_gravidar_contact name="$additionaltargets" object="this.ship" class="class.defensible" docked="false" functional="true" maybeattackedby="this.ship" multiple="true">
+          <match_context macro="this.sector.macro"/>
+          <match class="class.buildstorage" negate="true"/>
+          <match_distance max="5km" object="this.ship" />
+        </find_gravidar_contact>
+      </do_if>
+      <do_else>
+        <set_value name="$additionaltargets" exact="null" />
+      </do_else>
+
+      <!-- BEGIN FIGHT MOVEMENT -->
+      <!-- 
+            1. fly towards the target
+            2. this script is meant for fighters, so don't do any drastic speed changes
+            3. if we get too close, veer off, preferably in the direction we're going to minimize turns
+            4. repeat
+        -->
+
+      <!-- repeat until: target dead, we are dead, target not enemy, target docked or escort far away) -->
+      <do_while value="$target.isoperational">
+
+        <!-- abort if the target no longer is an enemy or is docked-->
+        <do_if value="($checkrelation and not this.mayattack.{$target}) or @$target.dock">
+          <debug_text text="this.ship.knownname + ' is not enemy to ' + $target.knownname" chance="$debugchance"/>
+          <break />
+        </do_if>
+
+        <do_if value="$needsammo?">
+          <do_if value="this.assignedcontrolled.ammostorage.missile.count">
+            <do_for_each name="$locammo" in="this.assignedcontrolled.ammostorage.missile.list">
+              <do_for_each name="$locweapon" in="this.assignedcontrolled.weapons.operational.list">
+                <do_if value="$locweapon.ammo.iscompatible.{$locammo}">
+                  <set_value name="$hasammo"/>
+                  <break/>
+                </do_if>
+              </do_for_each>
+              <do_if value="$hasammo?">
+                <break/>
+              </do_if>
+              <do_for_each name="$locturret" in="this.assignedcontrolled.turrets.operational.list">
+                <do_if value="$locweapon.ammo.iscompatible.{$locammo}">
+                  <set_value name="$hasammo"/>
+                  <break/>
+                </do_if>
+              </do_for_each>
+              <do_if value="$hasammo?">
+                <break/>
+              </do_if>
+            </do_for_each>
+          </do_if>
+
+          <do_if value="not $hasammo? and @this.trueowner.doesresupply">
+            <do_if value="not @this.$resupplier.isoperational and not @$localresupplier.isoperational and this.sector">
+              <find_ship name="$localresupplier" cansupplyclass="this.assignedcontrolled.class" owner="this.owner" space="this.sector"/>
+            </do_if>
+            <do_if value="not this.isplayerowned or @this.$resupplier.isoperational or @$localresupplier.isoperational">
+              <debug_text text="'%s %s %s out of ammo. moving to drydock for supplies.'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled]" chance="$debugchance"/>
+              <set_value name="$resupplier" exact="null"/>
+              <do_if value="@this.$resupplier.isoperational">
+                <set_value name="$resupplier" exact="this.$resupplier"/>
+              </do_if>
+              <do_elseif value="@$localresupplier.isoperational">
+                <set_value name="$resupplier" exact="$localresupplier"/>
+              </do_elseif>
+              <create_order id="'Resupply'" object="this.assignedcontrolled" immediate="true">
+                <param name="param_station" value="$resupplier"/>
+                <param name="internalorder" value="true"/>
+                <param name="debugchance" value="$debugchance"/>
+              </create_order>
+              <!-- cancel the attack order so we don't keep trying to attack in case resupply fails -->
+              <do_if value="this.assignedcontrolled.nextorder and (this.assignedcontrolled.nextorder.id != 'Board')">
+                <!-- if we are out of ammo, cannot attack, and are boarding, do not cancel the board order. situation is handled when that script initializes. -->
+                <cancel_order order="this.assignedcontrolled.nextorder"/>
+              </do_if>
+            </do_if>
+            <do_else>
+              <debug_text text="'player-owned ship %s %s %s out of ammo. sending notification and stopping attack.'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled]" chance="$debugchance"/>
+              <do_if value="notification.npc_out_of_ammo.active">
+                <!-- INTERACTION: out of ammo. cannot attack. -->
+                <run_script name="'player.interaction'" result="$locresponse">
+                  <param name="Line" value="5028" comment="Requesting instructions."/>
+                  <param name="UIText" value="{1015, 35}.[this.ship.idcode, this.ship.name]" comment="Requesting Orders"/>
+                  <param name="ConversationParam" value="'g_playerownedship_attacking_outofammo'"/>
+                  <param name="MaxQueueDelay" value="10s"/>
+                  <param name="caption" value="{1015, 43} + ' - ' + {1016,6}.[this.assignedcontrolled.knownname, this.assignedcontrolled.idcode]" comment="Out of ammo"/>
+                  <param name="debugchance" value="$debugchance"/>
+                </run_script>
+              </do_if>
+              <do_if value="@$locresponse != 'getammo' and this.assignedcontrolled.order">
+                <write_to_logbook category="general" title="{1015, 43}" text="{1016, 95}.[this.assignedcontrolled.knownname, this.assignedcontrolled.idcode]" interaction="showonmap" object="this.assignedcontrolled"/>
+                <do_if value="this.assignedcontrolled.order.id != 'Board'">
+                  <!-- if we are out of ammo, cannot attack, and are boarding, do not cancel the board order. situation is handled when that script initializes. -->
+                  <cancel_order order="this.assignedcontrolled.order"/>
+                </do_if>
+              </do_if>
+            </do_else>
+            <do_if value="@$locresponse != 'getammo'">
+              <create_order id="'Flee'" object="this.assignedcontrolled" immediate="true">
+                <param name="method" value="'boost'"/>
+                <param name="attacker" value="$target"/>
+                <param name="donotdrop" value="true"/>
+                <param name="deploydistraction" value="true"/>
+                <param name="log" value="false"/>
+                <param name="debugchance" value="$debugchance"/>
+              </create_order>
+            </do_if>
+            <remove_value name="$locresponse"/>
+          </do_if>
+          <remove_value name="$hasammo"/>
+        </do_if>
+
+        <do_if value="$escort.exists">
+          <set_value name="$refobject" exact="$escort"/>
+        </do_if>
+        <do_else>
+          <set_value name="$refobject" exact="this.ship"/>
+        </do_else>
+
+        <!-- If the target is in a different sector, or is farther than pursuedistance (should normally be radar range), -->
+        <do_if value="this.sector != $target.sector or (not $pursuetargets and $refobject.distanceto.{$target} gt $pursuedistance)">
+          <!-- break off attack. implementation of pursuetargets moved to order.fight.attack.object. -->
+          <debug_text text="'target is either not in the same sector or not within 10 minutes travel time and i am not authorized to pursue. breaking off attack.\n  my sector: %s\n target sector: %s\n distance to target: %s\n max distance in 10 minutes: %s\n pursue distance: %s'.[$refobject.sector, $target.sector, $refobject.distanceto.{$target}, this.ship.maxspeed*600, $pursuedistance]" chance="$debugchance"/>
+          <break/>
+        </do_if>
+
+        <!-- Select flight behaviour -->
+        <select_flight_behaviour entity="this" evasive="false" result="$Behaviour" comment="selected based on combined NPC skills" />
+
+        <do_if value="$target.isoperational">
+          <do_if value="not this.ship.defencenpc">
+            <!-- Decide weapons to Fire -->
+            <!-- Use missile based on piloting skill. Between [10-15]s best skill, [60-90]s worst skill -->
+            <do_if value="not $target.isclass.ship_xs and ((not this.ship.dps.lasers.all and this.ship.dps.missiles.all) or (this.ship.dps.missiles.all gt 0 and player.age gt $delaymissiles))">
+              <set_value name="$delaymissiles" min="player.age + 10s * (6 - (this.skill.piloting / 3))" max="player.age + 15s * (6 - (this.skill.piloting / 3))"/>
+              <stop_shooting object="this.ship"/>
+              <shoot_at object="this.ship" target="$target" additional_targets="$additionaltargets" missiles="true" tolerance="$ToleranceWeapon2" fixedtarget="true" />
+              <!-- set special Flight behaviour for missiles -->
+              <set_value name="$Behaviour" exact="flightbehaviour.bigfight" />
+            </do_if>
+            <do_else>
+              <shoot_at object="this.ship" target="$target" additional_targets="$additionaltargets" fixedtarget="true" />
+              <stop_shooting object="this.ship" missiles="true"/>
+            </do_else>
+          </do_if>
+
+          <!-- moving to a position a distance from the target isn't supported in some of the flight behaviors! hmm. -->
+          <!--<set_value name="$tempdist" min="$minrange" max="$maxrange"/>
+          <set_value name="$tempproportion" exact="$tempdist / this.ship.distanceto.{$target}"/>
+          <create_position name="$myrelpos" space="$target" object="this.ship"/>
+          <create_position name="$tempoffset" space="$target" x="$myrelpos.x * $tempproportion" y="$myrelpos.y * $tempproportion" z="$myrelpos.z * $tempproportion" object="$target"/>
+          <get_safe_pos result="$pos" sector="$target.sector" value="$tempoffset" object="$target" radius="this.ship.size / 2.0" ignored="this.ship"/>
+          <create_position name="$pos" space="$target" value="$pos" object="$target.sector"/>
+          <do_if value="$target.distanceto.[$target, $pos] gt $maxrange or $target.distanceto.[$target, $pos] lt $minrange">
+            <debug_text text="'%s %s plotted attack position.\nmy distance to pos: %s\ntarget distance to pos: %s\npresent distance to target: %s\nmin dist: %s\nmax dist: %s'.[this.ship.knownname, this.ship, this.ship.distanceto.[$target, $pos], $target.distanceto.[$target, $pos], this.ship.distanceto.{$target}, $minrange, $maxrange]" chance="100"/>
+          </do_if>
+          <remove_value name="$tempoffset"/>
+          <remove_value name="$tempoffsetcomponent"/>
+          <remove_value name="$myrelpos"/>
+          <remove_value name="$tempdist"/>-->
+
+          <!-- this is simply to prevent prematurely stopping the attack run if we start while we are very far from the target. -->
+          <set_value name="$duration_movement" exact="[((this.assignedcontrolled.bboxdistanceto.{$target} + this.assignedcontrolled.size) / [this.assignedcontrolled.maxspeed, 1m].max)s, 40s].max"/>
+          <do_if value="$duration_movement gt 40s">
+            <debug_text text="'chasing. travel mode active.\ntime to target: %ss'.[((this.assignedcontrolled.bboxdistanceto.{$target} + this.assignedcontrolled.size) / [this.assignedcontrolled.maxspeed, 1m].max)s]" chance="$debugchance"/>
+            <set_value name="$Behaviour" exact="flightbehaviour.chase"/>
+          </do_if>
+          <debug_text text="'starting attack run. ETA: %ss. distance to target: %sm, maximum normal speed: %s'.[$duration_movement, this.assignedcontrolled.bboxdistanceto.{$target}, this.assignedcontrolled.maxspeed]" chance="$debugchance"/>
+
+          <!-- do a simple attack run -->
+          <debug_text text="'start attack run. D=' + this.ship.distanceto.{$target} + ' .Behaviour: '+ $Behaviour " chance="$debugchance" />
+          <include_interrupt_actions ref="NPCUseCase_AttackRun_Small" />
+          <move_to object="this.ship" destination="$target" flightbehaviour="$Behaviour" forcesteering="true" travel="$duration_movement gt 40s">
+            <!--<position value="$pos"/>-->
+            <interrupt_after_time time="$duration_movement" comment="some flight behaviors do not finish" />
+            <interrupt>
+              <conditions>
+                <check_any>
+                  <event_object_destroyed object="$target" />
+                  <event_object_launched_missile object="this.ship" />
+                </check_any>
+              </conditions>
+            </interrupt>
+          </move_to>
+          <remove_value name="$duration_movement"/>
+        </do_if>
+
+        <do_if value="$target.isoperational and this.assignedcontrolled.bboxdistanceto.{$target} lt $MaxGainDistance">
+          <!-- Boosting. Only with a minimum threashold -->
+          <set_value name="$boost" exact="false" />
+          <set_value name="$moveduration" exact="30s"/>
+          <do_if value="$allowboost and (this.assignedcontrolled.combinedskill ge 30 or this.race == race.terran) and (this.assignedcontrolled.shieldpercentage gt 50)">
+            <set_value name="$boost" exact="true" />
+            <set_value name="$moveduration" exact="(this.assignedcontrolled.boost.maxduration * (this.assignedcontrolled.shieldpercentage / 100.0) * 0.5)s"/>
+            <debug_text text="'using boost. combinedskill: %s, shieldpercentage: %s\nboost duration: %ss\nmax boost duration: %ss\nduration before empty: %ss\nshield percentage: %s'.[this.assignedcontrolled.combinedskill, this.assignedcontrolled.shieldpercentage, $moveduration, this.assignedcontrolled.boost.maxduration, this.assignedcontrolled.boost.maxduration * (this.assignedcontrolled.shieldpercentage / 100.0), this.assignedcontrolled.shieldpercentage]" chance="$debugchance"/>
+          </do_if>
+          <do_if value="this.assignedcontrolled.isclass.ship_xs">
+            <set_value name="$moveduration" exact="$moveduration / 10s"/>
+          </do_if>
+
+          <!-- try to gain distance for a new attack run -->
+          <move_to object="this.assignedcontrolled" destination="$target" flightbehaviour="flightbehaviour.gaindistance" forcesteering="true" boost="$boost">
+            <interrupt_after_time time="$moveduration" comment="this is a max limit, the behaviour will decide when to stop based on distance/speed to target" />
+            <interrupt>
+              <conditions>
+                <event_object_attacked object="this.assignedcontrolled" />
+                <check_value value="event.param" exact="this.assignedcontrolled" negate="true" />
+                <check_value value="this.assignedcontrolled.type != shiptype.frigate"/>
+              </conditions>
+              <actions>
+                <set_value name="$doevade" exact="true" />
+              </actions>
+            </interrupt>
+          </move_to>
+          <do_if value="$boost">
+            <debug_text text="'%s %s %s shield percentage after boost: %s'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, this.assignedcontrolled.shieldpercentage]" chance="0"/>
+          </do_if>
+        </do_if>
+
+        <do_if value="$target.isoperational and not this.assignedcontrolled.isclass.ship_xs">
+          <is_in_quadrant object="$target" target="this.ship" front="true" result="$beingfollowed" />
+          <!-- After tring to gain distance, if I'm still followed: evade -->
+          <do_if value="@$beingfollowed and this.ship.distanceto.{$target} le $MinGainDistance">
+            <debug_text text="'target is facing us. Distance %1. Evade'.[this.ship.distanceto.{$target}]" chance="$debugchance" />
+            <!-- following logic temporarily disabled pending further discussion -->
+            <do_if value="false and this.assignedcontrolled.ammostorage.{deployablecategory.mine}.count">
+              <set_value name="$minechance" exact="this.assignedcontrolled.combinedskill"/>
+              <do_for_each name="$locmacro" in="this.assignedcontrolled.ammostorage.{deployablecategory.mine}.list">
+                <!-- review if we ever get a crazy number of mine types. -->
+                <do_if value="$locmacro.isfriendfoe">
+                  <set_value name="$minechance" exact="[this.assignedcontrolled.combinedskill * 2, 100].min"/>
+                  <set_value name="$minemacro" exact="$locmacro"/>
+                  <break/>
+                </do_if>
+              </do_for_each>
+              <do_all chance="$minechance">
+                <do_if value="$minemacro?">
+                  <launch_mine name="$locmine" object="this.assignedcontrolled" macro="$minemacro" timeout="30s"/>
+                </do_if>
+                <do_else>
+                  <launch_mine name="$locmine" object="this.assignedcontrolled" timeout="30s"/>
+                </do_else>
+                <do_if value="@$locmine.exists and $locmine.isfriendfoe">
+                  <do_if value="$locmine.isplayerowned">
+                    <set_relation_boost object="$target" otherobject="$locmine" value="this.trueowner.relation.kill.min" reason="relationchangereason.attackedobject" silent="true"/>
+                  </do_if>
+                  <do_else>
+                    <set_relation_boost object="$locmine" otherobject="$target" value="this.trueowner.relation.kill.min" reason="relationchangereason.attackedobject" silent="true"/>
+                  </do_else>
+                </do_if>
+                <remove_value name="$locmine"/>
+              </do_all>
+              <remove_value name="$minemacro"/>
+              <remove_value name="$minechance"/>
+            </do_if>
+            <set_value name="$doevade" exact="true" />
+          </do_if>
+        </do_if>
+
+        <do_if value="$doevade and $target.isoperational">
+          <set_value name="$doevade" exact="false" />
+          <run_script name="'move.evade'">
+            <param name="allowboost" value="$allowboost"/>
+          </run_script>
+        </do_if>
+
+        <wait min="100ms" max="500ms" />
+
+      </do_while>
+
+      <!-- END FIGHT MOVEMENT -->
+
+      <label name="finish" />
+
+      <reset_flight_behaviour object="this.assignedcontrolled"/>
+      <set_to_default_flight_control_model object="this.assignedcontrolled"/>
+      <stop_moving object="this.ship" />
+      <do_if value="not this.ship.defencenpc">
+        <cease_fire object="this.object" />
+        <set_alert_level object="this.ship" level="green" />
+      </do_if>
+      <remove_value name="this.$attacktarget"/>
+      <wait exact="100ms" />
+
+    </actions>
+  </attention>
+  <attention min="unknown">
+    <actions>
+      <!-- OOS: NOT CHECKING FOR BIG TARGETS -->
+      <label name="fight"/>
+
+      <do_if value="@$target.zone.isclass.highway">
+        <!-- DisengageHandler will land us here. -->
+        <debug_text text="'target now in a highway. disengaging.'" chance="$debugchance"/>
+        <resume label="finish"/>
+      </do_if>
+
+      <!-- Setting shooting and flight values  -->
+      <set_value name="$ToleranceWeapon1" exact="7.0deg" />
+      <set_value name="$ToleranceWeapon2" exact="5.0deg" />
+      <select_flight_behaviour entity="this" evasive="false" result="$Behaviour" />
+      <set_value name="$MaxGainDistance" exact="this.ship.maxcombatrange.all" />
+      <set_value name="$MinGainDistance" exact="$MaxGainDistance * 0.5"/>
+
+      <!-- Simulate the attack -->
+      <set_command_action commandaction="commandaction.attacking" />
+
+      <set_value name="$isdead" exact="0" />
+      <set_value name="$attacktime" exact="player.age + 10min" />
+
+      <!-- repeat until target is dead (or we are) -->
+      <do_while value="$target.isoperational and not $isdead" >
+
+        <!-- abort if the target no longer is an enemy or is docked-->
+        <do_if value="($checkrelation and not this.mayattack.{$target}) or @$target.dock">
+          <debug_text text="this.ship.knownname + ' is not enemy to ' + $target.knownname" chance="$debugchance"/>
+          <break />
+        </do_if>
+
+        <do_if value="$needsammo?">
+          <do_if value="this.assignedcontrolled.ammostorage.missile.count">
+            <do_for_each name="$locammo" in="this.assignedcontrolled.ammostorage.missile.list">
+              <do_for_each name="$locweapon" in="this.assignedcontrolled.weapons.operational.list">
+                <do_if value="$locweapon.ammo.iscompatible.{$locammo}">
+                  <set_value name="$hasammo"/>
+                  <break/>
+                </do_if>
+              </do_for_each>
+              <do_if value="$hasammo?">
+                <break/>
+              </do_if>
+              <do_for_each name="$locturret" in="this.assignedcontrolled.turrets.operational.list">
+                <do_if value="$locweapon.ammo.iscompatible.{$locammo}">
+                  <set_value name="$hasammo"/>
+                  <break/>
+                </do_if>
+              </do_for_each>
+              <do_if value="$hasammo?">
+                <break/>
+              </do_if>
+            </do_for_each>
+          </do_if>
+
+          <do_if value="not $hasammo? and @this.trueowner.doesresupply">
+            <do_if value="not @this.$resupplier.isoperational and not @$localresupplier.isoperational and this.sector">
+              <find_ship name="$localresupplier" cansupplyclass="this.assignedcontrolled.class" owner="this.owner" space="this.sector"/>
+            </do_if>
+            <do_if value="not this.isplayerowned or @this.$resupplier.isoperational or @$localresupplier.isoperational">
+              <debug_text text="'%s %s %s out of ammo. moving to drydock for supplies.'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled]" chance="$debugchance"/>
+              <set_value name="$resupplier" exact="null"/>
+              <do_if value="@this.$resupplier.isoperational">
+                <set_value name="$resupplier" exact="this.$resupplier"/>
+              </do_if>
+              <do_elseif value="@$localresupplier.isoperational">
+                <set_value name="$resupplier" exact="$localresupplier"/>
+              </do_elseif>
+              <create_order id="'Resupply'" object="this.assignedcontrolled" immediate="true">
+                <param name="param_station" value="$resupplier"/>
+                <param name="internalorder" value="true"/>
+                <param name="debugchance" value="$debugchance"/>
+              </create_order>
+              <!-- cancel the attack order so we don't keep trying to attack in case resupply fails -->
+              <do_if value="this.assignedcontrolled.nextorder and (this.assignedcontrolled.nextorder.id != 'Board')">
+                <!-- if we are out of ammo, cannot attack, and are boarding, do not cancel the board order. situation is handled when that script initializes. -->
+                <cancel_order order="this.assignedcontrolled.nextorder"/>
+              </do_if>
+            </do_if>
+            <do_else>
+              <debug_text text="'player-owned ship %s %s %s out of ammo. sending notification and stopping attack.'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled]" chance="$debugchance"/>
+              <do_if value="notification.npc_out_of_ammo.active">
+                <!-- INTERACTION: out of ammo. cannot attack. -->
+                <run_script name="'player.interaction'" result="$locresponse">
+                  <param name="Line" value="5028" comment="Requesting instructions."/>
+                  <param name="UIText" value="{1015, 35}.[this.ship.idcode, this.ship.name]" comment="Requesting Orders"/>
+                  <param name="ConversationParam" value="'g_playerownedship_attacking_outofammo'"/>
+                  <param name="MaxQueueDelay" value="10s"/>
+                  <param name="caption" value="{1015, 43} + ' - ' + {1016,6}.[this.assignedcontrolled.knownname, this.assignedcontrolled.idcode]" comment="Out of ammo"/>
+                  <param name="debugchance" value="$debugchance"/>
+                </run_script>
+              </do_if>
+              <do_if value="@$locresponse != 'getammo' and this.assignedcontrolled.order">
+                <write_to_logbook category="general" title="{1015, 43}" text="{1016, 95}.[this.assignedcontrolled.knownname, this.assignedcontrolled.idcode]" interaction="showonmap" object="this.assignedcontrolled"/>
+                <do_if value="this.assignedcontrolled.order.id != 'Board'">
+                  <!-- if we are out of ammo, cannot attack, and are boarding, do not cancel the board order. situation is handled when that script initializes. -->
+                  <cancel_order order="this.assignedcontrolled.order"/>
+                </do_if>
+              </do_if>
+            </do_else>
+            <do_if value="@$locresponse != 'getammo'">
+              <create_order id="'Flee'" object="this.assignedcontrolled" immediate="true">
+                <param name="method" value="'boost'"/>
+                <param name="attacker" value="$target"/>
+                <param name="donotdrop" value="true"/>
+                <param name="deploydistraction" value="true"/>
+                <param name="log" value="false"/>
+                <param name="debugchance" value="$debugchance"/>
+              </create_order>
+            </do_if>
+            <remove_value name="$locresponse"/>
+          </do_if>
+          <remove_value name="$hasammo"/>
+        </do_if>
+
+        <do_if value="$escort.exists">
+          <set_value name="$refobject" exact="$escort"/>
+        </do_if>
+        <do_else>
+          <set_value name="$refobject" exact="this.ship"/>
+        </do_else>
+
+        <!-- If the target is in a different sector, or is farther than pursuedistance (should normally be radar range), -->
+        <do_if value="this.sector != $target.sector or (not $pursuetargets and $refobject.distanceto.{$target} gt $pursuedistance)">
+          <!-- break off attack. implementation of pursuetargets moved to order.fight.attack.object. -->
+          <debug_text text="'target is either not in the same sector or not within 10 minutes travel time and i am not authorized to pursue. breaking off attack.\n  my sector: %s\n target sector: %s\n distance to target: %s\n max distance in 10 minutes: %s\n pursue distance: %s'.[$refobject.sector, $target.sector, $refobject.distanceto.{$target}, this.ship.maxspeed*600, $pursuedistance]" chance="$debugchance"/>
+          <break/>
+        </do_if>
+
+        <!-- New simulated run attack.  -->
+        <do_if value="$target.isoperational and (not $duration_movement? or ((player.age - @$time_movestart) ge $duration_movement))">
+          <set_value name="$duration_movement" exact="[((this.assignedcontrolled.bboxdistanceto.{$target} + this.assignedcontrolled.size) / [this.assignedcontrolled.maxspeed, 1m].max)s, 40s].max"/>
+          <debug_text text="'movement duration: %ss'.[$duration_movement]" chance="$debugchance"/>
+          <set_value name="$time_movestart" exact="player.age"/>
+          <debug_text text="'starting attack run. ETA: %ss. distance to target: %sm, maximum normal speed: %s'.[$duration_movement, this.assignedcontrolled.bboxdistanceto.{$target}, this.assignedcontrolled.maxspeed]" chance="$debugchance"/>
+          <move_to object="this.ship" destination="$target" finishonapproach="true" travel="$duration_movement gt 40s">
+            <interrupt_after_time time="1s"/>
+          </move_to>
+        </do_if>
+        <wait min="5ms" max="15ms" profile="flat" comment="we fire while approaching the target. wait is just to ensure we don't have infinite loops if moving returns immediately"/>
+
+        <do_if value="$target.isoperational and not this.ship.defencenpc">
+          <!-- Attacking 1-7 seconds -->
+          <!-- get strength of the next attack -->
+          <is_in_quadrant result="$useforwardweapons" object="this.assignedcontrolled" target="$target" front="true"/>
+          <get_attackstrength object="this.assignedcontrolled" target="$target" usedrones="false" useforwardweapons="$useforwardweapons">
+            <result hullshield="$result_hullshield" hullonly="$result_hullonly" shieldonly="$result_shieldonly" hullnoshield="$result_hullnoshield"/>
+            <missileresult ammo="$spentammotable" impacting="$impactingammotable" hullshield="$result_missilehullshield" hullonly="$result_missilehullonly" shieldonly="$result_missileshieldonly" hullnoshield="$result_missilehullnoshield"/>
+          </get_attackstrength>
+          <set_value name="$guidedmissilelaunched" exact="false"/>
+          <do_for_each name="$missilemacro" valuename="$missileamount" in="$spentammotable">
+            <do_if value="not $guidedmissilelaunched and $missilemacro.isguided">
+              <set_value name="$guidedmissilelaunched" exact="true"/>
+            </do_if>
+            <remove_ammo object="this.assignedcontrolled" macro="$missilemacro" amount="$missileamount"/>
+          </do_for_each>
+          <do_if value="this.assignedcontrolled.isformationleader">
+            <!-- ships flying in formation with this ship fire on target as the opportunity presents itself -->
+            <do_for_each name="$locship" in="this.assignedcontrolled.currentformationwingmen">
+              <do_if value="@$locship.formationleader == this.assignedcontrolled and not $locship.defencenpc" chance="15">
+                <is_in_quadrant result="$loc_useforwardweapons" object="$locship" target="$target" front="true"/>
+                <get_attackstrength object="$locship" target="$target" usedrones="false" useforwardweapons="$loc_useforwardweapons">
+                  <result hullshield="$locresult_hullshield" hullonly="$locresult_hullonly" shieldonly="$locresult_shieldonly" hullnoshield="$locresult_hullnoshield"/>
+                  <missileresult ammo="$locresult_spentammotable" impacting="$locresult_impactingammotable" hullshield="$locresult_missilehullshield" hullonly="$locresult_missilehullonly" shieldonly="$locresult_missileshieldonly" hullnoshield="$locresult_missilehullnoshield"/>
+                </get_attackstrength>
+                <set_value name="$result_hullshield" exact="$result_hullshield + $locresult_hullshield"/>
+                <set_value name="$result_hullonly" exact="$result_hullonly + $locresult_hullonly"/>
+                <set_value name="$result_shieldonly" exact="$result_shieldonly + $locresult_shieldonly"/>
+                <set_value name="$result_hullnoshield" exact="$result_hullnoshield + $locresult_hullnoshield"/>
+                <set_value name="$result_missilehullshield"   exact="$locresult_missilehullshield" operation="add"/>
+                <set_value name="$result_missilehullonly"     exact="$locresult_missilehullonly" operation="add"/>
+                <set_value name="$result_missileshieldonly"   exact="$locresult_missileshieldonly" operation="add"/>
+                <set_value name="$result_missilehullnoshield" exact="$locresult_missilehullnoshield" operation="add"/>
+                <!--Remove the missile ammo launched from this follower and check if one was a guided missile which may trigger a countermeasure-->
+                <do_for_each name="$missilemacro" valuename="$missileamount" in="$locresult_spentammotable">
+                  <do_if value="not $guidedmissilelaunched and $missilemacro.isguided">
+                    <set_value name="$guidedmissilelaunched" exact="true"/>
+                  </do_if>
+                  <remove_ammo object="$locship" macro="$missilemacro" amount="$missileamount"/>
+                </do_for_each>
+                <!--Merge the impacting ammo tables of this follower and the leader as we may need to reference them if a countermeasure is launched later-->
+                <do_for_each name="$missilemacro" valuename="$missileamount" in="$locresult_impactingammotable">
+                  <set_value name="$impactingammotable.{$missilemacro}" operation="add" exact="$missileamount"/>
+                </do_for_each>
+              </do_if>
+            </do_for_each>
+            <remove_value name="$loc_useforwardweapons"/>
+            <remove_value name="$locresult_hullshield"/>
+            <remove_value name="$locresult_hullonly"/>
+            <remove_value name="$locresult_shieldonly"/>
+            <remove_value name="$locresult_hullnoshield"/>
+            <remove_value name="$locresult_missilehullshield"/>
+            <remove_value name="$locresult_missilehullonly"/>
+            <remove_value name="$locresult_missileshieldonly"/>
+            <remove_value name="$locresult_missilehullnoshield"/>
+            <remove_value name="$locresult_spentammotable"/>
+            <remove_value name="$locresult_impactingammotable"/>
+          </do_if>
+
+          <!--Check if a guided missile was fired. If so, attempt to launch a countermeasure from the target-->
+          <remove_value name="$targetcountermeasure_startcount"/>
+          <remove_value name="$targetcountermeasuremacro"/>
+          <do_if value="$guidedmissilelaunched and $target.isclass.defensible">
+            <!--Gather data on remaining countermeasures for later-->
+            <set_value name="$targetcountermeasure_startcount" exact="$target.ammostorage.countermeasure.count"/>
+            <do_if value="$targetcountermeasure_startcount">
+              <set_value name="$targetcountermeasuremacro" exact="$target.ammostorage.countermeasure.list.random"/>
+              <!--Now launch the countermeasure for our missiles-->
+              <launch_countermeasures object="$target" virtual="true"/>
+              <set_value name="$targetcountermeasure_startcount" operation="subtract"/>
+              <debug_text text="'depleted countermeasures, current storage: %s'.[$targetcountermeasure_startcount]" chance="0"/>
+            </do_if>
+            <!--Now that we've dealt with the spent missiles, reset $guidedmissilelaunched based on the impacting missiles and remaining countermeasures to see if they could be distracted later-->
+            <set_value name="$guidedmissilelaunched" exact="false"/>
+            <do_if value="$targetcountermeasure_startcount">
+              <do_for_each name="$missilemacro" in="$impactingammotable">
+                <do_if value="$missilemacro.isguided">
+                  <set_value name="$guidedmissilelaunched" exact="true"/>
+                  <break/>
+                </do_if>
+              </do_for_each>
+            </do_if>
+          </do_if>
+
+          <do_if value="$result_hullshield or $result_hullonly or $result_shieldonly or $result_hullnoshield
+                 or $result_missilehullshield or $result_missilehullonly or $result_missileshieldonly or $result_missilehullnoshield">
+            <!--If ship was not facing the target when calculating dps, make the attack run shorter so they can sooner try again-->
+            <do_if value="$useforwardweapons">
+              <set_value name="$attackcounter" min="1" max="7" profile="increasing"/>
+            </do_if>
+            <do_else>
+              <set_value name="$attackcounter" min="1" max="5" profile="decreasing"/>
+            </do_else>
+            <do_all exact="$attackcounter" counter="$attack_i" comment="chance of fail and attack" >
+              <wait exact="1s" comment="dps-> every second makes damage" />
+              <do_if value="$target.isoperational and not $isdead">
+                <!-- do not attack objects that are too far away, gravidar range can be 20km+ !! -->
+                <do_if value="this.ship.distanceto.{$target} lt $MaxGainDistance" >
+                  <do_if value="not @$module.isoperational">
+                    <remove_value name="$module"/>
+                    <do_if value="@$target.ismodular or @$target.canhaveattackablemodules">
+                      <!--TODO @Owen should this be finding the closest one?-->
+                      <find_object_component name="$module" class="class.defencemodule" object="$target" />
+                    </do_if>
+                  </do_if>
+                  <!--if final iteration, check missiles-->
+                  <do_if value="$attack_i == $attackcounter and $impactingammotable.keys.count">
+                    <!--if a guided missile was launched, check target countermeasure counts-->
+                    <do_if value="$guidedmissilelaunched and $target.isclass.defensible">
+                      <set_value name="$targetcountermeasure_endcount" exact="$target.ammostorage.countermeasure.count"/>
+                      <do_if value="$targetcountermeasure_startcount and $targetcountermeasure_endcount lt $targetcountermeasure_startcount">
+                        <!--Countermeasures have been launched between the start of this attack and firing the missiles. Check countermeasure resistances and potentially reduce damage.-->
+                        <do_for_each name="$missilemacro" valuename="$missileamount" in="$impactingammotable">
+                          <do_if value="$missilemacro.isguided">
+                            <!--Multiply by a reduced factor as large targets may still be hit even if a missile is distracted by a countermeasure-->
+                            <set_value name="$countermeasuresuccesschance" exact="(100.0f - $missilemacro.countermeasureresistance.{$targetcountermeasuremacro}) * 0.7f"/>
+                            <do_all exact="$targetcountermeasure_startcount - $targetcountermeasure_endcount">
+                              <!--do_if = true here so we can contain these actions and have the break escape the above loop-->
+                              <do_if value="true" chance="$countermeasuresuccesschance">
+                                <!--note: the .explosive damage property result may be higher than the damage calculated by get_attackstrength due to other factors. Protect against negative.-->
+                                <debug_text text="'missile %s distracted by countermeasure that launched since the attack started'.[$missilemacro.id]" chance="$debugchance"/>
+                                <set_value name="$result_missilehullshield"    exact="[$result_missilehullshield - $missilemacro.explosiondamage.hullshield, 0].max"/>
+                                <set_value name="$result_missilehullonly"      exact="[$result_missilehullonly - $missilemacro.explosiondamage.hullonly, 0].max"/>
+                                <set_value name="$result_missileshieldonly"    exact="[$result_missileshieldonly - $missilemacro.explosiondamage.shieldonly, 0].max"/>
+                                <set_value name="$result_missilehullnoshield"  exact="[$result_missilehullnoshield - $missilemacro.explosiondamage.hullnoshield, 0].max"/>
+                                <break/>
+                              </do_if>
+                            </do_all>
+                          </do_if>
+                        </do_for_each>
+                      </do_if>
+                      <remove_value name="$targetcountermeasure_endcount"/>
+                    </do_if>
+                    <!-- Apply the missile explosive damage -->
+                    <apply_attackstrength object="$target" attacker="this.assignedcontrolled" explosion="true" hullshield="$result_missilehullshield" hullonly="$result_missilehullonly" shieldonly="$result_missileshieldonly" hullnoshield="$result_missilehullnoshield" module="@$module" surfaceelement="@$surfaceelement">
+                      <result killed="$isdead" module="$module" surfaceelement="$surfaceelement"/>
+                    </apply_attackstrength>
+                    <debug_text text="'%1 OOS. Apply explosive damage of %2 against %3 is: %4(%5|%6). Is killed: %7'.[player.age,this.ship.knownname,$target.knownname,$result_missilehullshield+$result_missilehullonly+$result_missileshieldonly+$result_missilehullnoshield,$target.hull,$target.shield,$isdead]" chance="$debugchance" />
+                  </do_if>
+                  <do_if value="not $isdead">
+                    <!-- Apply the regular dps attack strength -->
+                    <apply_attackstrength object="$target" attacker="this.assignedcontrolled" hullshield="$result_hullshield" hullonly="$result_hullonly" shieldonly="$result_shieldonly" hullnoshield="$result_hullnoshield" module="@$module" surfaceelement="@$surfaceelement">
+                      <result killed="$isdead" module="$module" surfaceelement="$surfaceelement"/>
+                    </apply_attackstrength>
+                  </do_if>
+                  <debug_text text="'smallship v smallship. %s %s %s attacking %s %s %s.\ndamage: %s\ndps: %s\ntarget speed: %sm/s\ntarget size: %s\ndistance to target: %sm'.[this.assignedcontrolled.idcode, this.assignedcontrolled.knownname, this.assignedcontrolled, $target.idcode, $target.knownname, $target, $result_hullshield + $result_hullonly + $result_shieldonly + $result_hullnoshield, this.assignedcontrolled.dps.all, $target.speed, $target.size, this.assignedcontrolled.bboxdistanceto.{$target}]" chance="0"/>
+                  <debug_text text="'%s OOS. Apply strength of %s against %s is: hullshield: %s, hullonly: %s, shieldonly: %s, hullnoshield: %s. (%s|%s). Is killed: %s'.[player.age, this.ship.knownname, $target.knownname, $result_hullshield, $result_hullonly, $result_shieldonly, $result_hullnoshield, $target.hull, $target.shield, $isdead]" chance="$debugchance"/>
+                </do_if>
+              </do_if>
+            </do_all>
+          </do_if>
+          <do_else>
+            <debug_text text="'%s OOS. %s has no DPS to apply to target %s at distance %s. Will wait.'.[player.age, this.ship.knownname, $target.knownname, this.assignedcontrolled.bboxdistanceto.{$target}]" chance="$debugchance"/>
+            <wait min="1s" max="7s" sinceversion="10"/>
+          </do_else>
+          <remove_value name="$useforwardweapons"/>
+        </do_if>
+
+        <!-- Search/Attacking wait time -->
+        <do_if value="$target.isoperational and (this.assignedcontrolled.bboxdistanceto.{$target} lt $MaxGainDistance)">
+          <create_position name="$locpos" space="$target.zone" min="$MinGainDistance" max="$MaxGainDistance" object="$target"/>
+          <create_orientation name="$locrot" refobject="$target" orientation="look_at">
+            <position value="$locpos"/>
+          </create_orientation>
+          <debug_text text="'pos %sm away from target'.[$target.distanceto.{$locpos}]" chance="$debugchance"/>
+          <set_value name="$gain_dist_time" min="3s" max="8s"/>
+          <move_to object="this.ship" destination="$target.zone" finishonapproach="true" >
+            <position value="$locpos"/>
+            <rotation value="$locrot"/>
+            <interrupt_after_time time="$gain_dist_time" />
+          </move_to>
+          <remove_value name="$gain_dist_time"/>
+          <remove_value name="$locpos"/>
+          <remove_value name="$locrot"/>
+          <wait min="1s" max="2s" profile="flat" />
+        </do_if>
+
+        <!-- Avoid an infite loop-->
+        <do_if value="player.age" min="$attacktime">
+          <break/>
+        </do_if>
+      </do_while>
+
+      <label name="finish" />
+
+      <do_if value="not this.ship.defencenpc">
+        <cease_fire object="this.object" />
+      </do_if>
+      <reset_flight_behaviour object="this.assignedcontrolled"/>
+      <set_to_default_flight_control_model object="this.assignedcontrolled"/>
+      <remove_value name="this.$attacktarget"/>
+      <debug_text text="'No more targets to be found'" chance="$debugchance" />
+      <wait exact="100ms" />
+
+    </actions>
+  </attention>
+  <on_abort>
+    <do_if value="this.assignedcontrolled.isoperational">
+      <reset_flight_behaviour object="this.assignedcontrolled"/>
+      <set_to_default_flight_control_model object="this.assignedcontrolled"/>
+      <stop_moving object="this.ship" />
+    </do_if>
+    <do_if value="not this.ship.defencenpc">
+      <cease_fire object="this.object" />
+      <set_alert_level object="this.ship" level="green" />
+    </do_if>
+    <remove_value name="this.$attacktarget"/>
+  </on_abort>
+</aiscript>

@@ -1,0 +1,522 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="Tutorial_map" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+    <cue name="Start" namespace="this">
+      <conditions>
+        <event_cue_signalled cue="md.Setup.Start" />
+      </conditions>
+      <actions>
+        <do_if value="not md.$TutorialRegister?">
+          <set_value name="md.$TutorialRegister" exact="[]" />
+        </do_if>
+        <append_to_list name="md.$TutorialRegister" exact="Start" />
+      </actions>
+      <cues>
+        <cue name="PlayerDied">
+          <conditions>
+            <event_object_destroyed object="player.entity" />
+          </conditions>
+          <actions>
+            <cancel_cue cue="Start" />
+          </actions>
+        </cue>
+
+        <cue name="Trigger" checkinterval="5s" version="2">
+          <conditions>
+            <check_value value="not md.$SurpressTutorials?" />
+            <check_value value="player.computer" />
+          </conditions>
+          <actions>
+            <set_value name="$DebugChance" exact="0"/>
+            <set_value name="$MissionName" exact="' 8) ' + readtext.{30195}.{1}" />
+            <set_value name="$Guide" exact="player.computer" />
+            <create_offer cue="Start" actor="$Guide" name="$MissionName" description="readtext.{30195}.{2}" difficulty="level.trivial" faction="faction.player" type="missiontype.tutorial">
+              <briefing>
+                <objective step="1" action="objective.custom" customaction="{30195,20}"/>
+                <objective step="2" action="objective.custom" customaction="{30195,21}"/>
+                <objective step="3" action="objective.custom" customaction="{30195,22}"/>
+              </briefing>
+            </create_offer>
+          </actions>
+          <patch sinceversion="2">
+            <do_if value="Start.hasmissionoffer">
+              <set_value name="$MissionName" exact="' 8) ' + readtext.{30195}.{1}" />
+              <update_offer cue="Start" name="$MissionName"/>
+            </do_if>
+          </patch>
+          <cues>
+            <cue name="Offer">
+              <cues>
+                <cue name="ConversationStarted" instantiate="true">
+                  <conditions>
+                    <event_conversation_started actor="$Guide" conversation="mission" convparam="Start" />
+                  </conditions>
+                  <actions>
+                    <remove_help all="true" />
+                    <open_conversation_menu menu="MissionBriefingMenu" param="[0, 0, Start, true]" />
+                  </actions>
+                  <cues>
+                    <cue name="ConversationNextSection" instantiate="true">
+                      <conditions>
+                        <event_conversation_next_section actor="$Guide" choiceparam="Start" />
+                      </conditions>
+                      <actions>
+                        <!-- Accept case -->
+                        <do_if value="event.param == 'c_mission_accept'">
+                          <signal_cue cue="Tutorial" />
+                        </do_if>
+                      </actions>
+                    </cue>
+
+                    <cue name="ConversationFinished">
+                      <conditions>
+                        <event_conversation_finished actor="$Guide" />
+                      </conditions>
+                      <actions>
+                        <cancel_cue cue="ConversationStarted" />
+                      </actions>
+                    </cue>
+
+                    <cue name="AcceptMission">
+                      <conditions>
+                        <event_object_signalled object="$Guide" param="'accept'" />
+                      </conditions>
+                      <actions>
+                        <signal_cue cue="Tutorial" />
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="Tutorial">
+              <conditions>
+                <check_any>
+                  <event_cue_signalled />
+                  <event_object_signalled object="player.entity" param="'start'" param2="Start" />
+                </check_any>
+              </conditions>
+              <actions>
+                <debug_text text="'Tutorial can begin'" chance="$DebugChance" />
+                <cancel_cue cue="Offer" />
+                <signal_cue_instantly cue="md.Tutorials.NewTutorialTriggered" param="Start" />
+                <set_value name="$TutorialStartTime" exact="player.age" />
+                <create_mission cue="Start" offercue="Start" />
+                <cancel_conversation actor="$Guide" />
+                <remove_offer cue="Start" />
+                <remove_help all="true" />
+                <set_value name="$StartDelay" exact="2s"/>
+                <remove_help all="true"/>
+                <show_help line="1001" duration="7s" position="1" force="true" width="140" comment="You can abort this tutorial in the Active Missions menu" allowclose="false" />
+                <set_value name="$MapOpen" exact="false" comment="assume map is closed"/>
+              </actions>
+              <cues>
+
+                <cue name="Abort">
+                  <conditions>
+                    <event_mission_aborted cue="Start" />
+                  </conditions>
+                  <actions>
+                    <remove_help all="true"/>
+                    <remove_mission cue="Start" type="aborted" />
+                    <signal_cue cue="Cleanup" />
+                  </actions>
+                </cue>
+
+                <cue name="Abort_OtherTutorialStarted">
+                  <conditions>
+                    <event_cue_signalled cue="md.Tutorials.NewTutorialTriggered" />
+                    <check_value value="event.param != Start" />
+                  </conditions>
+                  <actions>
+                    <remove_help all="true"/>
+                    <show_notification text="{1015,400}" sound="notification_warning" comment="Tutorial aborted" />
+                    <remove_mission cue="Start" type="aborted"/>
+                    <signal_cue cue="Cleanup" />
+                  </actions>
+                </cue>
+
+                <cue name="Tutorial_Init">
+                  <delay exact="$StartDelay"/>
+                  <actions>
+                    <!--Create a list of tutorial cues to trigger in what order, and what briefing step they point to-->
+                    <set_value name="$SignalList" exact="[
+                                [Tutorial_Basics, 1],
+                                [Tutorial_Context, 2],
+                                [Tutorial_Object, 3],
+                    ]"/>
+
+                    <set_value name="$Index" exact="0"/>
+                    <signal_cue cue="Tutorial_TriggerNext"/>
+
+                  </actions>
+                </cue>
+
+                <cue name="Tutorial_TriggerNext" instantiate="true">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <actions>
+                    <set_value name="$Index" operation="add"/>
+                    <do_if value="$Index gt $SignalList.count">
+                      <remove_help all="true"/>
+                      <debug_text text="'Basic Map tutorial has been completed'" chance="$DebugChance" />
+                      <show_help line="1002" position="1" force="true" comment="Tutorial Completed!"/>
+                      <show_help line="1003" position="1" force="true" comment="Press $INPUT_ACTION_HELP$ to try other tutorials."/>
+                      <remove_mission cue="Start" type="tutorialcompleted"/>
+                      <signal_cue cue="Cleanup"/>
+                    </do_if>
+                    <do_else>
+                      <signal_cue cue="$SignalList.{$Index}.{1}"/>
+                      <set_value name="$CurrentStep" exact="$SignalList.{$Index}.{2}"/>
+                      <set_objective_from_briefing cue="Start" step="$CurrentStep"/>
+                    </do_else>
+                  </actions>
+                </cue>
+
+                <cue name="Tutorial_MapClose" instantiate="true">
+                  <conditions>
+                    <event_ui_triggered screen="'MapMenu'" control="''"/>
+                  </conditions>
+                  <actions>
+                    <set_value name="$MapOpen" exact="true"/>
+                    <do_if value="player.input.controller">
+                      <show_help_overlay id="'toplevel_map'" highlightonly="true"/>
+                      <show_help_multi position="1" force="true" allowclose="false" width="200">
+                        <text line="992" comment="These yellow-framed boxes are tips. Click the arrow after you have read them to proceed to the next one."/>
+                        <text line="5004" comment="Press $INPUT_ACTION_OPEN_COCKPIT_MENU$ followed by..."/>
+                      </show_help_multi>
+                    </do_if>
+                    <do_else>
+                      <show_help_multi position="1" force="true" allowclose="false" width="200">
+                        <text line="992" log="false" comment="These yellow-framed boxes are tips. Click the arrow after you have read them to proceed to the next one."/>
+                        <text line="5001" log="true" comment="Press $INPUT_ACTION_OPEN_MAP$ to open the MAP menu"/>
+                      </show_help_multi>
+                    </do_else>
+                  </actions>
+                </cue>
+
+                <cue name="Tutorial_MapOpen" instantiate="true">
+                  <conditions>
+                    <event_ui_triggered screen="'MapMenu'" control="'menu_close'"/>
+                  </conditions>
+                  <actions>
+                    <remove_help all="true"/>
+                    <remove_help_overlay id="'toplevel_map'"/>
+                    <set_value name="$MapOpen" exact="false"/>
+                  </actions>
+                </cue>
+
+                <cue name="Tutorial_Basics">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <delay exact="1s"/>
+                  <actions>
+                    <do_if value="player.input.controller">
+                      <show_help_overlay id="'toplevel_map'" highlightonly="true"/>
+                      <show_help line="5004" log="true" position="1" force="true" comment="Press $INPUT_ACTION_OPEN_COCKPIT_MENU$ followed by..." allowclose="false" timeout="false"/>
+                    </do_if>
+                    <do_else>
+                      <show_help line="5001" log="true" position="1" force="true" comment="Press $INPUT_ACTION_OPEN_MAP$ to open the MAP menu" allowclose="false" timeout="false"/>
+                    </do_else>
+                  </actions>
+                  <cues>
+                    <cue name="Tutorial_Basics_Pause" instantiate="true">
+                      <conditions>
+                        <event_cue_completed cue="Tutorial_MapClose"/>
+                      </conditions>
+                      <actions>
+                        <reset_cue cue="Tutorial_Basics_MenuOpen"/>
+                      </actions>
+                    </cue>
+
+                    <cue name="Tutorial_Basics_MenuOpen" comment="TODO: @Roger: If we triggered some other map-related event, this won't fire anymore (and it already failed)">
+                      <conditions>
+                        <event_ui_triggered screen="'MapMenu'" control="''"/>
+                        <check_value value="event.param2 == ''"/>
+                      </conditions>
+                      <actions>
+                        <remove_help_overlay id="'toplevel_map'"/>
+                        <remove_help all="true"/>
+                      </actions>
+                      <cues>
+
+                        <cue name="Tutorial_Basics_MenuOpen_BasicHints">
+                          <delay exact="1s"/>
+                          <actions>
+                            <set_value name="$MouseSteering" exact="false" />
+                            <do_if value="not player.isvrmode and not player.input.controller and not player.input.vrcontroller">
+                              <set_value name="$MouseSteering" exact="true" />
+                            </do_if>
+                            <do_if value="$MouseSteering">
+                              <show_help_multi log="true" position="1" force="true" allowclose="false" width="180">
+                                <text line="5103" comment="This is a 3D map showing the universe you know so far. It grows over time when you discover new areas."/>
+                                <text line="5102" comment="You can PAN, TILT, ROTATE and ZOOM this map to observe your known universe"/>
+                                <text line="5145" comment="rotate/pan/zoom hint (for mouse)"/>
+                              </show_help_multi>
+                            </do_if>
+                            <do_elseif value="player.input.controller">
+                              <show_help_multi log="true" position="1" force="true" allowclose="false" width="180">
+                                <text line="5103" comment="This is a 3D map showing the universe you know so far. It grows over time when you discover new areas."/>
+                                <text line="5102" comment="You can PAN, TILT, ROTATE and ZOOM this map to observe your known universe"/>
+                                <text line="5135" comment="rotate/pan/zoom hint (for controller)"/>
+                              </show_help_multi>
+                            </do_elseif>
+                            <do_else comment="keyboard">
+                              <show_help_multi log="true" position="1" force="true" allowclose="false" width="180">
+                                <text line="5103" comment="This is a 3D map showing the universe you know so far. It grows over time when you discover new areas."/>
+                                <text line="5102" comment="You can PAN, TILT, ROTATE and ZOOM this map to observe your known universe"/>
+                                <text line="5125" comment="rotate/pan/zoom hint (for keyboard)"/>
+                              </show_help_multi>
+                            </do_else>
+                          </actions>
+                        </cue>
+
+                        <cue name="Tutorial_Basics_Wait">
+                          <conditions>
+                            <event_ui_triggered screen="'hintclosed'" control="'5103'"/>
+                          </conditions>
+                          <actions>
+                            <remove_help all="true" />
+                            <signal_cue cue="Tutorial_TriggerNext"/>
+                            <cancel_cue cue="Tutorial_Basics"/>
+                          </actions>
+                        </cue>
+
+                      </cues>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="Tutorial_Context">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <delay exact="1s"/>
+                  <actions>
+                  </actions>
+                  <cues>
+
+                    <cue name="Tutorial_Context_Pause" instantiate="true">
+                      <conditions>
+                        <check_any>
+                          <event_cue_completed cue="Tutorial_MapClose"/>
+                        </check_any>
+                      </conditions>
+                      <actions>
+                        <reset_cue cue="Tutorial_Context_Start"/>
+                      </actions>
+                    </cue>
+
+                    <cue name="Tutorial_Context_Start" checkinterval="1s">
+                      <conditions>
+                        <check_value value="$MapOpen == true"/>
+                      </conditions>
+                      <actions>
+                        <do_if value="player.input.controller">
+                          <show_help_multi log="false" position="1" allowclose="false" force="true" width="180">
+                            <text line="5200" comment="Many ACTIONS can be controlled from this map with CONTEXT MENUS"/>
+                            <text line="5211" comment=""/>
+                            <text line="5221" comment=""/>
+                            <text line="5234" comment="SELECTING one object changes what ACTIONS are available in the context on another object. This is essential when commanding remote ships and will be explained in the ADVANCED MAP TUTORIAL"/>
+                          </show_help_multi>
+                          <show_help line="5235" position="1" allowclose="false" timeout="false" force="true" log="false" comment="Select empty space with $INPUT_STATE_WIDGET_SELECT$ to make sure you have no object currently selected." />
+                        </do_if>
+                        <do_else comment="mouse">
+                          <show_help_multi log="false" position="1" allowclose="false" force="true" width="180" >
+                            <text line="5200" comment="Many ACTIONS can be controlled from this map with CONTEXT MENUS"/>
+                            <text line="5210" comment=""/>
+                            <text line="5220" comment=""/>
+                            <text line="5234" comment="SELECTING one object changes what ACTIONS are available in the context on another object. This is essential when commanding remote ships and will be explained in the ADVANCED MAP TUTORIAL"/>
+                          </show_help_multi>
+                          <show_help line="5232" position="1" allowclose="false" timeout="false" force="true" log="false" comment="Make sure you have no object currently selected by clicking in empty space." />
+                        </do_else>
+                      </actions>
+                      <cues>
+                        <cue name="Tutorial_SelectionReset">
+                          <conditions>
+                            <event_ui_triggered screen="'MapMenu'" control="'selection_reset'"/>
+                          </conditions>
+                          <actions>
+                            <remove_help all="true" />
+                            <show_help line="5233" position="1" allowclose="false" timeout="false" force="true" log="false" comment="Now open a context menu anywhere on the map" />
+                          </actions>
+                          <cues>
+                            <cue name="Tutorial_Context_OnOpen2">
+                              <conditions>
+                                <event_ui_triggered screen="'InteractMenu'" control="''"/>
+                              </conditions>
+                              <actions>
+                                <remove_help all="true" />
+                                <show_help_multi log="true" position="1" force="true" allowclose="false">
+                                  <text line="5250" comment="The ACTIONS you see now are for yourself or your current ship"/>
+                                </show_help_multi>
+                              </actions>
+                              <cues>
+                                <cue name="Tutorial_Context_Wait2">
+                                  <conditions>
+                                    <event_ui_triggered screen="'hintclosed'" control="'5250'"/>
+                                  </conditions>
+                                  <actions>
+                                    <signal_cue cue="Tutorial_TriggerNext"/>
+                                    <cancel_cue cue="Tutorial_Context"/>
+                                  </actions>
+                                </cue>
+                              </cues>
+                            </cue>
+                          </cues>
+                        </cue>
+                      </cues>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <cue name="Tutorial_Object">
+                  <conditions>
+                    <event_cue_signalled/>
+                  </conditions>
+                  <delay exact="1s"/>
+                  <actions>
+                  </actions>
+                  <cues>
+
+                    <cue name="Tutorial_Object_Pause" instantiate="true">
+                      <conditions>
+                        <check_any>
+                          <event_cue_completed cue="Tutorial_MapClose"/>
+                        </check_any>
+                      </conditions>
+                      <actions>
+                        <reset_cue cue="Tutorial_Object_Start"/>
+                      </actions>
+                    </cue>
+
+                    <cue name="Tutorial_Object_Start" checkinterval="1s">
+                      <conditions>
+                        <check_value value="$MapOpen == true"/>
+                      </conditions>
+                      <actions>
+                        <do_if value="player.input.controller">
+                          <show_help_multi log="true" position="1" force="true" allowclose="false">
+                            <text line="5251" comment="Object list changes with your current zoom level."/>
+                            <text line="5301" comment="$INPUT_STATE_WIDGET_SELECT$ on an object in these lists to make the map centre on it."/>
+                          </show_help_multi>
+                        </do_if>
+                        <do_else>
+                          <show_help_multi log="true" position="1" force="true" allowclose="false">
+                            <text line="5251" comment="Object list changes with your current zoom level."/>
+                            <text line="5300" comment="Double-click on an object in these lists to make the map centre on it."/>
+                          </show_help_multi>
+                        </do_else>
+                      </actions>
+                      <cues>
+                        <cue name="Tutorial_Object_ChangedSelected2">
+                          <actions>
+                            <show_help_multi log="true" position="1" force="true" allowclose="false">
+                              <text line="5302" comment="At the bottom of the map you can see information about the currently selected object"/>
+                            </show_help_multi>
+                            <do_if value="player.occupiedship">
+                              <do_if value="player.input.controller">
+                                <show_help line="5322" log="true" position="1" force="true" comment="Hover over the icon and press $INPUT_STATE_LOOTMAGNET$ ..." allowclose="false" timeout="false"/>
+                              </do_if>
+                              <do_else>
+                                <show_help line="5320" position="1" force="true" allowclose="false" timeout="false" comment="Press $INPUT_ACTION_TARGET_NEXT_TARGET$ to make the selected object your active target"/>
+                              </do_else>
+                            </do_if>
+                            <do_else>
+                              <do_if value="player.input.controller">
+                                <show_help_multi log="true" position="1" force="true" allowclose="false">
+                                  <text line="5324" comment="If you are seated in a cockpit you can make a selected object your active target by pressing $INPUT_STATE_LOOTMAGNET$..."/>
+                                </show_help_multi>
+                              </do_if>
+                              <do_else>
+                                <show_help_multi log="true" position="1" force="true" allowclose="false">
+                                  <text line="5323" comment="If you are seated in a cockpit you can make a selected object your active target by pressing $INPUT_ACTION_TARGET_NEXT_TARGET$..."/>
+                                </show_help_multi>
+                              </do_else>
+                              <signal_cue_instantly cue="Tutorial_Object_Info_v3"/>
+                            </do_else>
+                          </actions>
+                          <cues>
+                            <cue name="Tutorial_Object_ChangedTarget2">
+                              <conditions>
+                                <check_all>
+                                  <event_player_changed_target comment="only works when inside one of your ships!"/>
+                                  <check_value value="event.param"/>
+                                </check_all>
+                              </conditions>
+                              <actions>
+                                <remove_help all="true" />
+                                <show_help_multi log="true" position="1" force="true" allowclose="false">
+                                  <text line="5321" comment="If this object is in the same system, your HUD target is now also set to this object"/>
+                                </show_help_multi>
+                              </actions>
+                            </cue>
+                          </cues>
+                        </cue>
+
+                        <cue name="Tutorial_Object_Info_v3">
+                          <conditions>
+                            <check_any>
+                              <event_cue_signalled/>
+                              <event_ui_triggered screen="'hintclosed'" control="'5321'"/>
+                            </check_any>
+                          </conditions>
+                          <actions>
+                            <show_help_multi log="true" position="1" force="true" allowclose="false">
+                              <text line="5303" comment="The INFO tab on the left can be opened to see more details of an object"/>
+                            </show_help_multi>
+                          </actions>
+                          <cues>
+                            <cue name="Tutorial_Object_Wait_v3">
+                              <conditions>
+                                <event_ui_triggered screen="'hintclosed'" control="'5303'"/>
+                              </conditions>
+                              <actions>
+                                <remove_help all="true" />
+                                <show_help_overlay id="'map_sidebar_information'" highlightonly="true"/>
+                              </actions>
+                              <delay exact="5s"/>
+                              <actions>
+                                <remove_help_overlay id="'map_sidebar_information'"/>
+                                <signal_cue cue="Tutorial_TriggerNext"/>
+                                <cancel_cue cue="Tutorial_Object"/>
+                              </actions>
+                            </cue>
+                          </cues>
+                        </cue>
+                      </cues>
+                    </cue>
+                  </cues>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="Cleanup">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <remove_help_overlay all="true"/>
+                <debug_text text="'cleanup'" chance="$DebugChance"/>
+                <do_if value="$BriefingCutsceneStarted?">
+                  <stop_cutscene key="$CutsceneKey"/>
+                </do_if>
+                <do_if value="$Beacons?">
+                  <destroy_group group="$Beacons"/>
+                </do_if>
+                <remove_offer cue="Start"/>
+                <remove_mission cue="Start" />
+                <reset_cue cue="Trigger"/>
+              </actions>
+            </cue>
+
+          </cues>
+        </cue>
+      </cues>
+    </cue>
+  </cues>
+
+</mdscript>

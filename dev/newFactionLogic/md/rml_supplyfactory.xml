@@ -1,0 +1,275 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_SupplyFactory" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--
+    This RML is intended for use in Master-Missions. 
+    It handles checking if the player transported (any) ware to the specified station
+    
+    $feedbackvalue:
+    -103 $TargetStation is incorrectly defined.
+    -101 Cue parameters not defined
+    -100: Undefined failure. Defaulted to -100
+    -1: Station was destroyed (can't complete objectives)
+    1: supplies partially delivered 
+    2: All supplies delivered -->
+
+    <library name="SupplyFactory" version="4">
+      <params>
+        <param name="EndSignalCue"/>
+        <param name="MissionCue"/>
+        <param name="StartStep" default="1" comment="Briefing step to start the mission on"/>
+        <param name="UpdateBriefing" default="true" comment="Update the briefing objective step when the objective is updated"/>
+        <param name="DebugChance" default="0" />
+
+        <param name="TargetStation"                   comment="Station to supply with wares"/>
+        <param name="SupplyStorageMinPercent" default="25" comment="Target minimum storage-level in %"/>
+      </params>
+      <actions>
+        <set_value name="$feedbackvalue" exact="0"/>
+        <create_list name="$ErrorList"/>
+
+        <do_if value="not $EndSignalCue or not $MissionCue">
+          <append_to_list name="$ErrorList" exact="-101"/>
+        </do_if>
+        <do_if value="not $TargetStation">
+          <append_to_list name="$ErrorList" exact="-103"/>
+        </do_if>
+
+      </actions>
+      <!--MissionDuration removed as-of version 4-->
+      <!--<patch sinceversion="2">
+        <set_value name="$MissionDuration" exact="null"/>
+      </patch>
+      <patch sinceversion="3">
+        <do_if value="$MissionDuration">
+          <signal_cue cue="UpdateBriefing"/>
+        </do_if>
+      </patch>-->
+      <cues>
+
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="1"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup"/>
+          </actions>
+        </cue>
+
+        <cue name="StartMission" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="0"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="UpdateBriefing"/>
+          </actions>
+          <cues>
+
+            <cue name="DebugSupplyFactory" instantiate="true">
+              <conditions>
+                <event_cue_signalled comment="manually trigger for testing CheckMissionStatus-cue"/>
+              </conditions>
+              <actions>
+              </actions>
+            </cue>
+
+            <cue name="CheckMissionStatus" checkinterval="15s" instantiate="true" comment="check supply-levels every 15 seconds">
+              <actions>
+                <!-- TODO: @Owen, @Roger - what if storage gets destroyed... ? -->
+                <set_value name="$Enough" exact="true" />
+
+                <set_value name="$Wares" exact="$TargetStation.resources.list"/>
+
+                <!--Remove wares not bought by the station in large quantities-->
+                <do_all exact="$Wares.count" counter="$i" reverse="true">
+                  <do_if value="$TargetStation.products.{$Wares.{$i}}.exists">
+                    <!-- Station produces this ware themselves, no reason ask for delivery -->
+                    <remove_value name="$Wares.{$i}"/>
+                  </do_if>
+                  <do_else>
+                    <!-- Station not interested in buying this ware atm, so the mission could get stuck -->
+                    <find_buy_offer result="$BuyOffer" buyer="$TargetStation" wares="$Wares.{$i}"/>
+                    <do_if value="$BuyOffer == null" comment="Station does not currently buy ware">
+                      <remove_value name="$Wares.{$i}"/>
+                    </do_if>
+                  </do_else>
+                </do_all>
+
+                <do_all exact="$Wares.count" counter="$WaresCounter">
+                  <set_value name="$Ware" exact="$Wares.{$WaresCounter}" />
+                  <set_value name="$WareStorage" exact="($TargetStation.cargo.{$Ware}.count * 100) / $TargetStation.cargo.{$Ware}.target"/>
+                  <do_if value="$WareStorage lt $SupplyStorageMinPercent">
+                    <debug_text text="'Checking ' + $Ware + ' in-storage ' + $WareStorage +'% - insufficient'" chance="$DebugChance"/>
+                    <set_value name="$Enough" exact="false" />
+                    <break/>
+                  </do_if>
+                  <do_else>
+                    <debug_text text="'Checking ' + $Ware + ' in-storage ' + $WareStorage + ' - ok (' + $TargetStation.cargo.{$Ware}.count + ' / ' + $TargetStation.cargo.{$Ware}.target + ')'" chance="$DebugChance"/>
+                  </do_else>
+                </do_all>
+
+                <do_if value="$Enough">
+                  <debug_text text="'Supplies are high enough (>=' + $SupplyStorageMinPercent + ')'" chance="$DebugChance"/>
+                  <set_value name="$feedbackvalue" exact="2" comment="success"/>
+                  <signal_cue cue="Cleanup"/>
+                </do_if>
+
+                <signal_cue cue="UpdateBriefing"/>
+              </actions>
+            </cue>
+
+            <cue name="CheckMissionStatusFail">
+              <conditions>
+                <event_object_destroyed object="$TargetStation"/>
+              </conditions>
+              <actions>
+                <debug_text text="'RML_SupplyFactory.CheckMissionStatusFail: Station was destroyed'" chance="100"/>
+                <set_value name="$feedbackvalue" exact="-1"/>
+                <signal_cue cue="Cleanup"/>
+              </actions>
+            </cue>
+
+          </cues>
+        </cue>
+
+        <cue name="UpdateBriefing" instantiate="true" version="2" comment="Called each time a briefing-update is needed">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+
+            <do_if value="$UpdateBriefing">
+
+              <set_value name="$ObjectiveCounter" exact="0" />
+              <set_value name="$ObjectiveStep" exact="0" />
+              <set_value name="$ObjectiveStepText" exact="''" />
+              <set_value name="$Wares" exact="$TargetStation.resources.pure.list" comment="Get non-intermediate resources"/>
+              <!--Remove wares not bought by the station in large quantities-->
+              <do_all exact="$Wares.count" counter="$i" reverse="true">
+                <do_if value="$TargetStation.products.{$Wares.{$i}}.exists">
+                  <!-- Station produces this ware themselves, no reason ask for delivery -->
+                  <remove_value name="$Wares.{$i}"/>
+                </do_if>
+              </do_all>
+
+              <!-- First iteration we take the completed objectives, second iteration we take the remaining objectives
+                At the end of the first iteration, we set the 'set_objective' because up to this point we completed them -->
+              <do_all exact="2" counter="$TwiceCounter">
+                <do_all exact="$Wares.count" counter="$WaresCounter">
+                  <set_value name="$Ware" exact="$Wares.{$WaresCounter}" />
+                  <set_value name="$WareStorage" exact="($TargetStation.cargo.{$Ware}.count * 100) / $TargetStation.cargo.{$Ware}.target"/>
+
+                  <do_if value="($TwiceCounter == 1 and $WareStorage ge $SupplyStorageMinPercent) or ($TwiceCounter == 2 and $WareStorage lt $SupplyStorageMinPercent)">
+                    <debug_text text="'UpdateBriefing ' + $TwiceCounter + ' Ware ' + $Ware.name + ' ' + $WareStorage + '% wcA' + $WaresCounter + ' wcB' + $Wares.count" chance="$DebugChance"/>
+                    <set_value name="$ObjectiveText" exact="'%s %s%%'.[$Ware.name, $WareStorage]"/>
+
+                    <do_if value="$TwiceCounter == 2 and not $ObjectiveStep">
+                      <set_value name="$ObjectiveStep" exact="$StartStep + $ObjectiveCounter" />
+                      <set_value name="$ObjectiveStepText" exact="$ObjectiveText" />
+                    </do_if>
+
+                    <update_mission cue="$MissionCue">
+                      <briefing>
+                        <objective step="$StartStep + $ObjectiveCounter" action="objective.deliver" text="$ObjectiveText" object="$TargetStation" silent="true"/>
+                      </briefing>
+                    </update_mission>
+
+                    <set_value name="$ObjectiveCounter" operation="add"/>
+                  </do_if>
+                </do_all>
+              </do_all>
+
+              <do_if value="$ObjectiveCounter gt 0">
+                <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep + $ObjectiveCounter - 1"/>
+              </do_if>
+
+              <do_if value="$ObjectiveStep">
+                <set_objective cue="$MissionCue" step="$ObjectiveStep" action="objective.deliver" text="$ObjectiveStepText" object="$TargetStation" silent="true" showunknownpath="true"/>
+              </do_if>
+
+              <remove_value name="$ObjectiveText"/>
+            </do_if>
+
+          </actions>
+          <patch sinceversion="2">
+            <!--$MissionDuration was removed. Update the briefing the refresh the objective-->
+            <do_if value="$MissionDuration">
+              <signal_cue cue="UpdateBriefing"/>
+            </do_if>
+          </patch>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+            <!--TODO remove_objective-->
+
+            <do_if value="$feedbackvalue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'ERROR: Feedback value is 0 and no error values were set. Defaulting to -100'"/>
+                <set_value name="$feedbackvalue" exact="-100"/>
+              </do_if>
+              <do_else>
+                <set_value name="$feedbackvalue" exact="$ErrorList.{1}"/>
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+                    <do_if value="$ErrorList.{$Counter}" exact="-103">
+                      <set_value name="$FeedbackText" exact="'$TargetStation parameter left undefined'"/>
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'Cue parameters not defined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-100">
+                      <set_value name="$FeedbackText" exact="'Undefined failure. Defaulted to -100'"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                    </do_else>
+
+                    <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+
+              <do_if value="$feedbackvalue" exact="-2">
+                <set_value name="$FeedbackText" exact="{30004,6026}" comment="'Destination changed owner'"/>
+              </do_if>
+              <do_elseif value="$feedbackvalue" exact="-1">
+                <set_value name="$FeedbackText" exact="{30004,6028}" comment="'Station was destroyed'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="1">
+                <set_value name="$FeedbackText" exact="'Station supplies high enough - Moderate player help'"/>
+              </do_elseif>
+              <do_elseif value="$feedbackvalue" exact="2">
+                <set_value name="$FeedbackText" exact="'Station supplies high enough - High player help'"/>
+              </do_elseif>
+
+              <do_if value="$feedbackvalue" min="1">
+                <debug_text text="'Mission Successful. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_if>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission Failed. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+
+            </do_else>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+            <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$feedbackvalue"/>
+            <signal_cue cue="$EndSignalCue"/>
+            <cancel_cue cue="SupplyFactory"/>
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

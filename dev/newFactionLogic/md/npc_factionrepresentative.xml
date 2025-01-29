@@ -1,0 +1,347 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<mdscript name="NPC_FactionRepresentative" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+    <cue name="Handler_FactionRepresentative" namespace="this">
+      <actions>
+        <set_value name="$DebugChance" exact="0" />
+      </actions>
+      <cues>
+        <cue name="FactionRepresentativeCreated" instantiate="true" namespace="this" version="2">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <actions>
+            <set_value name="$DebugChance" exact="Handler_FactionRepresentative.$DebugChance" />
+
+            <set_value name="$FactionRepresentative" exact="event.param" />
+            <set_value name="$Faction" exact="$FactionRepresentative.owner" />
+            <set_value name="$FactionHeadquarters" exact="md.$FactionData.{$Faction}.$Headquarters" />
+            <debug_text text="'Tracking ' + $FactionRepresentative.name + ' ({' + $FactionRepresentative + '}) on ' + $FactionHeadquarters.knownname + ' ({' + $FactionHeadquarters + '}) in ' + $FactionHeadquarters.sector.knownname + ', ' + $FactionHeadquarters.cluster.knownname" chance="$DebugChance" />
+          </actions>
+          <patch sinceversion="2" state="complete">
+            <do_if value="@$FactionRepresentative.isclass.npc and $FactionHeadquarters.exists">
+              <remove_value name="$CeremonyUnderway"/>
+              <remove_value name="$CeremonyOver"/>
+              <set_value name="$PatchMission" exact="true"/>
+            </do_if>
+            <do_else>
+              <cancel_cue cue="FactionRepresentativeCreated"/>
+            </do_else>
+          </patch>
+          <cues>
+            <cue name="Patch_CheckMission" onfail="cancel">
+              <conditions>
+                <check_value value="@$PatchMission"/>
+              </conditions>
+              <actions>
+                <do_if value="@md.$FactionData.{$Faction}.$PromotionActive">
+                  <debug_text text="'Promotion is active for ' + $Faction" filter="savegame"/>
+                  <set_value name="this.$HasMission" exact="false"/>
+                  <do_all exact="@md.$Patch_ActivePromotionMissions.count" counter="$i">
+                    <do_if value="md.$Patch_ActivePromotionMissions.{$i}.$Faction == $Faction">
+                      <set_value name="this.$HasMission" exact="true"/>
+                      <break/>
+                    </do_if>
+                  </do_all>
+                  <do_if value="not this.$HasMission">
+                    <debug_text text="'Triggering promotion mission for ' + $Faction" filter="savegame"/>
+                    <remove_value name="md.$FactionData.{$Faction}.$PromotionActive"/>
+                    <signal_cue_instantly cue="md.PlayerReputation.Base" param="[$Faction, $Faction.relationto.{faction.player}, 0.0f]"/>
+                  </do_if>
+                </do_if>
+              </actions>
+            </cue>
+
+            <cue name="FactionRepresentativeKilled">
+              <conditions>
+                <event_object_destroyed object="$FactionRepresentative"/>
+              </conditions>
+              <actions>
+                <debug_text text="'Faction representative of %s killed. Cleaning up.'.[$Faction.knownname]"/>
+                <do_if value="@$Interior.isoperational">
+                  <run_actions ref="md.LIB_Generic.Cleanup_Mission_Interior_Call">
+                    <param name="Object"      value="$FactionHeadquarters"/>
+                    <param name="Interior"    value="$Interior"/>
+                    <param name="DebugChance" value="$DebugChance"/>
+                  </run_actions>
+                </do_if>
+                <cancel_cue cue="parent"/>
+              </actions>
+            </cue>
+
+            <cue name="FactionRepresentativeRelieved">
+              <conditions>
+                <event_faction_representative_changed faction="$Faction"/>
+              </conditions>
+              <actions>
+                <do_if value="event.param2 == $FactionRepresentative">
+                  <debug_text text="'Representative event fired for the existing rep'" filter="error"/>
+                  <reset_cue cue="this"/>
+                </do_if>
+                <do_else>
+                  <debug_text text="'Faction representative of %s has been FIRED! Cleaning up.'.[$Faction.knownname]"/>
+                  <do_if value="@$Interior.isoperational">
+                    <run_actions ref="md.LIB_Generic.Cleanup_Mission_Interior_Call">
+                      <param name="Object"      value="$FactionHeadquarters"/>
+                      <param name="Interior"    value="$Interior"/>
+                      <param name="DebugChance" value="$DebugChance"/>
+                    </run_actions>
+                  </do_if>
+                  <cancel_cue cue="parent"/>
+                </do_else>
+              </actions>
+            </cue>
+
+            <cue name="PlayerDockedOnCreation" onfail="cancel">
+              <conditions>
+                <check_value value="player.station" exact="$FactionHeadquarters" />
+              </conditions>
+              <actions>
+                <debug_text text="'Player is on ' + $FactionHeadquarters.name + ' ({' + $FactionHeadquarters + '}) when representative ' + $FactionRepresentative.name + ' ({' + $FactionRepresentative + '}) was created - generating interior'" chance="$DebugChance" />
+                <signal_cue cue="CreateFactionRepresentativeInterior" />
+              </actions>
+            </cue>
+
+            <cue name="CreateFactionRepresentativeInterior" instantiate="true">
+              <conditions>
+                <check_any>
+                  <event_object_changed_attention object="$FactionHeadquarters" attention="attention.nearby" />
+                  <event_cue_signalled />
+                </check_any>
+              </conditions>
+              <actions>
+                <do_if value="event.name == 'event_object_changed_attention'">
+                  <debug_text text="'Player approached ' + $FactionHeadquarters.knownname + ' ({' + $FactionHeadquarters + '})'" chance="$DebugChance" />
+                </do_if>
+                <do_elseif value="event.name == 'event_cue_signalled'">
+                  <debug_text text="'Player was already on ' + $FactionHeadquarters.knownname + ' ({' + $FactionHeadquarters + '})'" chance="$DebugChance" />
+                </do_elseif>
+
+                <!-- Define room in which Faction Boss will sit -->
+                <set_value name="this.$Race" exact="$FactionHeadquarters.owner.primaryrace" />
+                <set_value name="this.$InteriorSeed" exact="$FactionHeadquarters.seed + lookup.roomtype.list.indexof.{roomtype.factionrep}"/>
+                <get_room_definition macro="$CorridorMacro" race="this.$Race" tags="tag.administrationcorridor" seed="this.$InteriorSeed" />
+                <do_if value="not $CorridorMacro">
+                  <get_room_definition macro="$CorridorMacro" race="this.$Race" tags="tag.corridor" seed="this.$InteriorSeed" />
+                </do_if>
+                <get_room_definition macro="$RoomMacro" doors="$RoomDoors" race="this.$Race" tags="tag.factionrep" seed="this.$InteriorSeed" />
+                <!-- Create interior -->
+                <substitute_text text="this.$InteriorName" source="readtext.{30003}.{10004}">
+                  <replace string="'$FACTION$'" with="$Faction.name" />
+                </substitute_text>
+                <create_dynamic_interior object="$FactionHeadquarters" corridor="$CorridorMacro" room="$RoomMacro" name="this.$InteriorName" interiorname="$Interior" corridorname="$Corridor" roomname="$Room" roomtype="roomtype.factionrep" seed="this.$InteriorSeed" />
+                <do_if value="$Interior and $Corridor and $Room">
+                  <debug_text text="'Interior for ' + $FactionRepresentative.name + ' created'" chance="$DebugChance" />
+                  <find_npc_slot name="$NPCSlot" object="$Room" tags="tag.control"/>
+                  <do_if value="not $NPCSlot">
+                    <find_npc_slot name="$NPCSlot" object="$Room" />
+                  </do_if>
+                  <do_if value="$NPCSlot">
+                    <!-- Place faction representative -->
+                    <add_actor_to_room actor="$FactionRepresentative" slot="$NPCSlot" />
+                    <debug_text text="'$FactionRepresentative ' + $FactionRepresentative.name + ' added to room ' + $Room + ' (' + $RoomMacro + ')'" chance="$DebugChance" />
+                    <signal_cue cue="ConversationHandler_FactionRepresentative_Activate" />
+                  </do_if>
+                  <do_else>
+                    <debug_text text="'Could not find slot for ' + $FactionRepresentative.name + ' ({' + $FactionRepresentative + '}) in ' + $Room + '(' + $RoomMacro + ')'" filter="error" />
+                  </do_else>
+                </do_if>
+                <do_else>
+                  <debug_text text="'Interior for ' + $FactionRepresentative.name + ' could not be created using $CorridorMacro: ' + $CorridorMacro + ' and $RoomMacro: ' + $RoomMacro" filter="error" />
+                </do_else>
+              </actions>
+            </cue>
+
+            <cue name="PlayerUndocksFromHeadquarters" instantiate="true">
+              <conditions>
+                <event_object_interiors_despawning object="$FactionHeadquarters" />
+              </conditions>
+              <actions>
+                <do_if value="$Faction.isactive">
+                  <debug_text text="'Player leaving ' + $FactionHeadquarters.knownname + ' ({' + $FactionHeadquarters + '})'" chance="$DebugChance" />
+
+                  <!-- Move faction representative back to control room -->
+                  <set_value name="$ControlRoom" exact="$FactionHeadquarters.controlroom" />
+                  <do_if value="$ControlRoom">
+                    <add_actor_to_room actor="$FactionRepresentative" object="$ControlRoom" result="$RepresentativeMoved" />
+                    <do_if value="$RepresentativeMoved">
+                      <debug_text text="$FactionRepresentative.name + ' ({' + $FactionRepresentative + '}) was moved to control room of ' + $FactionHeadquarters.name + ' ({' + $FactionHeadquarters + '})'" chance="$DebugChance" />
+                    </do_if>
+                    <do_else>
+                      <debug_text text="$FactionRepresentative.name + ' ({' + $FactionRepresentative + '}) could not be moved to control room of ' + $FactionHeadquarters.name + ' ({' + $FactionHeadquarters + '}) - will be killed with interior'" filter="error" />
+                    </do_else>
+                  </do_if>
+                  <do_else>
+                    <debug_text text="'Control room for ' + $FactionHeadquarters.name + ' ({' + $FactionHeadquarters + '}) could not be found - ' + $FactionRepresentative.name + ' ({' + $FactionRepresentative + '}) will be killed with interior and'" filter="error" />
+                  </do_else>
+
+                  <!-- Make sure interior is destroyed before player leaves attention level -->
+                  <do_if value="$Interior?">
+                    <remove_dynamic_interior object="$FactionHeadquarters" interior="$Interior" />
+                    <debug_text text="'$Interior for ' + $FactionHeadquarters.name + ' ({' + $FactionHeadquarters + '}) should have been removed'" chance="$DebugChance" />
+                    <remove_value name="$Interior" />
+                  </do_if>
+
+                  <do_if value="PlayerDockedOnCreation.state == cuestate.complete or PlayerDockedOnCreation.state == cuestate.cancelled">
+                    <reset_cue cue="PlayerDockedOnCreation" />
+                  </do_if>
+                  <reset_cue cue="ConversationHandler_FactionRepresentative_Activate" />
+                </do_if>
+                <do_else>
+                  <debug_text text="'Faction %s deactivated. Cleaning up faction rep %s %s.'.[$Faction.knownname, $FactionRepresentative.knownname , $FactionRepresentative]"/>
+                  <destroy_object object="$FactionRepresentative"/>
+                  <!-- Make sure interior is destroyed before player leaves attention level -->
+                  <do_if value="$Interior?">
+                    <remove_dynamic_interior object="$FactionHeadquarters" interior="$Interior" />
+                    <debug_text text="'$Interior for ' + $FactionHeadquarters.name + ' ({' + $FactionHeadquarters + '}) should have been removed'" chance="$DebugChance" />
+                    <remove_value name="$Interior" />
+                  </do_if>
+                  <cancel_cue cue="parent"/>
+                </do_else>
+              </actions>
+            </cue>
+
+            <cue name="FactionDeactivated" version="2">
+              <conditions>
+                <check_any>
+                  <event_faction_deactivated faction="$Faction"/>
+                  <event_cue_signalled/>
+                </check_any>
+              </conditions>
+              <actions>
+                <do_if value="$FactionRepresentative.hascontext.{$FactionHeadquarters.controlroom}">
+                  <debug_text text="'Faction %s deactivated. Cleaning up faction rep %s %s.'.[$Faction.knownname, $FactionRepresentative.knownname , $FactionRepresentative]"/>
+                  <destroy_object object="$FactionRepresentative"/>
+                  <cancel_cue cue="parent"/>
+                </do_if>
+                <do_else>
+                  <debug_text text="'Faction %s deactivated. Faction rep %s %s remains in room to be cleaned up later.'.[$Faction.knownname, $FactionRepresentative.knownname , $FactionRepresentative]"/>
+                  <remove_representative faction="$Faction"/>
+                  <remove_value name="md.$FactionData.{$Faction}.$Representative"/>
+                  <set_entity_traits entity="$FactionRepresentative" customhandler="false"/>
+                  <cancel_cue cue="ConversationHandler_FactionRepresentative_Activate"/>
+                </do_else>
+              </actions>
+              <patch sinceversion="2" state="waiting">
+                <do_if value="not $Faction.isactive">
+                  <signal_cue cue="FactionDeactivated" check="false"/>
+                </do_if>
+              </patch>
+            </cue>
+
+            <!-- NPC Conversation Handler -->
+            <cue name="ConversationHandler_FactionRepresentative_Activate">
+              <conditions>
+                <event_cue_signalled />
+              </conditions>
+              <actions>
+                <debug_text text="'Conversation handler for faction representative ' + $FactionRepresentative.name + ' (' + $Faction.name + ') activating'" chance="$DebugChance" />
+                <set_entity_traits entity="$FactionRepresentative" customhandler="true" />
+              </actions>
+              <cues>
+                <cue name="ConversationStarted" instantiate="true">
+                  <conditions>
+                    <event_conversation_started actor="$FactionRepresentative" conversation="default"/>
+                  </conditions>
+                  <actions>
+                    <debug_text text="'Conversation with ' + $FactionRepresentative.name + ' (' + $Faction.name + ') started'" chance="$DebugChance" />
+
+                    <!-- TODO (@Lorraine): Do we need enemy greetings for faction representative? -->
+                    <do_if value="$Faction.relationto.{faction.player} ge 0.1" comment="Player is an ally of the faction">
+                      <set_value name="$NPCLine" exact="12103" comment="Faction representative allied greeting" />
+                    </do_if>
+                    <do_elseif value="$Faction.relationto.{faction.player} ge 0.01" comment="Player is a friend of the faction">
+                      <set_value name="$NPCLine" exact="12102" comment="Faction representative friendly greeting" />
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$NPCLine" exact="12101" comment="Faction representative neutral greeting" />
+                    </do_else>
+
+                    <do_if value="player.room != null and $FactionRepresentative.room == player.room">
+                      <set_value name="$LiveViewAvailable" exact="player.canactivateliveview"/>
+                      <add_player_choice text="{1002,3200}" section="cFactionRepresentative_liveStream" tooltip="(if $LiveViewAvailable then '' else {1001,9408})" position="top_right" comment="Show me the Live Stream" selectable="$LiveViewAvailable"/>
+                    </do_if>
+
+                    <add_npc_line speaker="$FactionRepresentative" line="$NPCLine" />
+                    <do_if value="not $FactionRepresentative.owner.hastag.nolicencesale" comment="Some factions (e.g. Kaori) don't offer blueprints">
+                      <add_player_choice_sub text="{1002,7000}" section="cFactionRepresentative_licences" position="top_left" choiceparam="[0, 0, $FactionRepresentative, 'licence']" baseparam="event.param2" comment="Show me your licences" />
+                    </do_if>
+                    <do_if value="not $FactionRepresentative.owner.hastag.noblueprintsale" comment="some factions (e.g. Kaori) don't offer blueprints">
+                      <add_player_choice_sub text="{1002,7001}" section="cFactionRepresentative_blueprints" position="left" choiceparam="[0, 0, $FactionRepresentative, 'blueprint']" baseparam="event.param2" comment="I would like to buy a blueprint."/>
+                    </do_if>
+                    <do_if value="@md.$FactionData.{$Faction}.$PromotionActive">
+                      <add_player_choice_sub section="cFactionRepresentative_promotion" text="{30003,10005}" position="bottom_left" highlighted="true" comment="TODO (@Lorraine): Add actual text to this in mission page" />
+                    </do_if>
+                    <add_player_choice_return text="{1002,2}" position="right" comment="Goodbye" />
+                  </actions>
+                </cue>
+
+                <cue name="ConversationNextSection" instantiate="true">
+                  <conditions>
+                    <event_conversation_next_section actor="$FactionRepresentative" />
+                  </conditions>
+                  <actions>
+                    <do_if value="event.param == 'cFactionRepresentative_licences'">
+                      <open_conversation_menu menu="BlueprintOrLicenceTraderMenu" param="event.param2" param2="event.param3" />
+                    </do_if>
+                    <do_elseif value="event.param == 'cFactionRepresentative_blueprints'">
+                      <open_conversation_menu menu="BlueprintOrLicenceTraderMenu" param="event.param2" param2="event.param3"/>
+                    </do_elseif>
+                    <do_elseif value="event.param == 'cFactionRepresentative_promotion'">
+
+                      <signal_cue_instantly cue="md.PlayerReputation.CeremonyEvent" param="[$FactionRepresentative, 'ceremonystarted']" comment="listened to by md.PlayerReputation.FactionRepresentativePromotionCallback" />
+                      <set_value name="$CeremonyUnderway" />
+
+                    </do_elseif>
+                  </actions>
+                </cue>
+
+                <cue name="LineSpoken" instantiate="true">
+                  <conditions>
+                    <event_speak_finished actor="$FactionRepresentative" />
+                    <check_value value="$CeremonyUnderway?" />
+                  </conditions>
+                  <actions>
+                    <do_if value="event.param2" exact="12117">
+                      <debug_text text="'The ceremony is now over'" chance="$DebugChance" />
+                      <remove_value name="$CeremonyUnderway" />
+                      <set_value name="$CeremonyOver" />
+                    </do_if>
+                    <do_else>
+                      <signal_cue_instantly cue="md.PlayerReputation.CeremonyEvent" param="[$FactionRepresentative, 'ceremonyline', event.param2]" comment="listened to by md.PlayerReputation.FactionRepresentativePromotionCallback" />
+                    </do_else>
+                  </actions>
+                </cue>
+
+                <cue name="ConversationComplete" instantiate="true">
+                  <conditions>
+                    <event_conversation_finished actor="$FactionRepresentative" />
+                  </conditions>
+                  <actions>
+                    <do_if value="$CeremonyOver?">
+                      <signal_cue_instantly cue="md.PlayerReputation.CeremonyEvent" param="[$FactionRepresentative, 'ceremonycomplete', event.param2]" comment="listened to by md.PlayerReputation.FactionRepresentativePromotionCallback" />
+                      <!--signal_cue_instantly cue="md.PlayerReputation.WritePromotionLogEntry" param="[md.$FactionData.{$Faction}.$PromotionActive, $FactionRepresentative.owner]" /-->
+                      <remove_value name="$CeremonyOver" />
+                      <debug_text text="$FactionRepresentative + ' has finished promoting player - mission will be completed now.'" chance="$DebugChance" />
+                      <remove_value name="md.$FactionData.{$Faction}.$PromotionActive"/>
+                    </do_if>
+                    <do_else>
+                      <debug_text text="'Player left conversation without finishing ceremony - it will remain in place'" chance="$DebugChance" />
+                    </do_else>
+                    <do_if value="$Faction.relationto.{faction.player} ge 0.01" comment="Player is a friend of the faction">
+                      <set_value name="$NPCLine" exact="2007" comment="(Goodbye - friendly)" />
+                    </do_if>
+                    <do_else>
+                      <set_value name="$NPCLine" exact="2008" comment="(Goodbye - neutral)" />
+                    </do_else>
+                    <speak actor="$FactionRepresentative" line="$NPCLine" />
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+          </cues>
+        </cue>
+      </cues>
+    </cue>
+  </cues>
+</mdscript>

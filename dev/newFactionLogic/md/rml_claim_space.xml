@@ -1,0 +1,213 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="RML_Claim_Space" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <!--
+    This RML is intended for use in Master-Missions. 
+    It handles checking if the player (or another faction) claimed the specified spaces
+    
+    $feedbackvalue:
+    -103 $ClaimSpaces is incorrectly defined.
+    -102 $ClaimFactions is incorrectly defined.
+    -101 Cue parameters not defined
+    -100: Undefined failure. Defaulted to -100
+    1: Space claimed -->
+
+    <library name="ClaimSpace">
+      <params>
+        <param name="EndSignalCue"/>
+        <param name="MissionCue"/>
+        <param name="StartStep"       default="1"     comment="Briefing step to start the mission on"/>
+        <param name="UpdateBriefing"  default="true"  comment="Update the briefing objective step when the objective is updated"/>
+        <param name="DebugChance"     default="0" />
+
+        <param name="Text_Objective"            comment="Objective text for the 'Claim: ' objective"/>
+        <param name="ClaimSpaces"               comment="List of sector to claim [$space1, ...]"/>
+        <param name="ClaimFactions"             comment="List of faction [faction.player, faction.argon]"/>
+      </params>
+      <actions>
+        <set_value name="$feedbackvalue" exact="0"/>
+        <create_list name="$ErrorList"/>
+
+        <do_if value="not $EndSignalCue or not $MissionCue">
+          <append_to_list name="$ErrorList" exact="-101"/>
+        </do_if>
+
+        <do_if value="typeof $ClaimFactions != datatype.list">
+          <append_to_list name="$ErrorList" exact="-102" />
+        </do_if>
+        <do_elseif value="$ClaimFactions.count" max="0">
+          <append_to_list name="$ErrorList" exact="-102" />
+        </do_elseif>
+
+        <do_if value="typeof $ClaimSpaces != datatype.list">
+          <append_to_list name="$ErrorList" exact="-103" />
+        </do_if>
+        <do_elseif value="$ClaimSpaces.count" max="0">
+          <append_to_list name="$ErrorList" exact="-103" />
+        </do_elseif>
+
+        <add_to_group groupname="$ClaimSpaceGroup" list="$ClaimSpaces"/>
+        <set_value name="$ClaimedTotal" exact="0"/>
+
+      </actions>
+      <cues>
+
+        <cue name="Signal_Cleanup" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="1"/>
+          </conditions>
+          <actions>
+            <signal_cue cue="Cleanup"/>
+          </actions>
+        </cue>
+
+        <cue name="StartMission" onfail="cancel">
+          <conditions>
+            <check_value value="$ErrorList.count" min="0"/>
+          </conditions>
+          <cues>
+
+            <cue name="DebugClaimSpace" instantiate="true">
+              <conditions>
+                <event_cue_signalled comment="manually trigger for testing TradeCompleted-cue"/>
+              </conditions>
+              <actions>
+                <do_any>
+                  <set_owner object="$ClaimSpaces.random" faction="$ClaimFactions.random" comment="victory condition" weight="70"/>
+                  <set_owner object="$ClaimSpaces.random" faction="faction.xenon" comment="lost claimed space (test edge cases)" weight="20"/>
+                </do_any>
+              </actions>
+            </cue>
+
+            <cue name="InitialBriefingUpdate">
+              <actions>
+                <signal_cue_instantly cue="ClaimUpdate"/>
+                <signal_cue cue="UpdateBriefing"/>
+              </actions>
+            </cue>
+
+            <cue name="ClaimUpdate" instantiate="true">
+              <conditions>
+                <event_cue_signalled/>
+              </conditions>
+              <actions>
+                <set_value name="$ClaimedTotal" exact="0"/>
+                <do_all exact="$ClaimSpaceGroup.count" counter="$i">
+                  <do_if value="$ClaimFactions.indexof.{$ClaimSpaceGroup.{$i}.owner}">
+                    <set_value name="$ClaimedTotal" operation="add"/>
+                  </do_if>
+                </do_all>
+              </actions>
+            </cue>
+            
+            
+            <cue name="ClaimCompleted" instantiate="true">
+              <conditions>
+                <event_object_changed_true_owner group="$ClaimSpaceGroup"/>
+              </conditions>
+              <actions>
+                <signal_cue_instantly cue="ClaimUpdate"/>
+                <do_if value="$ClaimedTotal == $ClaimSpaceGroup.count">
+                  <set_value name="$feedbackvalue" exact="1" comment="all spaces claimed"/>
+                  <signal_cue cue="Cleanup" />
+                </do_if>
+                <do_else>
+                  <debug_text text="'Claimed: ' + event.object.knownname + ' ' + $ClaimedTotal + '/' + $ClaimSpaceGroup.count + ' owned (win condition not met) '" chance="$DebugChance"/>
+                  <signal_cue cue="UpdateBriefing"/>
+                </do_else>
+              </actions>
+            </cue>
+          
+          </cues>
+        </cue>
+
+        <cue name="UpdateBriefing" instantiate="true" comment="Called each time a briefing-update is needed">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+
+            <do_if value="$UpdateBriefing">
+              <!-- pick next one in the list and update current objective -->
+              <do_all exact="$ClaimSpaces.count" counter="$i">
+                <do_if value="not $ClaimFactions.indexof.{$ClaimSpaces.{$i}.owner}">
+                  <update_mission cue="$MissionCue">
+                    <briefing>
+                      <objective step="$StartStep" action="objective.claim" text="$Text_Objective + ' ' + $ClaimSpaces.{$i}.knownname" />
+                    </briefing>
+                  </update_mission>
+                  <set_objective cue="$MissionCue" step="$StartStep" action="objective.claim" text="$Text_Objective + ' ' + $ClaimSpaces.{$i}.knownname"/>
+                  <break/>
+                </do_if>
+              </do_all>
+            </do_if>
+
+          </actions>
+        </cue>
+
+        <cue name="Cleanup">
+          <conditions>
+            <event_cue_signalled/>
+          </conditions>
+          <actions>
+
+            <do_if value="$feedbackvalue" exact="0">
+              <do_if value="$ErrorList.count" exact="0">
+                <debug_text text="'ERROR: Feedback value is 0 and no error values were set. Defaulting to -100'"/>
+                <set_value name="$feedbackvalue" exact="-100"/>
+              </do_if>
+              <do_else>
+                <set_value name="$feedbackvalue" exact="$ErrorList.{1}"/>
+
+                <do_if value="md.$RML_Debugging">
+                  <do_all exact="$ErrorList.count" counter="$Counter">
+                    <do_if value="$ErrorList.{$Counter}" exact="-103">
+                      <set_value name="$FeedbackText" exact="'$ClaimSpaces parameter left undefined'"/>
+                    </do_if>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-102">
+                      <set_value name="$FeedbackText" exact="'$ClaimFactions is incorrectly defined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-101">
+                      <set_value name="$FeedbackText" exact="'Cue parameters not defined'"/>
+                    </do_elseif>
+                    <do_elseif value="$ErrorList.{$Counter}" exact="-100">
+                      <set_value name="$FeedbackText" exact="'Undefined failure. Defaulted to -100'"/>
+                    </do_elseif>
+                    <do_else>
+                      <set_value name="$FeedbackText" exact="'Error: Unknown error value'"/>
+                    </do_else>
+
+                    <debug_text text="'Mission Error. Feedback id: ' + $ErrorList.{$Counter} + ' - ' + $FeedbackText" filter="error"/>
+                  </do_all>
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+
+              <do_if value="$feedbackvalue" exact="1">
+                <set_value name="$FeedbackText" exact="'All spaces claimed by any of the specified faction'"/>
+              </do_if>
+
+              <do_if value="$feedbackvalue" min="1">
+                <debug_text text="'Mission Successful. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_if>
+              <do_elseif value="@$FeedbackText">
+                <set_value name="$EndSignalCue.$EndFeedbackText" exact="$FeedbackText"/>
+                <debug_text text="'Mission Failed. Feedback id: ' + $feedbackvalue + ' - ' + $FeedbackText" chance="md.$RML_Debugging * $DebugChance"/>
+              </do_elseif>
+              <do_else>
+                <debug_text text="'WARNING: Unhandled feedback value ' + $feedbackvalue" chance="$DebugChance"/>
+              </do_else>
+            </do_else>
+
+            <set_value name="$EndSignalCue.$FinalStep" exact="$StartStep" chance="if $EndSignalCue.$FinalStep? then 0 else 100" comment="UpdateBriefing can overide"/>
+            <set_value name="$EndSignalCue.$EndFeedbackValue" exact="$feedbackvalue"/>
+            <signal_cue cue="$EndSignalCue"/>
+            <cancel_cue cue="ClaimSpace"/>
+          </actions>
+        </cue>
+      </cues>
+    </library>
+  </cues>
+</mdscript>

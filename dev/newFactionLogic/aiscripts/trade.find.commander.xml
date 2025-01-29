@@ -1,0 +1,740 @@
+<?xml version="1.0" encoding="iso-8859-1" ?>
+<aiscript name="trade.find.commander" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" version="12">
+  <params>
+    <param name="warebasket" />
+    <param name="manualwarebasket" default="[]"/>
+    <param name="range" />
+    <param name="buyspaces" default="[]" comment="list of allowed spaces to buy (sorted by closest distance)"/>
+    <param name="sellspaces" default="[]" comment="list of allowed spaces to sell (sorted by closest distance)"/>
+    <param name="tradeforbuildstorage" default="false" comment="trade for build storage of the commander rather than the commander directly."/>
+    <param name="smuggle" default="false"/>
+    <param name="buyfromfactions" default="[]" comment="overridden by trade restrictions"/>
+    <param name="selltofactions" default="[]" comment="overridden by trade restrictions"/>
+    <param name="debugchance" default="0"/>
+    <param name="debugchance2" default="0"/>
+  </params>
+  <interrupts>
+    <library>
+      <actions name="FindCommanderStation">
+        <set_value name="$commanderstation" exact="this.assignedcontrolled.toplevelcommander"/>
+        <do_if value="not @$commanderstation.isclass.station">
+          <do_if value="$commanderstation.isclass.buildstorage">
+            <set_value name="$commanderstation" exact="$commanderstation.base"/>
+          </do_if>
+          <do_else>
+            <set_value name="$commanderstation" exact="null"/>
+          </do_else>
+        </do_if>
+      </actions>
+    </library>
+  </interrupts>
+  <init>
+    <set_command_action commandaction="commandaction.searchingtrades" />
+
+    <include_interrupt_actions ref="GetBlacklistgroup"/>
+  </init>
+  <patch sinceversion="3">
+    <include_interrupt_actions ref="GetBlacklistgroup"/>
+  </patch>
+  <patch sinceversion="5">
+    <set_value name="$tradeforbuildstorage" exact="false"/>
+  </patch>
+  <patch sinceversion="6">
+    <do_if value="$minbuyprice?">
+      <set_value name="$minsellprice" exact="$minbuyprice"/>
+      <remove_value name="$minbuyprice"/>
+    </do_if>
+  </patch>
+  <patch sinceversion="7">
+    <set_value name="$smuggle" exact="false"/>
+    <do_if value="@this.assignedcontrolled.order.$usecover">
+      <set_value name="$smuggle" exact="true"/>
+    </do_if>
+  </patch>
+  <patch sinceversion="8">
+    <do_if value="@$warebasket.count">
+      <set_value name="$locbasket" exact="$warebasket.clone"/>
+      <do_all exact="$locbasket.count" counter="$_i" reverse="true">
+        <do_if value="this.assignedcontrolled.cargo.{$locbasket.{$_i}}.max lt 1">
+          <debug_text text="'PATCH: %s %s %s cannot carry ware %s currently in warebasket. removing.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, $locbasket.{$_i}]" filter="savegame"/>
+          <remove_value name="$locbasket.{$_i}"/>
+        </do_if>
+      </do_all>
+      <do_if value="$locbasket.count != $warebasket.count">
+        <set_value name="$warebasket" exact="$locbasket"/>
+        <edit_order_param order="this.assignedcontrolled.order" param="'warebasket'" value="$locbasket"/>
+      </do_if>
+      <remove_value name="$locbasket"/>
+    </do_if>
+  </patch>
+  <patch sinceversion="11">
+    <set_value name="$buyfromfactions" exact="[]"/>
+    <set_value name="$selltofactions" exact="[]"/>
+    <remove_value name="$onlyplayerclients"/>
+  </patch>
+  <patch sinceversion="12">
+    <set_value name="$manualwarebasket" exact="[]"/>
+  </patch>
+  <attention min="unknown">
+    <actions>
+
+      <set_value name="$homebase" exact="this.assignedcontrolled.commander" />
+      <do_if value="this.assignedcontrolled.assignment == assignment.assist">
+        <!-- cases:
+              subordinate to free trader
+              subordinate to station trader
+              subordinate to fleet auxiliary ship
+                free
+                working for station
+                working for another ship -->
+        <do_while value="$homebase.commander and not $homebase.isrealclass.station and not $homebase.isclass.buildstorage and ($homebase.assignment != assignment.supplyfleet)">
+          <set_value name="$homebase" exact="$homebase.commander"/>
+        </do_while>
+      </do_if>
+      <do_if value="$tradeforbuildstorage and $homebase.buildstorage">
+        <set_value name="$homebase" exact="$homebase.buildstorage"/>
+      </do_if>
+      <do_if value="not $homebase.exists">
+        <return>
+          <retval name="buyoffer" value="null"/>
+          <retval name="selloffer" value="null"/>
+          <retval name="failurereason" value="{1045, 117}" comment="Commander does not exist."/>
+        </return>
+      </do_if>
+      <set_value name="$currentcargo" exact="this.assignedcontrolled.cargo.list" />
+
+      <!-- set up initial state for trade runs -->
+      <label name="start" />
+
+      <set_value name="$buyoffer" exact="null" />
+      <set_value name="$selloffer" exact="null" />
+      <!-- NB: buyoffers can now sometimes be very old since blacklists can rule out all trade sources in range, thereby increasing the chance that entries are invalid when we loop back. -->
+      <set_value name="$buyoffers" exact="[]"/>
+
+      <debug_text text="player.age + ' finding trade offer; range: %1. Buy spaces %2, Sell spaces %2'.[$range.knownname, $buyspaces, $sellspaces]" chance="$debugchance" />
+      <debug_text text="player.age + ' current cargo: ' + $currentcargo" chance="$debugchance" />
+      <debug_text text="player.age + ' commander: ' + $homebase.knownname" chance="$debugchance" />
+
+      <label name="find trade run" />
+      <!-- try to find a buy offer for wares in our cargo first -->
+      <do_if value="$currentcargo.count gt 0">
+        <!-- in case it was resources for our station, wait until we can deliver them -->
+        <debug_text text="player.age + ' checking if we can sell our current cargo to our homebase'" chance="$debugchance" />
+        <find_buy_offer tradepartner="this.ship" buyer="$homebase" wares="$currentcargo" result="$buyoffer" />
+        <!-- If there is a buyoffer, go and sell to homebase -->
+        <do_if value="$buyoffer.available">
+          <do_if value="not $warebasket.indexof.{$buyoffer.ware} and @this.assignedcontrolled.order.id == 'TradeRoutine'">
+            <edit_order_param order="this.assignedcontrolled.order" param="'warebasket'" value="[$buyoffer.ware]"/>
+          </do_if>
+          <debug_text text="'we have cargo on board that our homebase needs: %1 in %2 needs %3 %4'.[$buyoffer.buyer.knownname, $buyoffer.buyer.zone.knownname, $buyoffer.offeramount.{this.ship}, $buyoffer.ware.name]" chance="$debugchance"/>
+          <resume label="finish" />
+        </do_if>
+        <do_else>
+          <debug_text text="'no buyoffer found for our cargo'" chance="$debugchance"/>
+          <!-- in case it was wares that our homebase does not need, shop around the range to find another buyer -->
+          <!-- find a buy offer that matches our cargo, proceeds will now go to our new commander -->
+          <debug_text text="player.age + ' checking if we can sell our current cargo somewhere else'" chance="$debugchance" />
+          <!-- Iterate over the sell spaces -->
+          <do_all exact="$sellspaces.count" counter="$s">
+            <do_if value="not $sellspaces.{$s}.isoperational">
+              <continue/>
+            </do_if>
+            <do_if value="not $homebase.exists or $homebase.iswreck">
+              <resume label="finish" />
+              <break />
+            </do_if>
+            <!-- Iterate ware by ware -->
+            <do_all exact="$currentcargo.count" counter="$i" reverse="1">
+              <do_if value="not $sellspaces.{$s}.isoperational">
+                <break/>
+              </do_if>
+              <do_if value="not $homebase.exists or $homebase.iswreck">
+                <resume label="finish" />
+                <break />
+              </do_if>
+              <set_value name="$currentware" exact="$currentcargo.{$i}" />
+              <set_value name="$minsellprice" exact="$currentware.minprice" />
+              <!-- If the homebase has this ware as resource, set the appropriate price -->
+              <find_sell_offer result="$homebaseselloffer" seller="$homebase" wares="$currentware" excludeempty="false"/>
+              <do_if value="$homebaseselloffer.exists">
+                <!-- we don't want to make a loss when selling off products from our homebase, otherwise just try and dump the goods -->
+                <set_value name="$minsellprice" exact="$homebaseselloffer.unitprice" />
+                <do_if value="$homebaseselloffer.hasdynamicprice">
+                  <do_if value="@this.$sellpricetable.{$currentware}">
+                    <set_value name="$minsellprice" exact="this.$sellpricetable.{$currentware}"/>
+                  </do_if>
+                </do_if>
+                <do_else>
+                  <do_if value="not this.$sellpricetable?">
+                    <set_value name="this.$sellpricetable" exact="table[]"/>
+                  </do_if>
+                  <set_value name="this.$sellpricetable.{$currentware}" exact="$minsellprice"/>
+                </do_else>
+              </do_if>
+              <do_elseif value="$homebase.resources.{$currentware}.exists">
+                <!-- don't sell potential resources for our homebase to someone else, just keep them. We will be able to deliver them later -->
+                <remove_value name="$currentcargo.{$i}"/>
+                <continue />
+              </do_elseif>
+
+              <!-- Find buy offers in buyspace -->
+              <do_if value="@$homebaseselloffer.restriction.factions.count">
+                <find_buy_offer tradepartner="this.ship" wares="$currentware" space="$sellspaces.{$s}" result="$buyoffers" multiple="true">
+                  <price min="$minsellprice"/>
+                  <match_buyer owner="$homebaseselloffer.restriction.factions" negateownerfilter="$homebaseselloffer.restriction.inverted" tradesknownto="this.owner">
+                    <match_use_blacklist group="$blacklistgroup" type="blacklisttype.objectactivity" object="this.ship"/>
+                  </match_buyer>
+                </find_buy_offer>
+              </do_if>
+              <do_else>
+                <find_buy_offer tradepartner="this.ship" wares="$currentware" space="$sellspaces.{$s}" result="$buyoffers" multiple="true">
+                  <price min="$minsellprice"/>
+                  <match_buyer tradesknownto="this.owner" owner="$selltofactions" negateownerfilter="not $selltofactions.count">
+                    <match_use_blacklist group="$blacklistgroup" type="blacklisttype.objectactivity" object="this.ship"/>
+                  </match_buyer>
+                </find_buy_offer>
+              </do_else>
+              <debug_text text="player.age + ' found %1 buyoffers %2 in %3'.[$buyoffers.count, $currentware, $sellspaces.{$s}.knownname]" chance="$debugchance"/>
+              <set_value name="$buyoffer" exact="null" />
+              <do_while value="$buyoffers.count gt 0">
+                <set_value name="$buyidx" min="1" max="$buyoffers.count" />
+                <set_value name="$buyoffer" exact="$buyoffers.{$buyidx}" />
+                <set_value name="$tradevalue" exact="[$buyoffer.offeramount.{this.assignedcontrolled}, this.assignedcontrolled.cargo.{$currentware}.free].min * $currentware.volume * ($buyoffer.relativeprice + 2)"/>
+                <do_if value="not @$bestoffer.available or ($tradevalue gt $besttradevalue)">
+                  <set_value name="$bestoffer" exact="$buyoffer"/>
+                  <set_value name="$besttradevalue" exact="$tradevalue"/>
+                </do_if>
+                <do_if value="$buyoffer.buyer.owner == this.trueowner">
+                  <break />
+                </do_if>
+                <remove_value name="$buyoffers.{$buyidx}" />
+              </do_while>
+
+              <!-- if we have a buyoffer that doesn't belong to this.owner, or we have no buyoffer; but we have a bestoffer. -->
+              <do_if value="(@$buyoffer.buyer.owner != this.trueowner) and @$bestoffer.available">
+                <set_value name="$buyoffer" exact="$bestoffer"/>
+              </do_if>
+              <remove_value name="$bestoffer"/>
+              <remove_value name="$besttradevalue"/>
+              <remove_value name="$tradevalue"/>
+
+              <do_if value="$buyoffer.exists">
+                <debug_text text="'we have cargo on board that our homebase does not need, but we can sell it in the allowed range: %1 in %2 needs %3 %4'.[$buyoffer.buyer.knownname, $buyoffer.buyer.zone.knownname, $buyoffer.offeramount.{this.ship}, $buyoffer.ware.name]" chance="$debugchance"/>
+                <resume label="finish" />
+              </do_if>
+              <wait min="5s" max="10s" />
+            </do_all>
+            <!-- avoid performace problems -->
+            <wait min="5s" max="10s"/>
+          </do_all>
+        </do_else>
+      </do_if>
+
+      <!-- de-parallelize station-based traders looking for trades to mitigate them finding the same trades from $homebase before reservations kick in. -->
+      <include_interrupt_actions ref="FindCommanderStation"/>
+
+      <!-- max 1.5 - 5.5 minutes -->
+      <set_value name="$startwait" exact="player.age"/>
+      <do_while value="(@$loopcount lt 30) and @$commanderstation.defencenpc.$lookingfortrades and ($commanderstation.defencenpc.$lookingfortrades != this.assignedcontrolled)">
+        <do_if value="not $commanderstation.subordinates.indexof.{$commanderstation.defencenpc.$lookingfortrades}">
+          <debug_text text="'ship looking for trades: %s %s %s no longer a subordinate of our station: %s %s %s'.[@$commanderstation.defencenpc.$lookingfortrades.idcode, @$commanderstation.defencenpc.$lookingfortrades.knownname, $commanderstation.defencenpc.$lookingfortrades, @$commanderstation.idcode, @$commanderstation.knownname, $commanderstation]"/>
+          <remove_value name="$commanderstation.defencenpc.$lookingfortrades"/>
+          <break/>
+        </do_if>
+        <debug_text text="player.age + ': %s %s %s still looking for trades. waiting.'.[@$commanderstation.defencenpc.$lookingfortrades.idcode, @$commanderstation.defencenpc.$lookingfortrades.knownname, $commanderstation.defencenpc.$lookingfortrades]" chance="$debugchance"/>
+        <wait min="3s" max="11s" sinceversion="6"/>
+        <set_value name="$loopcount" exact="@$loopcount + 1"/>
+      </do_while>
+      <debug_text text="'waited for %s seconds.'.[player.age - $startwait]" chance="0"/>
+      <remove_value name="$startwait"/>
+      <remove_value name="$loopcount"/>
+
+      <do_if value="@$commanderstation.tradenpc.exists">
+        <set_value name="$commanderstation.defencenpc.$lookingfortrades" exact="this.assignedcontrolled"/>
+        <debug_text text="'registering %s %s %s at %s %s %s as looking for trades.'.[@$commanderstation.defencenpc.$lookingfortrades.idcode, @$commanderstation.defencenpc.$lookingfortrades.knownname, $commanderstation.defencenpc.$lookingfortrades, @$commanderstation.idcode, @$commanderstation.knownname, $commanderstation]" chance="$debugchance"/>
+      </do_if>
+      <remove_value name="$commanderstation"/>
+
+      <!-- update the wares we deal with for a new trade run - ensure that we don't miss any wares if the list has changed due to the homebase being expanded -->
+      <do_if value="$homebase.exists and not $homebase.iswreck and not $homebase.isrealclass.ship">
+        <set_value name="$resources" exact="$homebase.resources.list" />
+        <set_value name="$resources_shortage" exact="[]"/>
+        <set_value name="$resources_critical" exact="[]"/>
+        <set_value name="$supplyresources" exact="$homebase.supplyresources.list" />
+        <set_value name="$products" exact="$homebase.products.list" />
+        <set_value name="$tradewares" exact="$homebase.tradewares.list"/>
+
+        <!-- at this point, $products contains all of the wares that our commander wants to dispose of. clean up all of the entries in this.$sellpricetable that are not products. -->
+        <do_if value="this.$sellpricetable?">
+          <do_for_each name="$locware" in="this.$sellpricetable" reverse="true">
+            <do_if value="not $products.indexof.{$locware} and not $tradewares.indexof.{$locware}">
+              <debug_text text="'cleaning up %s from sellpricetable.'.[$locware]" chance="$debugchance"/>
+              <remove_value name="this.$sellpricetable.{$locware}"/>
+            </do_if>
+          </do_for_each>
+        </do_if>
+
+        <do_if value="not $skipshortage?">
+          <!--Build a list of resources we can hold-->
+          <create_list name="$resources_to_check"/>
+          <do_for_each name="$locresource" in="$resources">
+            <do_if value="this.assignedcontrolled.cargo.{$locresource}.max gt 0">
+              <append_to_list name="$resources_to_check" exact="$locresource"/>
+            </do_if>
+          </do_for_each>
+          <do_if value="not $tradeforbuildstorage">
+
+            <do_for_each name="$shortagetype" in="[class.production, class.buildmodule, class.habitation]">
+              <generate_shortage_reports object="$homebase" shortage="$table_shortage" insufficient="$table_insufficient" type="$shortagetype"
+                                       relevantwares="$resources_to_check" insufficientthreshold="param.criticalwares.insufficientthreshold" insufficientthresholdcutoff="param.criticalwares.insufficientthresholdcutoff" shortagethreshold="param.criticalwares.shortagethreshold"/>
+
+              <do_for_each name="$locware" in="$table_insufficient">
+                <!--Remove insufficient wares from the resources to check as they are already added to both lists-->
+                <remove_from_list name="$resources_to_check" exact="$locware"/>
+                <append_to_list name="$resources_shortage" exact="$locware"/>
+                <append_to_list name="$resources_critical" exact="$locware"/>
+              </do_for_each>
+              <do_for_each name="$locware" in="$table_shortage">
+                <do_if value="$resources_shortage.indexof.{$locware} == 0 and not $products.indexof.{$locware}">
+                  <append_to_list name="$resources_shortage" exact="$locware"/>
+                </do_if>
+              </do_for_each>
+            </do_for_each>
+          </do_if>
+          <do_else>
+            <generate_shortage_reports object="$homebase" shortage="$table_shortage" insufficient="$table_insufficient" type="class.buildmodule"
+                                       relevantwares="$resources_to_check" insufficientthreshold="param.criticalwares.insufficientthreshold" insufficientthresholdcutoff="param.criticalwares.insufficientthresholdcutoff" shortagethreshold="param.criticalwares.shortagethreshold"/>
+
+            <do_for_each name="$locware" in="$table_insufficient">
+              <append_to_list name="$resources_shortage" exact="$locware"/>
+              <append_to_list name="$resources_critical" exact="$locware"/>
+            </do_for_each>
+            <do_for_each name="$locware" in="$table_shortage">
+              <do_if value="$resources_shortage.indexof.{$locware} == 0">
+                <append_to_list name="$resources_shortage" exact="$locware"/>
+              </do_if>
+            </do_for_each>
+          </do_else>
+          <remove_value name="$resources_to_check"/>
+          <remove_value name="$table_shortage"/>
+          <remove_value name="$table_insufficient"/>
+        </do_if>
+
+        <!-- start with an empty list in case $warebasket has wares that $homebase no longer needs. -->
+        <create_list name="$locwares"/>
+
+        <do_if value="not $resources_shortage.count">
+          <do_for_each name="$ware" in="$resources">
+            <do_if value="not $locwares.indexof.{$ware}">
+              <do_if value="(this.assignedcontrolled.cargo.{$ware}.max gt 0) and not $ware.isprocessed">
+                <append_to_list name="$locwares" exact="$ware" />
+              </do_if>
+            </do_if>
+          </do_for_each>
+          <do_for_each name="$ware" in="$products">
+            <do_if value="not $locwares.indexof.{$ware}">
+              <do_if value="(this.assignedcontrolled.cargo.{$ware}.max gt 0) and not $ware.isprocessed">
+                <append_to_list name="$locwares" exact="$ware" />
+              </do_if>
+            </do_if>
+          </do_for_each>
+          <do_for_each name="$ware" in="$tradewares">
+            <do_if value="not $locwares.indexof.{$ware}">
+              <do_if value="(this.assignedcontrolled.cargo.{$ware}.max gt 0) and not $ware.isprocessed">
+                <append_to_list name="$locwares" exact="$ware" />
+              </do_if>
+            </do_if>
+          </do_for_each>
+          <do_for_each name="$ware" in="$supplyresources">
+            <do_if value="not $locwares.indexof.{$ware}">
+              <do_if value="(this.assignedcontrolled.cargo.{$ware}.max gt 0) and not $ware.isprocessed">
+                <!-- NB: adding a ware to locwares adds it to the basket if it isn't already in the basket. -->
+                <append_to_list name="$locwares" exact="$ware" />
+              </do_if>
+            </do_if>
+
+            <get_ware_reservation result="$locreserved" object="$homebase" ware="$ware" supplies="true" type="sell"/>
+            <debug_text text="'short on %s. current amount in supply storage: %s'.[$ware, $homebase.supplies.{$ware}.count]" chance="$debugchance"/>
+            <!-- if $ware is not reserved, $homebase has none of it, it is not yet listed as a shortage ware, and we can carry it, -->
+            <do_if value="not $skipshortage? and not $locreserved and not $homebase.supplies.{$ware}.count and not $resources_shortage.indexof.{$ware} and (this.assignedcontrolled.cargo.{$ware}.max gt 0)">
+              <!-- ... list it as a shortage ware. -->
+              <!-- NB: adding a ware to resources_shortage replaces the basket with it if it is populated. -->
+              <append_to_list name="$resources_shortage" exact="$ware"/>
+            </do_if>
+            <remove_value name="$locreserved"/>
+          </do_for_each>
+        </do_if>
+
+        <do_for_each name="$locware" in="$resources_shortage" reverse="true">
+          <find_buy_offer result="$evalbuyoffer" tradepartner="this.ship" buyer="$homebase" wares="$locware"/>
+          <do_if value="not $evalbuyoffer or not $homebase.maybuyfrom.[this.owner, $locware]">
+            <do_if value="$resources_critical.indexof.{$locware}">
+              <debug_text text="'critical ware: %s not wanted by station. ignoring shortage.'.[$locware]" chance="$debugchance"/>
+              <remove_from_list name="$resources_critical" exact="$locware" multiple="false" />
+            </do_if>
+            <debug_text text="'shortage ware: %s not wanted by station. ignoring shortage.'.[$locware]" chance="$debugchance"/>
+            <remove_value name="$resources_shortage.{loop.index}"/>
+          </do_if>
+          <remove_value name="$evalbuyoffer"/>
+        </do_for_each>
+
+        <do_if value="$resources_shortage.count">
+          <set_value name="$usedshortage"/>
+          <debug_text text="'shortage detected. will try to purchase %s wares for %s %s %s. num critical wares: %s'.[$resources_shortage.count, @$homebase.idcode, @$homebase.knownname, $homebase, $resources_critical.count]" chance="$debugchance"/>
+          <set_value name="$locwares" exact="$resources_shortage"/>
+          <do_if value="$resources_critical.count">
+            <debug_text text="'critical shortage detected of %s wares.'.[$resources_critical.count]" chance="$debugchance"/>
+            <set_value name="$locwares" exact="$resources_critical"/>
+          </do_if>
+        </do_if>
+
+        <do_if value="$manualwarebasket.count">
+          <do_for_each name="$locware" in="$locwares" reverse="true">
+            <do_if value="not $manualwarebasket.indexof.{$locware}">
+              <remove_from_list name="$locwares" exact="$locware"/>
+              <debug_text text="'%s not in manual ware basket. removing.'.[$locware]" chance="$debugchance2"/>
+            </do_if>
+          </do_for_each>
+          <do_if value="not $locwares.count">
+            <debug_text text="'no wares left after filtering through manual ware basket.'" chance="$debugchance2"/>
+            <do_if value="$usedshortage?">
+              <debug_text text="'skipping shortages and trying again.'" chance="$debugchance2"/>
+              <remove_value name="$usedshortage"/>
+              <set_value name="$skipshortage"/>
+              <resume label="start"/>
+            </do_if>
+            <debug_text text="'no wares left after filtering through manual ware basket and shortages were already skipped.'" chance="$debugchance"/>
+            <set_value name="$failurereason" exact="{1045, 113}" comment="No matching trade offer found."/>
+            <resume label="finish"/>
+          </do_if>
+        </do_if>
+
+        <!-- check to see if we either added something or removed something from our warebasket. -->
+        <do_for_each name="$locware" in="$locwares">
+          <do_if value="not $warebasket.indexof.{$locware}">
+            <set_value name="$basketchanged"/>
+            <break/>
+          </do_if>
+        </do_for_each>
+        <do_if value="not $basketchanged?">
+          <do_for_each name="$locware" in="$warebasket">
+            <do_if value="not $locwares.indexof.{$locware}">
+              <set_value name="$basketchanged"/>
+              <break/>
+            </do_if>
+          </do_for_each>
+        </do_if>
+
+        <do_if value="$basketchanged?">
+          <debug_text text="'%s %s %s updating warebasket. \nold warebasket: %s\nnew warebasket: %s'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, $warebasket, $locwares]" chance="$debugchance"/>
+          <set_value name="$warebasket" exact="$locwares.clone"/>
+          <do_if value="@this.assignedcontrolled.order.id == 'TradeRoutine'">
+            <edit_order_param order="this.assignedcontrolled.order" param="'warebasket'" value="$locwares"/>
+            <wait exact="1ms" sinceversion="4"/>
+          </do_if>
+        </do_if>
+
+        <remove_value name="$skipshortage"/>
+        <remove_value name="$locwares"/>
+        <remove_value name="$supplyresources"/>
+        <remove_value name="$tradewares" />
+        <remove_value name="$products" />
+        <remove_value name="$resources" />
+        <remove_value name="$ware" />
+
+        <do_if value="$resources_shortage.count">
+          <resume label="buy"/>
+        </do_if>
+      </do_if>
+
+      <label name="sell"/>
+
+      <do_if value="not $homebase.exists or $homebase.iswreck">
+        <resume label="finish"/>
+      </do_if>
+
+      <debug_text text="player.age + ' checking if we can sell products from our station somewhere'" chance="$debugchance" />
+      <find_sell_offer tradepartner="this.ship" seller="$homebase" wares="$warebasket" result="$selloffers" multiple="true" />
+      <do_if value="not $selloffers.count">
+        <find_sell_offer seller="$homebase" wares="$warebasket" result="$locselloffer"/>
+        <debug_text text="'selloffers exist\nmy faction restricted: %s'.[if $locselloffer.restriction.inverted then $locselloffer.restriction.factions.indexof.{this.assignedcontrolled.owner} else (not $locselloffer.restriction.factions.indexof.{this.assignedcontrolled.owner})]" chance="0"/>
+        <do_if value="$locselloffer.exists and (($locselloffer.restriction.inverted and $locselloffer.restriction.factions.indexof.{this.assignedcontrolled.owner}) or (not $locselloffer.restriction.inverted and not $locselloffer.restriction.factions.indexof.{this.assignedcontrolled.owner}))">
+          <set_value name="$failurereason" exact="{1045, 118}" comment="Trade rule prohibits trade with commander."/>
+          <debug_text text="'trade rule prohibits %s %s %s selling %s from homebase %s %s %s.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, $locselloffer.ware, @$homebase.idcode, @$homebase.knownname, $homebase]" chance="0"/>
+        </do_if>
+        <remove_value name="$locselloffer"/>
+      </do_if>
+
+      <!-- find a buy offer that matches one of our sell offers -->
+      <do_if value="$selloffers.count gt 0">
+        <!-- shuffle list so that offers with the same relprice are still in a random order and not in the consistent order that the stations were found in -->
+        <shuffle_list list="$selloffers"/>
+        <!-- try to sell off the wares that we have the most of first, sort by relativeprice to avoid weirdness with intermediate wares. only do this 50% of the time to give other wares a chance -->
+        <sort_trades name="$selloffers" tradelist="$selloffers" sorter="relativeprice" chance="50" />
+
+        <!-- Compatibility - Loops reversed below -->
+        <do_all exact="$sellspaces.count" counter="$s" chance="0">
+          <do_all exact="$selloffers.count" counter="$i">
+            <wait exact="1ms"/>
+            <break/>
+          </do_all>
+          <wait exact="1ms"/>
+          <break/>
+        </do_all>
+
+        <do_all exact="$selloffers.count" counter="$i">
+          <do_if value="not $selloffers.{$i}.available or not @$selloffers.{$i}.offeramount.{this.assignedcontrolled}">
+            <debug_text text="'While looking for buyers of %1 the selloffer became invalid, skipping...'.[@$selloffers.{$i}.ware]" chance="$debugchance"/>
+            <continue/>
+          </do_if>
+          <!-- Iterate over the sell spaces -->
+          <do_all exact="$sellspaces.count" counter="$s">
+            <debug_text text="'Finding buy offer for up to %1 %2 in %3'.[$selloffers.{$i}.offeramount.{this.assignedcontrolled}, $selloffers.{$i}.ware, $sellspaces.{$s}.knownname]" chance="$debugchance" />
+            <!-- if there is a faction restriction for this ware, don't look for buyers of a different faction! -->
+            <do_if value="@$selloffers.{$i}.restriction.factions.count">
+              <find_buy_offer tradepartner="this.ship" wares="$selloffers.{$i}.ware" space="$sellspaces.{$s}" result="$buyoffers" multiple="true">
+                <match_buyer owner="$selloffers.{$i}.restriction.factions" negateownerfilter="$selloffers.{$i}.restriction.inverted" tradesknownto="this.owner" excluded="$homebase">
+                  <match_use_blacklist group="$blacklistgroup" type="blacklisttype.objectactivity" object="this.ship"/>
+                </match_buyer>
+                <relativeprice min="$selloffers.{$i}.relativeprice" tradepartner="if this.ship.isplayerowned then this.ship else null" comment="price must be at or above the relative price at the station to be considered" />
+              </find_buy_offer>
+            </do_if>
+            <do_else>
+              <find_buy_offer tradepartner="this.ship" wares="$selloffers.{$i}.ware" space="$sellspaces.{$s}" result="$buyoffers" multiple="true">
+                <relativeprice min="$selloffers.{$i}.relativeprice" tradepartner="if this.ship.isplayerowned then this.ship else null" comment="price must be at or above the relative price at the station to be considered" />
+                <match_buyer tradesknownto="this.owner" excluded="$homebase">
+                  <match_use_blacklist group="$blacklistgroup" type="blacklisttype.objectactivity" object="this.ship"/>
+                </match_buyer>
+              </find_buy_offer>
+            </do_else>
+
+            <do_for_each name="$buyoffer_local" in="$buyoffers" reverse="true">
+              <do_if value="$buyoffer_local.owner == $selloffers.{$i}.owner">
+                <debug_text text="'$buyoffer_local.owner: %s == $selloffers.{$i}.owner: %s. skipping buy offer.'.[$buyoffer_local.owner, $selloffers.{$i}.owner]" chance="$debugchance" />
+                <continue/>
+              </do_if>
+
+              <set_value name="$loctradevalue" exact="[$buyoffer_local.offeramount.{this.assignedcontrolled}, this.assignedcontrolled.cargo.{$buyoffer_local.ware}.free].min * $buyoffer_local.ware.volume * ($buyoffer_local.relativeprice + 2)"/>
+              <do_if value="not $smuggle and this.assignedcontrolled.hidecargochance lt 100 and $buyoffer_local.owner.zone.policefaction and $buyoffer_local.ware.illegalto.{$buyoffer_local.owner.zone.policefaction}.{this.owner} and ($buyoffer_local.owner.zone.policefaction != this.owner)">
+                <debug_text text="'%s illegal in %s %s and we are not smuggling. discarding trade.'.[$buyoffer_local.ware, $sellspaces.{$s}.class, $sellspaces.{$s}.knownname]" chance="$debugchance"/>
+                <remove_value name="$buyoffers.{loop.index}"/>
+              </do_if>
+              <do_elseif value="$loctradevalue and (not @$buyoffer.available or ($loctradevalue gt $tradevalue))">
+                <set_value name="$buyoffer" exact="$buyoffer_local"/>
+                <set_value name="$tradevalue" exact="$loctradevalue"/>
+                <debug_text text="'selling %s with a trade value of %s\ntrade price: %s,\nunit price: %s (before commissions)\namount: %s.'.[$buyoffer.ware, $tradevalue, [$buyoffer.offeramount.{this.assignedcontrolled}, this.assignedcontrolled.cargo.{$buyoffer.ware}.free].min * $buyoffer.unitprice, $buyoffer.unitprice, $buyoffer.unitprice, [$buyoffer.offeramount.{this.assignedcontrolled}, this.assignedcontrolled.cargo.{$buyoffer.ware}.free].min]" chance="$debugchance"/>
+              </do_elseif>
+              <remove_value name="$loctradevalue"/>
+            </do_for_each>
+
+            <do_if value="@$buyoffer.exists">
+              <set_value name="$selloffer" exact="$selloffers.{$i}" />
+              <do_if value="not this.$sellpricetable?">
+                <set_value name="this.$sellpricetable" exact="table[]"/>
+              </do_if>
+              <set_value name="this.$sellpricetable.{$selloffer.ware}" exact="$selloffer.unitprice"/>
+              <debug_text text="'buy offer found! trading %s. relprice: %s'.[$selloffer.ware, $selloffer.relativeprice]" chance="$debugchance"/>
+              <resume label="finish" />
+            </do_if>
+            <wait min="1s" max="3s" sinceversion="2"/>
+            <do_if value="not $selloffers.{$i}.available or not @$selloffers.{$i}.offeramount.{this.assignedcontrolled}">
+              <debug_text text="'While looking for buyers of %1 in %2 the selloffer became invalid, skipping...'.[@$selloffers.{$i}.ware, $sellspaces.{$s}.knownname]" chance="$debugchance"/>
+              <break />
+            </do_if>
+          </do_all>
+          <!-- avoid performace problems -->
+          <wait min="1s" max="3s" sinceversion="2"/>
+        </do_all>
+      </do_if>
+
+      <label name="buy"/>
+
+      <do_if value="not $homebase.exists or $homebase.iswreck">
+        <resume label="finish"/>
+      </do_if>
+
+      <debug_text text="player.age + ' checking if we can buy resources for our station somewhere'" chance="$debugchance" />
+      <find_buy_offer tradepartner="this.ship" buyer="$homebase" wares="$warebasket" result="$buyoffers" multiple="true" />
+      <do_if value="not $buyoffers.count">
+        <find_buy_offer buyer="$homebase" wares="$warebasket" result="$locbuyoffer"/>
+        <debug_text text="'buyoffers exist\nmy faction restricted: %s'.[if $locbuyoffer.restriction.inverted then $locbuyoffer.restriction.factions.indexof.{this.assignedcontrolled.owner} else (not $locbuyoffer.restriction.factions.indexof.{this.assignedcontrolled.owner})]" chance="0"/>
+        <do_if value="$locbuyoffer.exists and (($locbuyoffer.restriction.inverted and $locbuyoffer.restriction.factions.indexof.{this.assignedcontrolled.owner}) or (not $locbuyoffer.restriction.inverted and not $locbuyoffer.restriction.factions.indexof.{this.assignedcontrolled.owner}))">
+          <set_value name="$failurereason" exact="{1045, 118}" comment="Trade rule prohibits trade with commander."/>
+          <debug_text text="'trade rule prohibits %s %s %s buying %s from homebase %s %s %s.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, $locbuyoffer.ware, @$homebase.idcode, @$homebase.knownname, $homebase]" chance="0"/>
+        </do_if>
+        <remove_value name="$locbuyoffer"/>
+      </do_if>
+      <debug_text text="'found %s buy offers at %s %s %s.'.[$buyoffers.count, @$homebase.idcode, @$homebase.knownname, $homebase]" chance="$debugchance"/>
+
+      <!-- find a sell offer that matches one of our buy offers -->
+      <do_if value="$buyoffers.count gt 0">
+        <!-- build table with priorities, making primary resources more "urgent" than secondaries or ammo offers, higher $trade.stocklevel means higher demand -->
+        <set_value name="$offertable" exact="table[]" />
+        <do_for_each name="$offer" in="$buyoffers">
+          <set_value name="$offeramount" exact="$offer.offeramount.{this.ship}" />
+          <set_value name="$offertable.{$offer}" exact="$offer.stocklevel.{$offeramount} + (0.5 * $homebase.resources.{$offer.ware}.primary)" />
+          <debug_text text="'ware: %s, value: %s, amount: %s, demand-factor: %s%%, primary: %s'.[$offer.ware, $offertable.{$offer}, $offeramount, $offer.stocklevel.{$offeramount} * 100, $homebase.resources.{$offer.ware}.primary]" chance="$debugchance"/>
+        </do_for_each>
+        <!-- we now use the list of offers which has been sorted by the priority values -->
+        <set_value name="$buyoffers" exact="$offertable.keys.sorted" />
+        <remove_value name="$offertable"/>
+        <!-- $table.keys.sorted gives us the listed sorted by values from lowest to highest, so we need to iterate in reverse -->
+        <do_all exact="$buyoffers.count" counter="$i" reverse="true">
+          <do_if value="not $buyoffers.{$i}.available or not @$buyoffers.{$i}.offeramount.{this.assignedcontrolled}">
+            <debug_text text="'While looking for sellers of %1 the buyoffer became invalid, skipping...'.[@$buyoffers.{$i}.ware]" chance="$debugchance"/>
+            <continue/>
+          </do_if>
+          <!-- Iterate over the buy spaces -->
+          <do_all exact="$buyspaces.count" counter="$b">
+            <set_value name="$evalrelprice" exact="1.0"/>
+            <do_if value="this.isplayerowned">
+              <set_value name="$evalrelprice" exact="$buyoffers.{$i}.relativeprice"/>
+            </do_if>
+            <set_value name="$minvolume" exact="[$buyoffers.{$i}.offeramount.{this.assignedcontrolled}, (this.assignedcontrolled.cargo.{$buyoffers.{$i}.ware}.free / 2)].min * $buyoffers.{$i}.ware.volume"/>
+            <debug_text text="'Finding sell offer for %s in %s. minvolume: %s, offer volume: %s, storage volume: %s, max relprice: %s'.[$buyoffers.{$i}.ware, $buyspaces.{$b}.knownname, @$minvolume, $buyoffers.{$i}.offeramount.{this.assignedcontrolled} * $buyoffers.{$i}.ware.volume, (this.assignedcontrolled.cargo.{$buyoffers.{$i}.ware}.free / 2) * $buyoffers.{$i}.ware.volume, $evalrelprice]" chance="$debugchance"/>
+            <!-- if there is a faction restriction for this ware, don't look for sellers of a different faction! -->
+            <do_if value="@$buyoffers.{$i}.restriction.factions.count">
+              <find_sell_offer tradepartner="this.ship" wares="$buyoffers.{$i}.ware" space="$buyspaces.{$b}" result="$selloffers" multiple="true">
+                <relativeprice max="$evalrelprice" tradepartner="if this.ship.isplayerowned then this.ship else null"/>
+                <match_seller owner="$buyoffers.{$i}.restriction.factions" negateownerfilter="$buyoffers.{$i}.restriction.inverted" tradesknownto="this.owner" excluded="$homebase">
+                  <match_use_blacklist group="$blacklistgroup" type="blacklisttype.objectactivity" object="this.ship"/>
+                </match_seller>
+              </find_sell_offer>
+            </do_if>
+            <do_else>
+              <find_sell_offer tradepartner="this.ship" wares="$buyoffers.{$i}.ware" space="$buyspaces.{$b}" result="$selloffers" multiple="true">
+                <relativeprice max="$evalrelprice" tradepartner="if this.ship.isplayerowned then this.ship else null"/>
+                <totalvolume min="$minvolume"/>
+                <match_seller tradesknownto="this.owner" owner="$buyfromfactions" negateownerfilter="not $buyfromfactions.count" excluded="$homebase">
+                  <match_use_blacklist group="$blacklistgroup" type="blacklisttype.objectactivity" object="this.ship"/>
+                </match_seller>
+              </find_sell_offer>
+            </do_else>
+
+            <!-- shuffle list so that offers with the same tradevalue are still in a random order and not in the consistent order that the stations were found in -->
+            <shuffle_list list="$selloffers"/>
+            <do_for_each name="$selloffer_local" in="$selloffers" reverse="true">
+              <do_if value="@$buyoffers.{$i}.owner == @$selloffer_local.owner">
+                <debug_text text="'$buyoffers.{$i}.owner: %s == $selloffer_local.owner: %s. skipping sell offer.'.[$buyoffers.{$i}.owner, $selloffer_local.owner]" chance="$debugchance" />
+                <continue/>
+              </do_if>
+
+              <set_value name="$loctradevalue" exact="[$selloffer_local.offeramount.{this.assignedcontrolled}, this.assignedcontrolled.cargo.{$selloffer_local.ware}.free].min * $selloffer_local.ware.volume * -($selloffer_local.relativeprice - 2)"/>
+              <do_if value="not $smuggle and this.assignedcontrolled.hidecargochance lt 100 and $selloffer_local.owner.zone.policefaction and $selloffer_local.ware.illegalto.{$selloffer_local.owner.zone.policefaction}.{this.owner} and ($selloffer_local.owner.zone.policefaction != this.owner)">
+                <debug_text text="'%s illegal in %s %s and we are not smuggling. discarding trade.'.[$selloffer_local.ware, $buyspaces.{$b}.class, $buyspaces.{$b}.knownname]" chance="$debugchance"/>
+                <remove_value name="$selloffers.{loop.index}"/>
+              </do_if>
+              <do_elseif value="$loctradevalue and (not @$selloffer.available or ($loctradevalue gt $tradevalue))">
+                <set_value name="$selloffer" exact="$selloffer_local"/>
+                <set_value name="$tradevalue" exact="$loctradevalue"/>
+                <debug_text text="'buying %s with a trade value of %s\ntrade price: %s,\nunit price: %s (before discounts)\namount: %s.'.[$selloffer.ware, $tradevalue, [$selloffer.offeramount.{this.assignedcontrolled}, this.assignedcontrolled.cargo.{$selloffer.ware}.free].min * $selloffer.unitprice, $selloffer.unitprice, [$selloffer.offeramount.{this.assignedcontrolled}, this.assignedcontrolled.cargo.{$selloffer.ware}.free].min]" chance="$debugchance"/>
+              </do_elseif>
+              <remove_value name="$loctradevalue"/>
+            </do_for_each>
+
+            <do_if value="@$selloffer.available and @$selloffer.offeramount.{this.assignedcontrolled} and $buyoffers.{$i}.offeramount.{this.assignedcontrolled}">
+              <!-- we found a match! -->
+              <set_value name="$buyoffer" exact="$buyoffers.{$i}" />
+              <resume label="finish" />
+            </do_if>
+            <debug_text text="'waiting'" chance="$debugchance"/>
+            <do_all chance="0">
+              <!-- savegame compatibility. If we're in the old wait, restart the process at the 'buy' label to avoid issues because we changed the inner/outer do_all loops -->
+              <wait max="1ms" />
+              <resume label="buy"/>
+            </do_all>
+            <wait min="500ms" max="4s" sinceversion="9"/>
+            <do_if value="not $buyoffers.{$i}.available or not @$buyoffers.{$i}.offeramount.{this.assignedcontrolled}">
+              <debug_text text="'While looking for sellers of %1 in %2 the buyoffer became invalid, skipping...'.[@$buyoffers.{$i}.ware, $buyspaces.{$b}.knownname]" chance="$debugchance"/>
+              <break />
+            </do_if>
+          </do_all>
+          <!-- avoid performace problems -->
+          <do_all chance="0">
+            <!-- savegame compatibility. If we're in the old wait, restart the process at the 'buy' label to avoid issues because we changed the inner/outer do_all loops -->
+            <wait max="1ms" />
+            <resume label="buy"/>
+          </do_all>
+          <wait min="4s" max="10s" sinceversion="9"/>
+        </do_all>
+        <!-- clean up -->
+        <remove_value name="$evalrelprice"/>
+        <remove_value name="$buyoffers"/>
+      </do_if>
+
+      <!-- can't find anything good at the moment... wait a while, then check again -->
+      <do_if value="$usedshortage?">
+        <debug_text text="'tried looking for shortage wares but could not find good trades. trying again but skipping shortages.'" chance="$debugchance"/>
+        <remove_value name="$usedshortage"/>
+        <set_value name="$skipshortage"/>
+        <resume label="start"/>
+      </do_if>
+
+      <debug_text text="player.age + ' no good trade offer found, waiting for a while before checking again'" chance="$debugchance" />
+      <debug_text text="player.age + ' no good trade offer found. \'%1\'(job: \'%5\'), commander: \'%2\', buyoffers: \'%3\', selloffers: \'%4\''.[this.ship.knownname, $homebase.knownname, @$buyoffers, @$selloffers, @this.ship.job]" chance="$debugchance2" />
+
+      <!-- we didn't find anything. de-register ourselves to give the next guy a chance. -->
+      <include_interrupt_actions ref="FindCommanderStation"/>
+      <do_if value="@$commanderstation.defencenpc.exists and @$commanderstation.defencenpc.$lookingfortrades and ($commanderstation.defencenpc.$lookingfortrades == this.assignedcontrolled)">
+        <debug_text text="'%s %s %s done looking for trades for now.'.[@$commanderstation.defencenpc.$lookingfortrades.idcode, @$commanderstation.defencenpc.$lookingfortrades.knownname, $commanderstation.defencenpc.$lookingfortrades]" chance="$debugchance"/>
+        <remove_value name="$commanderstation.defencenpc.$lookingfortrades"/>
+      </do_if>
+      <remove_value name="$commanderstation"/>
+
+      <do_if value="@this.assignedcontrolled.order.isrunning">
+        <do_if value="not @$failurereason">
+          <set_value name="$failurereason" exact="{1045, 112}" comment="No matching trade offers found."/>
+          <do_if value="this.assignedcontrolled.hasblacklist.{blacklisttype.sectoractivity}.{$blacklistgroup} or this.assignedcontrolled.hasblacklist.{blacklisttype.sectortravel}.{$blacklistgroup} or this.assignedcontrolled.hasblacklist.{blacklisttype.objectactivity}.{$blacklistgroup}">
+            <set_value name="$failurereason" exact="{1045, 114}" comment="No trades found in allowed sectors."/>
+          </do_if>
+        </do_if>
+        <set_order_failed order="this.assignedcontrolled.order" text="$failurereason"/>
+      </do_if>
+
+      <run_script name="'move.idle'">
+        <param name="Min" value="30s" />
+        <param name="Max" value="90s" />
+      </run_script>
+      <resume label="start" />
+
+      <label name="finish" />
+
+      <do_if value="$buyoffer.exists and $selloffer.exists and not $buyoffer.offeramount.{this.assignedcontrolled}">
+        <debug_text text="'%s %s %s about to buy %s with invalid sell.'.[@this.assignedcontrolled.idcode, @this.assignedcontrolled.knownname, this.assignedcontrolled, $selloffer.ware]" filter="error"/>
+      </do_if>
+
+      <!-- we're done looking. de-register ourselves to give the next guy a chance. -->
+      <include_interrupt_actions ref="FindCommanderStation"/>
+      <do_if value="@$commanderstation.defencenpc.exists and @$commanderstation.defencenpc.$lookingfortrades and ($commanderstation.defencenpc.$lookingfortrades == @this.assignedcontrolled)">
+        <debug_text text="'%s %s %s done looking for trades.'.[@$commanderstation.defencenpc.$lookingfortrades.idcode, @$commanderstation.defencenpc.$lookingfortrades.knownname, $commanderstation.defencenpc.$lookingfortrades]" chance="$debugchance"/>
+        <remove_value name="$commanderstation.defencenpc.$lookingfortrades"/>
+      </do_if>
+      <remove_value name="$commanderstation"/>
+
+      <do_if value="$debugchance">
+        <do_if value="$selloffer.exists">
+          <debug_text text="player.age + ' SELLOFFER INFO:\n\'%1 %2\' sells %3 units of %4 for a total price of %5 Cr. Price per unit: %6'.[$selloffer.seller.knownname, $selloffer.seller, $selloffer.offeramount.{this.ship}, $selloffer.ware.name, $selloffer.price/1Cr, $selloffer.unitprice]" />
+        </do_if>
+        <do_if value="$buyoffer.exists">
+          <debug_text text="player.age + ' BUYOFFER INFO:\n\'%1 %2\' buys %3 (desires: %6) units of %4 for a total price of %5 Cr. Price per unit: %7'.[$buyoffer.buyer.knownname, $buyoffer.buyer, $buyoffer.offeramount.{this.ship}, $buyoffer.ware.name, $buyoffer.price/1Cr, $buyoffer.offeramount.{this.assignedcontrolled}, $buyoffer.unitprice]" />
+        </do_if>
+      </do_if>
+
+      <return>
+        <retval name="buyoffer" value="$buyoffer" />
+        <retval name="selloffer" value="$selloffer" />
+        <retval name="failurereason" value="@$failurereason"/>
+      </return>
+
+    </actions>
+  </attention>
+  <on_abort>
+    <do_if value="this.assignedcontrolled.isoperational">
+      <include_interrupt_actions ref="FindCommanderStation"/>
+      <do_if value="@$commanderstation.defencenpc.exists and @$commanderstation.defencenpc.$lookingfortrades and ($commanderstation.defencenpc.$lookingfortrades == this.ship)">
+        <remove_value name="$commanderstation.defencenpc.$lookingfortrades"/>
+      </do_if>
+      <remove_value name="$commanderstation"/>
+    </do_if>
+  </on_abort>
+</aiscript>

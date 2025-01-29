@@ -1,0 +1,2183 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="NPC_UseCases" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+
+    <cue name="UseCaseManager" version="4">
+      <actions>
+        <!-- Note: Even with $DebugChance == 0, you can enable debug text with $debugchance (lower case) in a usecase definition table and/or on a usecase trigger table -->
+        <set_value name="$DebugChance" exact="0" />
+        <!-- Analogously for $VerboseDebugChance: Enable special cases with $verbosedebugchance (lower case) -->
+        <!-- (Verbose debug output includes normal debug output automatically, so $DebugChance does not have to be set) -->
+        <set_value name="$VerboseDebugChance" exact="0" />
+
+        <!-- Use case definitions, filled below by UpdateUseCaseDefs -->
+        <set_value name="$UseCaseDefs" exact="table[]" />
+        <!-- Table for persistent usecase data, e.g. the last time a usecase was active -->
+        <set_value name="$UseCaseSettings" exact="table[]" />
+        <!-- List of instances of the UseCase cue (active usecases) -->
+        <set_value name="$ActiveUseCases" exact="[]" />
+        <!-- List of instances of the UseCase cue (queued usecases) - processed in reverse order -->
+        <set_value name="$QueuedUseCases" exact="[]" />
+        <!-- Table of presets (sets of default values) for custom usecase triggers -->
+        <set_value name="$CustomUsecasePresets" exact="table[
+                    $plot = table[
+                      $priority = 100,
+                      $speakpriority = 99,
+                      $allow_comm_chatter = true,
+                      $noconversation = true,
+                      $nofullscreenmenu = true,
+                      $queue = true,
+                      $exclusive = true,
+                    ],
+            ]"/>
+
+        <!-- EXAMPLE CODE for triggering a usecase -->
+        <do_all chance="0">
+          <!-- Note: $actors and $locations are both optional, as long as every required actor can be found.
+          If the trigger does not provide an actor, at least the location has to be known so a suitable actor can be found. However, the location
+          can also be inferred from the slot context (room or controllable) of a previously provided actor, so if a usecase requires multiple actors
+          in the same location, the trigger only has to provide the first required actor, and all further actors will be found in the same location.
+          Note that, if an NPC requires a controlposition and the location is provided, the controlposition must be a slot of the location. -->
+          <set_value name="$triggerparam" exact="table[
+                     $name = '$UseCase1',
+                     $locations = table[ $Bridge = player.room.slotcontext ],
+                     $actors = table[ $Manager = player.entity ]
+              ]" />
+          <!-- Additional optional parameters that can be provided in the table: -->
+          <!-- <set_value name="$triggerparam.$priority" exact="42" /> -->
+          <!--      Overrides $priority defined in usecase -->
+          <!-- <set_value name="$triggerparam.$validatespeak" exact="false" /> -->
+          <!--      Overrides $validatespeak defined in usecase -->
+          <!-- <set_value name="$triggerparam.$debugchance" exact="100" /> -->
+          <!--      Enables debug output for the triggered usecase -->
+          <!-- <set_value name="$triggerparam.$verbosedebugchance" exact="100" /> -->
+          <!--      Enables verbose debug output (including normal output) for the triggered usecase -->
+          <!-- <set_value name="$triggerparam.$keeplookat" exact="true" /> -->
+          <!--      Set to true to prevent last $lookat state of involved NPCs being reset when the usecase ends - user has to perform <clear_actor_lookat> manually (default is false) -->
+          <!-- <set_value name="$triggerparam.$keepemotion" exact="true" /> -->
+          <!--      Set to true to prevent last $emotion state of involved NPCs being reset when the usecase ends - user has to perform <clear_actor_emotion> manually (default is false) -->
+          <!-- <set_value name="$triggerparam.$usecasedef" exact="table[...]" /> -->
+          <!--      Custom usecase definition to be used instead of a common usecase that was registered by name. A custom $name may still be provided to distinguish various custom usecases. -->
+          <!-- <set_value name="$triggerparam.$script" exact="[...]" /> -->
+          <!--      Custom usecase script to be used in a usecase that does not provide its own script. Allows for some flexibility without having to define a whole custom usecase definition. -->
+          <!-- <set_value name="$triggerparam.$callbackcue" exact="$cue" /> -->
+          <!--      Custom MD cue that is signalled as callback when the usecase is completed (with param $callbackparam if provided) -->
+          <!-- <set_value name="$triggerparam.$callbackparam" exact="..." /> -->
+          <!--      Optional parameter that is passed in signal to $callbackcue when the usecase is completed (default is null) -->
+          <!-- <set_value name="$triggerparam.$abortcallbackcue" exact="$cue" /> -->
+          <!--      Custom MD cue that is signalled as callback when the usecase is aborted or cannot even start (with param $abortcallbackparam if provided) -->
+          <!-- <set_value name="$triggerparam.$abortcallbackparam" exact="..." /> -->
+          <!--      Optional parameter that is passed in signal to $abortcallbackcue when the usecase is aborted or cannot even start (default is null) -->
+          <!-- <set_value name="$triggerparam.$speakcallbackcue" exact="$cue" /> -->
+          <!--      Custom MD cue that is signalled as callback with param when a script speak is completed, if $speakcallbackparam is defined in that script step (ignored if $skipafter or $abortafter take effect) -->
+          <!-- <set_value name="$triggerparam.$abortonsignalledcue" exact="$cue" /> -->
+          <!--      Custom MD cue that causes the usecase to be aborted when it is signalled by the user -->
+          <signal_cue_instantly cue="UseCase" param="$triggerparam" />
+        </do_all>
+        <!-- END OF EXAMPLE -->
+      </actions>
+      <patch sinceversion="2">
+        <set_value name="$VerboseDebugChance" exact="0" />
+      </patch>
+      <patch sinceversion="3">
+        <set_value name="$QueuedUseCases" exact="[]" />
+      </patch>
+      <patch sinceversion="4">
+        <set_value name="$CustomUsecasePresets" exact="table[
+                    $plot = table[
+                      $priority = 100,
+                      $speakpriority = 99,
+                      $noconversation = true,
+                      $nofullscreenmenu = true,
+                      $queue = true,
+                      $exclusive = true,
+                    ],
+            ]"/>
+      </patch>
+      <cues>
+
+        <!-- ===== Usecases loading and validation ===== -->
+
+        <cue name="UpdateUseCaseDefs" instantiate="true">
+          <conditions>
+            <check_any>
+              <event_game_started />
+              <event_game_loaded />
+            </check_any>
+          </conditions>
+          <actions>
+            <debug_text text="'Updating NPC usecases'" chance="$DebugChance" />
+
+            <!-- In case of an update during the game, keep all active usecases, unless they have become incompatible (old version < minimal compatible version). -->
+            <!-- We can safely clear $UseCaseDefs. Any still active usecase continues using a reference to the old usecasedef. -->
+            <!-- Cleanup of incompatible active usecases is done at the end. -->
+            <clear_table table="$UseCaseDefs" />
+
+            <include_actions ref="md.NPC_UseCase_Definitions.AddUseCaseDefs" />
+
+            <!-- Enabling debug output for specific usecases -->
+            <!-- <set_value name="$UseCaseDefs.$UseCase1.$debugchance" exact="100" /> -->
+            <!-- Enabling verbose debug output (including normal output) for specific usecases -->
+            <!-- <set_value name="$UseCaseDefs.$UseCase1.$verbosedebugchance" exact="100" /> -->
+
+            <!-- Identify and clean up incompatible usecases -->
+            <do_for_each name="$cue" in="$ActiveUseCases" counter="$i" reverse="true">
+              <do_if value="not @$cue.$UseCaseDef.$custom and (not $UseCaseDefs.{$cue.$UseCaseDef.$name}? or @$cue.$UseCaseDef.$version lt @$UseCaseDefs.{$cue.$UseCaseDef.$name}.$mincompatibleversion)">
+                <debug_text text="'Active usecase %s (version %s) was invalidated, aborting'.[$cue.$UseCaseDef.$name, (@$cue.$UseCaseDef.$version)i]" chance="[$DebugChance, $cue.$DebugChance].max" />
+                <signal_cue_instantly cue="$cue" param="'cleanup'" />
+                <!-- Remove again just in case the signal didn't work -->
+                <do_if value="@$ActiveUseCases.{$i} == $cue">
+                  <remove_value name="$ActiveUseCases.{$i}" />
+                </do_if>
+                <set_value name="$removedusecase" exact="true" />
+              </do_if>
+            </do_for_each>
+            <!-- Removal of active usecases might have improved conditions for queued usecases -->
+            <do_if value="@$removedusecase and $QueuedUseCases.count != 0">
+              <signal_cue cue="CheckQueuedUseCases" />
+            </do_if>
+            <remove_value name="$removedusecase" />
+
+            <!-- Remove settings of usecases that don't exist any more -->
+            <do_for_each name="$settingusecase" in="$UseCaseSettings">
+              <do_if value="not $UseCaseDefs.{$settingusecase}?">
+                <remove_value name="$UseCaseSettings.{$settingusecase}" />
+              </do_if>
+            </do_for_each>
+
+          </actions>
+          <force name="Reload NPC UseCases" />
+        </cue>
+
+        <!-- Only used by UpdateUseCaseDefs -->
+        <cue name="AddUseCaseDef" instantiate="true" namespace="this">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <actions>
+            <!-- Example for demonstration purposes -->
+            <set_value name="$UseCaseDef" exact="event.param" />
+            <do_if value="typeof $UseCaseDef != datatype.table or @$UseCaseDef.$custom or not @$UseCaseDef.$name">
+              <debug_text text="'Attempting to add invalid NPC usecase definition %s'.[@$UseCaseDef.$name]" />
+            </do_if>
+            <do_else>
+              <run_actions ref="ValidateUseCaseDef" result="$Error">
+                <param name="UseCaseDef" value="$UseCaseDef" />
+              </run_actions>
+              <do_if value="$Error">
+                <debug_text text="'Invalid NPC usecase definition %s: %s'.[$UseCaseDef.$name, $Error]" filter="error" />
+              </do_if>
+              <do_else>
+                <set_value name="UseCaseManager.$UseCaseDefs.{$UseCaseDef.$name}" exact="$UseCaseDef" />
+              </do_else>
+            </do_else>
+          </actions>
+        </cue>
+
+        <library name="ValidateUseCaseDef" purpose="run_actions">
+          <params>
+            <param name="UseCaseDef" />
+          </params>
+          <actions>
+            <!-- Return value is an error string, or null in case of success -->
+            <do_if value="@$UseCaseDef.$custom and @UseCaseManager.$UseCaseDefs.{@$UseCaseDef.$name}">
+              <return value="'Custom NPC usecase definition uses name of non-custom usecase %s'.[$UseCaseDef.$name]"/>
+            </do_if>
+            <do_if value="($UseCaseDef.$version? or $UseCaseDef.$mincompatibleversion?) and @$UseCaseDef.$custom">
+              <return value="'Cannot use $version or $mincompatibleversion in a custom NPC usecase'" />
+            </do_if>
+            <do_if value="@$UseCaseDef.$version lt @$UseCaseDef.$mincompatibleversion">
+              <return value="'Invalid $version = %s, cannot be less than $incompatibleversion = %s'.[@$UseCaseDef.$version, @$UseCaseDef.$mincompatibleversion]" />
+            </do_if>
+            <do_if value="$UseCaseDef.$repeattimeout? and @$UseCaseDef.$custom">
+              <return value="'Cannot use $repeattimeout in a custom NPC usecase'" />
+            </do_if>
+            <do_if value="$UseCaseDef.$repeattimeout? and @$UseCaseDef.$queue">
+              <return value="'Cannot use $repeattimeout in a queued NPC usecase'" />
+            </do_if>
+            <do_if value="typeof @$UseCaseDef.$locations != datatype.list or $UseCaseDef.$locations.count == 0">
+              <return value="'Missing or invalid $locations definition'" />
+            </do_if>
+            <do_if value="typeof @$UseCaseDef.$actors != datatype.list or $UseCaseDef.$actors.count == 0">
+              <return value="'Missing or invalid $actors definition'" />
+            </do_if>
+            <set_value name="$actorsbyname" exact="table[]" />
+            <do_for_each name="$actordef" counter="$i" in="$UseCaseDef.$actors">
+              <do_if value="typeof $actordef != datatype.table or not (typeof @$actordef.$name).isstring">
+                <return value="'Invalid actor definition at $actors index %s'.[$i]" />
+              </do_if>
+              <do_if value="not (typeof @$actordef.$location).isstring or not @$UseCaseDef.$locations.indexof.{$actordef.$location}">
+                <return value="'Invalid location is specified for actor %s'.[$actordef.$name]" />
+              </do_if>
+              <do_if value="$actorsbyname.{$actordef.$name}?">
+                <return value="'Duplicate actor definition for actor %s'.[$actordef.$name]" />
+              </do_if>
+              <set_value name="$actorsbyname.{$actordef.$name}" exact="$actordef" />
+            </do_for_each>
+            <!-- Check scripts -->
+            <do_if value="$UseCaseDef.$script?">
+              <do_if value="$UseCaseDef.$selectscript?">
+                <return value="'Both $script and $selectscript provided'" />
+              </do_if>
+              <set_value name="$scripts" exact="[ $UseCaseDef.$script ]" />
+            </do_if>
+            <do_elseif value="$UseCaseDef.$selectscript?">
+              <create_list name="$scripts" />
+              <do_if value="typeof $UseCaseDef.$selectscript != datatype.list or $UseCaseDef.$selectscript.count == 0">
+                <return value="'Invalid $selectscript'" />
+              </do_if>
+              <do_for_each name="$entry" counter="$i" in="$UseCaseDef.$selectscript">
+                <do_if value="$entry.$weight? and (not (typeof $entry.$weight).isnumeric or $entry.$weight lt 0.0)">
+                  <return value="'Invalid $weight %s at $selectscript index %s'.[$entry.$weight, $i]" />
+                </do_if>
+                <append_to_list name="$scripts" exact="$entry.$script" />
+              </do_for_each>
+            </do_elseif>
+            <set_value name="$actorinstructions" exact="[ '$speak', '$selectspeak', '$speak_to_male', '$selectspeak_to_male', '$speak_to_female', '$selectspeak_to_female',
+                       '$walkto', '$runto', '$templookat', '$tempemotion'
+                ]" />
+            <do_for_each name="$script" in="$scripts">
+              <do_if value="typeof $script != datatype.list or $script.count == 0">
+                <return value="'Script is not a valid list'" />
+              </do_if>
+              <!-- NOTE: Check script entries - in general, we do not return error strings for errors in individual instructions -->
+              <!-- and print warning messages instead, so that such errors do not cause the usecase to be aborted. -->
+              <do_for_each name="$scriptentry" counter="$i" in="$script">
+                <do_if value="typeof $scriptentry == datatype.table">
+                  <do_if value="$scriptentry.$actor?">
+                    <!-- Check actor instructions -->
+                    <do_if value="not $actorsbyname.{$scriptentry.$actor}?">
+                      <debug_text text="'Warning for NPC usecase definition %s: Invalid $actor %s in instruction at index %s'.[$UseCaseDef.$name, $scriptentry.$actor, $i]" filter="error" />
+                    </do_if>
+                    <do_elseif value="@$actorsbyname.{$scriptentry.$actor}.$passive">
+                      <debug_text text="'Warning for NPC usecase definition %s: Actor %s is used as $actor in instruction at index %s, but is defined as passive actor'.[$UseCaseDef.$name, $scriptentry.$actor, $i]" filter="error" />
+                    </do_elseif>
+                    <do_if value="$scriptentry.$templookat? and $scriptentry.$templookat != 'player' and (not $actorsbyname.{$scriptentry.$templookat}? or $scriptentry.$templookat == $scriptentry.$actor)">
+                      <debug_text text="'Warning for NPC usecase definition %s: Invalid $templookat %s in instruction at index %s with $actor %s'.[$UseCaseDef.$name, $scriptentry.$templookat, $i, $scriptentry.$actor]" filter="error" />
+                    </do_if>
+                    <do_if value="@$scriptentry.$lookat and $scriptentry.$lookat != 'player' and (not $actorsbyname.{$scriptentry.$lookat}? or $scriptentry.$lookat == $scriptentry.$actor)">
+                      <debug_text text="'Warning for NPC usecase definition %s: Invalid $lookat %s in instruction at index %s with $actor %s'.[$UseCaseDef.$name, $scriptentry.$lookat, $i, $scriptentry.$actor]" filter="error" />
+                    </do_if>
+                    <do_if value="@$scriptentry.$recipient and $scriptentry.$recipient != 'player' and not $actorsbyname.{$scriptentry.$recipient}?">
+                      <debug_text text="'Warning for NPC usecase definition %s: Invalid $recipient %s in instruction at index %s with $actor %s'.[$UseCaseDef.$name, $scriptentry.$recipient, $i, $scriptentry.$actor]" filter="error" />
+                    </do_if>
+                    <do_if value="$scriptentry.$closemonitor?">
+                      <debug_text text="'Warning for NPC usecase definition %s: Instruction $closemonitor used together with $actor at index %s and will be ignored'.[$UseCaseDef.$name, $i]" filter="error" />
+                    </do_if>
+                  </do_if>
+                  <do_else>
+                    <!-- No $actor provided - check if an actor is needed -->
+                    <!-- We have to check $lookat and $emotion separately because, with a value of null, they are valid without $actor -->
+                    <do_if value="@$scriptentry.$lookat or @$scriptentry.$emotion">
+                      <debug_text text="'Warning for NPC usecase definition %s: Missing $actor for instruction %s at index %s'.[$UseCaseDef.$name, (if @$scriptentry.$lookat then '$lookat' else '$emotion'), $i]" filter="error" />
+                    </do_if>
+                    <do_else>
+                      <!-- Check if $actor is missing in script instruction -->
+                      <do_for_each name="$actorinstruction" in="$actorinstructions">
+                        <do_if value="$scriptentry.{$actorinstruction}?">
+                          <debug_text text="'Warning for NPC usecase definition %s: Missing $actor for instruction %s at index %s'.[$UseCaseDef.$name, $actorinstruction, $i]" filter="error" />
+                          <break />
+                        </do_if>
+                      </do_for_each>
+                    </do_else>
+                  </do_else>
+                  <!-- TODO: Validate speak actions (e.g. valid lists) -->
+                  <!-- TODO: Validate $filter keys (valid actor names) and values -->
+                  <!-- Validate $select -->
+                  <do_if value="$scriptentry.$select?">
+                    <do_if value="typeof $scriptentry.$select != datatype.list or $scriptentry.$select.count == 0">
+                      <debug_text text="'Warning for NPC usecase definition %s: Invalid $select value at index %s'.[$UseCaseDef.$name, $i]" filter="error" />
+                    </do_if>
+                    <do_else>
+                      <do_for_each name="$entry" counter="$j" in="$scriptentry.$select">
+                        <do_if value="$entry.$weight? and (not (typeof $entry.$weight).isnumeric or $entry.$weight lt 0.0)">
+                          <debug_text text="'Warning for NPC usecase definition %s: Invalid $weight %s at $select index %s in script at index %s'.[$UseCaseDef.$name, $entry.$weight, $j, $i]" filter="error" />
+                        </do_if>
+                      </do_for_each>
+                      <!-- We can append to the $scripts list while iterating over it -->
+                      <append_to_list name="$scripts" exact="$scriptentry.$select" />
+                    </do_else>
+                    <do_if value="$scriptentry.$actor? or $scriptentry.$lookat? or $scriptentry.$emotion? or $scriptentry.$closemonitor?">
+                      <debug_text text="'Warning for NPC usecase definition %s: $select is combined with other instruction(s) at index %s'.[$UseCaseDef.$name, $i]" filter="error" />
+                    </do_if>
+                  </do_if>
+                  <!-- Remove comments from instructions, we don't have to keep them in memory -->
+                  <remove_value name="$scriptentry.$comment" />
+                </do_if>
+                <do_elseif value="not (typeof $scriptentry).isnumeric or $scriptentry le 0s">
+                  <debug_text text="'Warning for NPC usecase definition %s: Invalid script instruction %s at index %s'.[$UseCaseDef.$name, $scriptentry, $i]" filter="error" />
+                </do_elseif>
+                <do_elseif value="typeof $scriptentry != datatype.time" comment="Positive number, just not of correct datatype">
+                  <debug_text text="'Warning for NPC usecase definition %s: Invalid numeric value %s of type %s at script index %s (specifying a delay requires time datatype)'.[$UseCaseDef.$name, $scriptentry, typeof $scriptentry, $i]" filter="error" />
+                </do_elseif>
+              </do_for_each>
+            </do_for_each>
+            <return value="null" />
+          </actions>
+        </library>
+
+        <!-- Custom usecases are not added via AddUseCaseDef, but defined on the fly when they are triggered. -->
+        <!-- They do not require all the values that are required for non-custom usecases, e.g. $name, $actors, $locations. This library infers and sets up all the missing values. -->
+        <library name="SetupCustomUseCaseDef" purpose="run_actions">
+          <params>
+            <param name="UseCaseDef" />
+            <param name="TriggerParam" />
+            <param name="VerboseDebugChance" default="0" />
+          </params>
+          <actions>
+            <!-- Return value is an error string, or null in case of success -->
+            <!-- Infer name -->
+            <set_value name="$name" exact="if @$UseCaseDef.$name then $UseCaseDef.$name else if @$TriggerParam.$name then $TriggerParam.$name else if @$TriggerParam.$caller then ('$Cue__' + $TriggerParam.$caller) else '[unnamed custom usecase definition]'" />
+            <do_if value="typeof $UseCaseDef != datatype.table">
+              <return value="'Provided parameter $usecasedef for custom usecase %s is not a table'.[$name]" />
+            </do_if>
+            <!-- Mark usecase as custom -->
+            <set_value name="$UseCaseDef.$custom" exact="true" />
+            <set_value name="$UseCaseDef.$name" exact="$name" />
+
+            <!-- Copy any missing properties of the usecase definition from trigger and any defined presets -->
+            <!-- Collect list of tables from which values could be copied ($TriggerParam, and any defined presets). -->
+            <set_value name="$propertysources" exact="[ $TriggerParam ]" />
+            <do_if value="$TriggerParam.$preset?">
+              <append_to_list name="$propertysources" exact="$TriggerParam.$preset" />
+            </do_if>
+            <do_if value="$TriggerParam.$presets?">
+              <append_list_elements name="$propertysources" other="$TriggerParam.$presets" />
+            </do_if>
+            <do_for_each name="$propertysource" in="$propertysources" counter="$i">
+              <!-- A string is the name of a preset defined in UseCaseManager -->
+              <do_if value="(typeof $propertysource).isstring">
+                <set_value name="$preset" exact="@UseCaseManager.$CustomUsecasePresets.{$propertysource}"/>
+                <do_if value="typeof $preset != datatype.table">
+                  <return value="'Undefined named preset \'%s\''.[$preset]" />
+                </do_if>
+                <set_value name="$propertysource" exact="$preset" />
+              </do_if>
+              <do_elseif value="typeof $propertysource != datatype.table">
+                <return value="'Provided preset value is neither a named preset nor a table: %s'.[$propertysource]" />
+              </do_elseif>
+              <!-- We have a valid property source now - check if there are any properties to copy -->
+              <do_for_each name="$property" in="[ '$version', '$mincompatibleversion', '$priority', '$chance', '$repeattimeout', '$noconversation', '$nofullscreenmenu', '$disable_actor_interaction', '$queue',
+                                                  '$exclusive', '$voiceover', '$speakpriority', '$allow_comm_chatter', '$allow_player_speak', '$validatespeak', '$script', '$selectscript'
+                  ]">
+                <!-- $TriggerParam properties take precedence over $UseCaseDef properties, so always copy (case $i == 1), otherwise only copy if the property does not exist yet -->
+                <do_if value="($i == 1 or not $UseCaseDef.{$property}?) and $propertysource.{$property}?">
+                  <set_value name="$UseCaseDef.{$property}" exact="$propertysource.{$property}" />
+                  <debug_text text="'[verbose] Custom NPC usecase %s: Assigning property %s = %s from %s'.[$UseCaseDef.$name, $property, $propertysource.{$property}, if $i == 1 then 'trigger param' else 'preset']" chance="$VerboseDebugChance" />
+                </do_if>
+              </do_for_each>
+            </do_for_each>
+
+            <!-- Request validation of speaks in custom usecases, unless explicitly disabled (NOTE: not related to the usecase validation at the end of the setup) -->
+            <do_if value="not $UseCaseDef.$validatespeak?">
+              <set_value name="$UseCaseDef.$validatespeak" exact="true" />
+            </do_if>
+
+            <!-- If $actors is not present in usecase, infer actor definitions from TriggerParam (keys $actors and $passiveactors) -->
+            <do_if value="not $UseCaseDef.$actors?">
+              <do_if value="typeof @$TriggerParam.$actors != datatype.table or $TriggerParam.$actors.keys.count == 0">
+                <return value="'Cannot determine actors without either a list of actor definitions or a table of actors'"/>
+              </do_if>
+              <do_if value="$UseCaseDef.$locations?">
+                <debug_text text="'Warning: Custom NPC usecase definition %s defines $locations but no valid $actors'.[$UseCaseDef.$name]" filter="error" />
+                <remove_value name="$UseCaseDef.$locations" />
+              </do_if>
+              <create_list name="$UseCaseDef.$actors" />
+              <do_for_each name="$actorkey" valuename="$actor" in="$TriggerParam.$actors">
+                <do_if value="not (typeof $actorkey).isstring">
+                  <return value="'Invalid actor key provided in $actors'" />
+                </do_if>
+                <!-- Handle case that $actor is table[ $entity = ..., $monitor = ... ] instead of an entity -->
+                <set_value name="$monitor" exact="@$actor.$monitor" />
+                <do_if value="$actor.$entity?">
+                  <set_value name="$actor" exact="$actor.$entity" />
+                </do_if>
+                <do_if value="not @$actor.isrealclass.entity">
+                  <return value="'Provided actor %s = %s is invalid'.[$actorkey, $actor]" />
+                </do_if>
+                <append_to_list name="$UseCaseDef.$actors" exact="table[ $name = $actorkey ]"/>
+                <do_if value="$monitor">
+                  <set_value name="$UseCaseDef.$actors.last.$monitor" exact="$monitor" />
+                </do_if>
+              </do_for_each>
+              <!-- Also add passive actors if provided -->
+              <do_if value="$TriggerParam.$passiveactors?">
+                <do_if value="typeof $TriggerParam.$passiveactors != datatype.table">
+                  <return value="'Provided $passiveactors value is not a table'"/>
+                </do_if>
+                <do_for_each name="$actorkey" valuename="$actor" in="$TriggerParam.$passiveactors">
+                  <do_if value="not (typeof $actorkey).isstring">
+                    <return value="'Invalid actor key provided in $passiveactors'" />
+                  </do_if>
+                  <!-- Handle case that $actor is table[ $entity = ..., $monitor = ... ] instead of an entity -->
+                  <set_value name="$monitor" exact="@$actor.$monitor" />
+                  <do_if value="$actor.$entity?">
+                    <set_value name="$actor" exact="$actor.$entity" />
+                  </do_if>
+                  <do_if value="not @$actor.isrealclass.entity">
+                    <return value="'Provided passive actor %s = %s is invalid'.[$actorkey, $actor]" />
+                  </do_if>
+                  <do_if value="$TriggerParam.$actors.{$actorkey}?">
+                    <return value="'Same actor key %s is used in both $actors and $passiveactors'.[$actorkey]" />
+                  </do_if>
+                  <append_to_list name="$UseCaseDef.$actors" exact="table[ $name = $actorkey, $passive = true ]"/>
+                  <do_if value="$monitor">
+                    <set_value name="$UseCaseDef.$actors.last.$monitor" exact="$monitor" />
+                  </do_if>
+                </do_for_each>
+              </do_if>
+              <debug_text text="'[verbose] Inferred $actors: ' + $UseCaseDef.$actors" chance="$VerboseDebugChance" />
+            </do_if>
+
+            <!-- If $locations are not present in usecase, infer location definitions from usecase actor definitions (possibly just created above) -->
+            <do_if value="not $UseCaseDef.$locations?">
+              <create_list name="$UseCaseDef.$locations" />
+              <set_value name="$locationlookup" exact="table[]" comment="Used to assign identical locations if actors are in same room/slotcontext" />
+              <!-- We have to perform some checks here that are also done in ValidateUseCaseDef, because the validation has not run yet -->
+              <do_if value="typeof $UseCaseDef.$actors != datatype.list">
+                <return value="'Invalid $actors definition'" />
+              </do_if>
+              <do_for_each name="$actordef" counter="$i" in="$UseCaseDef.$actors">
+                <do_if value="typeof $actordef != datatype.table or not (typeof @$actordef.$name).isstring">
+                  <return value="'Invalid actor definition at $actors index %s'.[$i]" />
+                </do_if>
+                <do_if value="$actordef.$location?">
+                  <debug_text text="'Warning: Custom NPC usecase definition %s defines actor %s with $location, but no valid $locations'.[$UseCaseDef.$name, @$actordef.$name]" filter="error" />
+                  <remove_value name="$actordef.$location" />
+                </do_if>
+                <set_value name="$actor" exact="@$TriggerParam.$actors.{$actordef.$name}" />
+                <do_if value="not $actor and @$actordef.$passive and $TriggerParam.$passiveactors?">
+                  <set_value name="$actor" exact="@$TriggerParam.$passiveactors.{$actordef.$name}" />
+                </do_if>
+                <do_if value="$actor.$entity?">
+                  <set_value name="$actor" exact="$actor.$entity" />
+                </do_if>
+                <do_if value="$actor">
+                  <set_value name="$location" exact="@$actor.room.slotcontext" comment="$actor.room can be null for disconnected actor" />
+                  <set_value name="$locationname" exact="@$locationlookup.{$location}" />
+                  <do_if value="not $locationname">
+                    <set_value name="$locationname" exact="$actordef.$name + 'Location'" />
+                    <do_if value="$location">
+                      <set_value name="$locationlookup.{$location}" exact="$locationname" />
+                    </do_if>
+                    <append_to_list name="$UseCaseDef.$locations" exact="$locationname" />
+                  </do_if>
+                  <set_value name="$actordef.$location" exact="$locationname" />
+                </do_if>
+                <do_elseif value="not @$actordef.$optional">
+                  <return value="'Required actor %s was not provided and cannot be inferred from locations'.[$actordef.$name]" />
+                </do_elseif>
+              </do_for_each>
+              <debug_text text="'[verbose] Inferred $locations: ' + $UseCaseDef.$locations" chance="$VerboseDebugChance" />
+              <debug_text text="'[verbose] Adjusted $actors: ' + $UseCaseDef.$actors" chance="$VerboseDebugChance" />
+            </do_if>
+
+            <!-- Finally validate the adjusted usecase definition, and return the result -->
+            <run_actions ref="ValidateUseCaseDef" result="$Error">
+              <param name="UseCaseDef" value="$UseCaseDef" />
+            </run_actions>
+            <return value="$Error" />
+          </actions>
+        </library>
+
+        <!-- ===== Usecase instantiation and initialisation ===== -->
+
+        <cue name="CheckQueuedUseCases" instantiate="true">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <actions>
+            <!-- Attempt to start *all* queued usecases (any of them may be able to start now, and they may run simultaneously) -->
+            <do_for_each name="$cue" in="$QueuedUseCases" counter="$i" reverse="true">
+              <assert value="$cue.exists and $cue.$Queued and not $cue.$Error" text="'Unexpected state of usecase %s'.[@$cue.$UseCaseDef.$name]" />
+              <!-- First check if usecase is allowed during a conversation or a fullscreen menu -->
+              <do_if value="@$cue.$UseCaseDef.$noconversation and player.isinconversation">
+                <debug_text text="'[verbose] Cannot start queued usecase %s because player is still in conversation'.[$cue.$UseCaseDef.$name]" chance="[$VerboseDebugChance, $cue.$VerboseDebugChance].max" />
+                <do_if value="WaitForConversationForQueuedUseCases.state != cuestate.waiting">
+                  <reset_cue cue="WaitForConversationForQueuedUseCases" />
+                </do_if>
+                <continue />
+              </do_if>
+              <do_if value="@$cue.$UseCaseDef.$nofullscreenmenu and player.isinfullscreenmenu">
+                <debug_text text="'[verbose] Cannot start queued usecase %s because player is still in fullscreen menu'.[$cue.$UseCaseDef.$name]" chance="[$VerboseDebugChance, $cue.$VerboseDebugChance].max" />
+                <do_if value="WaitForFullscreenMenuForQueuedUseCases.state != cuestate.waiting">
+                  <reset_cue cue="WaitForFullscreenMenuForQueuedUseCases" />
+                </do_if>
+                <continue />
+              </do_if>
+              <!-- Fill $Actors, $Locations, $ReservedSlots and $AbortingUseCases, possibly set $Error -->
+              <signal_cue_instantly cue="FindUseCaseActors" param="$cue" />
+              <do_if value="not $cue.$Error">
+                <signal_cue_instantly cue="$cue" param="'start'" />
+                <assert value="not $cue.$Queued" text="'Failed to start queued NPC usecase'" />
+              </do_if>
+              <do_elseif value="$ActiveUseCases.count == 0">
+                <debug_text text="'Queued usecase %s still cannot start (no active usecases remaining), removing from queue'.[$cue.$UseCaseDef.$name]" chance="[$DebugChance, $cue.$DebugChance].max" />
+                <signal_cue_instantly cue="$cue" param="'cleanup'" />
+                <!-- Remove again just in case the signal didn't work -->
+                <do_if value="@$QueuedUseCases.{$i} == $cue">
+                  <remove_value name="$QueuedUseCases.{$i}" />
+                </do_if>
+              </do_elseif>
+              <do_else>
+                <!-- Undo changes made by FindUseCaseActors, and wait for the next check -->
+                <set_value name="$cue.$Error" exact="false" />
+                <clear_table table="$cue.$Actors" />
+                <clear_table table="$cue.$Locations" />
+                <clear_list list="$cue.$ReservedSlots" />
+                <clear_list list="$cue.$AbortingUseCases" />
+              </do_else>
+            </do_for_each>
+          </actions>
+        </cue>
+
+        <!-- Wait for queued usecases to be started, in case they require $noconversation. -->
+        <!-- Stop checking if nothing is left to do. This cue is reset whenever it is needed. -->
+        <cue name="WaitForConversationForQueuedUseCases" checkinterval="1s">
+          <conditions>
+            <check_value value="$QueuedUseCases.count == 0 or not player.isinconversation" />
+          </conditions>
+          <actions>
+            <do_if value="$QueuedUseCases.count != 0">
+              <signal_cue cue="CheckQueuedUseCases" />
+            </do_if>
+          </actions>
+        </cue>
+
+        <!-- Wait for queued usecases to be started, in case they require $nofullscreenmenu. -->
+        <!-- Stop checking if nothing is left to do. This cue is reset whenever it is needed. -->
+        <cue name="WaitForFullscreenMenuForQueuedUseCases" checkinterval="1s">
+          <conditions>
+            <check_value value="$QueuedUseCases.count == 0 or not player.isinfullscreenmenu" />
+          </conditions>
+          <actions>
+            <do_if value="$QueuedUseCases.count != 0">
+              <signal_cue cue="CheckQueuedUseCases" />
+            </do_if>
+          </actions>
+        </cue>
+
+        <!-- Helper library to check if an actor is assigned as active actor to an active usecase -->
+        <!-- Return value: The UseCase cue instance to which actor NPC is assigned (null if not assigned or actor is the player) -->
+        <!-- Note: An actor can be assigned to multiple use cases using $passive=true, but may be active (non-passive) in only one usecase. -->
+        <!-- The player is also considered passive, except in usecases marked as $exclusive. -->
+        <library name="GetAssignedActorCue" purpose="run_actions">
+          <params>
+            <param name="actor" />
+          </params>
+          <actions>
+            <do_if value="$actor != player.entity">
+              <do_for_each name="$cue" in="UseCaseManager.$ActiveUseCases">
+                <do_if value="$cue.$ActiveActorGroup.indexof.{$actor}">
+                  <return value="$cue" />
+                </do_if>
+              </do_for_each>
+            </do_if>
+            <return value="null" />
+          </actions>
+        </library>
+
+        <!-- Helper library to check if an actor slot (componentslot) is reserved by an active usecase -->
+        <library name="GetReservedActorSlotCue" purpose="run_actions">
+          <params>
+            <param name="actorslot" />
+          </params>
+          <actions>
+            <do_for_each name="$cue" in="UseCaseManager.$ActiveUseCases">
+              <do_if value="$cue.$ReservedSlots.indexof.{$actorslot}">
+                <return value="$cue" />
+              </do_if>
+            </do_for_each>
+            <return value="null" />
+          </actions>
+        </library>
+
+        <!-- Helper cue to check filter criteria for a given actor -->
+        <!-- Input: event.param = table[ $usecase = usecase cue, $actor = actor to be checked, $location = usecase location of actor, $criteria = list, $allow_player = boolean, $allow_walk_to_position = boolean, $exclude = boolean, $verbosedebugchance = number ] -->
+        <!-- Output: event.param.$met = boolean, possibly event.param.$error = erroneous criterion -->
+        <cue name="CheckFilterCriteria" instantiate="true" namespace="this">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <actions>
+            <set_value name="event.param.$met" exact="true" />
+            <remove_value name="event.param.$error" />
+
+            <set_value name="$actor" exact="event.param.$actor" />
+            <set_value name="$playercase" exact="event.param.$allow_player and $actor.isclass.player" />
+            <do_for_each name="$criterion" in="event.param.$criteria">
+              <do_if value="typeof $criterion" exact="datatype.entityrole">
+                <set_value name="$met" exact="$actor.role == $criterion" />
+              </do_if>
+              <do_elseif value="typeof $criterion" exact="datatype.controlpost">
+                <do_if value="$criterion" exact="controlpost.aipilot">
+                  <!-- Also detect player if $allow_player is set, and don't detect aipilot that isn't actually piloting! -->
+                  <set_value name="$met" exact="$actor == @$actor.ship.pilot" />
+                </do_if>
+                <do_else>
+                  <set_value name="$met" exact="$actor.controlpost == $criterion" />
+                </do_else>
+              </do_elseif>
+              <do_elseif value="typeof $criterion" exact="datatype.race">
+                <set_value name="$met" exact="$actor.race == $criterion" />
+              </do_elseif>
+              <do_elseif value="typeof $criterion" exact="datatype.faction">
+                <set_value name="$met" exact="$actor.owner == $criterion" />
+              </do_elseif>
+              <do_elseif value="typeof $criterion" exact="datatype.class">
+                <do_if value="[class.entity, class.player, class.nonplayer, class.npc, class.computer].indexof.{$criterion}">
+                  <set_value name="$met" exact="$actor.isclass.{$criterion}" />
+                </do_if>
+                <do_else>
+                  <set_value name="$met" exact="$actor.object.isclass.{$criterion}" />
+                </do_else>
+              </do_elseif>
+              <do_elseif value="typeof $criterion" exact="datatype.attention">
+                <set_value name="$met" exact="$actor.attention ge $criterion" />
+              </do_elseif>
+              <do_elseif value="(typeof $criterion).isstring">
+                <do_if value="$criterion" exact="'iscapitalship'">
+                  <set_value name="$met" exact="@$actor.object.iscapitalship" />
+                </do_if>
+                <do_elseif value="$criterion" exact="'cantalk'">
+                  <set_value name="$met" exact="$actor.page != 0 or $playercase" />
+                </do_elseif>
+                <do_elseif value="$criterion" exact="'hasrenamedownerfaction'">
+                  <set_value name="$met" exact="@$actor.owner.hasbeenrenamed" />
+                </do_elseif>
+                <do_elseif value="$criterion" list="['isfemale', 'isintransit', 'isbusy', 'ismissionactor']">
+                  <assert value="typeof $criterion" exact="datatype.keyword" text="'$criterion=%s is of type %s, only a keyword is supported! [Klaus]'.[$criterion, typeof $criterion]" />
+                  <set_value name="$met" exact="$actor.{$criterion}" />
+                </do_elseif>
+              </do_elseif>
+              <do_elseif value="typeof $criterion" exact="datatype.controlposition">
+                <set_value name="$curpositionentity" exact="@event.param.$location.controlposition.{$criterion}.entity" />
+                <set_value name="$met" exact="$curpositionentity == $actor" />
+                <do_if value="not event.param.$exclude and not $met and $curpositionentity == null and event.param.$location and event.param.$allow_walk_to_position">
+                  <!-- Actor is not assigned to controlposition slot, but with $allow_walk_to_position, accept anyway. Requirements: NPC can walk over to the controlposition, and the controlposition is not reserved already. -->
+                  <!-- TODO: Check if actor is available for walking over to the controlposition -->
+                  <set_value name="$actorslot" exact="event.param.$location.controlposition.{$criterion}.roomslot" />
+                  <do_if value="$actorslot">
+                    <!-- Check if $actorslot is already reserved by another usecase that we cannot abort -->
+                    <run_actions ref="GetReservedActorSlotCue" result="$actorslotcue">
+                      <param name="actorslot" value="$actorslot" />
+                    </run_actions>
+                    <do_if value="not $actorslotcue or $usecase.$Priority gt $actorslotcue.$Priority">
+                      <set_value name="$met" exact="true" />
+                    </do_if>
+                  </do_if>
+                </do_if>
+              </do_elseif>
+              <do_else>
+                <set_value name="event.param.$met" exact="false" />
+                <set_value name="event.param.$error" exact="$criterion" />
+                <break />
+              </do_else>
+              <debug_text text="'[verbose]     criterion=%s, met=%s'.[$criterion, $met]" chance="event.param.$verbosedebugchance" />
+              <!-- If $criterion was not met and $exclude = false, or if $criterion was met and $exclude = true, overall the criteria were not met -->
+              <do_if value="$met == event.param.$exclude">
+                <set_value name="event.param.$met" exact="false" />
+                <break />
+              </do_if>
+            </do_for_each>
+          </actions>
+        </cue>
+
+        <!-- Helper cue to find and assign usecase actors. Fills $Actors, $Locations, $ReservedSlots and $AbortingUseCases in provided UseCase cue instance -->
+        <cue name="FindUseCaseActors" instantiate="true" namespace="this">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <actions>
+            <set_value name="$UseCaseDef" exact="event.param.$UseCaseDef" />
+            <set_value name="$Locations" exact="event.param.$Locations" />
+            <set_value name="$Actors" exact="event.param.$Actors" />
+            <set_value name="$ReservedSlots" exact="event.param.$ReservedSlots" />
+            <set_value name="$AbortingUseCases" exact="event.param.$AbortingUseCases" />
+            <set_value name="$Priority" exact="event.param.$Priority" />
+            <set_value name="$DebugChance" exact="event.param.$DebugChance" />
+            <set_value name="$VerboseDebugChance" exact="event.param.$VerboseDebugChance" />
+
+            <!-- Try to assign all actors to the usecase as defined in the usecase definition -->
+            <set_value name="$actordefs" exact="$UseCaseDef.$actors" />
+
+            <!-- Assign actors explicitly provided by usecase trigger -->
+            <do_for_each name="$actordef" in="$actordefs">
+              <set_value name="$actorkey" exact="$actordef.$name" />
+              <set_value name="$actor" exact="@event.param.$TriggerParam.$actors.{$actorkey}" />
+              <do_if value="not $actor and @$actordef.$passive">
+                <!-- In custom usecases, definitions for passive actors can also be inferred from $passiveactors -->
+                <set_value name="$actor" exact="@event.param.$TriggerParam.$passiveactors.{$actorkey}" />
+              </do_if>
+              <do_if value="$actor">
+                <do_if value="@$actor.isrealclass.entity">
+                  <set_value name="$Actors.{$actorkey}" exact="$actor" />
+                </do_if>
+                <do_elseif value="@$UseCaseDef.$custom and @$actor.$entity.isrealclass.entity">
+                  <!-- Custom NPC usecase triggers may provide actor as table with $entity key (and possibly other keys) -->
+                  <set_value name="$Actors.{$actorkey}" exact="$actor.$entity" />
+                </do_elseif>
+                <do_else>
+                  <debug_text text="'Trigger for NPC usecase %s provided invalid actor %s: %s'.[$UseCaseDef.$name, $actorkey, $actor]" filter="error" />
+                  <set_value name="event.param.$Error" exact="true" />
+                </do_else>
+              </do_if>
+            </do_for_each>
+
+            <set_value name="$providedlocations" exact="@event.param.$TriggerParam.$locations" />
+
+            <!-- Find remaining actors (two passes: find required actors in pass 1, optional ones in pass 2) -->
+            <do_all exact="2" counter="$pass">
+              <do_if value="event.param.$Error">
+                <break />
+              </do_if>
+              <do_for_each name="$actordef" in="$actordefs">
+                <do_if value="$pass == 1 and @$actordef.$optional">
+                  <continue />
+                </do_if>
+                <set_value name="$actorkey" exact="$actordef.$name" />
+                <set_value name="$locationkey" exact="$actordef.$location" />
+                <!-- Get location either from $Locations or $providedlocations, fill $Locations with provided locations in the process (even if invalid) -->
+                <set_value name="$location" exact="@$Locations.{$locationkey}" />
+                <do_if value="not $location and @$providedlocations.{$locationkey}">
+                  <set_value name="$location" exact="$providedlocations.{$locationkey}" />
+                  <set_value name="$Locations.{$locationkey}" exact="$location" />
+                </do_if>
+                <do_if value="$pass == 1 and player.age lt 1min and $Priority lt 100 and not @$UseCaseDef.$voiceover and not @$UseCaseDef.$exclusive and not @$UseCaseDef.$custom">
+                  <do_if value="($location and $location != player.room.slotcontext) or ($Actors.{$actorkey}? and not $Actors.{$actorkey}.isinspeakrange)">
+                    <debug_text text="'Ignoring NPC usecase %s with distant actor %s shortly after gamestart'.[$UseCaseDef.$name, $actorkey]" chance="$DebugChance" />
+                    <set_value name="event.param.$Error" exact="true" />
+                    <break />
+                  </do_if>
+                </do_if>
+                <do_if value="$Actors.{$actorkey}?">
+                  <!-- Actor already assigned -->
+                  <do_if value="not $location">
+                    <!-- Actor location was not provided by trigger, infer from actor room -->
+                    <set_value name="$Locations.{$locationkey}" exact="@$Actors.{$actorkey}.room.slotcontext" />
+                  </do_if>
+                  <continue />
+                </do_if>
+                <!-- Find actor based on $actordef criteria -->
+                <do_if value="not $location.isoperational">
+                  <do_if value="$pass == 1">
+                    <!-- Show error only if actor was not provided by trigger (otherwise a null value was provided as actor - abort silently) -->
+                    <do_if value="not event.param.$TriggerParam.$actors.{$actorkey}? and not (@$UseCaseDef.$custom and event.param.$TriggerParam.$passiveactors.{$actorkey}?)">
+                      <debug_text text="'Trigger for NPC usecase %s %s location %s for required actor %s'.[$UseCaseDef.$name, (if $location then 'provided invalid' else 'did not provide'), $locationkey, $actorkey]" filter="error" />
+                    </do_if>
+                    <set_value name="event.param.$Error" exact="true" />
+                    <break />
+                  </do_if>
+                  <debug_text text="'Skipping optional actor %s in usecase %s since trigger %s location %s'.[$actorkey, $UseCaseDef.$name, (if $location then 'provided invalid' else 'did not provide'), $locationkey]" chance="$DebugChance" />
+                  <continue />
+                </do_if>
+                <find_object_component name="$actorcandidates" object="$location" class="class.entity" multiple="true" />
+                <debug_text text="'[verbose] Checking candidates for actor %s: %s'.[$actorkey, $actorcandidates]" chance="$VerboseDebugChance" />
+                <do_for_each name="$actor" in="$actorcandidates" counter="$j" reverse="true">
+                  <!-- If $actor is not an NPC, check if that's allowed ($allow_player for player, or $allow_computer for computer) -->
+                  <do_if value="not $actor.isclass.npc">
+                    <do_if value="not (($actor.isclass.player and @$actordef.$allow_player) or ($actor.isclass.computer and @$actordef.$allow_computer))">
+                      <debug_text text="'[verbose]   skipping actor %s %s, actor is not an NPC (class=%s)'.[$actor, $actor.knownname, $actor.class]" chance="$VerboseDebugChance" />
+                      <remove_value name="$actorcandidates.{$j}" />
+                      <continue />
+                    </do_if>
+                  </do_if>
+                  <do_if value="not @$actordef.$passive">
+                    <!-- Check if $actor is already assigned as non-passive actor in another usecase that we cannot abort -->
+                    <run_actions ref="GetAssignedActorCue" result="$actorcue">
+                      <param name="actor" value="$actor" />
+                    </run_actions>
+                    <do_if value="$actorcue and $Priority le $actorcue.$Priority">
+                      <debug_text text="'[verbose]   skipping actor %s %s, already assigned in existing usecase %s with priority %s'.[$actor, $actor.knownname, $actorcue.$UseCaseDef.$name, $actorcue.$Priority]" chance="$VerboseDebugChance" />
+                      <remove_value name="$actorcandidates.{$j}" />
+                      <continue />
+                    </do_if>
+                  </do_if>
+                  <!-- TODO: Make sure that $actor is available in suitable state machine state - check with Owen -->
+                  <!-- Check if $actor is already assigned in current usecase -->
+                  <do_if value="not @$actordef.$allow_duplicate_actor">
+                    <do_for_each name="$actordef2" in="$actordefs">
+                      <do_if value="$actor" exact="@$Actors.{$actordef2.$name}">
+                        <!-- Mark $actor for removal from candidates -->
+                        <debug_text text="'[verbose]   skipping actor %s %s, already assigned'.[$actor, $actor.knownname]" chance="$VerboseDebugChance" />
+                        <set_value name="$actor" exact="null" />
+                        <break />
+                      </do_if>
+                    </do_for_each>
+                  </do_if>
+
+                  <!-- Check criteria in two passes: $filter in pass 1, $excludefilter in pass 2 -->
+                  <do_if value="$actor">
+                    <do_all exact="2" counter="$criteriapass">
+                      <set_value name="$filtertable" exact="table[
+                                 $usecase = event.param,
+                                 $actor = $actor,
+                                 $location = $location,
+                                 $criteria = (if $criteriapass == 2 then @$actordef.$excludefilter else @$actordef.$filter),
+                                 $exclude = ($criteriapass == 2),
+                                 $allow_player = @$actordef.$allow_player,
+                                 $allow_walk_to_position = @$actordef.$allow_walk_to_position,
+                                 $verbosedebugchance = $VerboseDebugChance ]" />
+                      <do_if value="$filtertable.$criteria">
+                        <debug_text text="'[verbose]   Checking %s for actor %s %s'.[(if $criteriapass == 2 then '$excludefilter' else '$filter'), $actor, $actor.knownname]" chance="$VerboseDebugChance" />
+                        <signal_cue_instantly cue="CheckFilterCriteria" param="$filtertable" />
+                        <do_if value="not $filtertable.$met">
+                          <do_if value="$filtertable.$error? and not $criterionerror?">
+                            <debug_text text="'NPC usecase %s specifies invalid filter criterion %s for actor %s'.[$UseCaseDef.$name, $filtertable.$error, $actorkey]" filter="error" />
+                            <set_value name="$criterionerror" />
+                          </do_if>
+                          <debug_text text="'[verbose]   skipping actor %s %s because of %s criteria'.[$actor, $actor.knownname, (if $criteriapass == 2 then '$excludefilter' else '$filter')]" chance="$VerboseDebugChance" />
+                          <set_value name="$actor" exact="null" />
+                          <break />
+                        </do_if>
+                      </do_if>
+                    </do_all>
+                  </do_if>
+                  <!-- After all filter/exclude checks, check if candidate is still valid. If invalid, remove from candidates -->
+                  <do_if value="not $actor">
+                    <remove_value name="$actorcandidates.{$j}" />
+                  </do_if>
+                </do_for_each>
+                <!-- Assign actor, or abort if required actor was not found -->
+                <do_if value="$actorcandidates.count">
+                  <set_value name="$Actors.{$actorkey}" exact="$actorcandidates.random" />
+                  <debug_text text="'For usecase %s, selected actor %s = %s %s at location %s (%s %s) - picked from %s candidate(s): %s'.[$UseCaseDef.$name, $actorkey, $Actors.{$actorkey}, $Actors.{$actorkey}.knownname, $locationkey, $location, $location.knownname, $actorcandidates.count, $actorcandidates]" chance="$DebugChance" />
+                </do_if>
+                <do_elseif value="$pass == 1">
+                  <debug_text text="'Cannot start usecase %s, required actor %s is not present at location %s (%s %s), not matching requirements, or already assigned to another usecase'.[$UseCaseDef.$name, $actorkey, $locationkey, $location, $location.knownname]" chance="$DebugChance" />
+                  <set_value name="event.param.$Error" exact="true" />
+                  <break />
+                </do_elseif>
+                <do_else>
+                  <debug_text text="'For usecase %s, optional actor %s is not present at location %s (%s %s), not matching requirements, or already assigned to another usecase'.[$UseCaseDef.$name, $actorkey, $locationkey, $location, $location.knownname]" chance="$DebugChance" />
+                </do_else>
+              </do_for_each>
+            </do_all>
+
+            <!-- Fill $AbortingUseCases: If any actor was already assigned to an existing UseCase, the old UseCase must be aborted -->
+            <do_if value="event.param.$Error" negate="true">
+              <do_for_each name="$actordef" in="$actordefs">
+                <set_value name="$actorkey" exact="$actordef.$name" />
+                <set_value name="$actor" exact="@$Actors.{$actorkey}" />
+                <do_if value="$actor">
+                  <run_actions ref="GetAssignedActorCue" result="$actorcue">
+                    <param name="actor" value="$actor" />
+                  </run_actions>
+                  <do_if value="$actorcue and not $AbortingUseCases.indexof.{$actorcue}">
+                    <!-- Actor is assigned to an old UseCase, which is not marked as aborting yet -->
+                    <do_if value="$Priority le $actorcue.$Priority">
+                      <debug_text text="'Cannot start %susecase %s with priority %s, actor %s (%s %s) is already assigned in existing usecase %s with priority %s'.[(if event.param.$Queued then 'queued ' else ''), $UseCaseDef.$name, $Priority, $actorkey, $actor, $actor.knownname, $actorcue.$UseCaseDef.$name, $actorcue.$Priority]" chance="$DebugChance" />
+                      <set_value name="event.param.$Error" exact="true" />
+                      <break />
+                    </do_if>
+                    <append_to_list name="$AbortingUseCases" exact="$actorcue" />
+                  </do_if>
+                  <!-- If the actor's $filter has a controlposition, we have to reserve it for this usecase -->
+                  <set_value name="$location" exact="@$Locations.{$actordef.$location}" />
+                  <do_if value="$location and @$actordef.$filter">
+                    <do_for_each name="$criterion" in="$actordef.$filter">
+                      <do_if value="typeof $criterion == datatype.controlposition">
+                        <set_value name="$actorslot" exact="$location.controlposition.{$criterion}.roomslot" />
+                        <run_actions ref="GetReservedActorSlotCue" result="$actorslotcue">
+                          <param name="actorslot" value="$actorslot" />
+                        </run_actions>
+                        <do_if value="$actorslotcue and not $AbortingUseCases.indexof.{$actorslotcue}">
+                          <!-- Slot is reserved by an old UseCase, which is not marked as aborting yet -->
+                          <do_if value="$Priority le $actorslotcue.$Priority">
+                            <debug_text text="'Cannot start usecase %s with priority %s, controlposition %s (%s) is reserved by existing usecase %s with priority %s'.[$UseCaseDef.$name, $Priority, $criterion, $actorslot, $actorslotcue.$UseCaseDef.$name, $actorslotcue.$Priority]" chance="$DebugChance" />
+                            <set_value name="event.param.$Error" exact="true" />
+                            <break />
+                          </do_if>
+                          <append_to_list name="$AbortingUseCases" exact="$actorslotcue" />
+                        </do_if>
+                        <do_if value="not $ReservedSlots.indexof.{$actorslot}">
+                          <append_to_list name="$ReservedSlots" exact="$actorslot" />
+                        </do_if>
+                      </do_if>
+                    </do_for_each>
+                    <do_if value="event.param.$Error">
+                      <break />
+                    </do_if>
+                  </do_if>
+                </do_if>
+              </do_for_each>
+            </do_if>
+
+            <!-- Do not allow multiple exclusive usecases simultaneously. Not strictly related to usecase actors, but this check fits here (considering the player as a usecase actor). -->
+            <do_if value="event.param.$Error" negate="true">
+              <do_if value="@$UseCaseDef.$exclusive">
+                <do_for_each name="$cue" in="UseCaseManager.$ActiveUseCases">
+                  <do_if value="@$cue.$UseCaseDef.$exclusive and not $AbortingUseCases.indexof.{$cue}">
+                    <!-- An exclusive UseCase is already running, and it is not marked as aborting yet -->
+                    <do_if value="$Priority le $cue.$Priority">
+                      <debug_text text="'Cannot start exclusive %susecase %s with priority %s, exclusive usecase %s is already active with priority %s'.[(if event.param.$Queued then 'queued ' else ''), $UseCaseDef.$name, $Priority, $cue.$UseCaseDef.$name, $cue.$Priority]" chance="$DebugChance" />
+                      <set_value name="event.param.$Error" exact="true" />
+                      <break />
+                    </do_if>
+                    <append_to_list name="$AbortingUseCases" exact="$cue" />
+                  </do_if>
+                </do_for_each>
+              </do_if>
+            </do_if>
+
+          </actions>
+        </cue>
+
+        <cue name="UseCase" instantiate="true" namespace="this" version="3">
+          <conditions>
+            <check_any>
+              <!-- Instantiating cue gets signalled with a trigger parameter (note that signals to the UseCase instance have a different meaning and are not caught here) -->
+              <event_cue_signalled />
+              <!-- or player gets signalled with 'npc_usecase' and trigger parameter (providing usecase access to AI scripts) -->
+              <event_object_signalled object="player.entity" param="'npc_usecase'" />
+            </check_any>
+          </conditions>
+          <actions>
+            <!-- NOTE: This cue instance gets registered and the cue variables will be accessible by UseCaseManager, other use cases, and helper cues. -->
+            <!-- The following variables must be externally available (using CamelCase, unlike "private" variables in lowercase): -->
+            <set_value name="$TriggerParam" exact="if event.name == 'event_cue_signalled' then event.param else event.param2" comment="Param provided by trigger through signal" />
+            <set_value name="$UseCaseDef" exact="@UseCaseManager.$UseCaseDefs.{@$TriggerParam.$name}" comment="Usecase definition (either provided by name or directly as custom definition)" />
+            <set_value name="$Locations" exact="table[]"                  comment="Table of usecase locations provided by trigger, named according to $UseCaseDef" />
+            <set_value name="$Actors" exact="table[]"                     comment="Table of assigned actors, named according to $UseCaseDef" />
+            <create_group groupname="$ActorGroup"                         comment="Group of assigned actors, matching $Actors, for quick lookup and group event handling" />
+            <create_group groupname="$ActiveActorGroup"                   comment="Group of assigned non-passive actors, a subset of $ActorGroup" />
+            <set_value name="$ActorLookat" exact="table[]"                comment="Table of actor entities with a currently applied lookat actor name, also used to determine who the actor speaks to" />
+            <set_value name="$ReservedSlots" exact="[]"                   comment="List of control position slots that may not be used by other UseCases or state machines" />
+            <set_value name="$AbortingUseCases" exact="[]"                comment="List of UseCase cue instances that have to be aborted when this UseCase starts" />
+            <set_value name="$Priority" exact="0"                         comment="UseCase priority (can only be determined after setting up custom usecase)" />
+            <set_value name="$ScriptEntries" exact="null"                 comment="Usecase script (provided through either $script or $selectscript in usecase definition)" />
+            <set_value name="$ScriptEntryIndex" exact="0"                 comment="Current entry index in usecase script" />
+            <set_value name="$ScriptEntry" exact="null"                   comment="Current entry in usecase script (after resolving $select)" />
+            <set_value name="$ScriptEntryActor" exact="null"              comment="Actor used in current script entry, can be null if entry is not actor-specific or actor is missing" />
+            <set_value name="$MonitorCutsceneData" exact="null"           comment="Table containing monitor cutscene ID and other data while cutscene is active" />
+            <set_value name="$ScriptEntryTasksRemaining" exact="table[]"  comment="Table of cues that are still processing tasks for the current script entry" />
+            <set_value name="$VerboseDebugChance" exact="[UseCaseManager.$VerboseDebugChance, @$TriggerParam.$verbosedebugchance, @$UseCaseDef.$verbosedebugchance].max" comment="Verbose debug chance" />
+            <set_value name="$DebugChance" exact="[       UseCaseManager.$DebugChance,        @$TriggerParam.$debugchance,        @$UseCaseDef.$debugchance, $VerboseDebugChance].max" comment="Debug chance" />
+            <set_value name="$Queued" exact="false"                       comment="Set to true if added to usecase queue" />
+            <set_value name="$Error" exact="false"                        comment="Set to true on error during initialisation to skip further processing" />
+
+            <do_if value="not @$UseCaseDef">
+              <!-- Custom usecase, provided by trigger (no registered usecase definition was found by name). -->
+              <!-- The usecase definition is either provided by the trigger as $usecasedef, or completely constructed from scratch. -->
+              <!-- The setup validates the provided usecase definition and infers any missing values from the trigger parameters. -->
+              <set_value name="$UseCaseDef" exact="if $TriggerParam.$usecasedef? then @$TriggerParam.$usecasedef.clone else table[]" />
+              <run_actions ref="SetupCustomUseCaseDef" result="$Error">
+                <param name="UseCaseDef" value="$UseCaseDef" />
+                <param name="TriggerParam" value="$TriggerParam" />
+                <param name="VerboseDebugChance" value="$VerboseDebugChance" />
+              </run_actions>
+              <do_if value="$Error">
+                <debug_text text="'Invalid custom NPC usecase definition %s: %s'.[@$UseCaseDef.$name, $Error]" filter="error" />
+                <set_value name="$Error" exact="true" />
+              </do_if>
+            </do_if>
+            <!-- Check usecase chance -->
+            <do_if value="not $Error">
+              <do_if value="$UseCaseDef.$chance?" chance="100 - @$UseCaseDef.$chance">
+                <debug_text text="'Skipping NPC usecase %s because of chance=%s%%'.[$UseCaseDef.$name, $UseCaseDef.$chance]" chance="$DebugChance" />
+                <set_value name="$Error" exact="true" />
+              </do_if>
+              <do_else>
+                <debug_text text="'Attempting to activate NPC usecase ' + $UseCaseDef.$name" chance="$DebugChance"/>
+              </do_else>
+            </do_if>
+            <!-- Check usecase timing -->
+            <do_if value="not $Error and $UseCaseDef.$repeattimeout? and not @$UseCaseDef.$custom and not @$UseCaseDef.$queue">
+              <set_value name="$lasttime" exact="@UseCaseManager.$UseCaseSettings.{$UseCaseDef.$name}.$lasttime" />
+              <do_if value="(typeof $lasttime == datatype.time) and (player.age lt $lasttime + $UseCaseDef.$repeattimeout)">
+                <debug_text text="'[verbose] Skipping NPC usecase %s because of repeattimeout=%ss (timeout reached in %ss)'.[$UseCaseDef.$name, $UseCaseDef.$repeattimeout, $lasttime + $UseCaseDef.$repeattimeout - player.age]" chance="$VerboseDebugChance" />
+                <set_value name="$Error" exact="true" />
+              </do_if>
+            </do_if>
+
+            <!-- Final steps - if these checks fail and queueing is requested, then we may try again later instead of failing instantly. -->
+            <do_if value="not $Error">
+              <!-- Determine usecase priority, required for FindUseCaseActors and potential queueing (default 0, and trigger param can override usecase definition) -->
+              <set_value name="$Priority" exact="if $TriggerParam.$priority? then $TriggerParam.$priority else @$UseCaseDef.$priority" />
+              <!-- First check if usecase is allowed during a conversation or a fullscreen menu -->
+              <do_if value="@$UseCaseDef.$noconversation and player.isinconversation">
+                <debug_text text="'Cannot start usecase %s because player is in conversation'.[$UseCaseDef.$name]" chance="$DebugChance" />
+                <set_value name="$Error" exact="true" />
+                <set_value name="$allowqueueing" exact="true" />
+                <!-- Make sure queued usecase gets evaluated again when conditions have changed -->
+                <do_if value="@$UseCaseDef.$queue and WaitForConversationForQueuedUseCases.state != cuestate.waiting">
+                  <reset_cue cue="WaitForConversationForQueuedUseCases" />
+                </do_if>
+              </do_if>
+              <do_elseif value="@$UseCaseDef.$nofullscreenmenu and player.isinfullscreenmenu">
+                <debug_text text="'Cannot start usecase %s because player is in fullscreen menu'.[$UseCaseDef.$name]" chance="$DebugChance" />
+                <set_value name="$Error" exact="true" />
+                <set_value name="$allowqueueing" exact="true" />
+                <!-- Make sure queued usecase gets evaluated again when conditions have changed -->
+                <do_if value="@$UseCaseDef.$queue and WaitForFullscreenMenuForQueuedUseCases.state != cuestate.waiting">
+                  <reset_cue cue="WaitForFullscreenMenuForQueuedUseCases" />
+                </do_if>
+              </do_elseif>
+              <do_else>
+                <!-- Identify usecase actors -->
+                <!-- Fill $Actors, $Locations, $ReservedSlots and $AbortingUseCases, possibly set $Error -->
+                <signal_cue_instantly cue="FindUseCaseActors" param="this" />
+                <set_value name="$allowqueueing" exact="UseCaseManager.$ActiveUseCases.count != 0" />
+              </do_else>
+
+              <!-- Handle queueing if requested and allowed -->
+              <do_if value="$Error and @$UseCaseDef.$queue and $allowqueueing">
+                <!-- Failed to find identify usecase actors, and queueing was requested. A possible failure cause was identified (e.g. conflicting active usecase), so it's worth trying again later. -->
+                <set_value name="$Queued" exact="true" />
+                <!-- Insert usecase in queue - high priority usecases will be started first. -->
+                <!-- NOTE: The queue is processed in reverse order, so the usecases with a higher index will be started earlier. -->
+                <set_value name="$queueidx" exact="1" />
+                <do_while value="($queueidx le UseCaseManager.$QueuedUseCases.count) and ($Priority gt UseCaseManager.$QueuedUseCases.{$queueidx}.$Priority)">
+                  <set_value name="$queueidx" operation="add" />
+                </do_while>
+                <set_value name="UseCaseManager.$QueuedUseCases.{$queueidx}" operation="insert" exact="this" />
+                <debug_text text="'Adding usecase %s to queue at position %s of %s, will attempt to set up usecase actors again later'.[$UseCaseDef.$name, UseCaseManager.$QueuedUseCases.count - $queueidx + 1, UseCaseManager.$QueuedUseCases.count]" chance="$DebugChance" />
+                <remove_value name="$queueidx" />
+                <!-- Undo changes made by FindUseCaseActors, so we can repeat the check later, and to skip error handling below -->
+                <set_value name="$Error" exact="false" />
+                <clear_table table="$Actors" />
+                <clear_table table="$Locations" />
+                <clear_list list="$ReservedSlots" />
+                <clear_list list="$AbortingUseCases" />
+              </do_if>
+              <remove_value name="$allowqueueing" />
+            </do_if>
+
+            <!-- Error detection finished, no new errors after this point! -->
+            <do_if value="$Error">
+              <do_if value="@$TriggerParam.$abortcallbackcue">
+                <do_if value="$TriggerParam.$abortcallbackcue.exists">
+                  <signal_cue_instantly cue="$TriggerParam.$abortcallbackcue" param="@$TriggerParam.$abortcallbackparam" check="false" />
+                </do_if>
+                <do_else>
+                  <debug_text text="'[verbose] $abortcallbackcue does not exist any more'" chance="$VerboseDebugChance" />
+                </do_else>
+              </do_if>
+              <cancel_cue cue="this" />
+            </do_if>
+            <do_elseif value="not $Queued">
+              <include_actions ref="UseCasePrepareStart" />
+              <!-- Register UseCase instance cue -->
+              <append_to_list name="UseCaseManager.$ActiveUseCases" exact="UseCase" />
+            </do_elseif>
+          </actions>
+          <patch sinceversion="2">
+            <set_value name="$VerboseDebugChance" exact="0" />
+          </patch>
+          <patch sinceversion="3">
+            <set_value name="$Queued" exact="false" />
+          </patch>
+          <cues>
+
+            <!-- Used on immediate start and on delayed start after queueing -->
+            <library name="UseCasePrepareStart" purpose="include_actions">
+              <actions>
+                <debug_text text="'Starting %sNPC usecase %s with priority %s, assigned actors: %s'.[(if $Queued then 'queued ' else ''), $UseCaseDef.$name, $Priority, $Actors]" chance="$DebugChance" />
+                <assert value="not $Error and not UseCaseManager.$QueuedUseCases.indexof.{UseCase} and not UseCaseManager.$ActiveUseCases.indexof.{UseCase}" text="'Unexpected state of usecase %s'.[$UseCaseDef.$name]" />
+                <set_value name="$Queued" exact="false" />
+                <!-- Init usecase settings and remember usecase start time as $lasttime -->
+                <do_if value="not @$UseCaseDef.$custom">
+                  <do_if value="not UseCaseManager.$UseCaseSettings.{$UseCaseDef.$name}?">
+                    <set_value name="UseCaseManager.$UseCaseSettings.{$UseCaseDef.$name}" exact="table[]" />
+                  </do_if>
+                  <set_value name="UseCaseManager.$UseCaseSettings.{$UseCaseDef.$name}.$lasttime" exact="player.age" />
+                </do_if>
+                <!-- Fill $ActorGroup based on $Actors -->
+                <do_for_each valuename="$actor" in="$Actors">
+                  <add_to_group groupname="$ActorGroup" object="$actor" />
+                  <!-- Make sure that a disconnected actor remains valid until the usecase is finished -->
+                  <do_if value="not $actor.exists">
+                    <create_cue_actor cue="UseCase" actor="$actor" />
+                  </do_if>
+                </do_for_each>
+                <!-- Fill $ActiveActorGroup, subset of $ActorGroup (exclude the player and all actors with $passive flag) -->
+                <!-- Also disable conversations for actors if requested -->
+                <do_for_each name="$actordef" in="$UseCaseDef.$actors">
+                  <do_if value="@$Actors.{$actordef.$name}.isclass.[class.npc, class.computer]">
+                    <do_if value="not @$actordef.$passive">
+                      <add_to_group groupname="$ActiveActorGroup" object="$Actors.{$actordef.$name}" />
+                    </do_if>
+                    <do_if value="if $actordef.$disable_interaction? then $actordef.$disable_interaction else if $TriggerParam.$disable_actor_interaction? then $TriggerParam.$disable_actor_interaction else @$UseCaseDef.$disable_actor_interaction">
+                      <debug_text text="'[verbose] Disabling conversations for %s'.[$Actors.{$actordef.$name}.debugname]" chance="$VerboseDebugChance"/>
+                      <set_value name="$Actors.{$actordef.$name}.$comm_disabled_counter" operation="add" />
+                    </do_if>
+                  </do_if>
+                </do_for_each>
+                <!-- Abort conflicting use cases -->
+                <do_for_each name="$cue" in="$AbortingUseCases">
+                  <debug_text text="'  Aborting conflicting NPC usecase %s with priority %s'.[$cue.$UseCaseDef.$name, $cue.$Priority]" chance="$DebugChance" />
+                  <set_value name="$cue.$InterruptSpeak" />
+                  <signal_cue_instantly cue="$cue" param="'cleanup'" />
+                </do_for_each>
+                <!-- TODO: Make sure NPC state machines don't change states unexpectedly during usecase - check with Owen -->
+                <!-- TODO: Make sure NPC state machines don't pick reserved NPC slots during usecase - check with Owen -->
+              </actions>
+            </library>
+
+            <!-- Start usecase as soon as UseCase sub-cues are available, unless queued -->
+            <cue name="CheckUseCaseStart" onfail="cancel">
+              <conditions>
+                <check_value value="not $Queued" />
+              </conditions>
+              <actions>
+                <signal_cue_instantly cue="UseCase" param="'start'" />
+              </actions>
+            </cue>
+
+            <cue name="UseCaseStart">
+              <conditions>
+                <!-- Triggered either by CheckUseCaseStart (not queued) or by CheckQueuedUseCases (queued) -->
+                <!-- NOTE: At this point UseCase is the instance, not the instantiating cue -->
+                <event_cue_signalled cue="UseCase" />
+                <check_value value="event.param" exact="'start'" />
+              </conditions>
+              <actions>
+                <assert value="not $Error" text="'Unexpected state of usecase %s'.[$UseCaseDef.$name]" />
+                <do_if value="$Queued">
+                  <!-- These steps are only needed when the usecase is started from the queue -->
+                  <remove_from_list name="UseCaseManager.$QueuedUseCases" exact="UseCase" />
+                  <include_actions ref="UseCasePrepareStart" />
+                  <append_to_list name="UseCaseManager.$ActiveUseCases" exact="UseCase" />
+                  <assert value="not $Queued" text="'UseCasePrepareStart failed to reset $Queued flag'" />
+                </do_if>
+              </actions>
+              <!-- Small delay to allow cleanup of previous usecases, and set up of all UseCase sub-cues -->
+              <delay exact="1ms" />
+              <actions>
+                <do_if value="$UseCaseDef.$selectscript?">
+                  <!-- Select usecase script (using same selection routine as for script entries) -->
+                  <run_actions ref="SelectWeightedSubEntry" result="$entry">
+                    <param name="usecase" value="namespace" />
+                    <param name="select" value="$UseCaseDef.$selectscript" />
+                  </run_actions>
+                  <do_if value="$entry.$script?">
+                    <set_value name="$ScriptEntries" exact="$entry.$script" />
+                  </do_if>
+                  <remove_value name="$entry" />
+                </do_if>
+                <do_if value="not $ScriptEntries and $UseCaseDef.$script?">
+                  <set_value name="$ScriptEntries" exact="$UseCaseDef.$script" />
+                </do_if>
+                <do_if value="typeof $ScriptEntries == datatype.list">
+                  <signal_cue cue="ProcessUseCaseScript" />
+                </do_if>
+                <do_else>
+                  <debug_text text="'Cannot start NPC usecase %s, no suitable usecase script was found'.[$UseCaseDef.$name]" chance="$DebugChance" />
+                  <set_value name="$ScriptEntryIndex" exact="1" comment="Treat the usecase as completed" />
+                  <signal_cue_instantly cue="UseCase" param="'cleanup'" />
+                </do_else>
+              </actions>
+            </cue>
+
+            <!-- ===== Usecase script processing ===== -->
+
+            <!-- Helper library to evaluate a script entry and determine the resulting script entry. The entry can be a whole script itself. -->
+            <!-- This includes chance check, requirement checks and random $select resolution, possibly recursively. -->
+            <!-- The return value is either the original entry, a sub-entry (from optional $select table), or null (if requirements are not met) -->
+            <library name="EvaluateScriptEntry" purpose="run_actions">
+              <params>
+                <param name="usecase" />
+                <param name="entry" />
+              </params>
+              <actions>
+                <do_if value="typeof $entry == datatype.table">
+
+                  <!-- Check $chance -->
+                  <do_if value="$entry.$chance?">
+                    <return value="null" chance="100 - $entry.$chance" />
+                  </do_if>
+
+                  <!-- If $actor provided, check if assigned -->
+                  <set_value name="$actor" exact="null" />
+                  <do_if value="$entry.$actor?">
+                    <set_value name="$actor" exact="@$usecase.$Actors.{$entry.$actor}" />
+                    <do_if value="not $actor">
+                      <return value="null" />
+                    </do_if>
+                  </do_if>
+
+                  <!-- $require_actor -->
+                  <do_if value="$entry.$require_actor?">
+                    <!-- $require_actor = actor key string, or table of actor key strings mapped to true|false -->
+                    <do_if value="typeof $entry.$require_actor == datatype.table">
+                      <do_for_each name="$actorkey" valuename="$actorrequirement" in="$entry.$require_actor">
+                        <!-- Fail if existence of assigned actor (true|false) does not match the requirement (Negating to ensure comparison of two Boolean values) -->
+                        <do_if value="$usecase.$Actors.{$actorkey}? == not $actorrequirement">
+                          <return value="null" />
+                        </do_if>
+                      </do_for_each>
+                    </do_if>
+                    <do_elseif value="not $usecase.$Actors.{$entry.$require_actor}?">
+                      <return value="null" />
+                    </do_elseif>
+                  </do_if>
+
+                  <!-- $require_inroom -->
+                  <do_if value="$entry.$require_inroom? and $actor">
+                    <!-- Fail if attention being inroom does not match the requirement -->
+                    <do_if value="($actor.attention ge attention.inroom) == not $entry.$require_inroom">
+                      <return value="null" />
+                    </do_if>
+                  </do_if>
+
+                  <!-- $filter / $excludefilter -->
+                  <do_if value="$entry.$filter? or $entry.$excludefilter?">
+                    <!-- $filter/$excludefilter = table[ $ActorName1 = [ criteria... ] or true, $ActorName2 = ... ] -->
+                    <do_all exact="2" counter="$criteriapass">
+                      <set_value name="$filteractors" exact="if $criteriapass == 2 then @$entry.$excludefilter else @$entry.$filter" />
+                      <do_if value="$filteractors">
+                        <debug_text text="'[verbose] Checking %s, actors = %s'.[(if $criteriapass == 2 then '$excludefilter' else '$filter'), $filteractors]" chance="$usecase.$VerboseDebugChance" />
+                        <do_for_each name="$actordef" in="$usecase.$UseCaseDef.$actors">
+                          <set_value name="$filteractorkey" exact="$actordef.$name" />
+                          <set_value name="$criteria" exact="@$filteractors.{$filteractorkey}" />
+                          <do_if value="$criteria">
+                            <set_value name="$filteractor" exact="@$usecase.$Actors.{$filteractorkey}" />
+                            <debug_text text="'[verbose]   Checking criteria for actor: key = %s, entity = %s %s'.[$filteractorkey, $filteractor, $filteractor.knownname]" chance="$usecase.$VerboseDebugChance" />
+                            <!-- Handle case where actor exists and criteria are defined in a list -->
+                            <do_if value="$filteractor.isoperational and typeof $criteria == datatype.list">
+                              <set_value name="$filtertable" exact="table[
+                                         $usecase = $usecase,
+                                         $actor = $filteractor,
+                                         $location = @$usecase.$Locations.{$actordef.$location},
+                                         $criteria = $criteria,
+                                         $exclude = ($criteriapass == 2),
+                                         $allow_player = true,
+                                         $allow_walk_to_position = false,
+                                         $verbosedebugchance = $usecase.$VerboseDebugChance ]" />
+                              <signal_cue_instantly cue="md.NPC_UseCases.CheckFilterCriteria" param="$filtertable" />
+                              <debug_text text="'[verbose]   Check was %ssuccessful for %s'.[(if $filtertable.$met then '' else 'not '), $filteractorkey]" chance="$usecase.$VerboseDebugChance" />
+                              <do_if value="not $filtertable.$met">
+                                <do_if value="$filtertable.$error?">
+                                  <debug_text text="'NPC usecase %s script entry specifies invalid filter criterion %s for actor %s'.[$usecase.$UseCaseDef.$name, $filtertable.$error, $filteractorkey]" filter="error" />
+                                </do_if>
+                                <return value="null" />
+                              </do_if>
+                            </do_if>
+                            <!-- Otherwise handle case that in pass 1 $filter actor does not exist, or in pass 2 $excludefilter actor exists (without list of criteria) -->
+                            <do_elseif value="($criteriapass == 1) == (not $filteractor.isoperational)">
+                              <debug_text text="'[verbose]   invalid without filtertable check'" chance="$usecase.$VerboseDebugChance" />
+                              <return value="null" />
+                            </do_elseif>
+                            <!-- In all other cases everything is fine -->
+                          </do_if>
+                          <!-- End actor def loop -->
+                        </do_for_each>
+                      </do_if>
+                      <!-- End criteriapass loop -->
+                    </do_all>
+                  </do_if>
+
+                  <!-- $select (do this last, so we only look at sub-entries if the parent meets the requirements) -->
+                  <do_if value="$entry.$select?">
+                    <run_actions ref="SelectWeightedSubEntry" result="$entry">
+                      <param name="usecase" value="$usecase" />
+                      <param name="select" value="$entry.$select" />
+                    </run_actions>
+                  </do_if>
+
+                </do_if>
+
+                <return value="$entry" />
+              </actions>
+            </library>
+
+            <library name="SelectWeightedSubEntry" purpose="run_actions">
+              <params>
+                <param name="usecase" />
+                <param name="select" />
+              </params>
+              <actions>
+                <!-- Select weighted entry from $select list, including recursive entry evaluation (if the result is null, the weight will be considered as 0) -->
+                <set_value name="$selectentries" exact="[]" />
+                <set_value name="$selectweights" exact="[]" />
+                <!-- Enforce floating point weight precision even if all weights are integers -->
+                <set_value name="$totalweight" exact="0.0" />
+                <do_for_each name="$entry" in="$select">
+                  <set_value name="$weight" exact="if $entry.$weight? then $entry.$weight else 1.0" />
+                  <do_if value="$weight > 0.0">
+                    <!-- Determine script entry recursively, to support nested $select and chance/filter support on all nesting levels -->
+                    <run_actions ref="EvaluateScriptEntry" result="$resultentry">
+                      <param name="usecase" value="$usecase" />
+                      <param name="entry" value="$entry" />
+                    </run_actions>
+                    <!-- Only valid entries can be selected -->
+                    <do_if value="$resultentry">
+                      <append_to_list name="$selectentries" exact="$resultentry" />
+                      <append_to_list name="$selectweights" exact="$weight" />
+                      <set_value name="$totalweight" exact="$weight" operation="add" />
+                    </do_if>
+                  </do_if>
+                </do_for_each>
+                <set_value name="$rnd" min="0.0" max="$totalweight" />
+                <do_for_each name="$entry" in="$selectentries" counter="$selectidx">
+                  <set_value name="$rnd" exact="$selectweights.{$selectidx}" operation="subtract" />
+                  <do_if value="$rnd lt 0.0">
+                    <return value="$entry" />
+                  </do_if>
+                </do_for_each>
+                <return value="@$selectentries.last" comment="Fallback: Last entry, or null if there are no entries" />
+              </actions>
+            </library>
+
+            <!-- Keep reading and processing entries in the usecase script until there are incomplete tasks remaining -->
+            <cue name="ProcessUseCaseScript" instantiate="true">
+              <conditions>
+                <event_cue_signalled />
+                <check_value value="$ScriptEntryTasksRemaining.keys.count == 0" comment="Early out" />
+              </conditions>
+              <actions>
+                <!-- Process script entries until one of them cannot be completed instantly -->
+                <do_while value="$ScriptEntryTasksRemaining.keys.count == 0">
+                  <!-- Finish previous script entry and reset actor -->
+                  <do_if value="$ScriptEntryActor.isclass.npc">
+                    <do_if value="$ScriptEntry.$templookat?">
+                      <debug_text text="'NPC usecase %s: Clearing actor %s templookat'.[$UseCaseDef.$name, $ScriptEntry.$actor]" chance="$DebugChance" />
+                      <remove_value name="$ActorLookat.{$ScriptEntryActor}" />
+                      <clear_actor_lookat actor="$ScriptEntryActor" />
+                    </do_if>
+                    <do_if value="$ScriptEntry.$tempemotion?">
+                      <debug_text text="'NPC usecase %s: Clearing actor %s tempemotion'.[$UseCaseDef.$name, $ScriptEntry.$actor]" chance="$DebugChance" />
+                      <clear_actor_emotion actor="$ScriptEntryActor" />
+                    </do_if>
+                  </do_if>
+                  <set_value name="$ScriptEntryActor" exact="null" />
+                  <!-- Proceed to next step in the usecase script -->
+                  <set_value name="$ScriptEntryIndex" operation="add" />
+                  <!-- Clean up if we reached the end of the script -->
+                  <do_if value="$ScriptEntryIndex gt $ScriptEntries.count">
+                    <debug_text text="'NPC usecase %s done'.[$UseCaseDef.$name]" chance="$DebugChance" />
+                    <signal_cue_instantly cue="UseCase" param="'cleanup'" />
+                    <break />
+                  </do_if>
+                  <!-- Determine $ScriptEntry, including $chance evaluation, random $select resolution, and requirement checks -->
+                  <run_actions ref="EvaluateScriptEntry" result="$ScriptEntry">
+                    <param name="usecase" value="UseCase" />
+                    <param name="entry" value="$ScriptEntries.{$ScriptEntryIndex}" />
+                  </run_actions>
+                  <!-- If entry is just a time value, use this as delay -->
+                  <do_if value="typeof $ScriptEntry" exact="datatype.time">
+                    <debug_text text="'NPC usecase %s step %s: Delay of %ss'.[$UseCaseDef.$name, $ScriptEntryIndex, $ScriptEntry]" chance="$DebugChance" />
+                    <signal_cue_instantly cue="Delay" param="[$ScriptEntry, 1ms].max" />
+                  </do_if>
+                  <!-- If entry is a table with $actor, process actor instructions -->
+                  <do_elseif value="$ScriptEntry.$actor?">
+                    <set_value name="$ScriptEntryActor" exact="@$Actors.{$ScriptEntry.$actor}" />
+                    <!-- Instructions that require a non-player actor (skip if actor is missing) -->
+                    <do_if value="$ScriptEntryActor.isclass.nonplayer" comment="Skip if actor is missing or if actor is the player">
+                      <!-- $lookat / $templookat -->
+                      <do_if value="($ScriptEntry.$lookat? or $ScriptEntry.$templookat?) and $ScriptEntryActor.isclass.npc">
+                        <set_value name="$lookat" exact="if @$ScriptEntry.$templookat then @$ScriptEntry.$templookat else @$ScriptEntry.$lookat" />
+                        <debug_text text="'NPC usecase %s step %s: Setting actor %s lookat = %s'.[$UseCaseDef.$name, $ScriptEntryIndex, $ScriptEntry.$actor, $lookat]" chance="$DebugChance" />
+                        <!-- Store lookat name in $ActorLookat -->
+                        <do_if value="$lookat">
+                          <set_value name="$ActorLookat.{$ScriptEntryActor}" exact="$lookat" />
+                        </do_if>
+                        <do_else>
+                          <remove_value name="$ActorLookat.{$ScriptEntryActor}" />
+                        </do_else>
+                        <!-- Apply lookat actor (Sanity check: Process lookat only if entity is actually nearby on the same object) -->
+                        <set_value name="$lookat" exact="if $lookat == 'player' then player.entity else @$Actors.{$lookat}" />
+                        <do_if value="$lookat and $ScriptEntryActor != $lookat and $ScriptEntryActor.object and $ScriptEntryActor.object == $lookat.object and $lookat.isclass.[class.npc, class.player] and $ScriptEntryActor.distanceto.{$lookat} lt 40m">
+                          <set_actor_lookat actor="$ScriptEntryActor" component="$lookat" />
+                        </do_if>
+                        <do_else>
+                          <clear_actor_lookat actor="$ScriptEntryActor" />
+                        </do_else>
+                      </do_if>
+                      <!-- $emotion / $tempemotion -->
+                      <do_if value="($ScriptEntry.$emotion? or $ScriptEntry.$tempemotion?) and $ScriptEntryActor.isclass.npc">
+                        <set_value name="$emotion" exact="if @$ScriptEntry.$tempemotion then @$ScriptEntry.$tempemotion else @$ScriptEntry.$emotion" />
+                        <debug_text text="'NPC usecase %s step %s: Setting actor %s emotion = %s'.[$UseCaseDef.$name, $ScriptEntryIndex, $ScriptEntry.$actor, $emotion]" chance="$DebugChance" />
+                        <do_if value="$emotion">
+                          <set_actor_emotion actor="$ScriptEntryActor" emotion="$emotion" />
+                        </do_if>
+                        <do_else>
+                          <clear_actor_emotion actor="$ScriptEntryActor" />
+                        </do_else>
+                      </do_if>
+                      <!-- $walkto / $runto -->
+                      <do_if value="$ScriptEntry.$runto? and $ScriptEntryActor.isclass.npc">
+                        <debug_text text="'NPC usecase %s step %s: Actor %s running to %s'.[$UseCaseDef.$name, $ScriptEntryIndex, $ScriptEntry.$actor, $ScriptEntry.$runto]" chance="$DebugChance" />
+                        <signal_cue_instantly cue="Walk" param="[ $ScriptEntry.$runto, true ]" />
+                      </do_if>
+                      <do_elseif value="$ScriptEntry.$walkto? and $ScriptEntryActor.isclass.npc">
+                        <debug_text text="'NPC usecase %s step %s: Actor %s walking to %s'.[$UseCaseDef.$name, $ScriptEntryIndex, $ScriptEntry.$actor, $ScriptEntry.$walkto]" chance="$DebugChance" />
+                        <signal_cue_instantly cue="Walk" param="[ $ScriptEntry.$walkto, false ]" />
+                      </do_elseif>
+                    </do_if>
+                    <!-- Speak instructions: Same as above, non-player only, but allow player if $allow_player_speak is set -->
+                    <do_if value="$ScriptEntryActor.isclass.nonplayer or ($ScriptEntryActor.isclass.player and (if $ScriptEntry.$allow_player_speak? then $ScriptEntry.$allow_player_speak else @$UseCaseDef.$allow_player_speak))">
+                      <!-- $speak / $selectspeak (must be after $lookat / $templookat, so we can determine who the NPC is speaking to (can be overridden with $recipient) - NOTE: not relevant in player-speak case -->
+                      <do_if value="$ScriptEntry.$speak? or $ScriptEntry.$selectspeak?">
+                        <set_value name="$speakline" exact="if $ScriptEntry.$speak? then $ScriptEntry.$speak else $ScriptEntry.$selectspeak.random" />
+                        <debug_text text="'NPC usecase %s step %s: Actor %s speaking line %s'.[$UseCaseDef.$name, $ScriptEntryIndex, $ScriptEntry.$actor, $speakline]" chance="$DebugChance" />
+                        <signal_cue_instantly cue="Speak" param="$speakline" />
+                      </do_if>
+                      <do_elseif value="($ScriptEntry.$speak_to_male? or $ScriptEntry.$selectspeak_to_male?) and ($ScriptEntry.$speak_to_female? or $ScriptEntry.$selectspeak_to_female?)">
+                        <set_value name="$speakline" exact="table[
+                                   $to_male = (if $ScriptEntry.$speak_to_male? then $ScriptEntry.$speak_to_male else $ScriptEntry.$selectspeak_to_male.random),
+                                   $to_female = (if $ScriptEntry.$speak_to_female? then $ScriptEntry.$speak_to_female else $ScriptEntry.$selectspeak_to_female.random) ]" />
+                        <debug_text text="'NPC usecase %s step %s: Actor %s speaking line %s (male) / %s (female)'.[$UseCaseDef.$name, $ScriptEntryIndex, $ScriptEntry.$actor, $speakline.$to_male, $speakline.$to_female]" chance="$DebugChance" />
+                        <signal_cue_instantly cue="Speak" param="$speakline" />
+                      </do_elseif>
+                    </do_if>
+                  </do_elseif>
+                  <!-- If entry is a table without $actor, allow resetting $lookat and/or $emotion for all actors, and finishing a monitor cutscene with $closemonitor -->
+                  <do_else>
+                    <do_if value="$ScriptEntry.$lookat? and $ScriptEntry.$lookat == null">
+                      <debug_text text="'NPC usecase %s step %s: Reset all lookats'.[$UseCaseDef.$name, $ScriptEntryIndex]" chance="$DebugChance" />
+                      <do_for_each name="$actor" in="$ActorGroup">
+                        <do_if value="$actor.isclass.npc">
+                          <clear_actor_lookat actor="$actor" />
+                        </do_if>
+                      </do_for_each>
+                      <clear_table table="$ActorLookat" />
+                    </do_if>
+                    <do_if value="$ScriptEntry.$emotion? and $ScriptEntry.$emotion == null">
+                      <debug_text text="'NPC usecase %s step %s: Reset all emotions'.[$UseCaseDef.$name, $ScriptEntryIndex]" chance="$DebugChance" />
+                      <do_for_each name="$actor" in="$ActorGroup">
+                        <do_if value="$actor.isclass.npc">
+                          <clear_actor_emotion actor="$actor" />
+                        </do_if>
+                      </do_for_each>
+                    </do_if>
+                    <do_if value="@$ScriptEntry.$closemonitor">
+                      <!-- Stop a previously started cutscene explicitly -->
+                      <debug_text text="'NPC usecase %s step %s: Closing monitor'.[$UseCaseDef.$name, $ScriptEntryIndex]" chance="$DebugChance" />
+                      <run_actions ref="StopMonitorCutscene">
+                        <param name="usecase" value="UseCase" />
+                      </run_actions>
+                    </do_if>
+                  </do_else>
+                  <!-- $skipafter / $abortafter (used in combination with $speak / $selectspeak / $walkto, allow continuing with the next instruction in parallel after a delay) -->
+                  <do_if value="$ScriptEntry.$skipafter?">
+                    <debug_text text="'NPC usecase %s step %s: Will skip any blocking instructions in this step after %ss'.[$UseCaseDef.$name, $ScriptEntryIndex, $ScriptEntry.$skipafter]" chance="$DebugChance" />
+                    <signal_cue_instantly cue="SkipAfterDelay" param="[[$ScriptEntry.$skipafter, 1ms].max, false]" />
+                  </do_if>
+                  <do_elseif value="$ScriptEntry.$abortafter?">
+                    <debug_text text="'NPC usecase %s step %s: Will abort usecase if this step is not completed after %ss'.[$UseCaseDef.$name, $ScriptEntryIndex, $ScriptEntry.$abortafter]" chance="$DebugChance" />
+                    <signal_cue_instantly cue="SkipAfterDelay" param="[[$ScriptEntry.$abortafter, 1ms].max, true]" />
+                  </do_elseif>
+                </do_while>
+              </actions>
+            </cue>
+
+            <cue name="Delay" instantiate="true">
+              <conditions>
+                <event_cue_signalled />
+              </conditions>
+              <actions>
+                <set_value name="$ScriptEntryTasksRemaining.{Delay}" />
+                <set_value name="Delay.$delaytime" exact="event.param" />
+              </actions>
+              <cues>
+                <cue name="DoDelay">
+                  <delay exact="Delay.$delaytime" />
+                </cue>
+                <cue name="OnDelayFinished">
+                  <conditions>
+                    <check_any>
+                      <event_cue_completed cue="DoDelay" />
+                      <event_cue_signalled cue="SkipRemainingTasks" />
+                    </check_any>
+                  </conditions>
+                  <actions>
+                    <remove_value name="$ScriptEntryTasksRemaining.{Delay}" />
+                    <cancel_cue cue="Delay" />
+                    <signal_cue cue="ProcessUseCaseScript" />
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="Speak" instantiate="true" version="4">
+              <conditions>
+                <event_cue_signalled />
+              </conditions>
+              <actions>
+                <do_if value="typeof event.param == datatype.list">
+                  <set_value name="Speak.$page" exact="event.param.{1}" />
+                  <set_value name="Speak.$line" exact="event.param.{2}" />
+                </do_if>
+                <do_else>
+                  <set_value name="Speak.$page" exact="$ScriptEntryActor.page" />
+                  <set_value name="Speak.$line" exact="event.param" />
+                </do_else>
+                <!-- Determine who the speaker is talking to. If undefined and not explicitly talking to or looking at the player, consider it as a monologue, so it will be treated as a background speak. -->
+                <set_value name="Speak.$backgroundcomm" exact="if $ScriptEntry.$allow_comm_chatter? then $ScriptEntry.$allow_comm_chatter else @$UseCaseDef.$allow_comm_chatter" />
+                <set_value name="$recipientname" exact="if $ScriptEntry.$recipient? then $ScriptEntry.$recipient else @$ActorLookat.{$ScriptEntryActor}" />
+                <do_if value="$recipientname == 'player'">
+                  <set_value name="Speak.$recipient" exact="player.entity" />
+                </do_if>
+                <do_elseif value="@$Actors.{$recipientname}">
+                  <set_value name="Speak.$recipient" exact="@$Actors.{$recipientname}" />
+                </do_elseif>
+                <do_else>
+                  <!-- Fallback: Monologue (speak to self), but enable backgroundcomm if we were *supposed* to speak to an actor at another location, even though the designated recipient is not assigned to the usecase -->
+                  <!-- (backgroundcomm can be prevented explicitly by setting $allow_comm_chatter = false) -->
+                  <!-- (NOTE: Restrict to visible attention level only, because setting the backgroundcomm flag disables the max distance check for implicit background comm) -->
+                  <set_value name="Speak.$recipient" exact="$ScriptEntryActor" />
+                  <do_if value="$recipientname and not $ScriptEntry.$allow_comm_chatter? and $ScriptEntryActor.attention ge attention.visible">
+                    <do_for_each name="$actor" in="$UseCaseDef.$actors">
+                      <do_if value="not Speak.$speakerlocation? and @$Actors.{$actor.$name} == $ScriptEntryActor">
+                        <set_value name="Speak.$speakerlocation" exact="$actor.$location" />
+                      </do_if>
+                      <do_elseif value="not Speak.$recipientlocation? and $actor.$name == $recipientname">
+                        <set_value name="Speak.$recipientlocation" exact="$actor.$location" />
+                      </do_elseif>
+                    </do_for_each>
+                    <set_value name="Speak.$backgroundcomm" exact="Speak.$speakerlocation? and Speak.$recipientlocation? and (Speak.$speakerlocation != Speak.$recipientlocation)" />
+                  </do_if>
+                </do_else>
+
+                <!-- If gender-specific lines were provided, select correct line -->
+                <do_if value="typeof Speak.$line == datatype.table">
+                  <set_value name="Speak.$line" exact="if @Speak.$recipient.isfemale then Speak.$line.$to_female else Speak.$line.$to_male" />
+                </do_if>
+                <!-- If line is a gender-specific honorific, adjust based on gender of recipient -->
+                <do_elseif value="@Speak.$recipient.isfemale and Speak.$page == $ScriptEntryActor.page and param.voice.female_honorifics.{Speak.$line}?">
+                  <set_value name="Speak.$line" exact="param.voice.female_honorifics.{Speak.$line}" />
+                </do_elseif>
+
+                <!-- Timed speak properties -->
+                <set_value name="Speak.$speakemotion" exact="@$ScriptEntry.$speakemotion"/>
+
+                <do_if value="$ScriptEntry.$skipspeakbeforeend? and $ScriptEntry.$skipspeakbeforeend gt 0.0">
+                  <set_value name="Speak.$timer" exact="-$ScriptEntry.$skipspeakbeforeend" />
+                  <set_value name="Speak.$interruptontimer" exact="false"/>
+                </do_if>
+                <do_elseif value="$ScriptEntry.$interruptspeakbeforeend? and $ScriptEntry.$interruptspeakbeforeend gt 0.0">
+                  <set_value name="Speak.$timer" exact="-$ScriptEntry.$interruptspeakbeforeend" />
+                  <set_value name="Speak.$interruptontimer" exact="true"/>
+                </do_elseif>
+                <do_elseif value="$ScriptEntry.$skipspeakafter? and $ScriptEntry.$skipspeakafter ge 0.0">
+                  <set_value name="Speak.$timer" exact="@$ScriptEntry.$skipspeakafter" />
+                  <set_value name="Speak.$interruptontimer" exact="false"/>
+                </do_elseif>
+                <do_elseif value="$ScriptEntry.$interruptspeakafter? and $ScriptEntry.$interruptspeakafter ge 0.0">
+                  <set_value name="Speak.$timer" exact="@$ScriptEntry.$interruptspeakafter" />
+                  <set_value name="Speak.$interruptontimer" exact="true"/>
+                </do_elseif>
+
+                <!-- Prepare speakcallbackcue -->
+                <do_if value="$ScriptEntry.$speakcallbackcue?">
+                  <set_value name="Speak.$speakcallbackcue" exact="$ScriptEntry.$speakcallbackcue" />
+                </do_if>
+                <do_elseif value="@$TriggerParam.$speakcallbackcue and $ScriptEntry.$speakcallbackparam?">
+                  <set_value name="Speak.$speakcallbackcue" exact="$TriggerParam.$speakcallbackcue" />
+                </do_elseif>
+
+                <do_if value="(typeof Speak.$page != datatype.integer or Speak.$page le 0) or (typeof Speak.$line != datatype.integer or Speak.$line lt 0) or not readtext.{Speak.$page}.{Speak.$line}?">
+                  <!-- Speaking not supported -->
+                  <do_if value="if $ScriptEntry.$validatespeak? then $ScriptEntry.$validatespeak else if $TriggerParam.$validatespeak? then $TriggerParam.$validatespeak else @$UseCaseDef.$validatespeak">
+                    <debug_text text="'NPC usecase %s, actor %s, speak page %s, line %s: Invalid speaker page or line, skipping instruction'.[$UseCaseDef.$name, $ScriptEntry.$actor, Speak.$page, Speak.$line]" filter="error" />
+                  </do_if>
+                  <do_else>
+                    <debug_text text="'NPC usecase %s, actor %s, speak page %s, line %s: Invalid speaker page or line, skipping instruction'.[$UseCaseDef.$name, $ScriptEntry.$actor, Speak.$page, Speak.$line]" chance="$DebugChance" />
+                  </do_else>
+                  <cancel_cue cue="Speak" />
+                  <signal_cue cue="ProcessUseCaseScript" />
+                  <!-- Signal callback cue for speak step if requested -->
+                  <do_if value="Speak.$speakcallbackcue?">
+                    <do_if value="@Speak.$speakcallbackcue.exists">
+                      <signal_cue_instantly cue="Speak.$speakcallbackcue" param="@$ScriptEntry.$speakcallbackparam" check="false" />
+                    </do_if>
+                    <do_else>
+                      <debug_text text="'[verbose] $speakcallbackcue does not exist any more'" chance="$VerboseDebugChance" />
+                    </do_else>
+                  </do_if>
+                </do_if>
+                <do_else>
+                  <set_value name="Speak.$linewithdelay" exact="Speak.$line" />
+                  <do_if value="typeof @$ScriptEntry.$speakdelay == datatype.time and $ScriptEntry.$speakdelay gt 0s">
+                    <!-- Store delay and line ID in speak line format - NOTE: We have to keep the original Speak.$line for detecting event_speak_finished -->
+                    <set_value name="Speak.$linewithdelay" exact="[ $ScriptEntry.$speakdelay, Speak.$line ]" />
+                  </do_if>
+                  <set_value name="Speak.$broadcast" exact="@$ScriptEntry.$broadcast" />
+                  <set_value name="Speak.$voiceover" exact="if $ScriptEntry.$voiceover? then $ScriptEntry.$voiceover else @$UseCaseDef.$voiceover" />
+                  <set_value name="Speak.$priority" exact="if Speak.$voiceover then 99 else (@$UseCaseDef.$speakpriority)i" />
+                  <set_value name="Speak.$actor" exact="$ScriptEntryActor" />
+                  <set_value name="Speak.$startcutscene" exact="false" comment="Whether cutscene should be started, will be determined below" />
+                  <set_value name="Speak.$speakstarted" exact="false" comment="Will be set when speak action is performed (may be delayed by cutscene start)" />
+
+                  <!-- Find monitor data in actor definition, determine if we should start a monitor cutscene -->
+                  <do_for_each name="$actor" in="$UseCaseDef.$actors">
+                    <do_if value="$actor.$name == $ScriptEntry.$actor">
+                      <!-- $monitor data in the actor definition can be disabled on an individual speak with $monitor = false. $monitor is ignored if the speaker is the player. -->
+                      <do_if value="(@$ScriptEntry.$monitor or (@$actor.$monitor and not $ScriptEntry.$monitor?)) and $ScriptEntryActor != player.entity">
+                        <!-- Monitor cutscene should be used only if the actor is talking to the player, or if broadcasting, or if the usecase requests the monitor explicitly -->
+                        <do_if value="Speak.$recipient == player.entity or Speak.$broadcast or @$actor.$monitor.$forceonplayer or @$ScriptEntry.$monitor.$forceonplayer">
+                          <!-- Check distance to player: if speaker is close to the player, do not show them on monitor, just let them speak directly -->
+                          <!-- (Check is enabled by default, can be disabled explicitly by setting $ignoredistance = true) -->
+                          <do_if value="@$actor.$monitor.$ignoredistance or @$ScriptEntry.$monitor.$ignoredistance or not $ScriptEntryActor.isinspeakrange">
+                            <!-- We should use the monitor cutscene! However, possibly the cutscene is already running and we'll just leave it running. -->
+                            <!-- If $forceonplayer was used and recipient was actually somebody else, set recipient to player anyway, since the actor -->
+                            <!-- will be on the monitor and should be audible as if talking to the player -->
+                            <set_value name="Speak.$recipient" exact="player.entity" />
+                            <!-- Determine cutscene key -->
+                            <set_value name="Speak.$cutscenekey" exact="@$ScriptEntry.$monitor.$cutscenekey" />
+                            <do_if value="not (typeof Speak.$cutscenekey).isstring">
+                              <set_value name="Speak.$cutscenekey" exact="@$actor.$monitor.$cutscenekey" />
+                              <do_if value="not (typeof Speak.$cutscenekey).isstring">
+                                <set_value name="Speak.$cutscenekey" exact="$ScriptEntryActor.facecutscene" />
+                                <do_if value="not (typeof Speak.$cutscenekey).isstring">
+                                  <set_value name="Speak.$cutscenekey" exact="'ShowNPCFace'" />
+                                </do_if>
+                              </do_if>
+                            </do_if>
+                            <!-- Change cutscene key in special case (ShowNPCFace and its race variants put a camera into the actual NPC's location - if location should not be shown, switch to ShowCharacter cutscene, which creates an avatar for the cutscene) -->
+                            <do_if value="Speak.$cutscenekey and (Speak.$cutscenekey == 'ShowNPCFace' or Speak.$cutscenekey == $ScriptEntryActor.facecutscene) and ($ScriptEntryActor.ishidden or not @$ScriptEntryActor.room.iswalkable)">
+                              <set_value name="Speak.$cutscenekey" exact="'ShowCharacter'" />
+                            </do_if>
+                            <!-- Determine cutscene caption -->
+                            <set_value name="Speak.$cutscenecaption" exact="if $ScriptEntry.$monitor.$caption? then $ScriptEntry.$monitor.$caption else @$actor.$monitor.$caption" />
+                            <do_if value="Speak.$cutscenecaption and not (typeof Speak.$cutscenecaption).isstring">
+                              <!-- Set default caption if usecase just specifies $caption = true -->
+                              <set_value name="Speak.$cutscenecaption" exact="{10002,22} + {1001,120} + ' ' + $ScriptEntryActor.knownname"/>
+                            </do_if>
+                            <!-- Check if a new monitor cutscene should be started at all -->
+                            <do_if value="@$MonitorCutsceneData.$Started and $MonitorCutsceneData.$Key == Speak.$cutscenekey and $MonitorCutsceneData.$Actor == $ScriptEntryActor and $MonitorCutsceneData.$Caption == Speak.$cutscenecaption">
+                              <!-- Continue using the previously started cutscene that is still active -->
+                              <debug_text text="'[verbose] Matching monitor cutscene was already started, keep using it'" chance="$VerboseDebugChance" />
+                            </do_if>
+                            <do_else>
+                              <!-- Start new cutscene -->
+                              <debug_text text="'[verbose] Starting cutscene to show actor %s [%s] on monitor: key=%s, caption=%s'.[$ScriptEntry.$actor, $ScriptEntryActor, Speak.$cutscenekey, Speak.$cutscenecaption]" chance="$VerboseDebugChance" />
+                              <set_value name="Speak.$startcutscene" exact="true" />
+                            </do_else>
+                          </do_if>
+                          <do_else>
+                            <debug_text text="'[verbose] Not showing actor on monitor because player is in speak range'" chance="$VerboseDebugChance" />
+                          </do_else>
+                        </do_if>
+                      </do_if>
+                      <break />
+                    </do_if>
+                  </do_for_each>
+
+                  <set_value name="$ScriptEntryTasksRemaining.{Speak}" />
+                </do_else>
+              </actions>
+              <patch sinceversion="2" state="complete">
+                <set_value name="$MonitorCutsceneData" exact="null" />
+                <set_value name="Speak.$startcutscene" exact="false" />
+                <set_value name="Speak.$speakstarted" exact="true" />
+              </patch>
+              <patch sinceversion="3" state="complete">
+                <set_value name="Speak.$linewithdelay" exact="Speak.$line" />
+              </patch>
+              <patch sinceversion="4" state="complete">
+                <do_if value="not Speak.$speakemotion?">
+                  <set_value name="Speak.$speakemotion" exact="null"/>
+                </do_if>
+              </patch>
+              <cues>
+                <cue name="SpeakOrWaitForCutsceneStart">
+                  <actions>
+                    <do_if value="Speak.$startcutscene">
+                      <!-- If a cutscene is already running, stop it -->
+                      <run_actions ref="StopMonitorCutscene">
+                        <param name="usecase" value="UseCase" />
+                        <param name="commnoise" value="false" />
+                      </run_actions>
+                      <!-- Start the new cutscene -->
+                      <debug_text text="'[verbose]   Starting targetmonitor cutscene %s'.[Speak.$cutscenekey]" chance="$VerboseDebugChance" />
+                      <play_cutscene key="Speak.$cutscenekey" targetmonitor="true" caption="Speak.$cutscenecaption" result="Speak.$cutsceneid">
+                        <param name="npcref" object="$ScriptEntryActor" />
+                      </play_cutscene>
+                    </do_if>
+                    <do_if value="@Speak.$cutsceneid">
+                      <set_value name="$MonitorCutsceneData" exact="table[
+                                        $ID = Speak.$cutsceneid,
+                                        $Key = Speak.$cutscenekey,
+                                        $Actor = $ScriptEntryActor,
+                                        $Caption = Speak.$cutscenecaption,
+                                        $StoppedCallback = OnSpeakCutsceneStopped,
+                                        $Started = false,
+                                        $Ready = false
+                          ]" />
+                    </do_if>
+                    <do_else>
+                      <!-- No cutscene to wait for, just speak -->
+                      <include_actions ref="DoSpeak" />
+                      <cancel_cue cue="this" />
+                    </do_else>
+                  </actions>
+                  <delay exact="10min" />
+                  <actions>
+                    <!-- Cutscene failure handling after timeout, in case cutscene was not started -->
+                    <debug_text text="'NPC usecase %s step %s: Timeout reached while trying to start cutscene %s \'%s\' - continuing without cutscene'.[$UseCaseDef.$name, $ScriptEntryIndex, $MonitorCutsceneData.$ID, $MonitorCutsceneData.$Key]" chance="$DebugChance" />
+                    <run_actions ref="StopMonitorCutscene">
+                      <param name="usecase" value="UseCase" />
+                    </run_actions>
+                    <include_actions ref="DoSpeak" />
+                    <cancel_cue cue="this" />
+                  </actions>
+                  <cues>
+                    <cue name="OnCutsceneStarted">
+                      <conditions>
+                        <event_cutscene_started cutscene="$MonitorCutsceneData.$ID" />
+                      </conditions>
+                      <actions>
+                        <debug_text text="'[verbose]   Cutscene %s started'.[$MonitorCutsceneData.$ID]" chance="$VerboseDebugChance" />
+                        <set_value name="$MonitorCutsceneData.$Started" exact="true" />
+                        <play_sound sound="'notification_conversationstart'" type="ui" />
+                      </actions>
+                    </cue>
+                    <cue name="OnCutsceneReady">
+                      <conditions>
+                        <event_cutscene_ready cutscene="$MonitorCutsceneData.$ID" />
+                      </conditions>
+                      <actions>
+                        <debug_text text="'[verbose]   Cutscene %s ready'.[$MonitorCutsceneData.$ID]" chance="$VerboseDebugChance" />
+                        <set_value name="$MonitorCutsceneData.$Ready" exact="true" />
+                        <include_actions ref="DoSpeak" />
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+
+                <!-- Callback triggered from OnMonitorCutsceneStopped -->
+                <cue name="OnSpeakCutsceneStopped">
+                  <conditions>
+                    <event_cue_signalled />
+                  </conditions>
+                  <actions>
+                    <debug_text text="'[verbose] Cutscene stopped! $speakstarted=%s'.[Speak.$speakstarted]" chance="$VerboseDebugChance" />
+                    <!-- Make sure that the speak is started even if something goes wrong with the cutscene -->
+                    <include_actions ref="DoSpeak" />
+                    <!-- Cancel the cue above and any remaining sub-cues, to prevent errors accessing $MonitorCutsceneData in case the cutscene was not ready or has not even been started -->
+                    <do_if value="SpeakOrWaitForCutsceneStart.state == cuestate.active">
+                      <cancel_cue cue="SpeakOrWaitForCutsceneStart" />
+                    </do_if>
+                  </actions>
+                </cue>
+
+                <library name="DoSpeak" purpose="include_actions">
+                  <actions>
+                    <do_if value="not Speak.$speakstarted">
+                      <set_value name="Speak.$speakstarted" exact="true" />
+                      <speak actor="Speak.$actor" page="Speak.$page" line="Speak.$linewithdelay" recipient="Speak.$recipient" priority="Speak.$priority"
+                             backgroundcomm="Speak.$backgroundcomm" broadcast="Speak.$broadcast" voiceover="Speak.$voiceover"
+                             emotion="Speak.$speakemotion" timer="@Speak.$timer" interruptontimer="@Speak.$interruptontimer" />
+                    </do_if>
+                  </actions>
+                </library>
+
+                <cue name="OnSpeakFinished">
+                  <conditions>
+                    <check_any>
+                      <check_all>
+                        <event_speak_finished actor="$ScriptEntryActor" page="Speak.$page" line="Speak.$line" />
+                        <check_value value="Speak.$speakstarted" comment="Ignore any finished-event before DoSpeak was performed" />
+                      </check_all>
+                      <!-- Or we should skip waiting for the speak to be finished (it may continue though) -->
+                      <event_cue_signalled cue="SkipRemainingTasks" />
+                    </check_any>
+                  </conditions>
+                  <actions>
+                    <!-- Note: If this task is skipped, the speak can continue. The usecase script can intentionally interrupt the task to let other things happen in parallel. -->
+                    <!-- Just in case the speak was not started yet, start it now (this can only happen when this task gets skipped while we wait for the monitor cutscene to start) -->
+                    <include_actions ref="DoSpeak" />
+                    <!-- Clear callback cue in monitor data if it is in our Speak instance tree (it's about to be cancelled and become invalid) -->
+                    <do_if value="@$MonitorCutsceneData.$StoppedCallback == OnSpeakCutsceneStopped">
+                      <set_value name="$MonitorCutsceneData.$StoppedCallback" exact="null" />
+                    </do_if>
+                    <remove_value name="$ScriptEntryTasksRemaining.{Speak}" />
+                    <cancel_cue cue="Speak" />
+                    <signal_cue cue="ProcessUseCaseScript" />
+                    <!-- Signal callback cue for speak step if requested -->
+                    <do_if value="Speak.$speakcallbackcue? and not @$InterruptSpeak">
+                      <do_if value="@Speak.$speakcallbackcue.exists">
+                        <signal_cue_instantly cue="Speak.$speakcallbackcue" param="@$ScriptEntry.$speakcallbackparam" check="false" />
+                      </do_if>
+                      <do_else>
+                        <debug_text text="'[verbose] $speakcallbackcue does not exist any more'" chance="$VerboseDebugChance" />
+                      </do_else>
+                    </do_if>
+                  </actions>
+                </cue>
+
+                <cue name="SkipSpeakHandler" onfail="cancel">
+                  <conditions>
+                    <check_value value="typeof @Speak.$timer != datatype.null" />
+                    <debug_text text="'[verbose]   Speak timer for %s speak instruction: %s%s'.[
+                                if @Speak.$interruptontimer then 'interrupting' else 'skipping',
+                                if typeof Speak.$timer == datatype.time then (abs((Speak.$timer)f) + ' seconds') else abs((Speak.$timer)f * 100) + ' %',
+                                if Speak.$timer lt 0 then ' before end' else '']" debugchance="$VerboseDebugChance" />
+                    <!-- Below we only handle skipping, not interrupting (interrupted speaks are automatically handled via event_speak_finished) -->
+                    <check_value value="not @Speak.$interruptontimer" />
+                  </conditions>
+                  <cues>
+                    <cue name="OnSkipSpeak">
+                      <conditions>
+                        <event_speak_timer_triggered actor="$ScriptEntryActor" page="Speak.$page" line="Speak.$line" />
+                        <check_value value="Speak.$speakstarted" comment="Ignore any timer-event before DoSpeak was performed" />
+                      </conditions>
+                      <actions>
+                        <debug_text text="'NPC usecase %s step %s: Received speak timer event - skipping remainder of speak and continuing with next step'.[$UseCaseDef.$name, $ScriptEntryIndex]" chance="$DebugChance" />
+                        <signal_cue cue="SkipRemainingTasks" />
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+
+              </cues>
+            </cue>
+
+            <cue name="Walk" instantiate="true">
+              <conditions>
+                <event_cue_signalled />
+              </conditions>
+              <actions>
+                <set_value name="Walk.$controlposition" exact="event.param.{1}" />
+                <set_value name="Walk.$running" exact="event.param.{2}" />
+                <!-- Determine destination slot -->
+                <set_value name="Walk.$location" exact="$ScriptEntryActor.room.slotcontext" />
+                <set_value name="Walk.$destslot" exact="@Walk.$location.controlposition.{Walk.$controlposition}.roomslot" />
+                <set_value name="Walk.$destnpc" exact="@Walk.$location.controlposition.{Walk.$controlposition}.entity" />
+                <do_if value="not Walk.$destslot">
+                  <!-- Invalid walk destination -->
+                  <debug_text text="'NPC usecase %s, actor %s: Invalid walking destination %s, skipping instruction'.[$UseCaseDef.$name, $ScriptEntry.$actor, Walk.$controlposition]" chance="$DebugChance" />
+                  <cancel_cue cue="Walk" />
+                </do_if>
+                <do_elseif value="Walk.$destnpc and Walk.$destnpc != $ScriptEntryActor">
+                  <!-- Slot already in use by another NPC -->
+                  <debug_text text="'NPC usecase %s, actor %s: Destination %s already assigned to %s %s, skipping instruction'.[$UseCaseDef.$name, $ScriptEntry.$actor, Walk.$controlposition, Walk.$destnpc, Walk.$destnpc.knownname]" chance="$DebugChance" />
+                  <cancel_cue cue="Walk" />
+                </do_elseif>
+                <do_elseif value="Walk.$destnpc == $ScriptEntryActor and not $ScriptEntryActor.isintransit and not $ScriptEntryActor.isbusy">
+                  <!-- Actor is already at the destination -->
+                  <debug_text text="'NPC usecase %s, actor %s: Already at destination %s, skipping instruction'.[$UseCaseDef.$name, $ScriptEntry.$actor, Walk.$controlposition]" chance="$DebugChance" />
+                  <cancel_cue cue="Walk" />
+                </do_elseif>
+                <do_else>
+                  <debug_text text="'NPC usecase %s, actor %s: Starting movement to room slot %s (%s)'.[$UseCaseDef.$name, $ScriptEntry.$actor, Walk.$destslot, Walk.$controlposition]" chance="$DebugChance" />
+                  <set_value name="$ScriptEntryTasksRemaining.{Walk}" />
+                  <!-- TODO: Pass running flag / run speed -->
+                  <signal_objects object="$ScriptEntryActor" param="'npc_to_post'" param2="table[ $NPCSlot = Walk.$destslot ]" />
+                  <!--TODO @Owen - the slot is not yet reserved! Figure out how to do this well.-->
+                </do_else>
+              </actions>
+              <cues>
+                <!-- TODO: Replace this workaround, there should be a proper event in OnWalkFinished -->
+                <cue name="CheckWalkFinished" checkinterval="1s">
+                  <conditions>
+                    <check_any>
+                      <check_value value="$ScriptEntryActor.roomslot == Walk.$destslot and not $ScriptEntryActor.isintransit and not $ScriptEntryActor.isbusy" />
+                      <check_age min="Walk.time + 20s" comment="Prevent getting stuck forever" />
+                    </check_any>
+                  </conditions>
+                </cue>
+                <cue name="OnWalkFinished">
+                  <conditions>
+                    <check_any>
+                      <event_cue_completed cue="CheckWalkFinished" />
+                      <event_cue_signalled cue="SkipRemainingTasks" />
+                    </check_any>
+                  </conditions>
+                  <actions>
+                    <remove_value name="$ScriptEntryTasksRemaining.{Walk}" />
+                    <cancel_cue cue="Walk" />
+                    <signal_cue cue="ProcessUseCaseScript" />
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <!-- Signalled to skip all remaining tasks for current script entry after a delay, or even abort the usecase
+            (but this is not an actual task, so the processing cue doesn't have to wait for the $skipafter delay itself) -->
+            <cue name="SkipAfterDelay" instantiate="true">
+              <conditions>
+                <event_cue_signalled />
+              </conditions>
+              <actions>
+                <set_value name="SkipAfterDelay.$curindex" exact="$ScriptEntryIndex" />
+                <set_value name="SkipAfterDelay.$delaytime" exact="event.param.{1}" />
+                <set_value name="SkipAfterDelay.$abort" exact="event.param.{2}" />
+              </actions>
+              <cues>
+                <cue name="DoDelayAndSkip">
+                  <delay exact="SkipAfterDelay.$delaytime" />
+                  <actions>
+                    <!-- Only skip remaining tasks if the script processing hasn't already moved on in the meantime -->
+                    <do_if value="SkipAfterDelay.$curindex" exact="$ScriptEntryIndex">
+                      <do_if value="SkipAfterDelay.$abort">
+                        <debug_text text="'NPC usecase %s step %s timeout reached - aborting'.[$UseCaseDef.$name, $ScriptEntryIndex]" chance="$DebugChance" />
+                        <set_value name="$InterruptSpeak" />
+                        <signal_cue_instantly cue="UseCase" param="'cleanup'" />
+                      </do_if>
+                      <do_else>
+                        <debug_text text="'NPC usecase %s step %s timeout reached - continuing with next step'.[$UseCaseDef.$name, $ScriptEntryIndex]" chance="$DebugChance" />
+                        <signal_cue cue="SkipRemainingTasks" />
+                      </do_else>
+                    </do_if>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <!-- Cue to be signalled when remaining tasks should be skipped (listeners for the event are elsewhere) -->
+            <cue name="SkipRemainingTasks" instantiate="true">
+              <conditions>
+                <!-- Use event condition just to keep cue alive within the UseCase instance tree -->
+                <event_cue_signalled />
+                <check_value value="false" comment="Optimisation, no need to instantiate" />
+              </conditions>
+            </cue>
+
+            <!-- ===== Abort triggers ===== -->
+
+            <library name="StopMonitorCutscene" purpose="run_actions">
+              <params>
+                <param name="usecase" />
+                <param name="commnoise" default="true" />
+                <param name="allowcallback" default="true" />
+              </params>
+              <actions>
+                <do_if value="$usecase.$MonitorCutsceneData">
+                  <stop_cutscene cutscene="$usecase.$MonitorCutsceneData.$ID" />
+                  <!-- Play comm noise for logging off, unless we are just changing cutscene to a different speaker -->
+                  <do_if value="$commnoise">
+                    <play_sound sound="'comm_incoming_off'" type="ui" />
+                  </do_if>
+                  <do_if value="$allowcallback and $usecase.$MonitorCutsceneData.$StoppedCallback">
+                    <signal_cue cue="$usecase.$MonitorCutsceneData.$StoppedCallback" />
+                  </do_if>
+                  <set_value name="$usecase.$MonitorCutsceneData" exact="null" />
+                </do_if>
+              </actions>
+            </library>
+
+            <cue name="OnMonitorCutsceneStopped" instantiate="true">
+              <conditions>
+                <event_cutscene_stopped />
+                <check_value value="$MonitorCutsceneData and event.param2 == $MonitorCutsceneData.$ID" />
+              </conditions>
+              <actions>
+                <debug_text text="'[verbose] Cutscene %s (key=%s) was stopped during NPC usecase %s!'.[$MonitorCutsceneData.$ID, $MonitorCutsceneData.$Key, $UseCaseDef.$name]" chance="$VerboseDebugChance" />
+                <do_if value="$MonitorCutsceneData.$StoppedCallback">
+                  <signal_cue cue="$MonitorCutsceneData.$StoppedCallback" />
+                </do_if>
+                <set_value name="$MonitorCutsceneData" exact="null" />
+              </actions>
+            </cue>
+
+            <!-- Handle a usecase actor getting killed (abort in case of active actor, clean up and continue in case of passive actor) -->
+            <cue name="AbortedByKilledActor" instantiate="true">
+              <conditions>
+                <event_object_destroyed group="$ActorGroup" />
+              </conditions>
+              <actions>
+                <debug_text text="'Actor %s of NPC usecase %s was killed'.[event.object, $UseCaseDef.$name]" chance="$DebugChance" />
+                <do_if value="$ActiveActorGroup.indexof.{event.object} or $ScriptEntryActor == event.object">
+                  <signal_cue_instantly cue="UseCase" param="'cleanup'" />
+                </do_if>
+                <do_else>
+                  <!-- Remove actor from usecase and continue without it -->
+                  <do_for_each name="$actorkey" valuename="$actor" in="$Actors">
+                    <do_if value="$actor" exact="event.object">
+                      <remove_value name="$Actors.{$actorkey}" />
+                      <!-- Don't break because actor could be assigned multiple times with $allow_duplicate_actor -->
+                    </do_if>
+                  </do_for_each>
+                  <remove_value name="$ActorLookat.{event.object}" />
+                </do_else>
+              </actions>
+            </cue>
+
+            <!-- Abort if conversation is started with one of the active usecase actors -->
+            <cue name="AbortedByConversation">
+              <conditions>
+                <event_conversation_started />
+                <check_any>
+                  <check_all>
+                    <check_value value="$ActiveActorGroup.indexof.{event.object}" />
+                    <debug_text text="'Conversation started with actor %s of NPC usecase %s'.[event.object, $UseCaseDef.$name]" debugchance="$DebugChance" />
+                  </check_all>
+                  <check_all>
+                    <check_value value="$MonitorCutsceneData" />
+                    <debug_text text="'Conversation started while monitor cutscene %s with actor %s was active'.[$MonitorCutsceneData.$Key, $MonitorCutsceneData.$Actor]" debugchance="$DebugChance" />
+                  </check_all>
+                </check_any>
+              </conditions>
+              <actions>
+                <signal_cue_instantly cue="UseCase" param="'cleanup'" />
+              </actions>
+            </cue>
+
+            <cue name="CheckAbortOnSignalledCue" onfail="cancel">
+              <conditions>
+                <check_value value="typeof @$TriggerParam.$abortonsignalledcue == datatype.cue" />
+              </conditions>
+              <cues>
+                <cue name="AbortedOnSignalledCue">
+                  <conditions>
+                    <event_cue_signalled cue="$TriggerParam.$abortonsignalledcue" />
+                  </conditions>
+                  <actions>
+                    <debug_text text="'Abort-cue for NPC usecase %s was signalled'.[$UseCaseDef.$name]" chance="$DebugChance" />
+                    <set_value name="$InterruptSpeak" />
+                    <signal_cue_instantly cue="UseCase" param="'cleanup'" />
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <!-- ===== Cleanup ===== -->
+
+            <cue name="Cleanup">
+              <conditions>
+                <!-- NOTE: At this point UseCase is the instance, not the instantiating cue -->
+                <event_cue_signalled cue="UseCase" />
+                <check_value value="event.param" exact="'cleanup'" />
+              </conditions>
+              <actions>
+                <debug_text text="'Cleaning up NPC usecase %s'.[$UseCaseDef.$name]" chance="$DebugChance" />
+                <set_value name="$ScriptEntryTasksRemaining.{Cleanup}" comment="Just to prevent ProcessUseCaseScript from running again" />
+                <do_if value="not $Error">
+                  <!-- Do these cleanup tasks only if usecase was actually started -->
+                  <do_for_each name="$actor" in="$ActorGroup">
+                    <do_if value="$actor.isclass.npc">
+                      <do_if value="not @$TriggerParam.$keeplookat">
+                        <clear_actor_lookat actor="$actor" />
+                      </do_if>
+                      <do_if value="not @$TriggerParam.$keepemotion">
+                        <clear_actor_emotion actor="$actor" />
+                      </do_if>
+                    </do_if>
+                  </do_for_each>
+                  <do_if value="@$InterruptSpeak">
+                    <!-- Usecase is being aborted with the request to interrupt the current speak -->
+                    <do_for_each name="$taskcue" in="$ScriptEntryTasksRemaining">
+                      <do_if value="$taskcue.staticbase == md.NPC_UseCases.Speak and $taskcue.$speakstarted">
+                        <!-- NOTE: This will remove $taskcue from $ScriptEntryTasksRemaining via <event_speak_finished>, which is fine -->
+                        <debug_text text="'[verbose] Interrupting speak of actor %s %s'.[$taskcue.$actor, $taskcue.$actor.knownname]" chance="$VerboseDebugChance" />
+                        <interrupt_speak actor="$taskcue.$actor" priority="$taskcue.$priority" />
+                      </do_if>
+                    </do_for_each>
+                  </do_if>
+                  <!-- Stop cutscene without callback -->
+                  <run_actions ref="StopMonitorCutscene">
+                    <param name="usecase" value="UseCase" />
+                    <param name="allowcallback" value="false" />
+                  </run_actions>
+                  <!-- Re-enable conversations with usecase actors that were temporarily disabled -->
+                  <do_for_each name="$actordef" in="$UseCaseDef.$actors">
+                    <do_if value="@$Actors.{$actordef.$name}.isclass.[class.npc, class.computer]">
+                      <do_if value="if $actordef.$disable_interaction? then $actordef.$disable_interaction else if $TriggerParam.$disable_actor_interaction? then $TriggerParam.$disable_actor_interaction else @$UseCaseDef.$disable_actor_interaction">
+                        <debug_text text="'[verbose] Re-enabling conversations for %s'.[$Actors.{$actordef.$name}.debugname]" chance="$VerboseDebugChance"/>
+                        <do_if value="@$Actors.{$actordef.$name}.$comm_disabled_counter gt 1">
+                          <set_value name="$Actors.{$actordef.$name}.$comm_disabled_counter" operation="subtract"/>
+                        </do_if>
+                        <do_else>
+                          <remove_value name="$Actors.{$actordef.$name}.$comm_disabled_counter" />
+                        </do_else>
+                      </do_if>
+                    </do_if>
+                  </do_for_each>
+
+                  <!-- TODO: Reset other temporary states (NPC state machine states, reserved slots?) -->
+                </do_if>
+                <!-- Unregister UseCase instance cue -->
+                <remove_from_list name="UseCaseManager.$ActiveUseCases" exact="UseCase" />
+                <!-- If this usecase is in the queue, remove from queue, otherwise (if an active usecase was finished/aborted) wake up queued usecases -->
+                <do_if value="$Queued">
+                  <remove_from_list name="UseCaseManager.$QueuedUseCases" exact="UseCase" />
+                </do_if>
+                <do_elseif value="UseCaseManager.$QueuedUseCases.count">
+                  <signal_cue cue="CheckQueuedUseCases" />
+                </do_elseif>
+                <!-- Clean up usecase instance -->
+                <cancel_cue cue="UseCase" />
+                <!-- Signal callback cue if requested -->
+                <do_if value="not $Error and ($ScriptEntryIndex gt @$ScriptEntries.count)">
+                  <!-- Completed -->
+                  <do_if value="@$TriggerParam.$callbackcue">
+                    <do_if value="$TriggerParam.$callbackcue.exists">
+                      <signal_cue_instantly cue="$TriggerParam.$callbackcue" param="@$TriggerParam.$callbackparam" check="false" />
+                    </do_if>
+                    <do_else>
+                      <debug_text text="'[verbose] $callbackcue does not exist any more'" chance="$VerboseDebugChance" />
+                    </do_else>
+                  </do_if>
+                </do_if>
+                <do_else>
+                  <!-- Aborted -->
+                  <do_if value="@$TriggerParam.$abortcallbackcue">
+                    <do_if value="$TriggerParam.$abortcallbackcue.exists">
+                      <signal_cue_instantly cue="$TriggerParam.$abortcallbackcue" param="@$TriggerParam.$abortcallbackparam" check="false" />
+                    </do_if>
+                    <do_else>
+                      <debug_text text="'[verbose] $abortcallbackcue does not exist any more'" chance="$VerboseDebugChance" />
+                    </do_else>
+                  </do_if>
+                </do_else>
+              </actions>
+            </cue>
+
+          </cues>
+          <!-- End of UseCase cue -->
+        </cue>
+
+      </cues>
+    </cue>
+
+    <!-- Special usecase triggers that are not integrated in other scripts -->
+    <cue name="Triggers">
+      <conditions>
+        <event_cue_signalled cue="md.Setup.Start" />
+      </conditions>
+      <cues>
+
+        <cue name="OnShipInDistress" instantiate="true" namespace="this">
+          <conditions>
+            <event_object_signalled object="player.galaxy" param="'ship_in_distress'"/>
+            <!-- param2="defending ship" param3="attacking ship" -->
+            <check_value value="event.param2.attention" min="attention.visible" />
+            <check_value value="@event.param2.pilot.controlled == event.param2" />
+            <check_value value="player.room.isclass.cockpit" />
+            <check_value value="not @global.$SuppressCommChatter" comment="Comm chatter not suppressed by a mission" />
+          </conditions>
+          <actions>
+            <do_if value="event.param2.isclass.[class.ship_m, class.ship_l, class.ship_xl]">
+              <signal_cue_instantly cue="UseCase" param="table[ $name = '$Combat_Large_Attacked_CallingForHelp', $actors = table[ $Captain = event.param2.pilot ] ]" />
+            </do_if>
+            <do_else>
+              <signal_cue_instantly cue="UseCase" param="table[ $name = '$Combat_Small_Attacked_CallingForHelp', $actors = table[ $Attacked = event.param2.pilot ] ]" />
+            </do_else>
+          </actions>
+        </cue>
+
+        <cue name="OnPlayerShipFriendlyFire" instantiate="true" namespace="this">
+          <conditions>
+            <event_object_attacked group="global.$PlayerOccupiedShipGroup" />
+            <check_value value="@event.param.pilot.isclass.npc and event.param.pilot.page" />
+            <check_value value="not event.param.hasrelation.enemy.{faction.player}" />
+            <check_value value="not @global.$SuppressCommChatter" comment="Comm chatter not suppressed by a mission" />
+          </conditions>
+          <actions>
+            <!-- Make the attacker apologise (complaint by attacked pilot is skipped because it's the player) -->
+            <signal_cue_instantly cue="UseCase" param="table[ $name = '$Combat_Small_Attacked_FriendlyFire', $actors = table[ $Attacked = player.entity, $Attacker = event.param.pilot ], $priority = 30 ]"/>
+          </actions>
+        </cue>
+
+        <cue name="PlayerShipShieldDown" instantiate="true">
+          <conditions>
+            <event_object_shield_damaged group="global.$PlayerShipsGroup" comment="could also check for global.$PlayerContainerGroup"/>
+            <check_value value="event.object.isclass.ship"/>
+            <check_value value="event.object.shield le 0"/>
+            <check_value value="event.object.isoperational"/>
+            <check_value value="not @global.$SuppressCommChatter" comment="Comm chatter not suppressed by a mission" />
+          </conditions>
+          <actions>
+            <signal_cue_instantly cue="md.NPC_UseCases.UseCase" param="table[ $name = '$Combat_Large_Attacked_ReportShieldsDown', $locations = table[ $AttackedLocation = event.object.controlroom.slotcontext ] ]"/>
+          </actions>
+        </cue>
+
+      </cues>
+    </cue>
+
+
+  </cues>
+</mdscript>
