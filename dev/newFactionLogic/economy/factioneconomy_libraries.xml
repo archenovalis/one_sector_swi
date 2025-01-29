@@ -81,5 +81,448 @@
       </actions>
     </library>
 
+    <!--Library to check if running actions should be disregarded or escalated-->
+    <library name="CheckRunningActions" purpose="run_actions">
+      <params>
+        <param name="Faction" />
+        <param name="ActionReports" comment="Action reports table to process" />
+        <param name="DisregardedActions" comment="List to populate with disregarded actions" />
+        <param name="EscalatedActions" comment="List to populate with escalated actions" />
+        <param name="Remove_Factory_Cue" default="null" comment="Static cue to signal for an escalating RemoveFactory action" />
+        <param name="DebugChance" default="0" />
+      </params>
+      <actions>
+        <set_value name="$Request_Commandeerable_Freighter_Release_Time" exact="90min" comment="Time after which the ship will be released" />
+
+        <set_value name="$Request_Freighter_Spawn_Wait_Time" exact="20min" comment="Time to allow the freighter to start being placed in a shipyard" />
+        <set_value name="$Request_Freighter_Build_Wait_Time" exact="1h" comment="Fallback time to allow the freighter to be built by the shipyard after spawning.
+                                                                                         Spawning usually only happens when all resources are present and building can start." />
+
+        <set_value name="$Request_Pri_Freighter_Spawn_Wait_Time" exact="30min" comment="Time to allow the freighter to start being placed in a shipyard" />
+        <set_value name="$Request_Pri_Freighter_Build_Wait_Time" exact="1h" comment="Fallback time to allow the freighter to be built by the shipyard after spawning.
+                                                                                             Spawning usually only happens when all resources are present and building can start." />
+
+        <set_value name="$Dismantle_Station_Timeout" exact="12h" comment="Time after which to consider dismantling a station if all productions are paused" />
+        <set_value name="$Pause_Production_Timeout" exact="24h" comment="Time to monitor a paused production" />
+
+        <set_value name="$Request_Production_Build_Wait_Time" exact="5h" comment="Time to allow the building to start" />
+        <set_value name="$Request_Production_Build_Timeout" exact="5h" comment="Time to allow the build to progress before disregarding" />
+        <set_value name="$Request_Production_Working_Timeout" exact="5h" comment="Time to allow the factory to work before disregarding" />
+
+        <set_value name="$Request_Factory_Build_Wait_Time" exact="15h" comment="Time to allow the building to start, where any module is operational or buildmodule is building" />
+        <set_value name="$Request_Factory_Build_Timeout" exact="10h" comment="Time to allow the build to progress before disregarding" />
+        <set_value name="$Request_Factory_Working_Timeout" exact="5h" comment="Time to allow the factory to work before disregarding" />
+
+        <do_for_each valuename="$ActionReportList" in="$ActionReports">
+          <do_for_each name="$ActionReport" in="$ActionReportList" counter="$ARL_i" reverse="true">
+            <set_value name="$DisregardAction" exact="false" />
+            <set_value name="$DisregardReason" exact="'UNKNOWN'" chance="$DebugChance" />
+            <set_value name="$DisregardObject" exact="null" />
+            <set_value name="$DisregardParam" exact="null" />
+
+            <set_value name="$ActionReportDef" exact="$ActionReport.$ActionDef" />
+
+            <!--CHECK REQUEST_COMMANDEERABLE_FREIGHTER and REQUEST_PRIO_COMMANDEERABLE_FREIGHTER ACTIONS-->
+            <do_if value="$ActionReportDef.$Type == '$request_commandeerable_freighter' or $ActionReportDef.$Type == '$request_prio_commandeerable_freighter'">
+              <set_value name="$CommandeeredShip" exact="$ActionReportDef.$Ship" />
+              <do_if value="$CommandeeredShip.isoperational and $CommandeeredShip.isjobship and not @$ActionReportDef.$Disregard" comment="$ActionReportDef.$Disregard can be set in the action handler itself">
+                <!--Ship is still an existing job ship-->
+                <do_if value="player.age ge $ActionReportDef.$CommandeerTime + $Request_Commandeerable_Freighter_Release_Time">
+                  <!--Ship is no longer a requested ship. Disregard action report-->
+                  <set_value name="$DisregardAction" exact="true" />
+                  <set_value name="$DisregardReason" exact="'Ship is to be released as a commandeered freighter'" chance="$DebugChance" />
+                  <set_value name="$DisregardObject" exact="$CommandeeredShip" />
+                </do_if>
+              </do_if>
+              <do_else>
+                <!--Ship is no longer a requested ship. Disregard action report-->
+                <set_value name="$DisregardAction" exact="true" />
+                <set_value name="$DisregardReason" exact="'Ship is no longer a suitable job ship'" chance="$DebugChance" />
+                <set_value name="$DisregardObject" exact="$CommandeeredShip" />
+              </do_else>
+              <remove_value name="$CommandeeredShip" />
+            </do_if>
+
+            <!--CHECK REQUEST_FREIGHTER ACTION-->
+            <do_elseif value="$ActionReportDef.$Type == '$request_freighter'">
+              <set_value name="$RequestedShip" exact="$ActionReportDef.$Ship" />
+              <do_if value="($RequestedShip.exists or @$RequestedShip.state == componentstate.operational) and $RequestedShip.isrequestedjobship">
+                <!--Ship is still an existing requested job ship or is an operational ship waiting to be built somewhere-->
+                <!--TODO @Owen - parameters for things such as how long to wait for requested ships-->
+                <do_if value="not $RequestedShip.exists and not $RequestedShip.build">
+                  <do_if value="$ActionReport.$StartTime lt player.age - $Request_Freighter_Spawn_Wait_Time">
+                    <!--DISREGARD-->
+                    <!--However, the ship still does not exist and it was requested some time ago. Kill and try something else-->
+                    <destroy_object object="$RequestedShip" />
+                    <set_value name="$DisregardAction" exact="true" />
+                    <set_value name="$DisregardReason" exact="'Time elapsed and it never existed'" chance="$DebugChance" />
+                  </do_if>
+                </do_if>
+                <do_elseif value="$RequestedShip.isoperational">
+                  <!--TODO @Owen, check if actually doing something. Any trade runs?-->
+                  <!--<do_elseif value="$ActionReportDef.$LaunchTime lt xxxxs and the situation is around the same or worse">
+                          try another freighter or a more drastic measure?
+                          </do_elseif>-->
+                </do_elseif>
+                <do_elseif value="$RequestedShip.isconstruction">
+                  <do_if value="@$ActionReportDef.$SpawnTime lt player.age - $Request_Freighter_Build_Wait_Time">
+                    <!--DISREGARD-->
+                    <!--Ship has not been built yet-->
+                    <!--TODO @Owen. Check state of the build. Is it close to finishing? Allow a bit more time?-->
+                    <!--TODO @Owen Recycle-->
+                    <destroy_object object="$RequestedShip" />
+                    <set_value name="$DisregardAction" exact="true" />
+                    <set_value name="$DisregardReason" exact="'Ship took too long to finish building'" chance="$DebugChance" />
+                  </do_if>
+                </do_elseif>
+                <do_elseif value="$RequestedShip.iswreck">
+                  <!--DISREGARD-->
+                  <!--Requested job ship is destroyed-->
+                  <set_value name="$DisregardAction" exact="true" />
+                  <set_value name="$DisregardReason" exact="'Ship is destroyed.'" chance="$DebugChance" />
+                  <set_value name="$DisregardObject" exact="$RequestedShip" />
+                </do_elseif>
+              </do_if>
+              <do_else>
+                <!--Ship is no longer a requested ship. Disregard action report-->
+                <set_value name="$DisregardAction" exact="true" />
+                <set_value name="$DisregardReason" exact="'Ship is no longer a requested job ship'" chance="$DebugChance" />
+                <set_value name="$DisregardObject" exact="$RequestedShip" />
+              </do_else>
+              <remove_value name="$RequestedShip" />
+            </do_elseif>
+
+            <!--CHECK REQUEST_PRIORITY_FREIGHTER ACTION-->
+            <do_elseif value="$ActionReportDef.$Type == '$request_priority_freighter'">
+              <set_value name="$RequestedShip" exact="$ActionReportDef.$Ship" />
+              <do_if value="($RequestedShip.exists or @$RequestedShip.state == componentstate.operational) and $RequestedShip.isrequestedjobship">
+                <!--Ship is still an existing requested job ship or is an operational ship waiting to be built somewhere-->
+                <!--TODO @Owen - parameters for things such as how long to wait for requested ships-->
+                <do_if value="not $RequestedShip.exists and not $RequestedShip.build">
+                  <do_if value="$ActionReport.$StartTime lt player.age - $Request_Pri_Freighter_Spawn_Wait_Time">
+                    <!--DISREGARD-->
+                    <!--However, the ship still does not exist and it was requested some time ago. Kill and try something else-->
+                    <destroy_object object="$RequestedShip" />
+                    <set_value name="$DisregardAction" exact="true" />
+                    <set_value name="$DisregardReason" exact="'Time elapsed and it never existed'" chance="$DebugChance" />
+                  </do_if>
+                </do_if>
+                <do_elseif value="$RequestedShip.isoperational">
+                  <!--TODO @Owen, check if actually doing something. Any trade runs?-->
+                  <!--<do_elseif value="$ActionReportDef.$LaunchTime lt xxxxs and the situation is around the same or worse">
+                          try another freighter or a more drastic measure?
+                          </do_elseif>-->
+                </do_elseif>
+                <do_elseif value="$RequestedShip.isconstruction">
+                  <do_if value="@$ActionReportDef.$SpawnTime lt player.age - $Request_Pri_Freighter_Build_Wait_Time">
+                    <!--DISREGARD-->
+                    <!--Ship has not been built yet-->
+                    <!--TODO @Owen. Check state of the build. Is it close to finishing? Allow a bit more time?-->
+                    <!--TODO @Owen Recycle-->
+                    <destroy_object object="$RequestedShip" />
+                    <set_value name="$DisregardAction" exact="true" />
+                    <set_value name="$DisregardReason" exact="'Ship took too long to finish building'" chance="$DebugChance" />
+                  </do_if>
+                </do_elseif>
+                <do_elseif value="$RequestedShip.iswreck">
+                  <!--DISREGARD-->
+                  <!--Requested job ship is destroyed-->
+                  <set_value name="$DisregardAction" exact="true" />
+                  <set_value name="$DisregardReason" exact="'Ship is destroyed.'" chance="$DebugChance" />
+                  <set_value name="$DisregardObject" exact="$RequestedShip" />
+                </do_elseif>
+              </do_if>
+              <do_else>
+                <set_value name="$DisregardAction" exact="true" />
+                <set_value name="$DisregardReason" exact="'Ship is no longer a requested job ship'" chance="$DebugChance" />
+                <set_value name="$DisregardObject" exact="$RequestedShip" />
+              </do_else>
+              <remove_value name="$RequestedShip" />
+            </do_elseif>
+
+            <!--CHECK PAUSE_PRODUCTION ACTION-->
+            <do_elseif value="$ActionReportDef.$Type == '$pause_production'">
+              <set_value name="$Station" exact="$ActionReportDef.$Station" />
+              <do_if value="not $Station.exists">
+                <!--DISREGARD-->
+                <!--The station no longer exists-->
+                <set_value name="$DisregardAction" exact="true" />
+                <set_value name="$DisregardReason" exact="'Station no longer exists'" chance="$DebugChance" />
+              </do_if>
+              <do_elseif value="not $ActionReportDef.$PauseModule.isoperational">
+                <!--DISREGARD-->
+                <!--Paused production is no longer operational-->
+                <set_value name="$DisregardAction" exact="true" />
+                <set_value name="$DisregardReason" exact="'Paused production module is no longer operational'" chance="$DebugChance" />
+                <set_value name="$DisregardObject" exact="$Station" />
+                <set_value name="$DisregardParam" exact="$ActionReportDef.$PauseModule" />
+              </do_elseif>
+              <do_elseif value="not $ActionReportDef.$PauseModule.ispausedmanually">
+                <!--DISREGARD-->
+                <!--Production is no longer paused-->
+                <set_value name="$DisregardAction" exact="true" />
+                <set_value name="$DisregardReason" exact="'Production module is no longer paused'" chance="$DebugChance" />
+                <set_value name="$DisregardObject" exact="$Station" />
+                <set_value name="$DisregardParam" exact="$ActionReportDef.$PauseModule" />
+              </do_elseif>
+              <do_else>
+                <!--Production paused - if the station is already ownerless it'll be dismantled soon, so ignore -->
+                <do_if value="$Faction.isactive and $Remove_Factory_Cue and not $Station.isownerless and ($ActionReportDef.$PauseTime lt (player.age - $Dismantle_Station_Timeout))">
+                  <!-- productions have been paused for a long time, try to dismantle station -->
+                  <set_value name="$NewActionDef" exact="table[]" />
+                  <set_value name="$NewActionDef.$Type" exact="'$remove_factory'" />
+                  <set_value name="$Sector" exact="$Station.sector" />
+                  <signal_cue_instantly cue="$Remove_Factory_Cue" param="[$NewActionDef, $Sector, null, $Station]" />
+                  <do_if value="$NewActionDef.$Station?">
+                    <set_value name="$NewActionDef.$Sector" exact="$Sector" />
+                    <set_value name="$NewAction" exact="table[]" />
+                    <set_value name="$NewAction.$ActionDef" exact="$NewActionDef" />
+                    <set_value name="$NewAction.$StartTime" exact="player.age" />
+                    <set_value name="$NewAction.$Sector" exact="$Sector" />
+                    <set_value name="$NewAction.$Ware" exact="$ActionReport.$Ware" />
+                    <set_value name="$NewAction.$AggregatedValue" exact="$ActionReport.$AggregatedValue" />
+                    <append_to_list name="$EscalatedActions" exact="$NewAction" />
+                    <!-- we are escalating -->
+                    <set_value name="$DisregardAction" exact="true" />
+                    <set_value name="$DisregardReason" exact="'Factory %1 (%2, %3) has been scheduled for deconstruction, beginning evacuation.'.[$Station.knownname, $Station, $Station.idcode]" chance="$DebugChance" />
+                    <set_value name="$DisregardObject" exact="$Station" />
+                    <set_value name="$DisregardParam" exact="$ActionReportDef.$PauseModule" />
+                  </do_if>
+                </do_if>
+                <do_if value="not $DisregardAction and $ActionReportDef.$PauseTime lt (player.age - $Pause_Production_Timeout)">
+                  <!--DISREGARD-->
+                  <!--Production has been paused for some time and we cannot dismantle the factory, disregard the action which will lead it to resume production. -->
+                  <set_value name="$DisregardAction" exact="true" />
+                  <set_value name="$DisregardReason" exact="'Factory has had paused production %1 (%2) for %3'.[$ActionReportDef.$PauseModule.knownname, $ActionReportDef.$PauseModule, $Pause_Production_Timeout]" chance="$DebugChance" />
+                  <set_value name="$DisregardObject" exact="$Station" />
+                  <set_value name="$DisregardParam" exact="$ActionReportDef.$PauseModule" />
+                  <debug_text filter="economy_verbose" text="'#FLE#;%1;UnpauseProduction_Timeout;%2;%3;%4;%5;%6;%7'.[player.age, $Station.knownname, $Station, $Station.idcode, $Station.sector.knownname, $Faction.id, $ActionReport.$Ware, '', '']" context="false" />
+                </do_if>
+              </do_else>
+              <remove_value name="$Station" />
+            </do_elseif>
+
+            <!--CHECK REQUEST_PRODUCTION ACTION-->
+            <do_elseif value="$ActionReportDef.$Type == '$request_production'">
+              <set_value name="$Station" exact="$ActionReportDef.$Station" />
+              <do_if value="not $Station.exists">
+                <!--DISREGARD-->
+                <!--The station no longer exists-->
+                <set_value name="$DisregardAction" exact="true" />
+                <set_value name="$DisregardReason" exact="'Station no longer exists'" chance="$DebugChance" />
+              </do_if>
+              <do_elseif value="@$ActionReportDef.$BuiltTime">
+                <!--All productions were finished-->
+                <!--TODO @Owen check if the factory is actually producing?-->
+                <do_if value="$ActionReportDef.$BuiltTime lt player.age - $Request_Production_Working_Timeout">
+                  <!--DISREGARD-->
+                  <!--Productions have been complete for some time.-->
+                  <set_value name="$DisregardAction" exact="true" />
+                  <set_value name="$DisregardReason" exact="'Factory has had the new productions for ' + $Request_Production_Working_Timeout" chance="$DebugChance" />
+                  <set_value name="$DisregardObject" exact="$Station" />
+                </do_if>
+              </do_elseif>
+              <do_elseif value="@$ActionReportDef.$StartBuildTime or @$ActionReportDef.$LastBuildTime">
+                <!--Some module has begun construction-->
+                <do_if value="[$ActionReportDef.$StartBuildTime, @$ActionReportDef.$LastBuildTime].max lt player.age - $Request_Production_Build_Timeout">
+                  <!--DISREGARD-->
+                  <!--Factory has been expanding for a long time.-->
+                  <set_value name="$DisregardAction" exact="true" />
+                  <set_value name="$DisregardReason" exact="'Factory has been expanding for ' + $Request_Production_Build_Timeout" chance="$DebugChance" />
+                  <set_value name="$DisregardObject" exact="$Station" />
+                </do_if>
+              </do_elseif>
+              <do_else>
+                <!--Building has not started yet-->
+                <do_if value="$ActionReport.$StartTime lt player.age - $Request_Production_Build_Wait_Time">
+                  <!--DISREGARD-->
+                  <!--Construction has not started on the factory for a long time.-->
+                  <set_value name="$DisregardAction" exact="true" />
+                  <set_value name="$DisregardReason" exact="'Expansion has not started on factory for' + $Request_Production_Build_Wait_Time" chance="$DebugChance" />
+                  <set_value name="$DisregardObject" exact="$Station" />
+                </do_if>
+              </do_else>
+              <remove_value name="$Station" />
+            </do_elseif>
+            <!--CHECK REQUEST_FACTORY ACTION-->
+            <do_elseif value="$ActionReportDef.$Type == '$request_factory'">
+              <set_value name="$Station" exact="$ActionReportDef.$Station" />
+              <do_if value="not $Station.exists or $Station.iswreck">
+                <!--DISREGARD-->
+                <!--The module did exist, but no longer-->
+                <set_value name="$DisregardAction" exact="true" />
+                <set_value name="$DisregardReason" exact="'Station no longer exists'" chance="$DebugChance" />
+              </do_if>
+              <do_elseif value="@$ActionReportDef.$UnpausedProduction">
+                <!--The request to construct a factory resulted in unpausing a module-->
+                <do_if value="$ActionReportDef.$BuiltTime lt player.age - $Request_Factory_Working_Timeout">
+                  <!--DISREGARD-->
+                  <!--Module was been unpaused for a while-->
+                  <set_value name="$DisregardAction" exact="true" />
+                  <set_value name="$DisregardReason" exact="'Unpaused module has been working for ' + $Request_Factory_Working_Timeout" chance="$DebugChance" />
+                  <set_value name="$DisregardObject" exact="$Station" />
+                </do_if>
+              </do_elseif>
+              <do_elseif value="@$ActionReportDef.$BuiltTime">
+                <!--Build has finished-->
+                <!--TODO @Owen check if the factory is actually producing?-->
+                <do_if value="$ActionReportDef.$BuiltTime lt player.age - $Request_Factory_Working_Timeout">
+                  <!--DISREGARD-->
+                  <!--Factory has been complete for some time.-->
+                  <set_value name="$DisregardAction" exact="true" />
+                  <set_value name="$DisregardReason" exact="'Factory has been working for ' + $Request_Factory_Working_Timeout" chance="$DebugChance" />
+                  <set_value name="$DisregardObject" exact="$Station" />
+                </do_if>
+              </do_elseif>
+              <do_elseif value="@$ActionReportDef.$StartBuildTime">
+                <!--Build has started-->
+                <do_if value="$ActionReportDef.$StartBuildTime lt player.age - $Request_Factory_Build_Timeout">
+                  <!--DISREGARD-->
+                  <!--Factory has been building for a long time.-->
+                  <set_value name="$DisregardAction" exact="true" />
+                  <set_value name="$DisregardReason" exact="'Factory has been building for ' + $Request_Factory_Build_Timeout" chance="$DebugChance" />
+                  <set_value name="$DisregardObject" exact="$Station" />
+                  <set_value name="$ActionReportDef.$RemoveFactory" exact="true" />
+                </do_if>
+              </do_elseif>
+              <do_else>
+                <!--Building has not started yet-->
+                <do_if value="$ActionReport.$StartTime lt player.age - $Request_Factory_Build_Wait_Time">
+                  <!--DISREGARD-->
+                  <!--Construction has not started on the factory for a long time.-->
+                  <set_value name="$DisregardAction" exact="true" />
+                  <set_value name="$DisregardReason" exact="'Construction has not started on factory for' + $Request_Factory_Build_Timeout" chance="$DebugChance" />
+                  <set_value name="$DisregardObject" exact="$Station" />
+                  <set_value name="$ActionReportDef.$RemoveFactory" exact="true" />
+                </do_if>
+              </do_else>
+              <remove_value name="$Station" />
+            </do_elseif>
+            <!--CHECK REMOVE_FACTORY ACTION-->
+            <do_elseif value="$ActionReportDef.$Type == '$remove_factory'">
+              <set_value name="$Station" exact="$ActionReportDef.$Station" />
+              <do_if value="not $Station.exists">
+                <!--DISREGARD-->
+                <!--The station did exist, but no longer-->
+                <set_value name="$DisregardAction" exact="true" />
+                <set_value name="$DisregardReason" exact="'Station no longer exists'" chance="$DebugChance" />
+              </do_if>
+              <!-- TODO: do we need to bother with other checks? Once the recycling has started there is no going back anyway -->
+              <remove_value name="$Station" />
+            </do_elseif>
+            <do_else>
+              <assert value="false" text="'Unknown action type ' + $ActionReportDef.$Type + ' [Owen]'" break="1" />
+            </do_else>
+
+            <do_if value="$DisregardAction">
+              <debug_text text="'Disregarding action with reason: ' + $DisregardReason + ' Action: ' + $ActionReport" context="false" chance="$DebugChance" />
+              <do_if value="$DisregardObject and $DisregardObject.isclass.component">
+                <!--.isclass.component check as $DisregardObject may be disconnected and .exists may not work-->
+                <signal_objects object="$DisregardObject" param="'factionlogic_econ_disregard'" param2="$ActionReportDef.$Type" param3="$DisregardParam" />
+              </do_if>
+              <!-- also clear any sub-action this action may have had -->
+              <do_if value="$ActionReportDef.$SubActionDefs?">
+                <do_all exact="$ActionReportDef.$SubActionDefs.count" counter="$sa">
+                  <set_value name="$SubActionDef" exact="$ActionReportDef.$SubActionDefs.{$sa}" />
+                  <set_value name="$DisregardObject" exact="if $SubActionDef.$Ship then $SubActionDef.$Ship else $SubActionDef.$Station" />
+                  <do_if value="$DisregardObject and $DisregardObject.isclass.component">
+                    <!--.isclass.component check as $DisregardObject may be disconnected and .exists may not work-->
+                    <debug_text text="'Disregarding sub-action with reason: Primary action disregarded Action: ' + $SubActionDef" context="false" chance="$DebugChance" />
+                    <signal_objects object="$DisregardObject" param="'factionlogic_econ_disregard'" param2="$SubActionDef.$Type" />
+                  </do_if>
+                </do_all>
+              </do_if>
+
+              <append_to_list name="$DisregardedActions" exact="$ActionReport" />
+              <remove_value name="$ActionReportList.{$ARL_i}" />
+            </do_if>
+          </do_for_each>
+        </do_for_each>
+      </actions>
+    </library>
+
+    <!--
+      adds a production issue at the sector for the faction.
+      called from EvaluateSectorShortage at $IsProductionIssue.
+    -->
+    <!--
+      global.$ProductionIssues = table[
+        $Faction = table[
+          $Sector = table[
+            $Ware = time, ...
+          ], ...
+        ], ...
+      ]
+    -->
+    <library name="AddProductionIssue" purpose="run_actions">
+      <params>
+        <param name="Faction" />
+        <param name="Sector" />
+        <param name="Ware" />
+        <param name="SectorValue" />
+        <param name="DebugChance" default="0" />
+      </params>
+      <actions>
+        <!-- <set_value name="$DebugChance" exact="100" /> -->
+        <do_if value="not global.$ProductionIssues?">
+          <set_value name="global.$ProductionIssues" exact="table[]" />
+        </do_if>
+        <do_if value="not global.$ProductionIssues.{$Faction}?">
+          <set_value name="global.$ProductionIssues.{$Faction}" exact="table[]" />
+        </do_if>
+        <do_if value="not global.$ProductionIssues.{$Faction}.{$Sector}?">
+          <set_value name="global.$ProductionIssues.{$Faction}.{$Sector}" exact="table[]" />
+        </do_if>
+        <set_value operation="add" name="global.$ProductionIssues.{$Faction}.{$Sector}.{$Ware}" exact="$SectorValue" />
+        <debug_text text="'%s, $Sector: %s, $Ware: %s, $SectorValue: %s'.[$Faction, $Sector.knownname, $Ware.name, $SectorValue]" chance="$DebugChance" />
+      </actions>
+    </library>
+
+    <!--
+      removes the data for the faction at the sector.
+      called from EvaluateSectorShortage before the sector is evaluated for the faction.
+    -->
+    <library name="CleanProductionIssueForFaction" purpose="run_actions">
+      <params>
+        <param name="Faction" />
+        <param name="DebugChance" default="0" />
+      </params>
+      <actions>
+        <!-- <set_value name="$DebugChance" exact="100" /> -->
+        <do_if value="global.$ProductionIssues.{$Faction}?">
+          <remove_value name="global.$ProductionIssues.{$Faction}" />
+        </do_if>
+        <debug_text text="$Faction" chance="$DebugChance" />
+      </actions>
+    </library>
+
+    <!--
+      returns a list of wares that the faction had a production issue at the sector since the last EvaluateSectorShortage.
+      called from gm_buildstation.
+    -->
+    <library name="GetProductionIssue" purpose="run_actions">
+      <params>
+        <param name="Faction" />
+        <param name="Sector" />
+        <param name="DebugChance" default="0" />
+      </params>
+      <actions>
+        <!-- <set_value name="$DebugChance" exact="100" /> -->
+        <set_value name="$Wares" exact="@global.$ProductionIssues.{$Faction}.{$Sector}.keys.list" />
+        <do_if value="$Wares">
+          <sort_list list="$Wares" sortbyvalue="global.$ProductionIssues.{$Faction}.{$Sector}.{loop.element}" sortdescending="true" />
+        </do_if>
+        <do_else>
+          <set_value name="$Wares" exact="[]" />
+        </do_else>
+        <do_if value="$DebugChance == 100">
+          <debug_text text="'%s, $Sector: %s, $Wares: %s'.[$Faction, $Sector.knownname, $Wares]" chance="$DebugChance" />
+          <do_for_each name="$Ware" in="$Wares">
+            <debug_text text="'    $Ware: %s'.[$Ware.name]" chance="$DebugChance" />
+          </do_for_each>
+        </do_if>
+        <return value="$Wares" />
+      </actions>
+    </library>
   </cues>
 </mdscript>
