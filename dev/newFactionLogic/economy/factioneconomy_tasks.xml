@@ -1,0 +1,1613 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="FactionEconomy_Tasks" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../xsd/md.xsd">
+  <cues>
+    <!--event.param [$ActionDef, $Requester object/sector, $Ware, $Priority, $Faction, $DebugText]-->
+    <cue name="Request_Commandeerable_Freighter" instantiate="true" namespace="this" version="4">
+      <conditions>
+        <event_cue_signalled />
+      </conditions>
+      <actions>
+
+        <set_value name="$DebugChance" exact="0" />
+        <set_value name="$AIDebugChance" exact="0" />
+        <set_value name="$ActionDefinition" exact="event.param.{1}" />
+        <set_value name="$Requester" exact="event.param.{2}" />
+        <set_value name="$Ware" exact="event.param.{3}" />
+        <set_value name="$Priority" exact="event.param.{4}" />
+        <set_value name="$Faction" exact="event.param.{5}" />
+        <set_value name="$DebugText" exact="event.param.{6}" />
+
+        <do_if value="$Requester.isclass.sector">
+          <set_value name="$RequestSector" exact="$Requester" />
+        </do_if>
+        <do_else>
+          <set_value name="$RequestSector" exact="$Requester.sector" />
+        </do_else>
+
+        <set_value name="$Miner" exact="$Ware.hastag.minable" />
+        <set_value name="$IsMineral" exact="$Miner and $Ware.hastag.mineral" />
+        <set_value name="$DebugText" exact="$DebugText + '(Request_Commandeerable_Freighter) '" chance="$DebugChance" />
+
+        <debug_text text="$DebugText + player.age + ': Sector ' + $RequestSector + ' ' + $RequestSector.knownname + ' requested a commandeerable ' + (if $Miner then 'miner' else 'transporter') + ' for ' + $Ware + '. Priority: ' + $Priority + '. Requester: ' + $Requester" context="false" chance="$DebugChance" />
+
+        <set_value name="$Ship" exact="null" />
+
+        <!--Early out check for factions with no suitable job ships-->
+        <get_suitable_job result="$TestJob" tags="[tag.factionlogic, tag.freighter]" faction="$Faction" />
+        <do_if value="$TestJob">
+          <remove_value name="$TestJob" />
+          <find_cluster_in_range distances="$LocalClusterDistances" object="$RequestSector" maxdistance="if $Priority then 5 else 3" multiple="true" />
+          <set_value name="$LocalClusters" exact="$LocalClusterDistances.keys.sorted" />
+          <do_all exact="$LocalClusters.count" counter="$i">
+            <do_if value="$Priority">
+              <!--TODO @Owen filter if the ship can carry the ware-->
+              <set_value name="$PotentialShips" exact="[]" />
+              <find_ship_by_true_owner name="$Temp_PotentialShips" faction="$Faction" commandeerable="true" requestedjobship="false" jobtags="[tag.factionlogic, tag.freighter]" space="$LocalClusters.{$i}" multiple="true" />
+              <do_all exact="$Temp_PotentialShips.count" counter="$k">
+                <!--Prioritise ships with the ware in their basket-->
+                <do_if value="$Temp_PotentialShips.{$k}.warebasket.{$Ware}.exists">
+                  <set_value name="$PotentialShips.{1}" operation="insert" exact="$Temp_PotentialShips.{$k}" />
+                </do_if>
+                <do_elseif value="$Temp_PotentialShips.{$k}.cargo.{$Ware}.max">
+                  <append_to_list name="$PotentialShips" exact="$Temp_PotentialShips.{$k}" />
+                </do_elseif>
+              </do_all>
+              <remove_value name="$Temp_PotentialShips" />
+            </do_if>
+            <do_else>
+              <find_ship_by_true_owner name="$PotentialShips" faction="$Faction" commandeerable="true" requestedjobship="false" jobtags="[tag.factionlogic, tag.freighter]" space="$LocalClusters.{$i}" multiple="true">
+                <match_basket_wares wares="$Ware" />
+              </find_ship_by_true_owner>
+            </do_else>
+            <debug_text text="'found ' + $PotentialShips.count + ' in ' + $LocalClusters.{$i}.knownname + ' at dist ' + $LocalClusterDistances.{$LocalClusters.{$i}}" chance="$DebugChance" />
+            <do_all exact="$PotentialShips.count" counter="$k">
+              <set_value name="$PotentialShip" exact="$PotentialShips.{$k}" />
+              <do_if value="$IsMineral">
+                <find_object_component name="$MiningLaser" weaponmode="weaponmode.mining" checkoperational="true" object="$PotentialShip" />
+                <do_if value="not $MiningLaser">
+                  <!--No mining laser, try next ship-->
+                  <remove_value name="$MiningLaser" />
+                  <continue />
+                </do_if>
+                <remove_value name="$MiningLaser" />
+              </do_if>
+              <do_if value="$PotentialShip.tradeorders.count == 0">
+                <!--Ship currently not performing a trade-->
+                <set_value name="$Ship" exact="$PotentialShip" />
+                <break />
+              </do_if>
+              <do_elseif value="$LocalClusterDistances.{$LocalClusters.{$i}} le 3 and $PotentialShip.tradeorders.count == 1 and (@$PotentialShip.tradeorders.{1}.trade.seller == $PotentialShip or not @$PotentialShip.tradeorders.{1}.trade.seller)">
+                <!--Ship is a bit more distant but is finishing a trade run-->
+                <set_value name="$Ship" exact="$PotentialShip" />
+                <break />
+              </do_elseif>
+            </do_all>
+            <do_if value="$Ship">
+              <break />
+            </do_if>
+          </do_all>
+          <remove_value name="$LocalClusterDistances" />
+          <remove_value name="$LocalClusters" />
+          <remove_value name="$PotentialShips" />
+          <remove_value name="$PotentialShip" />
+          <remove_value name="$IsMineral" />
+
+          <do_if value="$Ship.exists">
+            <set_value name="$ActionDefinition.$Ship" exact="$Ship" />
+            <set_value name="$ActionDefinition.$CommandeerTime" exact="player.age" />
+            <commandeer_object object="$Ship" />
+            <debug_text text="$DebugText + 'Ship ' + $Ship + ' ' + $Ship.knownname + ' commandeered'" context="false" chance="$DebugChance" />
+            <set_value name="$Duration" exact="if $Priority then 3h else 1.5h" />
+            <set_value name="$Timeout" exact="player.age + $Duration" />
+            <do_if value="$Priority and $Requester.isclass.container">
+              <!--Set commander -->
+              <create_order id="'AssignCommander'" object="$Ship">
+                <param name="commander" value="$Requester" />
+                <param name="assignment" value="if $Miner then assignment.mining else assignment.trade" />
+                <param name="cancelorders" value="false" />
+                <param name="debugchance" value="$AIDebugChance" />
+              </create_order>
+            </do_if>
+            <do_if value="$Miner">
+              <!-- Miner -->
+              <create_order id="'MiningRoutine'" object="$Ship">
+                <param name="warebasket" value="[$Ware]" />
+                <param name="range" value="$RequestSector" />
+                <param name="minbuy" value="0" />
+                <param name="maxbuy" value="5" />
+                <param name="minsell" value="0" />
+                <param name="maxsell" value="0" />
+                <param name="endtime" value="$Timeout" />
+                <param name="debugchance" value="$AIDebugChance" />
+              </create_order>
+            </do_if>
+            <do_else>
+              <!-- Trader -->
+              <create_order id="'TradeRoutine'" object="$Ship">
+                <param name="warebasket" value="[$Ware]" />
+                <param name="range" value="$RequestSector" />
+                <param name="maxbuy" value="5" />
+                <param name="endtime" value="$Timeout" />
+                <param name="debugchance" value="$AIDebugChance" />
+              </create_order>
+            </do_else>
+            <do_if value="$Priority and $Requester.isclass.container">
+              <!--Queue up order to remove commander when task is done -->
+              <create_order id="'AssignCommander'" object="$Ship">
+                <param name="cancelorders" value="false" />
+                <param name="debugchance" value="$AIDebugChance" />
+              </create_order>
+            </do_if>
+          </do_if>
+          <do_else>
+            <debug_text text="$DebugText + ' No suitable ships found for this purpose. Abort'" context="false" chance="$DebugChance" />
+            <cancel_cue cue="Request_Commandeerable_Freighter" />
+          </do_else>
+        </do_if>
+        <do_else>
+          <debug_text text="$DebugText + ' No suitable job ship definitions for this purpose. Abort'" context="false" chance="$DebugChance" />
+          <cancel_cue cue="Request_Commandeerable_Freighter" />
+        </do_else>
+      </actions>
+      <patch sinceversion="3">
+        <do_if value="not $Requester?">
+          <set_value name="$Requester" exact="$RequestSector" />
+        </do_if>
+      </patch>
+      <patch sinceversion="4">
+        <do_if value="not $Timeout?">
+          <set_value name="$Timeout" exact="this.time + 5h" />
+        </do_if>
+      </patch>
+      <cues>
+        <!--TODO @Owen changed owner?-->
+        <cue name="Request_Commandeerable_Freighter_Disregard_Patch" checkinterval="30min">
+          <conditions>
+            <check_value value="player.age ge $Timeout" />
+          </conditions>
+          <!--Give the Faction Logic enough time to clean it up properly as new cleanup logic was added-->
+          <delay exact="30min" />
+          <actions>
+            <!--This is to patch these actions which may have been forgotten by the Faction Logic.-->
+            <set_value name="$ActionDefinition.$Disregard" exact="true" />
+            <do_if value="$Priority and $Ship.commander.exists and ($Ship.commander == $Requester)">
+              <!-- make sure we clear the commander again -->
+              <remove_object_commander object="$Ship" />
+            </do_if>
+            <!--<do_else>
+                  <debug_text text="'Removing commandeerable freighter action for ' + $Ship + ' ' + $Ship.knownname + ' as it appears to have been forgotten by ' + $Faction + ' - expected to hit during build 0.8 [Owen]'" filter="error"/>
+                </do_else>-->
+            <release_commandeered_object object="$Ship" />
+            <cancel_cue cue="Request_Commandeerable_Freighter" />
+          </actions>
+        </cue>
+        <cue name="Request_Commandeerable_Freighter_Disregarded">
+          <conditions>
+            <event_object_signalled object="$Ship" param="'factionlogic_econ_disregard'" />
+            <check_value value="event.param2 == '$request_commandeerable_freighter' or event.param2 == '$request_prio_commandeerable_freighter'" />
+          </conditions>
+          <actions>
+            <debug_text text="$DebugText + ' Commandeered ship ' + $Ship.knownname + ' ' + $Ship  + ' for ware ' + $Ware + ' was disregarded by economic faction logic'" context="false" chance="$DebugChance" />
+            <release_commandeered_object object="$Ship" />
+            <cancel_cue cue="Request_Commandeerable_Freighter" />
+          </actions>
+        </cue>
+        <cue name="Request_Commandeerable_Freighter_Destroyed">
+          <conditions>
+            <event_object_destroyed object="$Ship" />
+          </conditions>
+          <actions>
+            <debug_text text="$DebugText + ' Commandeered ship ' + $Ship.knownname + ' ' + $Ship  + ' for ware ' + $Ware + ' was destroyed by ' + event.param + ' ' + @event.param.knownname + ' (' + event.param2 + ') in ' + $Ship.sector.knownname + ' ' + $Ship.sector" context="false" chance="$DebugChance" />
+            <cancel_cue cue="Request_Commandeerable_Freighter" />
+          </actions>
+        </cue>
+      </cues>
+    </cue>
+
+    <!--event.param [$ActionDef, $Sector, $Ware, $Priority, $Zone(optional), $Faction, $DebugText]-->
+    <cue name="Request_Freighter" instantiate="true" namespace="this" version="3">
+      <conditions>
+        <event_cue_signalled />
+      </conditions>
+      <actions>
+
+        <set_value name="$DebugChance" exact="0" />
+        <set_value name="$AIDebugChance" exact="0" />
+        <set_value name="$ActionDefinition" exact="event.param.{1}" />
+        <set_value name="$Requester" exact="event.param.{2}" />
+        <set_value name="$Ware" exact="event.param.{3}" />
+        <set_value name="$Priority" exact="event.param.{4}" />
+        <set_value name="$Faction" exact="event.param.{6}" />
+        <set_value name="$DebugText" exact="event.param.{7}" />
+        <set_value name="$JobZone" exact="null" />
+        <do_if value="$Requester.isclass.sector">
+          <set_value name="$RequestSector" exact="$Requester" />
+        </do_if>
+        <do_else>
+          <set_value name="$RequestSector" exact="$Requester.sector" />
+        </do_else>
+        <do_if value="@event.param.{5}">
+          <set_value name="$JobZone" exact="event.param.{5}" />
+        </do_if>
+        <do_elseif value="$Requester.isclass.station and $Requester.zone.isalwaysnormalzone">
+          <set_value name="$JobZone" exact="$Requester.zone" />
+        </do_elseif>
+        <do_elseif value="$RequestSector.isclass.sector">
+          <find_zone name="$JobZone" space="$RequestSector" alwaysnormalzone="true">
+            <match_child class="class.station" owner="$Faction" checkoperational="true" />
+          </find_zone>
+          <do_if value="not $JobZone">
+            <!--Just default to any normal zone-->
+            <find_zone name="$JobZone" space="$RequestSector" alwaysnormalzone="true" />
+          </do_if>
+        </do_elseif>
+
+        <do_if value="not $JobZone">
+          <assert value="false" text="'No valid Requester for Request_Freighter cue, aborting!\nRequester is %1 (class %2) [Michael]'.[$Requester, @$Requester.class]" break="1" />
+          <cancel_cue cue="Request_Freighter" />
+        </do_if>
+        <do_else>
+          <set_value name="$Salvager" exact="false" />
+          <set_value name="$Miner" exact="$Ware.hastag.minable" />
+          <assert value="not $Miner or not ($Ware.isprocessed and $Ware.hastag.recycling)" text="'Ware is tagged for both mining and recycling processing. Unknown case for faction logic to solve [Owen]'" />
+          <do_if value="not $Miner">
+            <set_value name="$Salvager" exact="$Ware.isprocessed and $Ware.hastag.recycling" />
+          </do_if>
+          <!--TODO: cancel_requested_ship ship="$waitingship"-->
+          <!--TODO @Owen pass in space as 'requester' and have the job find the object by context to that space. Requester remains the object. How slow is this?-->
+          <do_if value="$DebugChance == 100">
+            <set_value name="$DebugText" exact="$DebugText + '(Request_Freighter) '" />
+            <debug_text text="$DebugText + player.age + ': Sector ' + $RequestSector + ' ' + $RequestSector.knownname + ' requested a ' + (if $Miner then 'miner' else (if $Salvager then 'tug' else 'transporter')) + ' for ' + $Ware + ' ' + if $Priority then ' PRIORITY ' else ' NON-PRIORITY'" context="false" />
+            <find_requested_job_ship name="$PreviousRequested" requester="$RequestSector" ware="$Ware" multiple="true" />
+            <do_if value="$PreviousRequested.count">
+              <debug_text text="$PreviousRequested.count + ' ships have already been requested for this purpose'" context="false" />
+            </do_if>
+            <do_else>
+              <debug_text text="'No ships have currently been requested for this purpose'" context="false" />
+            </do_else>
+          </do_if>
+          <do_if value="$Miner">
+            <get_suitable_job result="$Jobs" faction="$Faction" tags="[tag.factionlogic, tag.miner]" ware="$Ware" multiple="true" />
+          </do_if>
+          <do_elseif value="$Salvager">
+            <!--TODO @Owen - tug or compactor?-->
+            <get_suitable_job result="$Jobs" faction="$Faction" tags="[tag.factionlogic, tag.tug]" ware="$Ware" multiple="true" />
+          </do_elseif>
+          <do_else>
+            <get_suitable_job result="$Jobs" faction="$Faction" tags="[tag.factionlogic, tag.trader]" ware="$Ware" multiple="true" />
+          </do_else>
+          <set_value name="$Ship" exact="null" />
+          <do_if value="$Jobs.count">
+            <shuffle_list list="$Jobs" />
+            <do_while value="$Jobs.count">
+              <request_job_ship name="$Ship" job="$Jobs.{1}" requester="$RequestSector" ware="$Ware" zone="$JobZone" />
+              <do_if value="$Ship">
+                <!--Set a base timeout several hours from now-->
+                <set_requested_job_ship_timeout ship="$Ship" timeout="player.age + (if $Priority then 4h else 2h)" />
+                <debug_text text="$DebugText + 'Ship ' + $Ship + ' ' + $Ship.knownname + ' requested from job ' + $Jobs.{1}" context="false" chance="$DebugChance" />
+                <break />
+              </do_if>
+              <do_else>
+                <debug_text text="$DebugText + 'ship unable to be requested for job ' + $Jobs.{1}" context="false" chance="$DebugChance" />
+                <remove_value name="$Jobs.{1}" />
+              </do_else>
+            </do_while>
+          </do_if>
+          <do_else>
+            <debug_text text="$DebugText + ' No job ships defined for this purpose - ' + $Ware + ' . Abort'" context="false" chance="$DebugChance" />
+          </do_else>
+
+          <do_if value="$Ship">
+            <set_value name="$ActionDefinition.$Ship" exact="$Ship" />
+          </do_if>
+          <do_else>
+            <cancel_cue cue="Request_Freighter" />
+          </do_else>
+        </do_else>
+      </actions>
+      <patch sinceversion="2">
+        <do_if value="not $Requester?">
+          <set_value name="$Requester" exact="$RequestSector" />
+        </do_if>
+      </patch>
+      <patch sinceversion="3">
+        <set_value name="$Salvager" exact="false" />
+      </patch>
+      <cues>
+        <cue name="Request_Freighter_Disregarded">
+          <conditions>
+            <event_object_signalled object="$Ship" param="'factionlogic_econ_disregard'" />
+            <check_value value="(not $Priority and event.param2 == '$request_freighter') or ($Priority and event.param2 == '$request_priority_freighter')" />
+          </conditions>
+          <actions>
+            <debug_text text="$DebugText + ' Requested ship ' + $Ship.knownname + ' ' + $Ship  + ' for ware ' + $Ware + ' was disregarded by economic faction logic'" context="false" chance="$DebugChance" />
+            <remove_job_ship_request ship="$Ship" />
+            <cancel_cue cue="Request_Freighter" />
+          </actions>
+        </cue>
+        <cue name="Request_Freighter_Destroyed">
+          <conditions>
+            <event_object_destroyed object="$Ship" />
+          </conditions>
+          <actions>
+            <debug_text text="$DebugText + ' Requested ship ' + $Ship.knownname + ' ' + $Ship  + ' for ware ' + $Ware + ' was destroyed by ' + event.param + ' ' + @event.param.knownname + ' (' + event.param2 + ') in ' + @$Ship.sector.knownname + ' ' + @$Ship.sector" context="false" chance="$DebugChance" />
+            <cancel_cue cue="Request_Freighter" />
+          </actions>
+        </cue>
+        <cue name="Request_Freighter_Spawned">
+          <conditions>
+            <!--TODO @Owen, better condition?-->
+            <event_object_docked object="$Ship" />
+          </conditions>
+          <actions>
+            <debug_text text="$DebugText + ' Requested ship ' + $Ship.knownname + ' ' + $Ship  + ' for ware ' + $Ware + ' spawned in ' + if $Ship.container then $Ship.container.knownname else ' space of ' + $Ship.sector.knownname + ' ' + $Ship.sector" context="false" chance="$DebugChance" />
+            <set_value name="$ActionDefinition.$SpawnTime" exact="player.age" />
+          </actions>
+        </cue>
+        <!--HACK TODO @Owen event for unregistering a requested ship-->
+        <cue name="Request_Freighter_Not_Requested" checkinterval="1s">
+          <conditions>
+            <check_value value="not $Ship.isrequestedjobship" />
+          </conditions>
+          <actions>
+            <debug_text text="$DebugText + ' Requested ship ' + $Ship.knownname + ' ' + $Ship  + ' for ware ' + $Ware + ' had its request removed.'" context="false" chance="$DebugChance" />
+            <cancel_cue cue="Request_Freighter" />
+          </actions>
+        </cue>
+        <cue name="Request_Freighter_Built">
+          <conditions>
+            <event_object_signalled object="$Ship" param="'build.shiptrader'" param2="'requested_ship_built'" />
+          </conditions>
+          <actions>
+            <debug_text text="$DebugText + player.age + ': Ship ' + $Ship.knownname + ' ' + $Ship + ' built in ' + $Ship.zone.knownname + ' ' + $Ship.zone" context="false" chance="$DebugChance" />
+
+            <set_value name="$ActionDefinition.$LaunchTime" exact="player.age" />
+            <set_value name="$Duration" exact="if $Priority then 4h else 2h" />
+            <set_value name="$Timeout" exact="player.age + $Duration" />
+            <set_requested_job_ship_timeout ship="$Ship" timeout="$Timeout" />
+            <do_if value="$Priority and $Requester.isclass.container">
+              <!--Queue up order to remove commander when order is done (order in reverse due to immediate inserting order at the front) -->
+              <create_order id="'AssignCommander'" object="$Ship" immediate="true">
+                <param name="cancelorders" value="false" />
+                <param name="debugchance" value="$AIDebugChance" />
+              </create_order>
+            </do_if>
+            <do_if value="$Miner">
+              <!-- Miner -->
+              <create_order id="'MiningRoutine'" object="$Ship" immediate="true">
+                <param name="warebasket" value="[$Ware]" />
+                <param name="range" value="$RequestSector" />
+                <param name="minbuy" value="0" />
+                <param name="maxbuy" value="5" />
+                <param name="minsell" value="0" />
+                <param name="maxsell" value="0" />
+                <param name="endtime" value="$Timeout" />
+                <param name="debugchance" value="$AIDebugChance" />
+              </create_order>
+            </do_if>
+            <do_elseif value="$Salvager">
+              <!--Salvage vessel-->
+              <create_order id="'SalvageRoutine'" object="$Ship" immediate="true">
+                <param name="warebasket" value="[$Ware]" />
+                <param name="anchorspace" value="$RequestSector" />
+                <param name="range" value="5" />
+                <param name="duration" value="$Duration" />
+                <param name="debugchance" value="$AIDebugChance" />
+              </create_order>
+            </do_elseif>
+            <do_else>
+              <!-- Trader -->
+              <create_order id="'TradeRoutine'" object="$Ship" immediate="true">
+                <param name="warebasket" value="[$Ware]" />
+                <param name="range" value="$RequestSector" />
+                <param name="maxbuy" value="5" />
+                <param name="endtime" value="$Timeout" />
+                <param name="debugchance" value="$AIDebugChance" />
+              </create_order>
+            </do_else>
+            <do_if value="$Priority and $Requester.isclass.container">
+              <!--Set commander -->
+              <create_order id="'AssignCommander'" object="$Ship" immediate="true">
+                <param name="commander" value="$Requester" />
+                <param name="assignment" value="if $Miner then assignment.mining else (if $Salvager then assignment.salvage else assignment.trade)" />
+                <param name="cancelorders" value="false" />
+                <param name="debugchance" value="$AIDebugChance" />
+              </create_order>
+            </do_if>
+            <cancel_cue cue="Request_Freighter" />
+          </actions>
+        </cue>
+      </cues>
+    </cue>
+
+    <!--event.param [$ActionDef, $Sector, $Product, $Station(optional), $Faction, $DebugText]-->
+    <cue name="Pause_Production_Module" instantiate="true" namespace="this">
+      <conditions>
+        <event_cue_signalled />
+      </conditions>
+      <actions>
+
+        <set_value name="$DebugChance" exact="0" />
+        <set_value name="$ActionDefinition" exact="event.param.{1}" />
+        <set_value name="$RequestSector" exact="event.param.{2}" />
+        <set_value name="$Product" exact="event.param.{3}" />
+        <set_value name="$Faction" exact="event.param.{5}" />
+        <set_value name="$DebugText" exact="event.param.{6}" />
+        <set_value name="$Station" exact="null" />
+
+        <set_value name="$DebugText" exact="$DebugText + ' (Pause_Production_Module) '" chance="$DebugChance" />
+
+        <debug_text text="$DebugText + player.age + ': Sector ' + $RequestSector + ' ' + $RequestSector.knownname + ' requested to PAUSE a production module for product: ' + $Product" context="false" chance="$DebugChance" />
+
+        <do_if value="not $RequestSector.isclass.sector and typeof $Product != datatype.ware and typeof $Faction != datatype.faction">
+          <debug_text text="'Invalid parameters for Pause_Production_Module action. Sector : ' + $RequestSector + ' Product: ' + $Product + ' Faction: ' + $Faction" filter="error" />
+          <cancel_cue cue="Pause_Production_Module" />
+        </do_if>
+        <do_elseif value="$Product.hastag.minable">
+          <debug_text text="$DebugText + player.age + ': Sector ' + $RequestSector + ' ' + $RequestSector.knownname + ' disregarding production module PAUSE request for minable ware: ' + $Product" context="false" chance="$DebugChance" />
+          <cancel_cue cue="Pause_Production_Module" />
+        </do_elseif>
+        <do_else>
+          <do_if value="@event.param.{4}">
+            <set_value name="$Station" exact="event.param.{4}" />
+          </do_if>
+          <do_else>
+            <!-- find a station in this sector that has a production for $Product that we can pause -->
+            <find_station_by_true_owner name="$Station" faction="$Faction" space="$RequestSector" checkoperational="true" canequipships="false" tradestation="false" headquarters="false">
+              <match_child class="class.production" pausedmanually="false">
+                <match_products wares="$Product" />
+              </match_child>
+            </find_station_by_true_owner>
+          </do_else>
+
+          <do_if value="$Station">
+            <debug_text text="$DebugText + player.age + ' ' + $Station + ' ' + $Station.knownname + ' selected as the factory to pause a production for ' + $Product" context="false" chance="$DebugChance" />
+            <find_object_component object="$Station" name="$ProductionModule" checkoperational="true" class="class.production" pausedmanually="false">
+              <match_products wares="$Product" />
+            </find_object_component>
+            <do_if value="$ProductionModule">
+              <set_production_paused object="$ProductionModule" paused="true" />
+              <set_value name="$ActionDefinition.$Station" exact="$Station" />
+              <set_value name="$ActionDefinition.$PauseModule" exact="$ProductionModule" />
+              <set_value name="$ActionDefinition.$PauseTime" exact="player.age" />
+            </do_if>
+            <do_else>
+              <debug_text text="$DebugText + player.age + ' unable to find suitable production module'" context="false" chance="$DebugChance" />
+              <cancel_cue cue="Pause_Production_Module" />
+            </do_else>
+          </do_if>
+          <do_else>
+            <debug_text text="$DebugText + player.age + ' no station could be selected as the factory to pause a production for ' + $Product" context="false" chance="$DebugChance" />
+            <cancel_cue cue="Pause_Production_Module" />
+          </do_else>
+        </do_else>
+      </actions>
+      <cues>
+        <cue name="Pause_Production_Module_Disregarded">
+          <conditions>
+            <event_object_signalled object="$Station" param="'factionlogic_econ_disregard'" param2="'$pause_production'" param3="$ProductionModule" />
+          </conditions>
+          <actions>
+            <do_if value="not $Station.isownerless and $Station.tradenpc.exists">
+              <debug_text text="$DebugText + ' Paused production of ' + $Station.knownname + ' ' + $Station + ' for production ' + $Product + ' was disregarded by economic faction logic. Unpausing'" context="false" chance="$DebugChance" />
+              <do_if value="$ProductionModule.exists">
+                <set_production_paused object="$ProductionModule" paused="false" />
+              </do_if>
+            </do_if>
+            <do_else>
+              <debug_text text="$DebugText + ' Paused production of ' + $Station.knownname + ' ' + $Station + ' for production ' + $Product + ' was disregarded by economic faction logic. Not unpausing production ' + $ProductionModule + ' because the station is going to be dismantled anyway.'" context="false" chance="$DebugChance" />
+            </do_else>
+            <cancel_cue cue="Pause_Production_Module" />
+          </actions>
+        </cue>
+
+        <cue name="Pause_Production_Module_Destoryed">
+          <conditions>
+            <event_object_destroyed object="$Station" />
+          </conditions>
+          <actions>
+            <debug_text text="$DebugText + player.age + ': Factory ' + $Station.knownname + ' ' + $Station + ' was destroyed.'" context="false" chance="$DebugChance" />
+            <cancel_cue cue="Pause_Production_Module" />
+          </actions>
+        </cue>
+      </cues>
+    </cue>
+
+    <!--event.param [$ActionDef, $Sector, $Product, $NeighbouringSectorTable, $Station(optional), $Faction, $BusyStations, $DebugText]-->
+    <cue name="Request_Production_Module" instantiate="true" namespace="this" version="3">
+      <conditions>
+        <event_cue_signalled />
+      </conditions>
+      <actions>
+
+        <set_value name="$DebugChance" exact="0" />
+        <set_value name="$ActionDefinition" exact="event.param.{1}" />
+        <set_value name="$RequestSector" exact="event.param.{2}" />
+        <set_value name="$Product" exact="event.param.{3}" />
+        <!--Reference to $NeighbouringSectorTable will be removed at the end of this cue as it's no longer needed-->
+        <set_value name="$NeighbouringSectorTable" exact="event.param.{4}" />
+        <set_value name="$Faction" exact="event.param.{6}" />
+        <set_value name="$BusyStations" exact="event.param.{7}" />
+        <set_value name="$DebugText" exact="event.param.{8}" />
+        <set_value name="$Station" exact="null" />
+
+        <!--Some extensions may set this flag for certain factions. Base-game factions do not respect compatibility when expanding.-->
+        <set_value name="$CheckProductionCompatibility" exact="false" />
+
+        <do_if value="$Faction == faction.argon or $Faction == faction.antigone">
+          <set_value name="$CheckProductionCompatibility" exact="true" />
+        </do_if>
+        <do_if value="$Faction == faction.paranid or $Faction == faction.holyorder">
+          <set_value name="$CheckProductionCompatibility" exact="true" />
+        </do_if>
+        <do_if value="$Faction == faction.trinity">
+          <set_value name="$CheckProductionCompatibility" exact="true" />
+        </do_if>
+        <do_if value="$Faction == faction.teladi">
+          <set_value name="$CheckProductionCompatibility" exact="true" />
+        </do_if>
+
+        <set_value name="$DebugText" exact="$DebugText + ' (Request_Production_Module) '" chance="$DebugChance" />
+
+        <debug_text text="$DebugText + player.age + ': Sector ' + $RequestSector + ' ' + $RequestSector.knownname + ' requested a new production module for product: ' + $Product" context="false" chance="$DebugChance" />
+
+        <do_if value="not $RequestSector.isclass.sector and typeof $Product != datatype.ware and typeof $Faction != datatype.faction">
+          <debug_text text="'Invalid parameters for Request_Production_Module action. Sector : ' + $RequestSector + ' Product: ' + $Product + ' Faction: ' + $Faction" filter="error" />
+          <cancel_cue cue="Request_Production_Module" />
+        </do_if>
+        <do_elseif value="$Product.hastag.minable">
+          <debug_text text="$DebugText + player.age + ': Sector ' + $RequestSector + ' ' + $RequestSector.knownname + ' disregarding production module request for minable ware: ' + $Product" context="false" chance="$DebugChance" />
+          <cancel_cue cue="Request_Production_Module" />
+        </do_elseif>
+        <do_else>
+          <do_if value="@event.param.{5}">
+            <set_value name="$Station" exact="event.param.{5}" />
+          </do_if>
+          <do_else>
+            <!-- Step 1: find all stations in this and neighbouring sectors that have a paused production for $Product -->
+            <set_value name="$NeighbouringSectorDistanceKeys" exact="$NeighbouringSectorTable.keys.list" />
+            <do_all exact="$NeighbouringSectorDistanceKeys.count" counter="$NSDK_i">
+              <set_value name="$JumpDist" exact="$NeighbouringSectorDistanceKeys.{$NSDK_i}" />
+              <shuffle_list list="$NeighbouringSectorTable.{$JumpDist}" />
+              <do_all exact="$NeighbouringSectorTable.{$JumpDist}.count" counter="$NS_i">
+                <find_station_by_true_owner name="$PausedStation" faction="$Faction" space="$NeighbouringSectorTable.{$JumpDist}.{$NS_i}" checkoperational="true">
+                  <match_child class="class.production" pausedmanually="true">
+                    <match_products wares="$Product" />
+                  </match_child>
+                </find_station_by_true_owner>
+                <do_if value="$PausedStation.exists">
+                  <break />
+                </do_if>
+              </do_all>
+              <do_if value="$PausedStation.exists">
+                <break />
+              </do_if>
+            </do_all>
+            <remove_value name="$NeighbouringSectorTable" />
+            <remove_value name="$NeighbouringSectorDistanceKeys" />
+            <do_if value="$PausedStation.exists">
+              <find_object_component object="$PausedStation" name="$PausedProductionModule" checkoperational="true" class="class.production" pausedmanually="true">
+                <match_products wares="$Product" />
+              </find_object_component>
+            </do_if>
+            <run_actions ref="md.FactionEconomy_Libraries.Check_Production_Location_Suitablility" result="$IsProductionSuitable">
+              <param name="Sector" value="$RequestSector" />
+              <param name="Ware" value="$Product" />
+              <param name="Faction" value="$Faction" />
+            </run_actions>
+            <do_if value="@$PausedStation.exists and @$PausedProductionModule.exists">
+              <!-- if we found something to unpause, we're good and can stop here -->
+              <set_production_paused object="$PausedProductionModule" paused="false" />
+              <set_value name="$ActionDefinition.$Station" exact="$PausedStation" />
+              <set_value name="$ActionDefinition.$UnpausedProduction" exact="true" />
+              <set_value name="$ActionDefinition.$ProductionEntries" exact="[$PausedProductionModule]" />
+              <set_value name="$ActionDefinition.$StartBuildTime" exact="player.age" />
+              <set_value name="$ActionDefinition.$BuiltTime" exact="player.age" />
+              <set_value name="$ActionDefinition.$LastBuildTime" exact="player.age" />
+            </do_if>
+            <do_elseif value="not $IsProductionSuitable">
+              <set_value name="$Station" exact="null" />
+              <debug_text text="$DebugText + player.age + ': Sector ' + $RequestSector + ' ' + $RequestSector.knownname + ' disregarding new production request for ' + $Product + ' production as the sectors environment is not suitable'" context="false" chance="$DebugChance" />
+            </do_elseif>
+            <do_else>
+              <!--Step 2: find all stations with productions in the sector and check if they are suitable to expand. May include those which have not yet been constructed.-->
+              <!-- make sure there cannot be a $station variable left over from the Step 1 search -->
+              <set_value name="$Station" exact="null" />
+              <find_station_by_true_owner name="$Stations" faction="$Faction" space="$RequestSector" checkoperational="false" multiple="true" excluded="$BusyStations" />
+              <!--TODO @Owen - new filters for construction sequence contents e.g. filter out those with more than 5 productions in the plan?-->
+
+              <set_value name="$StationsTable" exact="table[]" />
+              <!--TODO @Owen - better evaluate which station to expand-->
+              <!--TODO @Owen - take module compatibilities into account?-->
+
+              <set_value name="$ProductionPlanned" exact="false" />
+
+              <!--$CheckProductionCompatibility being set will lead to check_production_allowed being called which enforces compatibilities defined in modules.xml and quotas in god.xml-->
+              <do_if value="$CheckProductionCompatibility">
+                <do_for_each name="$CheckedStation" in="$Stations">
+                  <set_value name="$HasProduction" exact="false" />
+                  <do_if value="$CheckedStation.buildstorage">
+                    <set_value name="$ConstructionPlan" exact="null" />
+
+                    <check_object result="$HasProduction" object="$CheckedStation">
+                      <match_child class="class.production" min="1" />
+                    </check_object>
+                    <do_if value="not $HasProduction">
+                      <set_value name="$ConstructionPlan" exact="$CheckedStation.plannedconstruction.sequence" />
+                      <do_if value="$ConstructionPlan">
+                        <do_all exact="$ConstructionPlan.count" counter="$plan_i">
+                          <do_if value="$ConstructionPlan.{$plan_i}.macro.isclass.production">
+                            <set_value name="$HasProduction" exact="true" />
+                            <break />
+                          </do_if>
+                        </do_all>
+                      </do_if>
+                    </do_if>
+                  </do_if>
+                  <do_if value="$HasProduction">
+                    <check_production_allowed result="$IsAllowed" object="$CheckedStation" ware="$Product" />
+                    <do_if value="$IsAllowed">
+                      <!--Prefer expanding smaller stations-->
+                      <set_value name="$StationsTable.{$CheckedStation}" operation="add" exact="100 - (if $ConstructionPlan then $ConstructionPlan.count else $CheckedStation.plannedconstruction.sequence.count)" />
+                    </do_if>
+                  </do_if>
+                </do_for_each>
+                <remove_value name="$HasProduction" />
+              </do_if>
+              <do_else>
+                <!--If $CheckProductionCompatibility is not set, use the old behaviour which counts the number of productions to prevent huge stations and prefers stations with similar productions-->
+                <do_all exact="$Stations.count" counter="$i" reverse="true">
+                  <set_value name="$Remove" exact="false" />
+                  <set_value name="$ProductionCount" exact="0" />
+                  <set_value name="$ProductionsMatched" exact="false" />
+
+                  <do_if value="$Stations.{$i}.buildstorage">
+                    <set_value name="$ConstructionPlan" exact="$Stations.{$i}.plannedconstruction.sequence" />
+                    <do_if value="$ConstructionPlan">
+                      <do_all exact="$ConstructionPlan.count" counter="$plan_i">
+                        <do_if value="$ConstructionPlan.{$plan_i}.macro.isclass.production">
+                          <set_value name="$ProductionCount" operation="add" />
+                          <!--TODO @Owen get the module limit from parameters.xml-->
+                          <do_if value="$ProductionCount ge 5">
+                            <!--Too many productions planned. Disregard-->
+                            <set_value name="$Remove" exact="true" />
+                            <break />
+                          </do_if>
+                          <do_if value="$ConstructionPlan.{$plan_i}.macro.products.{$Product}.exists">
+                            <do_if value="not $Stations.{$i}.planmodule.{$ConstructionPlan.{$plan_i}.id}.isoperational">
+                              <set_value name="$ProductionPlanned" exact="true" />
+                              <debug_text text="$DebugText + 'Station ' + $Stations.{$i} + ' ' + $Stations.{$i}.knownname + ' in sector ' + $RequestSector + ' ' + $RequestSector.knownname + ' already has a planned production module for ' + $Product + ' in its construction plan (may be planned, under construction or wrecked). Do not attempt to build another just yet.'" context="false" chance="$DebugChance" />
+                              <break />
+                            </do_if>
+                            <do_else>
+                              <set_value name="$ProductionsMatched" exact="true" />
+                            </do_else>
+                          </do_if>
+                        </do_if>
+                      </do_all>
+                    </do_if>
+                    <do_else>
+                      <set_value name="$Remove" exact="true" />
+                    </do_else>
+                  </do_if>
+                  <do_else>
+                    <set_value name="$Remove" exact="true" />
+                  </do_else>
+
+                  <do_if value="$ProductionPlanned">
+                    <break />
+                  </do_if>
+                  <do_elseif value="$Remove or $ProductionCount == 0">
+                    <!--Station was not suitable or is not a planned factory-->
+                    <remove_value name="$Stations.{$i}" />
+                  </do_elseif>
+                  <do_else>
+                    <do_if value="$ProductionsMatched">
+                      <!--station is already producing this ware, give it a higher score-->
+                      <set_value name="$StationsTable.{$Stations.{$i}}" operation="add" exact="50" />
+                    </do_if>
+                    <do_else>
+                      <set_value name="$StationsTable.{$Stations.{$i}}" operation="add" exact="20" />
+                    </do_else>
+                  </do_else>
+                </do_all>
+              </do_else>
+
+              <do_if value="not $ProductionPlanned">
+                <!--TODO @Owen this isn't selecting via weighting but just a preferred order.-->
+                <set_value name="$StationKeys" exact="$StationsTable.keys.sorted" />
+                <do_if value="$StationKeys.count">
+                  <set_value name="$StationIndex" min="1" max="$StationKeys.count" profile="increasing" />
+                  <set_value name="$Station" exact="$StationKeys.{$StationIndex}" />
+                </do_if>
+              </do_if>
+              <remove_value name="$Stations" />
+              <remove_value name="$ConstructionPlan" />
+              <remove_value name="$StationsTable" />
+            </do_else>
+          </do_else>
+
+          <do_if value="@$PausedProductionModule">
+            <debug_text text="$DebugText + player.age + ' ' + $PausedStation + ' ' + $PausedStation.knownname + ' selected as the factory to unpause production for product ' + $Product" context="false" chance="$DebugChance" />
+            <cancel_cue cue="Request_Production_Module" />
+          </do_if>
+          <do_elseif value="$Station">
+            <debug_text text="$DebugText + player.age + ' ' + $Station + ' ' + $Station.knownname + ' selected as the factory to expand for product ' + $Product" context="false" chance="$DebugChance" />
+
+            <set_value name="$ModuleSet" exact="$Station.modulesets.{1}" />
+            <set_value name="$WantedProductions" exact="[]" />
+
+            <get_module_definition macro="$ProductionMacro" tags="[tag.production, tag.module]" set="$ModuleSet" faction="$Faction" ware="$Product" />
+            <do_if value="$ProductionMacro">
+              <append_to_list name="$WantedProductions" exact="$ProductionMacro" />
+            </do_if>
+            <do_else>
+              <debug_text text="'Unable to create a production module for ware ' + $Product" chance="$DebugChance" />
+            </do_else>
+
+            <do_if value="$WantedProductions.count">
+              <do_all chance="$DebugChance">
+                <debug_text text="'Wants productions:'" />
+                <do_all exact="$WantedProductions.count" counter="$i">
+                  <debug_text text="' - ' + $WantedProductions.{$i}" />
+                </do_all>
+              </do_all>
+
+              <!--Calculate what other modules should be added to the station-->
+              <set_value name="$CurrentlyPlanned" exact="$Station.plannedconstruction.sequence" />
+              <!--The requested productions are the starting entries of several lists-->
+              <set_value name="$NewModules" exact="$WantedProductions.clone" />
+              <set_value name="$ResultingProductions" exact="$WantedProductions.clone" />
+              <set_value name="$LatestPlannedModules" exact="$WantedProductions.clone" />
+              <set_value name="$ExistingStorage" exact="[]" />
+              <debug_text text="'Stations current plan has ' + $CurrentlyPlanned.count + ' entries'" chance="$DebugChance" />
+              <do_all exact="$CurrentlyPlanned.count" counter="$i">
+                <append_to_list name="$LatestPlannedModules" exact="$CurrentlyPlanned.{$i}.macro" />
+                <do_if value="$CurrentlyPlanned.{$i}.macro.isclass.production">
+                  <append_to_list name="$ResultingProductions" exact="$CurrentlyPlanned.{$i}.macro" />
+                </do_if>
+                <do_elseif value="$CurrentlyPlanned.{$i}.macro.isclass.storage">
+                  <append_to_list name="$ExistingStorage" exact="$CurrentlyPlanned.{$i}.macro" />
+                </do_elseif>
+              </do_all>
+
+              <!--Using the production modules in the current plan in addition to the newly requested productions, calculate storage requirements-->
+              <get_module_definition macro="$ViableStorageModules" faction="$Station.owner" tags="[tag.storage, tag.module]" set="$ModuleSet" multiple="true" />
+              <get_suitable_storage_modules result="$NewStorageModules" production="$ResultingProductions" storage="$ExistingStorage" macros="$ViableStorageModules" />
+              <do_all exact="$NewStorageModules.count" counter="$i">
+                <debug_text text="'Wants additional storage ' + $NewStorageModules.{$i}" chance="$DebugChance" />
+                <append_to_list name="$NewModules" exact="$NewStorageModules.{$i}" />
+                <append_to_list name="$LatestPlannedModules" exact="$NewStorageModules.{$i}" />
+              </do_all>
+
+              <!--Run FinaliseStations libraries-->
+              <set_value name="$DebugFileName" exact="md.$SystemTimeAtGamestart + '_' + $Station" comment="The name of the file to which the log will be saved. This is 'faction_logic.txt'" />
+              <set_value name="$DebugDirectory" exact="'faction_logic'" comment="The directory under which log files should be kept" />
+              <set_value name="$DebugOutput" exact="false" comment="Should the log file also be printed to VS output? - Make sure this is false for release builds" />
+
+              <set_value name="$AddModules" exact="table[]" />
+              <set_value name="$PlannedModules" exact="$LatestPlannedModules.clone" />
+
+              <!--Additional docks-->
+              <include_actions ref="md.FinaliseStations.DefaultCalculateDocks" />
+              <!--Additional piers-->
+              <do_if value="$Station.owner != faction.xenon">
+                <!-- Xenon do not use capital trading ships, no need for piers -->
+                <include_actions ref="md.FinaliseStations.DefaultCalculatePiers" />
+              </do_if>
+              <!--Additional defence modules-->
+              <set_value name="$Def_UseModules" exact="true" />
+              <include_actions ref="md.FinaliseStations.DefaultCalculateDefence" />
+
+              <do_all exact="$AddModules.keys.count" counter="$ModuleCounter">
+                <set_value name="$ModuleToAdd" exact="$AddModules.keys.{$ModuleCounter}" />
+                <set_value name="$NumberToAdd" exact="$AddModules.{$ModuleToAdd}" />
+
+                <do_all exact="$NumberToAdd">
+                  <append_to_list name="$NewModules" exact="$ModuleToAdd" />
+                </do_all>
+              </do_all>
+
+              <get_module_definition macro="$ViableConnectionModules" faction="$Station.owner" tags="[tag.connection, tag.module]" set="$ModuleSet" multiple="true" />
+              <!-- add $Station to $BusyStations group so it won't be found as a potential station for another production module while the construction sequence generation is in progress -->
+              <add_to_group groupname="$BusyStations" object="$Station" />
+              <!-- Processing continues in Request_Production_Module_Generate_Sequence IFF $CreateConstructionSequence has been set.  -->
+              <set_value name="$CreateConstructionSequence" />
+            </do_if>
+            <do_else>
+              <debug_text text="$DebugText + player.age + ' unable to find suitable production modules'" context="false" chance="$DebugChance" />
+              <cancel_cue cue="Request_Production_Module" />
+            </do_else>
+          </do_elseif>
+          <do_else>
+            <debug_text text="$DebugText + player.age + ' no station could be selected as the factory to expand for product ' + $Product" context="false" chance="$DebugChance" />
+            <cancel_cue cue="Request_Production_Module" />
+          </do_else>
+        </do_else>
+      </actions>
+      <patch sinceversion="2" state="complete">
+        <set_value name="$Product" exact="$Products.{1}" />
+        <remove_value name="$Products" />
+      </patch>
+      <patch sinceversion="3" state="complete">
+        <do_if value="@$PausedProductionModule or not $Station.isoperational">
+          <debug_text text="'cleaning up dead instance related to ' + $Product + ' for ' + $Faction + ' in ' + $RequestSector.knownname" filter="savegame" />
+          <cancel_cue cue="Request_Production_Module" />
+        </do_if>
+      </patch>
+      <cues>
+        <cue name="Request_Production_Module_Generate_Sequence" onfail="cancel">
+          <conditions>
+            <!-- patch compatibility: only generate sequence if this variable exists
+                before this cue and its children were introduced (3.00 Beta 6) <create_construction_sequence /> happened immediately in Request_Production_Module, sometimes causing noticeable stutters
+                and we do not want older versions to generate the sequence again -->
+            <check_value value="$CreateConstructionSequence?" />
+          </conditions>
+          <actions>
+            <!-- This will start the process of generating a construction sequence on a different thread. This action returns immediately. -->
+            <do_if value="$Station and $NewModules.count and $ViableConnectionModules">
+              <create_construction_sequence station="$Station" base="$Station.plannedconstruction.sequence" macros="$NewModules" connectors="$ViableConnectionModules" />
+              <debug_text filter="economy_verbose" text="'#FLE#;%1;RequestNewProduction;%2;%3;%4;%5;%6;%7'.[player.age, $Station.knownname, $Station, $Station.idcode, $RequestSector.knownname, $Faction.id, $Product, '', '']" context="false" />
+            </do_if>
+            <do_else>
+              <debug_text text="$DebugText + player.age + ' missing required data to generate construction sequence'" context="false" chance="$DebugChance" />
+              <cancel_cue cue="Request_Production_Module" />
+            </do_else>
+          </actions>
+          <cues>
+            <cue name="Request_Production_Module_Sequence_Generated">
+              <conditions>
+                <event_object_construction_sequence_created object="$Station" />
+                <debug_text text="$DebugText + player.age + ' Generated construction sequence for: ' + $Station + ' sequence: ' + event.param + ' success: '+ event.param2" source="false" debugchance="$DebugChance" />
+              </conditions>
+              <actions>
+                <remove_from_group group="$BusyStations" object="$Station" />
+                <do_if value="event.param and event.param2">
+                  <cancel_cue cue="Request_Production_Module_Sequence_Aborted" />
+                  <!--Successful construction sequence generation-->
+                  <set_value name="$ConstructionSequence" exact="event.param" />
+                  <set_value name="$ActionDefinition.$Station" exact="$Station" />
+
+                  <set_value name="$ProductionEntries" exact="[]" />
+                  <do_all exact="$ConstructionSequence.count" counter="$i">
+                    <do_if value="$i == ($CurrentlyPlanned.count + 1)">
+                      <debug_text text="'New modules:'" chance="$DebugChance" />
+                    </do_if>
+                    <debug_text text="$ConstructionSequence.{$i}.macro" chance="$DebugChance" />
+
+                    <do_if value="$i gt $CurrentlyPlanned.count and $WantedProductions.indexof.{$ConstructionSequence.{$i}.macro}">
+                      <append_to_list name="$ProductionEntries" exact="$ConstructionSequence.{$i}.id" />
+                      <debug_text text="'Production entry to track: ' + $ConstructionSequence.{$i}.id" chance="$DebugChance" />
+                    </do_if>
+                  </do_all>
+                  <do_if value="$ProductionEntries.count == 0 and player.debug">
+                    <debug_text text="'\n\tObject: %1 (%2, %3)\n\t$CurrentlyPlanned = %4'.[$Station.knownname, $Station.idcode, $Station, $CurrentlyPlanned]" />
+                    <do_all exact="$CurrentlyPlanned.count" counter="$e">
+                      <debug_text text="'\t\t' + $CurrentlyPlanned.{$e}.macro" context="false" />
+                    </do_all>
+                    <debug_text text="'\t$WantedProductions = ' + $WantedProductions" context="false" />
+                    <do_for_each name="$WantedMacro" in="$WantedProductions">
+                      <debug_text text="'\t\t' + $WantedMacro" context="false" />
+                    </do_for_each>
+                    <debug_text text="'\t$NewModules = ' + $NewModules" context="false" />
+                    <do_for_each name="$ModuleMacro" in="$NewModules">
+                      <debug_text text="'\t\t' + $ModuleMacro" context="false" />
+                    </do_for_each>
+                    <debug_text text="'\t$ConstructionSequence = ' + $ConstructionSequence" context="false" />
+                    <do_all exact="$ConstructionSequence.count" counter="$e">
+                      <debug_text text="'\t\t' + $ConstructionSequence.{$e}.macro" context="false" />
+                    </do_all>
+                  </do_if>
+                  <assert value="$ProductionEntries.count" text="'No prodution entries present [Owen]'" break="1" />
+                  <!--The list of production entry IDs are not cloned. This library may modify them-->
+                  <set_value name="$ActionDefinition.$ProductionEntries" exact="$ProductionEntries" />
+                  <add_build_to_expand_station result="$BuildTask" buildobject="$Station" object="$Station.buildstorage" constructionplan="$ConstructionSequence" />
+                  <remove_value name="$NewModules" />
+                  <remove_value name="$CreateConstructionSequence" />
+                  <remove_value name="$ConstructionSequence" />
+                </do_if>
+                <do_else>
+                  <!-- Failed to generate construction sequence -->
+                  <cancel_cue cue="Request_Production_Module" />
+                </do_else>
+              </actions>
+            </cue>
+
+            <cue name="Request_Production_Module_Sequence_Aborted">
+              <conditions>
+                <event_game_loaded />
+              </conditions>
+              <actions>
+                <!-- a pending construction sequence generation would be lost, reset to try again  -->
+                <do_if value="$Station and @$NewModules.count and @$ViableConnectionModules">
+                  <reset_cue cue="Request_Production_Module_Generate_Sequence" />
+                </do_if>
+                <do_else>
+                  <!-- Failed to generate construction sequence -->
+                  <remove_from_group group="$BusyStations" object="$Station" />
+                  <cancel_cue cue="Request_Production_Module" />
+                </do_else>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="Request_Production_Module_Disregarded">
+          <conditions>
+            <event_object_signalled object="$Station" param="'factionlogic_econ_disregard'" param2="'$request_production'" />
+          </conditions>
+          <actions>
+            <debug_text text="$DebugText + ' Station expansion of  ' + $Station.knownname + ' ' + $Station + ' for production ' + $Product + ' was disregarded by economic faction logic'" context="false" chance="$DebugChance" />
+            <!--TODO @Owen - halt construction?-->
+            <cancel_cue cue="Request_Production_Module" />
+          </actions>
+        </cue>
+
+        <cue name="Request_Production_Module_Destoryed">
+          <conditions>
+            <event_object_destroyed object="$Station" />
+          </conditions>
+          <actions>
+            <debug_text text="$DebugText + player.age + ': Factory ' + $Station.knownname + ' ' + $Station + ' was destroyed.'" context="false" chance="$DebugChance" />
+            <cancel_cue cue="Request_Production_Module" />
+          </actions>
+        </cue>
+
+        <!--Wait for when a build has started where the construction sequence includes one of the production components-->
+        <cue name="Request_Production_Module_Started">
+          <conditions>
+            <event_build_started object="$Station.buildstorage" />
+            <check_value value="event.param2.count" />
+            <check_value value="$ProductionEntries?" />
+            <check_any exact="$ProductionEntries.count" counter="$i">
+              <check_value value="event.param2.{$ProductionEntries.{$i}}.exists" />
+            </check_any>
+          </conditions>
+          <actions>
+            <set_value name="$ActionDefinition.$StartBuildTime" exact="player.age" />
+            <debug_text text="$DebugText + player.age + ': Factory ' + $Station.knownname + ' ' + $Station + ' started construction related to new productions.'" context="false" chance="$DebugChance" />
+          </actions>
+          <cues>
+            <!--Keep the list of production entries in the action definition up to date-->
+            <cue name="Request_Production_Module_Evaluate_Build" instantiate="true">
+              <conditions>
+                <event_build_finished_components object="$Station.buildstorage" />
+              </conditions>
+              <actions>
+                <set_value name="$PlannedSequence" exact="$Station.plannedconstruction.sequence" />
+
+                <do_all exact="$ProductionEntries.count" counter="$i" reverse="true">
+                  <do_if value="not $PlannedSequence.{$ProductionEntries.{$i}}.exists">
+                    <remove_value name="$ProductionEntries.{$i}" />
+                    <continue />
+                  </do_if>
+
+                  <do_if value="$Station.planmodule.{$ProductionEntries.{$i}}.isoperational">
+                    <signal_objects object="player.galaxy" param="'station expanded'" param2="$Station" />
+                    <do_if value="not $ActionDefinition.$FinishedProductionEntries?">
+                      <set_value name="$ActionDefinition.$FinishedProductionEntries" exact="[]" />
+                    </do_if>
+                    <append_to_list name="$ActionDefinition.$FinishedProductionEntries" exact="$ProductionEntries.{$i}" />
+                    <set_value name="$ActionDefinition.$LastBuildTime" exact="player.age" />
+
+                    <do_if value="$ActionDefinition.$FinishedProductionEntries.count ge $ProductionEntries.count">
+                      <!--All production modules built-->
+                      <debug_text text="$DebugText + player.age + ': Factory ' + $Station.knownname + ' ' + $Station + ' all productions built.'" context="false" chance="$DebugChance" />
+                      <set_value name="$ActionDefinition.$BuiltTime" exact="player.age" />
+                      <!-- request a ship that works for this station to ensure it gets up and running fast -->
+                      <signal_cue_instantly cue="RequestProductionFreighter" param="[$ActionDefinition, $Station, $Product, true, $Faction]" />
+                      <cancel_cue cue="Request_Production_Module_Started" />
+                    </do_if>
+                  </do_if>
+                </do_all>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+      </cues>
+    </cue>
+
+    <!--event.param [$ActionDef, $Sector, $Ware, $NeighbouringSectorTable, $Zone(optional), $Faction, $DebugText]-->
+    <cue name="Request_Factory" instantiate="true" namespace="this">
+      <conditions>
+        <event_cue_signalled />
+      </conditions>
+      <actions>
+        <set_value name="$DebugChance" exact="0" />
+        <set_value name="$GeneratorDebugChance" exact="0" />
+        <set_value name="$ActionDefinition" exact="event.param.{1}" />
+        <set_value name="$RequestSector" exact="event.param.{2}" />
+        <set_value name="$Ware" exact="event.param.{3}" />
+        <!--Reference to $NeighbouringSectorTable will be removed at the end of this cue as it's no longer needed-->
+        <set_value name="$NeighbouringSectorTable" exact="event.param.{4}" />
+        <set_value name="$Faction" exact="event.param.{6}" />
+        <set_value name="$DebugText" exact="event.param.{7}" />
+        <set_value name="$Zone" exact="null" />
+
+        <set_value name="$Station" exact="null" />
+        <set_value name="$DebugText" exact="$DebugText + ' (Request_Factory) '" chance="$DebugChance" />
+        <debug_text text="$DebugText + 'Checking if it is viable to construct a new factory for ware ' + $Ware + ' in sector ' + $RequestSector.knownname" context="false" chance="$DebugChance" />
+
+        <set_value name="$StuckStations" exact="0" />
+        <set_value name="$StuckStationLimit" exact="2" />
+        <set_value name="$PausedStation" exact="null" />
+        <set_value name="$PausedProductionModule" exact="null" />
+        <run_actions ref="md.FactionEconomy_Libraries.Check_Production_Location_Suitablility" result="$IsProductionSuitable">
+          <param name="Sector" value="$RequestSector" />
+          <param name="Ware" value="$Ware" />
+          <param name="Faction" value="$Faction" />
+        </run_actions>
+        <do_if value="$Ware.hastag.minable">
+          <debug_text text="$DebugText + player.age + ': Sector ' + $RequestSector + ' ' + $RequestSector.knownname + ' disregarding factory request for minable ware: ' + $Ware" context="false" chance="$DebugChance" />
+        </do_if>
+        <do_elseif value="not $IsProductionSuitable">
+          <debug_text text="$DebugText + player.age + ': Sector ' + $RequestSector + ' ' + $RequestSector.knownname + ' disregarding factory request for ' + $Ware + ' production as the sectors environment is not suitable'" context="false" chance="$DebugChance" />
+        </do_elseif>
+        <do_else>
+          <!-- Step 1: find all stations in this and neighbouring sectors that have a paused production for $Ware -->
+          <set_value name="$NeighbouringSectorDistanceKeys" exact="$NeighbouringSectorTable.keys.list" />
+          <do_all exact="$NeighbouringSectorDistanceKeys.count" counter="$NSDK_i">
+            <set_value name="$JumpDist" exact="$NeighbouringSectorDistanceKeys.{$NSDK_i}" />
+            <shuffle_list list="$NeighbouringSectorTable.{$JumpDist}" />
+            <do_for_each name="$SearchSector" in="$NeighbouringSectorTable.{$JumpDist}">
+              <!--If checking the request sector, also check if any factories are having trouble producing this ware. If so, we may not request a new factory-->
+              <do_if value="$SearchSector == $RequestSector">
+                <find_station_by_true_owner name="$CheckedStations" faction="$Faction" space="$SearchSector" checkoperational="true" multiple="true" />
+                <shuffle_list list="$CheckedStations" />
+                <do_for_each name="$CheckedStation" in="$CheckedStations">
+                  <set_value name="$InsufficientReport" exact="null" />
+                  <set_value name="$FoundStuckProduction" exact="false" />
+                  <set_value name="$ProducingModules" exact="$CheckedStation.productions" />
+                  <append_list_elements name="$ProducingModules" other="$CheckedStation.processingmodules" />
+                  <do_for_each name="$CheckedProduction" in="$ProducingModules">
+                    <!--NOTE: $CheckedProduction can be a production or processing module-->
+                    <do_if value="$CheckedProduction.products.{$Ware}.exists">
+                      <!--Check if paused, and if not, check if the resources are insufficient-->
+                      <do_if value="@$CheckedProduction.ispausedmanually">
+                        <set_value name="$PausedStation" exact="$CheckedStation" />
+                        <set_value name="$PausedProductionModule" exact="$CheckedProduction" />
+                        <break />
+                      </do_if>
+                      <do_elseif value="not $InsufficientReport">
+                        <generate_shortage_reports object="$CheckedStation" insufficient="$InsufficientReport" type="class.production" includeprocessed="true" />
+                        <do_for_each name="$Resource" in="$CheckedProduction.resources.list">
+                          <do_if value="$InsufficientReport.{$Resource}?">
+                            <set_value name="$FoundStuckProduction" exact="true" />
+                            <break />
+                          </do_if>
+                        </do_for_each>
+                        <do_if value="$FoundStuckProduction">
+                          <!--If a stuck production is found, continue checking other factories-->
+                          <set_value name="$StuckStations" operation="add" />
+                          <break />
+                        </do_if>
+                      </do_elseif>
+                    </do_if>
+                  </do_for_each>
+                  <do_if value="$PausedProductionModule.exists">
+                    <!--If a paused production is found, don't check any other stations-->
+                    <break />
+                  </do_if>
+                  <do_elseif value="$StuckStations ge $StuckStationLimit">
+                    <!--If too many factories are stuck with this ware, no need to check more-->
+                    <break />
+                  </do_elseif>
+                </do_for_each>
+              </do_if>
+              <do_else>
+                <find_station_by_true_owner name="$PausedStation" faction="$Faction" space="$SearchSector" checkoperational="true">
+                  <match_child class="class.production" pausedmanually="true">
+                    <match_products wares="$Ware" />
+                  </match_child>
+                </find_station_by_true_owner>
+              </do_else>
+              <do_if value="$PausedStation.exists">
+                <break />
+              </do_if>
+            </do_for_each>
+            <do_if value="$PausedStation.exists">
+              <break />
+            </do_if>
+          </do_all>
+          <remove_value name="$NeighbouringSectorTable" />
+          <remove_value name="$NeighbouringSectorDistanceKeys" />
+          <remove_value name="$ProducingModules" />
+          <do_if value="$PausedStation.exists and not @$PausedProductionModule">
+            <find_object_component object="$PausedStation" name="$PausedProductionModule" checkoperational="true" class="class.production" pausedmanually="true">
+              <match_products wares="$Ware" />
+            </find_object_component>
+          </do_if>
+
+          <do_if value="@$PausedStation.exists and @$PausedProductionModule.exists">
+            <!-- if we found something to unpause, we're good and can stop here -->
+            <set_production_paused object="$PausedProductionModule" paused="false" />
+            <set_value name="$ActionDefinition.$Station" exact="$PausedStation" />
+            <set_value name="$ActionDefinition.$UnpausedProduction" exact="$PausedProductionModule" />
+            <set_value name="$ActionDefinition.$StartBuildTime" exact="player.age" />
+            <set_value name="$ActionDefinition.$BuiltTime" exact="player.age" />
+            <set_value name="$ActionDefinition.$LastBuildTime" exact="player.age" />
+            <debug_text text="$DebugText + player.age + ' ' + $PausedStation + ' ' + $PausedStation.knownname + ' selected as the factory to unpause production for product ' + $Ware" context="false" chance="$DebugChance" />
+          </do_if>
+          <do_elseif value="$StuckStations ge $StuckStationLimit">
+            <debug_text text="$DebugText + player.age + ' there are already too many factories having resource issues for product ' + $Ware + ' do not add another factory'" context="false" chance="$DebugChance" />
+          </do_elseif>
+          <do_else>
+            <remove_value name="$StuckStations" />
+            <remove_value name="$StuckStationLimit" />
+            <remove_value name="$PausedStation" />
+            <remove_value name="$PausedProductionModule" />
+
+            <!--TODO @Owen - support requesting allies for productions if $Faction can't build it themselves-->
+            <set_value name="$ExtraTags" exact="[]" />
+            <do_if value="$RequestSector.containsthewave">
+              <append_to_list name="$ExtraTags" exact="tag.condensate" />
+            </do_if>
+            <get_module_definition reference="$ModuleDefinition" ware="$Ware" tags="$ExtraTags" faction="$Faction" />
+
+            <do_if value="$ModuleDefinition">
+              <debug_text text="$DebugText + player.age + ': Sector ' + $RequestSector + ' ' + $RequestSector.knownname + ' requested a factory for ' + $Ware" context="false" chance="$DebugChance" />
+              <do_if value="@event.param.{5}">
+                <set_value name="$Zone" exact="event.param.{5}" />
+              </do_if>
+              <do_else>
+                <find_zone name="$Zone" space="$RequestSector" chance="50">
+                  <match_child class="class.station" owner="$Faction" checkoperational="true" max="3" />
+                </find_zone>
+                <do_if value="not $Zone">
+                  <set_value name="$BuildInSector" exact="true" />
+                </do_if>
+              </do_else>
+            </do_if>
+            <do_else>
+              <debug_text text="$DebugText + player.age + ': Sector ' + $RequestSector + ' ' + $RequestSector.knownname + ' requested a factory for ' + $Ware + ' but is unable to produce the ware'" context="false" chance="$DebugChance" />
+            </do_else>
+            <remove_value name="$ModuleDefinition" />
+
+            <do_if value="$Zone or @$BuildInSector">
+              <!--Find all stations with productions in the sector and check if they have any planned production modules for this product-->
+              <find_station_by_true_owner name="$Stations" faction="$Faction" space="$RequestSector" hasbuildingtask="true" checkoperational="false" multiple="true" />
+
+              <set_value name="$ProductionPlanned" exact="false" />
+
+              <do_for_each name="$ExistingStation" in="$Stations">
+                <do_if value="$ExistingStation.buildstorage">
+                  <set_value name="$ConstructionPlan" exact="$ExistingStation.plannedconstruction.sequence" />
+                  <do_if value="$ConstructionPlan">
+                    <do_all exact="$ConstructionPlan.count" counter="$plan_i">
+                      <do_if value="$ConstructionPlan.{$plan_i}.macro.isclass.production">
+                        <do_if value="$ConstructionPlan.{$plan_i}.macro.products.{$Ware}.exists">
+                          <do_if value="not $ExistingStation.planmodule.{$ConstructionPlan.{$plan_i}.id}.isoperational">
+                            <set_value name="$ProductionPlanned" exact="true" />
+                            <debug_text text="$DebugText + 'Station ' + $ExistingStation + ' ' + $ExistingStation.knownname + ' in sector ' + $RequestSector + ' ' + $RequestSector.knownname + ' already has a planned production module for ' + $Ware + ' in its construction plan (may be planned, under construction or wrecked). Do not attempt to build another just yet.'" context="false" chance="$DebugChance" />
+                            <break />
+                          </do_if>
+                        </do_if>
+                      </do_if>
+                    </do_all>
+                  </do_if>
+                </do_if>
+
+                <do_if value="$ProductionPlanned">
+                  <break />
+                </do_if>
+              </do_for_each>
+              <remove_value name="$Stations" />
+
+              <do_if value="not $ProductionPlanned">
+                <!--############# Disabled.
+                    Limit the production modules to a 1-5 bell curve. Module compatibilities defined in modules.xml remain. Should the value here exceed the value in modules.xml, this value is ignored.-->
+                <!--<set_value name="$ProductionLimit" min="1" max="5" profile="bell"/>
+                    ##############-->
+
+                <!--Only request a small factory at first.-->
+                <!-- NOTE: if the ware is the result of processing a recycling ware, we need to increase the production limit to account for the auto-combined productions that are part of the module definitions for the ware. -->
+                <set_value name="$ProductionLimit" exact="if $Ware.hastag.recycling then 3 else 1" />
+                <do_if value="@$BuildInSector">
+                  <set_value name="$SectorCentre" exact="$RequestSector.coreposition" />
+                  <set_value name="$SectorCoreSize" exact="$RequestSector.coresize / 2" />
+                  <set_value name="$Yaw" min="0deg" max="360deg" />
+                  <set_value name="$Y" min="$SectorCentre.y - 10km" max="$SectorCentre.y + 10km" />
+                  <set_value name="$PlacementDist" min="0km" max="$SectorCoreSize" profile="bell" scale="2" />
+                  <create_factory name="$Station" modules="$Modules" resultbasesequence="$BaseSequence" sector="$RequestSector" race="$Faction.primaryrace" owner="$Faction" originalproduct="$Ware">
+                    <compatibilities>
+                      <limits production="$ProductionLimit" />
+                    </compatibilities>
+                    <select ware="$Ware" faction="$Faction" tags="$ExtraTags" />
+                    <safepos x="$SectorCentre.x + sin($Yaw) * $PlacementDist" y="$Y" z="$SectorCentre.z + cos($Yaw) * $PlacementDist" includeplotbox="true" radius="3km" />
+                  </create_factory>
+                  <remove_value name="$SectorCentre" />
+                  <remove_value name="$SectorCoreSize" />
+                  <remove_value name="$Yaw" />
+                  <remove_value name="$Y" />
+                  <remove_value name="$PlacementDist" />
+                </do_if>
+                <do_else>
+                  <create_factory name="$Station" modules="$Modules" resultbasesequence="$BaseSequence" zone="$Zone" race="$Faction.primaryrace" owner="$Faction" originalproduct="$Ware">
+                    <compatibilities>
+                      <limits production="$ProductionLimit" />
+                    </compatibilities>
+                    <select ware="$Ware" faction="$Faction" tags="$ExtraTags" />
+                    <safepos max="40km" allowyaxis="false" includeplotbox="true" radius="3km" />
+                  </create_factory>
+                </do_else>
+              </do_if>
+            </do_if>
+          </do_else>
+        </do_else>
+
+        <do_if value="$Station">
+          <set_value name="$ActionDefinition.$Station" exact="$Station" />
+          <debug_text text="$DebugText + player.age + ': Factory ' + $Station + ' was placed in ' + $Station.zone.knownname + ' ' + $Station + ' of sector ' + $Station.sector.knownname + ' ' + $Station.sector + ' to help produce ' + $Ware" context="false" chance="$DebugChance" />
+        </do_if>
+        <do_else>
+          <cancel_cue cue="Request_Factory" />
+        </do_else>
+      </actions>
+      <cues>
+        <cue name="Request_Factory_Finalise" ref="md.FinaliseStations.NewStation_GenerateFactory">
+          <param name="Station" value="$Station" comment="Existing and bare station, already placed in universe" />
+          <param name="NewPlannedModules" value="$Modules" comment="List of module macros" />
+          <param name="BaseSequence" value="$BaseSequence" comment="Base construction sequence to add $PlannedModules to" />
+          <param name="ModuleSet" value="$Station.modulesets.{1}" comment="Module set to be used" />
+          <param name="AddHabitation" value="false" />
+          <param name="AddBuild" value="true" comment="Add a build task for the station on its build storage?" />
+          <param name="ReportCue" value="Request_Factory_Finalised" comment="Cue to be signalled when this library wants to inform the caller" />
+          <param name="DebugOutput" value="$GeneratorDebugChance == 100" />
+        </cue>
+
+        <cue name="Request_Factory_Finalised">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <actions>
+            <debug_text text="$DebugText + player.age + ': Factory ' + $Station.knownname + ' ' + $Station + ' has finished finalising its construction plan. In ' + $Station.sector.knownname + ' for ' + $Ware" context="false" chance="$DebugChance" />
+            <set_value name="$ActionDefinition.$SpawnTime" exact="player.age" />
+            <add_to_group groupname="md.FactionEconomy.Habitation_Helper.$Factories" object="$Station" />
+          </actions>
+        </cue>
+
+        <cue name="Request_Factory_Disregarded">
+          <conditions>
+            <event_object_signalled object="$Station" param="'factionlogic_econ_disregard'" param2="'$request_factory'" />
+          </conditions>
+          <actions>
+            <debug_text text="$DebugText + ' Station construction of ' + $Station.knownname + ' ' + $Station + ' for ware ' + $Ware + ' was disregarded by economic faction logic'" context="false" chance="$DebugChance" />
+            <!--Whatever disregarded this action will take care of the remaining station-->
+            <cancel_cue cue="Request_Factory" />
+          </actions>
+        </cue>
+
+        <!--TODO @Owen an event for when a build step actually starts (not event_build_started)-->
+        <cue name="Request_Factory_Construction_Started" checkinterval="10s">
+          <conditions>
+            <check_any>
+              <check_object object="$Station">
+                <match_child class="class.module" state="componentstate.operational" min="1" />
+              </check_object>
+              <check_value value="@$Station.buildingmodule.isbuilding" />
+            </check_any>
+          </conditions>
+          <actions>
+            <set_value name="$ActionDefinition.$StartBuildTime" exact="player.age" />
+          </actions>
+        </cue>
+
+        <cue name="Request_Factory_Destroyed">
+          <conditions>
+            <event_object_destroyed object="$Station" />
+          </conditions>
+          <actions>
+            <debug_text text="$DebugText + player.age + ': Factory ' + $Station.knownname + ' ' + $Station + ' was destroyed.'" context="false" chance="$DebugChance" />
+            <cancel_cue cue="Request_Factory" />
+          </actions>
+        </cue>
+
+        <cue name="Request_Factory_Finished">
+          <conditions>
+            <event_build_finished object="$Station.buildstorage" />
+          </conditions>
+          <actions>
+            <debug_text text="$DebugText + player.age + ': Factory ' + $Station.knownname + ' ' + $Station + ' has finished building.'" context="false" chance="$DebugChance" />
+            <set_value name="$ActionDefinition.$BuiltTime" exact="player.age" />
+            <!-- request a ship that works for this station to ensure it gets up and running fast -->
+            <signal_cue_instantly cue="RequestProductionFreighter" param="[$ActionDefinition, $Station, $Ware, false, $Faction]" />
+            <cancel_cue cue="Request_Factory" />
+          </actions>
+        </cue>
+      </cues>
+    </cue>
+
+    <!--event.param [$ActionDef, $Station, $Ware, $IsProduction, $Faction]-->
+    <cue name="RequestProductionFreighter" instantiate="true" namespace="this">
+      <conditions>
+        <event_cue_signalled />
+      </conditions>
+      <actions>
+        <set_value name="$DebugChance" exact="0" />
+        <set_value name="$ActionDefinition" exact="event.param.{1}" />
+        <set_value name="$Station" exact="event.param.{2}" />
+        <set_value name="$Ware" exact="event.param.{3}" />
+        <set_value name="$IsProduction" exact="event.param.{4}" />
+        <set_value name="$Faction" exact="event.param.{5}" />
+
+        <do_if value="not $Station.exists or not $Ware">
+          <assert value="false" text="'Cue RequestProductionFreighter signalled with invalid parameters, $Station(%1) and $Ware(%2) must be valid! [Michael]'.[$Station, $Ware]" />
+          <cancel_cue cue="RequestProductionFreighter" />
+        </do_if>
+
+        <set_value name="$WareResources" exact="$Ware.raceresources.{$Faction.primaryrace}.list" />
+        <set_value name="$ResourceTags" exact="table[]" />
+        <set_value name="$ResourceTags.$Container" exact="tag.container" />
+        <set_value name="$ResourceTags.$Gas" exact="tag.gas" />
+        <set_value name="$ResourceTags.$Mineral" exact="tag.mineral" />
+        <set_value name="$ResourceTagKeys" exact="$ResourceTags.keys.list" />
+        <set_value name="$ResourceTypes" exact="table[]" />
+        <do_all exact="$WareResources.count" counter="$resources_i">
+          <set_value name="$WareResource" exact="$WareResources.{$resources_i}" />
+          <do_all exact="$ResourceTagKeys.count" counter="$RTK_i">
+            <set_value name="$ResourceKey" exact="$ResourceTagKeys.{$RTK_i}" />
+            <set_value name="$ResourceTag" exact="$ResourceTags.{$ResourceKey}" />
+            <do_if value="$WareResource.hastag.{$ResourceTag}">
+              <do_if value="not $ResourceTypes.{$ResourceKey}?">
+                <set_value name="$ResourceTypes.{$ResourceKey}" exact="[$WareResource]" />
+              </do_if>
+              <do_else>
+                <append_to_list name="$ResourceTypes.{$ResourceKey}" exact="$WareResource" />
+              </do_else>
+            </do_if>
+          </do_all>
+        </do_all>
+        <remove_value name="$ResourceKey" />
+        <remove_value name="$ResourceTag" />
+
+        <set_value name="$ResourceTypeKeys" exact="$ResourceTypes.keys.list" />
+        <do_all exact="$ResourceTypeKeys.count" counter="$RTK_j">
+          <set_value name="$WareList" exact="$ResourceTypes.{$ResourceTypeKeys.{$RTK_j}}" />
+          <do_if value="$WareList.count gt 0">
+            <set_value name="$NewActionDef" exact="table[]" />
+            <set_value name="$Commandeered" exact="false" />
+            <do_if value="$IsProduction">
+              <!-- try commandeering first -->
+              <set_value name="$NewActionDef.$Type" exact="'$request_prio_commandeerable_freighter'" />
+              <signal_cue_instantly cue="Request_Commandeerable_Freighter" param="[$NewActionDef, $Station, $WareList.{1}, true, $Faction, $DebugText]" />
+              <set_value name="$Commandeered" exact="if $NewActionDef.$Ship? then true else false" />
+            </do_if>
+            <do_if value="not $IsProduction or not $NewActionDef.$Ship?">
+              <set_value name="$NewActionDef.$Type" exact="'$request_priority_freighter'" />
+              <signal_cue_instantly cue="Request_Freighter" param="[$NewActionDef, $Station, $WareList.{1}, true, null, $Faction, $DebugText]" />
+            </do_if>
+            <do_if value="$NewActionDef.$Ship?">
+              <do_if value="not $ActionDefinition.$SubActionDefs?">
+                <set_value name="$ActionDefinition.$SubActionDefs" exact="[$NewActionDef]" />
+              </do_if>
+              <do_else>
+                <append_to_list name="$ActionDefinition.$SubActionDefs" exact="$NewActionDef" />
+              </do_else>
+              <!--curtime, object_name, object_id, object_idcode, sector_name, faction_id, ware, station_id, station_idcode-->
+              <do_if value="@$Commandeered">
+                <debug_text filter="economy_verbose" text="'#FLE#;%1;RequestCommandeeredStationTransporter;%2;%3;%4;%5;%6;%7;%8;%9'.[player.age, $NewActionDef.$Ship.knownname, $NewActionDef.$Ship, $NewActionDef.$Ship.idcode, $Station.sector.knownname, $Faction.id, $WareList.{1}, $Station, $Station.idcode]" context="false" />
+              </do_if>
+              <do_else>
+                <debug_text filter="economy_verbose" text="'#FLE#;%1;RequestStationTransporter;%2;%3;%4;%5;%6;%7;%8;%9'.[player.age, $NewActionDef.$Ship.knownname, $NewActionDef.$Ship, $NewActionDef.$Ship.idcode, $Station.sector.knownname, $Faction.id, $WareList.{1}, $Station, $Station.idcode]" context="false" />
+              </do_else>
+            </do_if>
+          </do_if>
+        </do_all>
+      </actions>
+    </cue>
+
+    <!--event.param [$ActionDef, $Sector, $Ware, $Zone(optional), $Faction, $DebugText]-->
+    <cue name="Remove_Factory" instantiate="true" namespace="this">
+      <conditions>
+        <event_cue_signalled />
+      </conditions>
+      <actions>
+        <set_value name="$DebugChance" exact="0" />
+        <set_value name="$AIDebugChance" exact="0" />
+        <set_value name="$GeneratorDebugChance" exact="0" />
+        <set_value name="$ActionDefinition" exact="event.param.{1}" />
+        <set_value name="$RequestSector" exact="event.param.{2}" />
+        <set_value name="$Ware" exact="event.param.{3}" />
+        <set_value name="$Faction" exact="event.param.{5}" />
+        <set_value name="$DebugText" exact="event.param.{6}" />
+        <set_value name="$Station" exact="null" />
+        <do_if value="@event.param.{4}">
+          <set_value name="$Station" exact="event.param.{4}" />
+        </do_if>
+        <set_value name="$Faction" exact="$Faction" />
+
+        <do_if value="not $Station.exists">
+          <!-- TODO: find an appropriate station -->
+        </do_if>
+
+        <set_value name="$DebugText" exact="$DebugText + ' (Remove_Factory) '" chance="$DebugChance" />
+        <do_if value="$Station.isoperational">
+          <do_if value="$Station.istradestation or $Station.canequipships">
+            <debug_text text="$DebugText + player.age + ': Factory %1 (%2, %3) in %4 is not a valid target for deconstruction because it is either a trade station, shipyard or equipment dock.'.[$Station.knownname, $Station, $Station.idcode, $Station.sector.knownname]" context="false" chance="$DebugChance" />
+            <set_value name="$Station" exact="null" />
+          </do_if>
+          <do_else>
+            <check_object result="$IsIndestructible" object="$Station">
+              <match_child class="class.module" indestructible="true" />
+            </check_object>
+            <do_if value="$IsIndestructible">
+              <debug_text text="$DebugText + player.age + ': Factory %1 (%2, %3) in %4 is not a valid target for deconstruction because it has indestructible modules.'.[$Station.knownname, $Station, $Station.idcode, $Station.sector.knownname]" context="false" chance="$DebugChance" />
+              <set_value name="$Station" exact="null" />
+            </do_if>
+            <do_else>
+              <find_object_component name="$ActiveProduction" object="$Station" class="class.production" pausedmanually="false" checkoperational="true" />
+              <do_if value="not $ActiveProduction.exists">
+                <!-- make sure this station is not the last producer of any of its products for $Faction -->
+                <set_value name="$Products" exact="$Station.products.list" />
+                <do_all exact="$Products.count" counter="$p">
+                  <!-- search for all producers of the product ware owned by $Faction within a 5-jump distance so far away territory doesn't interfere -->
+                  <find_station_by_true_owner name="$ProducerStations" space="player.galaxy" faction="$Faction" checkoperational="true" indestructible="false" multiple="true">
+                    <match_products wares="$Products.{$p}" />
+                    <match_gate_distance object="$RequestSector" max="5" />
+                  </find_station_by_true_owner>
+                  <do_if value="$ProducerStations.count le 1">
+                    <!-- there needs to be at least one more station aside from this one that produces the ware within the specified distance, otherwise this station must not be deconstructed -->
+                    <debug_text text="$DebugText + player.age + ': Factory %1 (%2, %3) in %4 is not a valid target for deconstruction because it is the last producer of %5.'.[$Station.knownname, $Station, $Station.idcode, $Station.sector.knownname, $Products.{$p}]" context="false" chance="$DebugChance" />
+                    <set_value name="$Station" exact="null" />
+                    <break />
+                  </do_if>
+                </do_all>
+              </do_if>
+              <do_else>
+                <debug_text text="$DebugText + player.age + ': Factory %1 (%2, %3) in %4 is not a valid target for deconstruction because it has active productions.'.[$Station.knownname, $Station, $Station.idcode, $Station.sector.knownname]" context="false" chance="$DebugChance" />
+                <set_value name="$Station" exact="null" />
+              </do_else>
+            </do_else>
+          </do_else>
+        </do_if>
+
+        <do_if value="$Station.exists">
+          <!-- All productions of this station have been paused and we are not the sole producer of any of our products. Begin Evacuation and dismantle the station. -->
+          <set_value name="$ActionDefinition.$Station" exact="$Station" />
+          <set_value name="$ActionDefinition.$EvacStartTime" exact="player.age" />
+          <debug_text text="$DebugText + player.age + ': Factory %1 (%2, %3) in %4 beginning evacuation to be deconstructed.'.[$Station.knownname, $Station, $Station.idcode, $Station.sector.knownname]" context="false" chance="$DebugChance" />
+
+          <!-- 1. trigger red warning lights -->
+          <find_object_component object="$Station" name="$StationModules" class="class.module" multiple="true" checkoperational="true" />
+          <do_all exact="$StationModules.count" counter="$m">
+            <add_effect object="$StationModules.{$m}" effect="'hack_deactivated_l'" />
+          </do_all>
+
+          <!-- 2. release all subordinates -->
+          <do_all exact="$Station.subordinates.count" counter="$s" reverse="true">
+            <release_commandeered_object object="$Station.subordinates.{$s}" />
+            <create_order id="'AssignCommander'" object="$Station.subordinates.{$s}" immediate="true">
+              <param name="cancelorders" value="false" />
+              <param name="debugchance" value="$AIDebugChance" />
+            </create_order>
+          </do_all>
+
+          <!-- 3. order ships to evacuate station (the order is also given to player ships!) -->
+          <find_object_component name="$DockedShips" object="$Station" class="class.ship" docked="true" checkoperational="true" multiple="true" />
+          <!--<find_ship name="$DockedShips" space="$Station" docked="true" checkoperational="true" multiple="true" />-->
+          <set_value name="$EcavuationShipOrders" exact="table[]" />
+          <do_all exact="$DockedShips.count" counter="$d">
+            <set_value name="$Ship" exact="$DockedShips.{$d}" />
+            <get_safe_pos result="$SafePos" sector="$RequestSector" min="$Station.size" max="$Station.size * 2" object="$Station" />
+            <create_order id="'MoveWait'" immediate="true" object="$Ship" name="$Order">
+              <param name="destination" value="[$RequestSector, $SafePos]" />
+              <param name="timeout" value="5min" />
+              <param name="debugchance" value="$AIDebugChance" />
+            </create_order>
+            <set_value name="$EcavuationShipOrders.{$Ship}" exact="$Order" />
+          </do_all>
+
+          <!-- 4. set station to faction ownerless so we stop tracking it -->
+          <set_owner object="$Station" faction="faction.ownerless" overridenpc="true" />
+
+          <do_if value="$Station.tradenpc.exists">
+            <!-- 5. remove manager to stop all trading activity -->
+            <!-- TODO: instead of removing the manager, try to sell all wares in storage first? -->
+            <destroy_object object="$Station.tradenpc" />
+          </do_if>
+        </do_if>
+        <do_else>
+          <cancel_cue cue="Remove_Factory" />
+        </do_else>
+      </actions>
+      <cues>
+        <cue name="Remove_Factory_EvacStart" checkinterval="2min">
+          <conditions>
+            <count_object_components result="$DockedShips" object="$Station" class="class.ship" docked="true" includeobjects="true" checkoperational="true" min="1" />
+            <!--<count_ships result="$DockedShips" space="$Station" docked="true" checkoperational="true" min="1" />-->
+          </conditions>
+          <actions>
+            <do_all exact="$DockedShips.count" counter="$d">
+              <!-- check if the ship already has an order to leave and if not, issue a new one -->
+              <set_value name="$Ship" exact="$DockedShips.{$d}" />
+              <do_if value="$Ship.isplayerowned or player.age - $ActionDefinition.$EvacStartTime lt 30min">
+                <do_if value="not @$EcavuationShipOrders.{$Ship} or not $Ship.orders.indexof.{$EcavuationShipOrders.{$Ship}}">
+                  <get_safe_pos result="$SafePos" sector="$RequestSector" min="$Station.size" max="$Station.size * 2" object="$Station" />
+                  <create_order id="'MoveWait'" immediate="true" object="$Ship" name="$Order">
+                    <param name="destination" value="[$RequestSector, $SafePos]" />
+                    <param name="timeout" value="5min" />
+                    <param name="debugchance" value="$AIDebugChance" />
+                  </create_order>
+                  <set_value name="$EcavuationShipOrders.{$Ship}" exact="$Order" />
+                </do_if>
+              </do_if>
+              <do_else>
+                <!-- fallback: if we haven't been able to evacuate NPC ships within half an hour, just destroy them -->
+                <destroy_object object="$Ship" />
+              </do_else>
+            </do_all>
+          </actions>
+        </cue>
+        <cue name="Remove_Factory_EvacFinished" checkinterval="1min">
+          <conditions>
+            <count_object_components object="$Station" class="class.ship" docked="true" includeobjects="true" checkoperational="true" exact="0" />
+            <!--<count_ships space="$Station" docked="true" checkoperational="true" exact="0" />-->
+            <count_object_components object="$Station" owner="faction.player" exact="0" />
+          </conditions>
+          <actions>
+            <remove_value name="$EcavuationShipOrders" />
+            <set_value name="$ActionDefinition.$EvacFinishTime" exact="player.age" />
+            <signal_cue cue="Remove_Factory_Begin_Recycling" />
+          </actions>
+        </cue>
+        <cue name="Remove_Factory_Begin_Recycling">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <actions>
+            <debug_text text="$DebugText + player.age + ': Factory %1 (%2, %3) in %4 beginning recycling process.'.[$Station.knownname, $Station, $Station.idcode, $Station.sector.knownname]" context="false" chance="$DebugChance" />
+            <set_value name="$ActionDefinition.$RecycleStartTime" exact="player.age" />
+            <get_control_entities name="$ControlEntities" object="$Station" />
+            <debug_text text="$DebugText + 'Killing ' + $ControlEntities.count + ' control entities on recycling station ' + $Station.knownname + ' ' + $Station" context="false" chance="$DebugChance" />
+            <do_for_each name="$ControlEntity" in="$ControlEntities">
+              <!-- destroy_object doesn't happen in the same frame so we abort the scripts immediately to prevent errors while the station is already deconstructing and the entities haven't been killed yet -->
+              <abort_scripts entity="$ControlEntity" />
+              <destroy_object object="$ControlEntity" />
+            </do_for_each>
+            <remove_value name="$ControlEntities" />
+            <!-- this starts the actual recycling process of the entire station -->
+            <add_build_to_expand_station object="$Station.buildstorage" buildobject="$Station" />
+          </actions>
+        </cue>
+        <cue name="Remove_Factory_Disregarded" version="2">
+          <conditions>
+            <event_object_signalled object="$Station" param="'factionlogic_econ_disregard'" param2="'$remove_factory'" />
+          </conditions>
+          <actions>
+            <debug_text text="$DebugText + player.age + ': Factory %1 (%2, %3) in %4 has been disregarded and no longer tracks deconstruction progress.'.[$Station.knownname, $Station, $Station.idcode, $Station.sector.knownname]" context="false" chance="$DebugChance" />
+            <cancel_cue cue="Remove_Factory" />
+          </actions>
+          <patch sinceversion="2" state="waiting">
+            <do_if value="Remove_Factory_Begin_Recycling.state != cuestate.waiting">
+              <get_control_entities name="$ControlEntities" object="$Station" />
+              <debug_text text="'Killing ' + $ControlEntities.count + ' control entities on recycling station ' + $Station.knownname + ' ' + $Station" filter="savegame" />
+              <do_for_each name="$ControlEntity" in="$ControlEntities">
+                <destroy_object object="$ControlEntity" />
+              </do_for_each>
+              <remove_value name="$ControlEntities" />
+            </do_if>
+          </patch>
+        </cue>
+        <cue name="Remove_Factory_Destroyed">
+          <conditions>
+            <event_object_destroyed object="$Station" />
+          </conditions>
+          <actions>
+            <debug_text text="$DebugText + player.age + ': Factory %1 (%2, %3) in %4 has been destroyed.'.[$Station.knownname, $Station, $Station.idcode, $Station.sector.knownname]" context="false" chance="$DebugChance" />
+            <cancel_cue cue="Remove_Factory" />
+          </actions>
+        </cue>
+        <cue name="Remove_Factory_Finished">
+          <conditions>
+            <event_build_finished object="$Station.buildstorage" />
+          </conditions>
+          <actions>
+            <debug_text text="$DebugText + player.age + ': Factory %1 (%2, %3) in %4 has been deconstructed.'.[$Station.knownname, $Station, $Station.idcode, $Station.sector.knownname]" context="false" chance="$DebugChance" />
+            <set_value name="$ActionDefinition.$RecycleEndTime" exact="player.age" />
+            <cancel_cue cue="Remove_Factory" />
+          </actions>
+        </cue>
+      </cues>
+    </cue>
+  </cues>
+</mdscript>
