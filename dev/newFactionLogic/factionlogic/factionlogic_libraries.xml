@@ -1,0 +1,368 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="FactionLogic_Libraries" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../xsd/md.xsd">
+  <cues>
+    <library name="EvaluateForceStrengthLib" purpose="run_actions">
+      <params>
+        <param name="Ships" comment="Ship or list/group of ships" />
+        <param name="SubordinateThreatFactor" default="0.8" />
+        <param name="ResultTable" default="null" />
+      </params>
+      <actions>
+        <set_value name="$Result" exact="0" />
+        <do_for_each name="$Ship" in="if typeof $Ships == datatype.component then [$Ships] else $Ships">
+          <run_actions ref="Estimated_Ship_Strength_Lib" result="$ShipThreat">
+            <param name="Ship" value="$Ship" />
+            <param name="SubordinateThreatFactor" value="$SubordinateThreatFactor" />
+          </run_actions>
+          <do_if value="$ResultTable">
+            <set_value name="$ResultTable.{$Ship}" exact="$ShipThreat" />
+          </do_if>
+          <set_value name="$Result" exact="$ShipThreat" operation="add" />
+        </do_for_each>
+        <return value="$Result" />
+      </actions>
+    </library>
+
+    <!--Internal use-->
+    <library name="Get_Suitable_Jobs_Lib" purpose="run_actions">
+      <params>
+        <param name="JobDefinitions" />
+        <param name="Points" />
+        <param name="Faction" />
+        <param name="Commandeerable" default="false" />
+        <param name="AdditionalTags" default="null" comment="Tag or list of tags used in addition to the tags of the JobsTable" />
+        <param name="DebugChance" default="0" />
+      </params>
+      <actions>
+        <assert value="typeof $JobDefinitions == datatype.list" />
+        <assert value="$Points gt 0" />
+        <assert value="typeof $Faction == datatype.faction" />
+
+        <create_list name="$JobListIndexes" exact="$JobDefinitions.count" />
+        <do_all exact="$JobDefinitions.count" counter="$i">
+          <set_value name="$JobListIndexes.{$i}" exact="$i" />
+        </do_all>
+
+        <set_value name="$Suitable_Jobs" exact="[]" />
+        <debug_text text="'Attempting to get suitable job ships for ' + $Faction + '. Points: ' + $Points" chance="$DebugChance" />
+
+        <set_value name="$MatchingJobsTable" exact="table[]" />
+        <set_value name="$AffordableDefinitions" exact="[]" />
+
+        <do_if value="$AdditionalTags">
+          <set_value name="$CombinedTagList" exact="[]" />
+        </do_if>
+
+        <set_value name="$Tries" exact="0" />
+        <set_value name="$PointsOverflow" exact="0" />
+        <do_while value="$Points gt 0 and $JobListIndexes.count">
+          <set_value name="$Tries" operation="add" />
+          <set_value name="$Definition" exact="null" />
+          <set_value name="$Cost" exact="0" />
+          <clear_list list="$AffordableDefinitions" />
+
+          <do_all exact="$JobListIndexes.count" counter="$i">
+            <do_if value="$AffordableDefinitions.count or $JobDefinitions.{$JobListIndexes.{$i}}.$Points le $Points">
+              <append_to_list name="$AffordableDefinitions" exact="$JobListIndexes.{$i}" />
+            </do_if>
+          </do_all>
+
+          <do_if value="$AffordableDefinitions.count">
+            <!--Hardcoded scale as it can't be an expression-->
+            <do_if value="$Tries" exact="1">
+              <set_value name="$Index" min="1" max="$AffordableDefinitions.count" profile="decreasing" scale="4" />
+            </do_if>
+            <do_elseif value="$Tries" exact="2">
+              <set_value name="$Index" min="1" max="$AffordableDefinitions.count" profile="decreasing" scale="3" />
+            </do_elseif>
+            <do_elseif value="$Tries" exact="3">
+              <set_value name="$Index" min="1" max="$AffordableDefinitions.count" profile="decreasing" scale="2" />
+            </do_elseif>
+            <do_elseif value="$Tries" min="4">
+              <set_value name="$Index" min="1" max="$AffordableDefinitions.count" profile="decreasing" />
+            </do_elseif>
+            <set_value name="$SelectedJobIndex" exact="$AffordableDefinitions.{$Index}" />
+            <set_value name="$Definition" exact="$JobDefinitions.{$SelectedJobIndex}" />
+            <set_value name="$Cost" exact="$Definition.$Points" />
+
+            <do_if value="$MatchingJobsTable.{$SelectedJobIndex}?">
+              <set_value name="$JobsList" exact="$MatchingJobsTable.{$SelectedJobIndex}" />
+              <debug_text text="'Has already found suitable jobs for cost ' + $Cost + ' Jobs: ' + $JobsList" chance="$DebugChance" />
+            </do_if>
+            <do_else>
+              <do_if value="$CombinedTagList?">
+                <clear_list list="$CombinedTagList" />
+                <append_list_elements name="$CombinedTagList" other="$Definition.$Tags" />
+                <do_if value="typeof $AdditionalTags == datatype.list">
+                  <append_list_elements name="$CombinedTagList" other="$AdditionalTags" />
+                </do_if>
+                <do_else>
+                  <append_to_list name="$CombinedTagList" exact="$AdditionalTags" />
+                </do_else>
+                <get_suitable_job result="$JobsList" multiple="true" faction="$Faction" size="$Definition.$Class" tags="$CombinedTagList" onlycommandeerable="$Commandeerable" />
+              </do_if>
+              <do_else>
+                <get_suitable_job result="$JobsList" multiple="true" faction="$Faction" size="$Definition.$Class" tags="$Definition.$Tags" onlycommandeerable="$Commandeerable" />
+              </do_else>
+              <set_value name="$MatchingJobsTable.{$SelectedJobIndex}" exact="$JobsList" />
+            </do_else>
+
+            <do_if value="$JobsList.count">
+              <set_value name="$Tries" exact="0" />
+              <append_to_list name="$Suitable_Jobs" exact="$JobsList.random" />
+              <set_value name="$Points" operation="subtract" exact="$Cost" />
+              <debug_text text="'Selected job ' + $Suitable_Jobs.{$Suitable_Jobs.count} + ' for cost: ' + $Cost + '; points now ' + $Points" chance="$DebugChance" />
+              <do_if value="$PointsOverflow gt 0">
+                <debug_text text="'Attempted to add $PointsOverflow back to $Points. $PointsOverflow: ' + $PointsOverflow + '; $Points now: ' + ($Points + $PointsOverflow)" chance="$DebugChance" />
+                <set_value name="$Points" operation="add" exact="$PointsOverflow" />
+                <set_value name="$PointsOverflow" exact="0" />
+              </do_if>
+            </do_if>
+            <do_else>
+              <!--No matching jobs. Remove entry in $JobListIndexes-->
+              <debug_text text="'No suitable job for class ' + $Definition.$Class + ' at cost ' + $Cost" chance="$DebugChance" />
+              <remove_from_list name="$JobListIndexes" exact="$SelectedJobIndex" multiple="false" />
+            </do_else>
+          </do_if>
+          <do_if value="$Tries gt 0">
+            <do_if value="$Cost">
+              <set_value name="$PointDiff" exact="$Points - $Cost" />
+            </do_if>
+            <do_elseif value="$Tries gt 4">
+              <do_if value="$Points gt 1">
+                <!--$Points may be a float. Use 2 as a minimum for safety-->
+                <set_value name="$PointDiff" min="1" max="[$Points - 1, 2].max" />
+              </do_if>
+            </do_elseif>
+            <do_else>
+              <set_value name="$Points" exact="0" />
+              <set_value name="$PointDiff" exact="0" />
+            </do_else>
+
+            <do_if value="$PointDiff">
+              <set_value name="$Tries" exact="0" />
+              <set_value name="$Points" operation="subtract" exact="$PointDiff" />
+              <set_value name="$PointsOverflow" operation="add" exact="$PointDiff" />
+              <debug_text text="'Attempting another tier by reducing $Points to ' + $Points + '. Points overflow is now ' + $PointsOverflow" chance="$DebugChance" />
+            </do_if>
+          </do_if>
+        </do_while>
+
+        <return value="$Suitable_Jobs" />
+      </actions>
+    </library>
+
+    <!--returns a suitable situation ID for the faction in the sector.
+    Primarily used to help in the display of notifications when a faction subgoal has performed an activity
+    
+    potential results (ordered by priority):
+    'faction_is_war_host'     - Player is subscribed to a war and the faction is the host
+    'faction_is_war_enemy'    - Player is subscribed to a war and the faction is the enemy
+    'enemy_to_local_friend'   - Faction is an enemy to a local faction who is friendly to the player
+    'neutral_to_local_friend' - Faction is neutral to a local faction who is friendly to the player-->
+    <library name="Get_Faction_Situation_By_Sector" purpose="run_actions">
+      <params>
+        <param name="Faction" />
+        <param name="Sector" />
+      </params>
+      <actions>
+        <!--TODO @Owen check if active war subscriptions involve this space, regardless of sector ownership-->
+
+        <set_value name="$DisplayNotification" exact="false" />
+        <set_value name="$SectorOwner" exact="$Sector.owner" />
+        <set_value name="$IsEnemyToLocation" exact="false" />
+        <do_if value="$Sector.iscontested">
+          <set_value name="$ContestingFactions" exact="$Sector.contestingfactions" />
+          <set_value name="$SectorOwner" exact="null" />
+        </do_if>
+
+        <!--Check if the player is part of a subscription related to the owner-->
+        <run_actions ref="md.X4Ep1_War_Subscriptions.Get_Active_War_Subscriptions" result="$ActiveAlliedSubscriptions">
+          <param name="HostFactions" value="[$Faction]" />
+          <param name="EnemyFactions" value="if $ContestingFactions? then $ContestingFactions else [$SectorOwner]" />
+        </run_actions>
+        <set_value name="$ActiveEnemySubscriptions" exact="[]" />
+        <do_if value="not $ActiveAlliedSubscriptions">
+          <run_actions ref="md.X4Ep1_War_Subscriptions.Get_Active_War_Subscriptions" result="$ActiveEnemySubscriptions">
+            <param name="HostFactions" value="if $ContestingFactions? then $ContestingFactions else [$SectorOwner]" />
+            <param name="EnemyFactions" value="[$Faction]" />
+          </run_actions>
+        </do_if>
+
+        <do_if value="$ActiveAlliedSubscriptions.count">
+          <set_value name="$DisplayNotification" exact="true" />
+        </do_if>
+        <do_elseif value="$ActiveEnemySubscriptions.count">
+          <set_value name="$DisplayNotification" exact="true" />
+          <set_value name="$IsEnemyToLocation" exact="true" />
+        </do_elseif>
+        <!--If not part of a subscription, check if the player is close by and has a friendly faction who will broadcast the news-->
+        <do_elseif value="$Sector.isknown">
+          <set_value name="$SectorDist" exact="player.entity.gatedistance.{$Sector}" />
+          <do_if value="$SectorDist ge 0 and $SectorDist le 1">
+            <do_if value="$ContestingFactions?">
+              <do_for_each in="$ContestingFactions">
+                <do_if value="not loop.element.hasrelation.enemy.{faction.player}">
+                  <set_value name="$DisplayNotification" exact="true" />
+                  <!--Don't break. We want to flag if someone conciders the faction hostile-->
+                  <do_if value="loop.element.hasrelation.enemy.{$Faction}">
+                    <set_value name="$IsEnemyToLocation" exact="true" />
+                  </do_if>
+                </do_if>
+              </do_for_each>
+            </do_if>
+            <do_elseif value="$SectorOwner">
+              <set_value name="$DisplayNotification" exact="not $SectorOwner.hasrelation.enemy.{faction.player}" />
+            </do_elseif>
+          </do_if>
+        </do_elseif>
+
+        <do_if value="$DisplayNotification">
+          <do_if value="$ActiveAlliedSubscriptions.count">
+            <!--Faction is a war subscription host performing an activity in enemy space-->
+            <return value="'faction_is_war_host'" />
+          </do_if>
+          <do_elseif value="$ActiveEnemySubscriptions.count">
+            <!--Faction is a war subscription enemy performing an activity in host space-->
+            <return value="'faction_is_war_enemy'" />
+          </do_elseif>
+          <do_elseif value="$IsEnemyToLocation">
+            <!--Faction is an enemy to a local faction friendly to the player-->
+            <return value="'enemy_to_local_friend'" />
+          </do_elseif>
+          <do_else>
+            <!--Faction is not enemy to a local faction friendly to the player-->
+            <return value="'neutral_to_local_friend'" />
+          </do_else>
+        </do_if>
+        <return value="null" />
+      </actions>
+    </library>
+
+    <!--this.$Sector must be set-->
+    <library name="SectorNoLongerBorder">
+      <actions>
+        <debug_text text="this.$Sector + ' ' + this.$Sector.knownname + ' is no longer considered border for ' + $Faction" chance="if $DebugChance == 100 and this.$Sector.haslocationtag.border then 100 else 0" />
+        <remove_space_location_tag space="this.$Sector" tag="tag.border" />
+      </actions>
+    </library>
+
+    <library name="UpdateData">
+      <actions>
+        <set_value name="$Clusters" exact="[]" />
+        <set_value name="$Zones" exact="[]" />
+
+        <!--Populate $ClaimedSectors will all owned and contested sectors of this faction-->
+        <clear_group group="$ClaimedSectors" />
+        <find_sector name="$Sectors" owner="$Faction" multiple="true" />
+        <add_to_group groupname="$ClaimedSectors" list="$Sectors" />
+        <find_sector groupname="$ClaimedSectors" contestedby="$Faction" />
+
+        <do_for_each name="$Loop_Sector" in="$Sectors">
+          <do_if value="not $Clusters.indexof.{$Loop_Sector.cluster}">
+            <append_to_list name="$Clusters" exact="$Loop_Sector.cluster" />
+          </do_if>
+        </do_for_each>
+
+        <find_zone name="$Zones" space="$Sectors" normalzone="true" multiple="true" />
+
+        <set_value name="$AdjacentSectors" exact="[]" />
+        <set_value name="this.$ExcludedSectors" exact="$Sectors.clone" />
+        <do_if value="$ExcludedSectors.count">
+          <append_list_elements name="this.$ExcludedSectors" other="$ExcludedSectors" />
+        </do_if>
+
+        <!--Find gates in owned sectors which lead to unowned sectors and list those sectors as adjacent. Flag owned sectors bordering enemies as border.-->
+        <do_for_each name="$OwnSector" in="$Sectors">
+          <find_gate name="$JumpGates" space="$OwnSector" active="true" multiple="true" />
+          <find_highway_entry_gate name="$JumpGates" space="$OwnSector" superhighwaygate="true" append="true" multiple="true" />
+          <set_value name="this.$BorderingEnemy" exact="false" />
+          <do_for_each name="$JumpGate" in="$JumpGates">
+            <debug_text text="'gate ' + $OwnSector.knownname + ' dest ' + $JumpGate.destination.sector + ' ' + $JumpGate.destination.sector.knownname" chance="$DebugChance" />
+            <set_value name="this.$GateDestination" exact="@$JumpGate.destination.sector" />
+            <do_if value="this.$GateDestination and this.$ExcludedSectors.indexof.{this.$GateDestination} == 0">
+              <debug_text text="$Faction + ' is checking ' + this.$GateDestination.knownname + ' ' + this.$GateDestination + ' from ' + $OwnSector.knownname" chance="$DebugChance" />
+              <do_if value="$AdjacentSectors.indexof.{this.$GateDestination} == 0 and this.$GateDestination.owner != $Faction">
+                <append_to_list name="$AdjacentSectors" exact="this.$GateDestination" />
+              </do_if>
+
+              <do_if value="not this.$BorderingEnemy">
+                <!--Check if the sector of our jumpgate is fully in our control but the gate destination leads to a sector owned or contested by an enemy-->
+                <do_if value="this.$GateDestination.iscontested">
+                  <do_for_each name="$ContestingFaction" in="this.$GateDestination.contestingfactions">
+                    <do_if value="$Faction.hasrelation.enemy.{$ContestingFaction}">
+                      <set_value name="this.$BorderingEnemy" exact="true" />
+                      <break />
+                    </do_if>
+                  </do_for_each>
+                </do_if>
+                <do_elseif value="$Faction.hasrelation.enemy.{this.$GateDestination.owner}">
+                  <set_value name="this.$BorderingEnemy" exact="true" />
+                </do_elseif>
+              </do_if>
+            </do_if>
+          </do_for_each>
+          <do_if value="this.$BorderingEnemy">
+            <do_if value="not $OwnSector.haslocationtag.border">
+              <debug_text text="'Faction ' + $Faction + ' will flag sector ' + $OwnSector + ' ' + $OwnSector.knownname + ' as a border sector'" chance="$DebugChance" />
+              <add_space_location_tag space="$OwnSector" tag="tag.border" />
+            </do_if>
+          </do_if>
+          <do_else>
+            <!--Attempt to clear the border tag-->
+            <set_value name="this.$Sector" exact="$OwnSector" />
+            <include_actions ref="md.FactionLogic_Libraries.SectorNoLongerBorder" />
+          </do_else>
+        </do_for_each>
+
+        <debug_text text="$Faction.knownname + ' updating space data - Claimed Sectors: ' + $ClaimedSectors.count + ' - Adjacent Sectors: ' + $AdjacentSectors.count" chance="$DebugChance2" />
+
+        <do_if value="player.age ge $NextJobRedeployTime">
+          <signal_cue cue="md.FactionLogic.RedeployJobShips" check="false" />
+        </do_if>
+
+        <!--<debug_text text="'$AdjacentSectors'"/>
+                <do_all exact="$AdjacentSectors.count" counter="$AdjacentSectorsCounter">
+                  <debug_text text="$AdjacentSectors.{$AdjacentSectorsCounter}.knownname" chance="$DebugChance"/>
+                </do_all>-->
+
+        <!--<set_value name="$MilitaryStrength" exact="0"/>
+                <find_ship name="$MilitaryShips" primarypurpose="purpose.fight" owner="$Faction" space="player.galaxy" multiple="true"/>
+                <do_all exact="$MilitaryShips.count" counter="$MilitaryCounter">
+                  <do_if value="$MilitaryShips.{$MilitaryCounter}.isclass.ship_xs">
+                    <set_value name="$MilitaryStrength" exact="1" operation="add"/>
+                  </do_if>
+                  <do_elseif value="$MilitaryShips.{$MilitaryCounter}.isclass.ship_s">
+                    <set_value name="$MilitaryStrength" exact="5" operation="add"/>
+                  </do_elseif>
+                  <do_elseif value="$MilitaryShips.{$MilitaryCounter}.isclass.ship_m">
+                    <set_value name="$MilitaryStrength" exact="8" operation="add"/>
+                  </do_elseif>
+                  <do_elseif value="$MilitaryShips.{$MilitaryCounter}.isclass.ship_l">
+                    <set_value name="$MilitaryStrength" exact="35" operation="add"/>
+                  </do_elseif>
+                  <do_elseif value="$MilitaryShips.{$MilitaryCounter}.isclass.ship_xl">
+                    <set_value name="$MilitaryStrength" exact="75" operation="add"/>
+                  </do_elseif>
+                </do_all>
+                <append_to_list name="$MilitaryStrengthList" exact="$MilitaryStrength"/>-->
+
+        <!--<debug_text text="$Faction + ' MilitaryStrength: ' + $MilitaryStrength" chance="$DebugChance"/>
+                <do_if value="$MilitaryStrengthList.count" min="2">
+                  <debug_text text="$Faction + ' MilitaryStrength was: ' + $MilitaryStrengthList.{$MilitaryStrengthList.count - 1}" chance="$DebugChance"/>
+                </do_if>-->
+
+      </actions>
+    </library>
+
+    <library name="Purge_Outdated_Data" purpose="include_actions">
+      <actions>
+        <do_all exact="$Crises.count" counter="$crisis_i" reverse="true">
+          <do_if value="not $Crises.{$crisis_i}.exists">
+            <remove_value name="$Crises.{$crisis_i}" />
+          </do_if>
+        </do_all>
+      </actions>
+    </library>
+  </cues>
+</mdscript>

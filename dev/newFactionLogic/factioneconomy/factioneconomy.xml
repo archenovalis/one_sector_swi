@@ -1,0 +1,1620 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="FactionEconomy" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../xsd/md.xsd">
+  <cues>
+
+    <!--TODO @Owen - if traffic levels for a station are at a sustained high level, build a dock area-->
+
+    <!--Helper libraries-->
+
+
+    <!--Factories created by economic faction logic do not initially have habitation modules to prevent them complaining about workforce wares before they've even started successfully producing
+    When a factory in $Factories finishes their first production they will attempt to add a habitation module to their construction plan-->
+    <cue name="Habitation_Helper" namespace="this">
+      <actions>
+        <create_group groupname="$Factories" />
+      </actions>
+      <cues>
+        <cue name="Habitation_Helper_Production_Finished" instantiate="true" namespace="this">
+          <conditions>
+            <event_object_production_finished group="parent.$Factories" />
+          </conditions>
+          <actions>
+            <set_value name="$Station" exact="event.object" />
+            <set_value name="$ModuleSet" exact="$Station.modulesets.{1}" />
+            <set_value name="$DebugChance" exact="0" />
+
+            <remove_from_group group="parent.$Factories" object="$Station" />
+
+            <set_value name="$CurrentPlan" exact="$Station.plannedconstruction.sequence" />
+            <debug_text text="'Stations current plan has ' + $CurrentPlan.count + ' entries'" chance="$DebugChance" />
+
+            <set_value name="$PlannedModules" exact="[]" />
+            <do_all exact="$CurrentPlan.count" counter="$i">
+              <append_to_list name="$PlannedModules" exact="$CurrentPlan.{$i}.macro" />
+            </do_all>
+
+            <!--Run FinaliseStations library-->
+            <set_value name="$DebugFileName" exact="md.$SystemTimeAtGamestart + '_' + $Station + '_hab_extension'" comment="The name of the file to which the log will be saved. This is 'faction_logic.txt'" />
+            <set_value name="$DebugDirectory" exact="'faction_logic'" comment="The directory under which log files should be kept" />
+            <set_value name="$DebugOutput" exact="false" comment="Should the log file also be printed to VS output? - Make sure this is false for release builds" />
+
+            <set_value name="$AddModules" exact="table[]" />
+            <set_value name="$Hab_UseForeignModules" exact="false" />
+            <set_value name="$Hab_ValidRaces" exact="[race.argon, race.paranid, race.teladi, race.split, race.terran]" />
+            <include_actions ref="md.FinaliseStations.DefaultCalculateHabitation" />
+
+            <set_value name="$NewModules" exact="[]" />
+            <do_for_each name="$Module" valuename="$ModuleCount" in="$AddModules">
+              <do_all exact="$ModuleCount">
+                <append_to_list name="$NewModules" exact="$Module" />
+              </do_all>
+            </do_for_each>
+            <debug_text text="'New modules: ' + $NewModules" chance="$DebugChance" />
+
+            <do_if value="$NewModules.count">
+              <get_module_definition macro="$ViableConnectionModules" faction="$Station.owner" tags="[tag.connection, tag.module]" set="$ModuleSet" multiple="true" />
+              <create_construction_sequence station="$Station" base="$Station.plannedconstruction.sequence" macros="$NewModules" connectors="$ViableConnectionModules" />
+              <debug_text text="player.age + ' Beginning construction sequence generation for: ' + $Station + ' ' + $Station.knownname" chance="$DebugChance" />
+            </do_if>
+            <do_else>
+              <cancel_cue cue="this" />
+            </do_else>
+          </actions>
+          <cues>
+            <cue name="Habitation_Helper_Generation_Finished">
+              <conditions>
+                <event_object_construction_sequence_created object="$Station" />
+              </conditions>
+              <actions>
+                <debug_text text="player.age + ' Generated construction sequence for: ' + $Station + ' sequence: ' + event.param + ' success: '+ event.param2" chance="$DebugChance" />
+                <do_if value="event.param and event.param2">
+                  <!--Successful construction sequence generation-->
+                  <add_build_to_expand_station result="$BuildTask" buildobject="$Station" object="$Station.buildstorage" constructionplan="event.param" />
+                </do_if>
+
+                <cancel_cue cue="namespace" />
+              </actions>
+            </cue>
+
+            <cue name="Habitation_Helper_Generation_Aborted">
+              <conditions>
+                <event_game_loaded />
+              </conditions>
+              <actions>
+                <!-- a pending construction sequence generation would be lost, add to group again and try later -->
+                <add_to_group groupname="namespace.parent.$Factories" object="$Station" />
+                <cancel_cue cue="namespace" />
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+      </cues>
+    </cue>
+
+    <!--Faction economy library-->
+    <library name="Econ_Manager" namespace="this" version="6">
+      <params>
+        <param name="FactionManagerCue" />
+        <param name="Faction" />
+        <param name="ConsumedFactions" default="[]" />
+        <param name="DebugChance" default="0" />
+      </params>
+      <actions>
+        <set_value name="$DebugText" exact="'(' + $Faction.id + ') Econ_Manager - '" />
+        <set_value name="$Reports" exact="table[]" />
+
+        <!--Table of actions the faction has attemtped to fix economic problems.-->
+        <!--Key is by sector, value is the list of actions-->
+        <set_value name="$ActionReports" exact="table[]" />
+
+        <!--Table of sectors within 1 jump of the sector (including itself)-->
+        <set_value name="$SectorNeighbourTable" exact="table[]" />
+        <include_actions ref="md.FactionEconomy_Libraries.UpdateSectorNeighbourTable" />
+
+        <set_value name="$InsufficientProductsTable" exact="table[]" />
+        <set_value name="$ShortageProductsTable" exact="table[]" />
+        <set_value name="$OverflowProductsTable" exact="table[]" />
+        <set_value name="$InsufficientWorkforceTable" exact="table[]" />
+        <set_value name="$ShortageWorkforceTable" exact="table[]" />
+        <set_value name="$InsufficientBuildTable" exact="table[]" />
+        <set_value name="$ShortageBuildTable" exact="table[]" />
+        <set_value name="$BuyOfferAmountsTable" exact="table[]" />
+        <set_value name="$SellOfferAmountsTable" exact="table[]" />
+
+        <!--Aggregated tables have the Ware as key and the value is the aggregated time of all reports for that ware-->
+        <set_value name="$AggregatedInsufficientProductsTable" exact="table[]" />
+        <set_value name="$AggregatedShortageProductsTable" exact="table[]" />
+        <set_value name="$AggregatedOverflowProductsTable" exact="table[]" />
+        <set_value name="$AggregatedInsufficientWorkforceTable" exact="table[]" />
+        <set_value name="$AggregatedShortageWorkforceTable" exact="table[]" />
+        <set_value name="$AggregatedInsufficientBuildTable" exact="table[]" />
+        <set_value name="$AggregatedShortageBuildTable" exact="table[]" />
+        <set_value name="$AggregatedBuyOfferAmountsTable" exact="table[]" />
+        <set_value name="$AggregatedSellOfferAmountsTable" exact="table[]" />
+
+        <!--Table of sectors which contain ware tables of aggregated report values-->
+        <set_value name="$SectorInsufficientProductsTable" exact="table[]" />
+        <set_value name="$SectorShortageProductsTable" exact="table[]" />
+        <set_value name="$SectorOverflowProductsTable" exact="table[]" />
+        <set_value name="$SectorInsufficientWorkforceTable" exact="table[]" />
+        <set_value name="$SectorShortageWorkforceTable" exact="table[]" />
+        <set_value name="$SectorInsufficientBuildTable" exact="table[]" />
+        <set_value name="$SectorShortageBuildTable" exact="table[]" />
+        <set_value name="$SectorBuyOfferAmountsTable" exact="table[]" />
+        <set_value name="$SectorSellOfferAmountsTable" exact="table[]" />
+      </actions>
+      <patch sinceversion="2" state="complete">
+        <set_value name="$BuyOfferAmountsTable" exact="table[]" />
+        <set_value name="$SellOfferAmountsTable" exact="table[]" />
+        <set_value name="$AggregatedBuyOfferAmountsTable" exact="table[]" />
+        <set_value name="$AggregatedSellOfferAmountsTable" exact="table[]" />
+        <set_value name="$SectorBuyOfferAmountsTable" exact="table[]" />
+        <set_value name="$SectorSellOfferAmountsTable" exact="table[]" />
+      </patch>
+      <patch sinceversion="3" state="complete">
+        <set_value name="$OverflowProductsTable" exact="table[]" />
+        <set_value name="$AggregatedOverflowProductsTable" exact="table[]" />
+        <set_value name="$SectorOverflowProductsTable" exact="table[]" />
+      </patch>
+      <patch sinceversion="4" state="complete">
+        <include_actions ref="md.FactionEconomy_Libraries.UpdateSectorNeighbourTable" />
+      </patch>
+      <patch sinceversion="5" state="complete">
+        <do_if value="$Faction == faction.trinity">
+          <set_value name="$ConsumedFactions" exact="[faction.paranid, faction.holyorder]" />
+        </do_if>
+        <do_else>
+          <set_value name="$ConsumedFactions" exact="[]" />
+        </do_else>
+      </patch>
+      <patch sinceversion="6" state="complete">
+        <!--Find paused productions which have been forgotten by the Econ_Manager-->
+        <find_station_by_true_owner name="$StationsWithPausedModules" faction="$Faction" space="player.galaxy" checkoperational="true" canequipships="false" tradestation="false" headquarters="false" multiple="true">
+          <match_child class="class.production" pausedmanually="true" />
+        </find_station_by_true_owner>
+
+        <do_if value="$StationsWithPausedModules.count">
+          <set_value name="$PauseActionModules" exact="[]" />
+          <do_for_each valuename="$ActionReportList" in="$ActionReports">
+            <do_for_each name="$ActionReport" in="$ActionReportList">
+              <set_value name="$ActionReportDef" exact="$ActionReport.$ActionDef" />
+
+              <do_if value="$ActionReportDef.$Type == '$pause_production' and $ActionReportDef.$PauseModule.exists">
+                <append_to_list name="$PauseActionModules" exact="$ActionReportDef.$PauseModule" />
+              </do_if>
+            </do_for_each>
+          </do_for_each>
+
+          <do_for_each name="$PausedModuleStation" in="$StationsWithPausedModules">
+            <find_object_component name="$PausedModules" object="$PausedModuleStation" class="class.production" pausedmanually="true" excluded="$PauseActionModules" multiple="true" />
+            <do_for_each name="$PausedModule" in="$PausedModules">
+              <debug_text text="'Production module ' + $PausedModule + ' ' + $PausedModule.knownname + ' was paused but no longer had a matching pause request. Unpausing'" filter="savegame" />
+              <set_production_paused object="$PausedModule" paused="false" />
+            </do_for_each>
+          </do_for_each>
+        </do_if>
+        <remove_value name="$PauseActionModules" />
+        <remove_value name="$StationsWithPausedModules" />
+      </patch>
+      <cues>
+
+        <cue name="Manage_Stations" ref="md.FactionEconomy_Stations.Manage_Stations">
+          <param name="FactionManagerCue" value="$FactionManagerCue" />
+          <param name="Faction" value="$Faction" />
+          <param name="DebugChance" value="$DebugChance" />
+        </cue>
+
+        <cue name="RespondToShortageData" instantiate="true">
+          <conditions>
+            <event_cue_signalled cue="md.FactionEconomy_Reports.ShortageDataGenerated" />
+          </conditions>
+          <delay min="1s" max="5s" />
+          <actions>
+            <signal_cue_instantly cue="EvaluateShortages" param="$Faction" check="false" />
+          </actions>
+        </cue>
+
+        <cue name="EvaluateShortages" version="2">
+          <conditions>
+            <event_cue_signalled />
+            <check_value value="md.FactionEconomy_Reports.GenerateShortageData.state == cuestate.waiting" />
+          </conditions>
+          <actions>
+            <set_value name="$DebugChance" exact="0" />
+
+            <debug_text text="'STARTING EVALUATION ' + $Faction" chance="$DebugChance" />
+
+            <include_actions ref="md.FactionEconomy_Libraries.UpdateSectorNeighbourTable" />
+
+            <run_actions ref="md.FactionEconomy_Libraries.CleanProductionIssueForFaction" comment="assume all previous data is invalid">
+              <param name="Faction" value="$Faction" />
+            </run_actions>
+
+            <set_value name="$HadReports" exact="false" />
+            <do_if value="@md.FactionEconomy_Reports.GlobalStorageData.$Reports">
+              <set_value name="$OwnerReports" exact="@md.FactionEconomy_Reports.GlobalStorageData.$Reports.{$Faction}" />
+              <do_if value="$OwnerReports">
+                <set_value name="$HadReports" exact="true" />
+
+                <clear_table table="$InsufficientProductsTable" />
+                <clear_table table="$ShortageProductsTable" />
+                <clear_table table="$OverflowProductsTable" />
+                <clear_table table="$InsufficientWorkforceTable" />
+                <clear_table table="$ShortageWorkforceTable" />
+                <clear_table table="$InsufficientBuildTable" />
+                <clear_table table="$ShortageBuildTable" />
+                <clear_table table="$BuyOfferAmountsTable" />
+                <clear_table table="$SellOfferAmountsTable" />
+
+                <!--Aggregated tables have the Ware as key and the value is the aggregated time of all reports for that ware-->
+                <clear_table table="$AggregatedInsufficientProductsTable" />
+                <clear_table table="$AggregatedShortageProductsTable" />
+                <clear_table table="$AggregatedOverflowProductsTable" />
+                <clear_table table="$AggregatedInsufficientWorkforceTable" />
+                <clear_table table="$AggregatedShortageWorkforceTable" />
+                <clear_table table="$AggregatedInsufficientBuildTable" />
+                <clear_table table="$AggregatedShortageBuildTable" />
+                <clear_table table="$AggregatedBuyOfferAmountsTable" />
+                <clear_table table="$AggregatedSellOfferAmountsTable" />
+
+                <!--Table of sectors which contain ware tables of aggregated report values-->
+                <clear_table table="$SectorInsufficientProductsTable" />
+                <clear_table table="$SectorShortageProductsTable" />
+                <clear_table table="$SectorOverflowProductsTable" />
+                <clear_table table="$SectorInsufficientWorkforceTable" />
+                <clear_table table="$SectorShortageWorkforceTable" />
+                <clear_table table="$SectorInsufficientBuildTable" />
+                <clear_table table="$SectorShortageBuildTable" />
+                <clear_table table="$SectorBuyOfferAmountsTable" />
+                <clear_table table="$SectorSellOfferAmountsTable" />
+
+                <set_value name="$TableRef" exact="null" />
+                <set_value name="$TableRefKeys" exact="null" />
+                <set_value name="$ReportKeys" exact="$OwnerReports.keys.list" />
+                <do_all exact="$ReportKeys.count" counter="$i">
+                  <set_value name="$Station" exact="$ReportKeys.{$i}" />
+                  <do_if value="$Station.exists">
+                    <set_value name="$Sector" exact="$Station.sector" />
+
+                    <!--Insufficient Production Wares-->
+                    <do_if value="$OwnerReports.{$Station}.$InsufficientProductionWares?">
+                      <set_value name="$TableRef" exact="$OwnerReports.{$Station}.$InsufficientProductionWares" />
+                      <set_value name="$TableRefKeys" exact="$TableRef.keys.list" />
+                      <do_all exact="$TableRefKeys.count" counter="$k">
+                        <set_value name="$Ware" exact="$TableRefKeys.{$k}" />
+                        <set_value name="$ReportValue" exact="$TableRef.{$Ware}" />
+                        <do_if value="not $SectorInsufficientProductsTable.{$Sector}?">
+                          <set_value name="$SectorInsufficientProductsTable.{$Sector}" exact="table[]" />
+                        </do_if>
+                        <set_value name="$SectorInsufficientProductsTable.{$Sector}.{$Ware}" exact="$ReportValue" operation="add" />
+                        <do_if value="$DebugChance == 100">
+                          <set_value name="$AggregatedInsufficientProductsTable.{$Ware}" exact="$ReportValue" operation="add" />
+                          <!--Avoid clashes by adding a little to the report value-->
+                          <do_while value="$InsufficientProductsTable.{$ReportValue}?">
+                            <set_value name="$ReportValue" exact="1" operation="add" />
+                          </do_while>
+                          <set_value name="$InsufficientProductsTable.{$ReportValue}" exact="table[$Station = $Station, $Ware = $Ware]" />
+                        </do_if>
+                      </do_all>
+                    </do_if>
+
+                    <!--Production wares in short supply-->
+                    <!--<do_if value="$OwnerReports.{$Station}.$ShortageProductionWares?">
+                      <set_value name="$TableRef" exact="$OwnerReports.{$Station}.$ShortageProductionWares"/>
+                      <set_value name="$TableRefKeys" exact="$TableRef.keys.list"/>
+                      <do_all exact="$TableRefKeys.count" counter="$k">
+                        <set_value name="$Ware" exact="$TableRefKeys.{$k}"/>
+                        <set_value name="$ReportValue" exact="$TableRef.{$Ware}"/>
+                        <do_if value="not $SectorShortageProductsTable.{$Sector}?">
+                          <set_value name="$SectorShortageProductsTable.{$Sector}" exact="table[]"/>
+                        </do_if>
+                        <set_value name="$SectorShortageProductsTable.{$Sector}.{$Ware}" exact="$ReportValue" operation="add"/>
+                        <do_if value="$DebugChance == 100">
+                        <set_value name="$AggregatedShortageProductsTable.{$Ware}" exact="$ReportValue" operation="add" />
+                          <do_while value="$ShortageProductsTable.{$ReportValue}?">
+                            <set_value name="$ReportValue" exact="1" operation="add"/>
+                          </do_while>
+                          <set_value name="$ShortageProductsTable.{$ReportValue}" exact="table[$Station = $Station, $Ware = $Ware]"/>
+                        </do_if>
+                      </do_all>
+                    </do_if>-->
+
+                    <!--Production wares in overflow-->
+                    <do_if value="$OwnerReports.{$Station}.$OverflowProductionWares?">
+                      <set_value name="$TableRef" exact="$OwnerReports.{$Station}.$OverflowProductionWares" />
+                      <set_value name="$TableRefKeys" exact="$TableRef.keys.list" />
+                      <do_all exact="$TableRefKeys.count" counter="$k">
+                        <set_value name="$Ware" exact="$TableRefKeys.{$k}" />
+                        <set_value name="$ReportValue" exact="$TableRef.{$Ware}" />
+                        <do_if value="not $SectorOverflowProductsTable.{$Sector}?">
+                          <set_value name="$SectorOverflowProductsTable.{$Sector}" exact="table[]" />
+                        </do_if>
+                        <set_value name="$SectorOverflowProductsTable.{$Sector}.{$Ware}" exact="$ReportValue" operation="add" />
+                        <do_if value="$DebugChance == 100">
+                          <set_value name="$AggregatedOverflowProductsTable.{$Ware}" exact="$ReportValue" operation="add" />
+                          <!--Avoid clashes by adding a little to the report value-->
+                          <do_while value="$OverflowProductsTable.{$ReportValue}?">
+                            <set_value name="$ReportValue" exact="1" operation="add" />
+                          </do_while>
+                          <set_value name="$OverflowProductsTable.{$ReportValue}" exact="table[$Station = $Station, $Ware = $Ware]" />
+                        </do_if>
+                      </do_all>
+                    </do_if>
+
+                    <!--Insufficient Workforce Wares-->
+                    <do_if value="$OwnerReports.{$Station}.$InsufficientWorkforceWares?">
+                      <set_value name="$TableRef" exact="$OwnerReports.{$Station}.$InsufficientWorkforceWares" />
+                      <set_value name="$TableRefKeys" exact="$TableRef.keys.list" />
+                      <do_all exact="$TableRefKeys.count" counter="$k">
+                        <set_value name="$Ware" exact="$TableRefKeys.{$k}" />
+                        <set_value name="$ReportValue" exact="$TableRef.{$Ware}" />
+                        <do_if value="not $SectorInsufficientWorkforceTable.{$Sector}?">
+                          <set_value name="$SectorInsufficientWorkforceTable.{$Sector}" exact="table[]" />
+                        </do_if>
+                        <set_value name="$SectorInsufficientWorkforceTable.{$Sector}.{$Ware}" exact="$ReportValue" operation="add" />
+                        <do_if value="$DebugChance == 100">
+                          <set_value name="$AggregatedInsufficientWorkforceTable.{$Ware}" exact="$ReportValue" operation="add" />
+                          <!--Avoid clashes by adding a little to the report value-->
+                          <do_while value="$InsufficientWorkforceTable.{$ReportValue}?">
+                            <set_value name="$ReportValue" exact="1" operation="add" />
+                          </do_while>
+                          <set_value name="$InsufficientWorkforceTable.{$ReportValue}" exact="table[$Station = $Station, $Ware = $Ware]" />
+                        </do_if>
+                      </do_all>
+                    </do_if>
+
+                    <!--Workforce wares in short supply-->
+                    <!--<do_if value="$OwnerReports.{$Station}.$ShortageWorkforceWares?">
+                      <set_value name="$TableRef" exact="$OwnerReports.{$Station}.$ShortageWorkforceWares"/>
+                      <set_value name="$TableRefKeys" exact="$TableRef.keys.list"/>
+                      <do_all exact="$TableRefKeys.count" counter="$k">
+                        <set_value name="$Ware" exact="$TableRefKeys.{$k}"/>
+                        <set_value name="$ReportValue" exact="$TableRef.{$Ware}"/>
+                        <do_if value="not $SectorShortageWorkforceTable.{$Sector}?">
+                          <set_value name="$SectorShortageWorkforceTable.{$Sector}" exact="table[]"/>
+                        </do_if>
+                        <set_value name="$SectorShortageWorkforceTable.{$Sector}.{$Ware}" exact="$ReportValue" operation="add"/>
+                        <do_if value="$DebugChance == 100">
+                        <set_value name="$AggregatedShortageWorkforceTable.{$Ware}" exact="$ReportValue" operation="add" />
+                          <do_while value="$ShortageWorkforceTable.{$ReportValue}?">
+                            <set_value name="$ReportValue" exact="1" operation="add"/>
+                          </do_while>
+                          <set_value name="$ShortageWorkforceTable.{$ReportValue}" exact="table[$Station = $Station, $Ware = $Ware]"/>
+                        </do_if>
+                      </do_all>
+                    </do_if>-->
+
+                    <!--Insufficient Build Wares-->
+                    <do_if value="$OwnerReports.{$Station}.$InsufficientBuildWares?">
+                      <set_value name="$TableRef" exact="$OwnerReports.{$Station}.$InsufficientBuildWares" />
+                      <set_value name="$TableRefKeys" exact="$TableRef.keys.list" />
+                      <do_all exact="$TableRefKeys.count" counter="$k">
+                        <set_value name="$Ware" exact="$TableRefKeys.{$k}" />
+                        <!--treat insufficient build wares as higher priority?-->
+                        <!--TODO @Owen move to params-->
+                        <set_value name="$ReportValue" exact="$TableRef.{$Ware} * 1" />
+                        <do_if value="not $SectorInsufficientBuildTable.{$Sector}?">
+                          <set_value name="$SectorInsufficientBuildTable.{$Sector}" exact="table[]" />
+                        </do_if>
+                        <set_value name="$SectorInsufficientBuildTable.{$Sector}.{$Ware}" exact="$ReportValue" operation="add" />
+                        <do_if value="$DebugChance == 100">
+                          <set_value name="$AggregatedInsufficientBuildTable.{$Ware}" exact="$ReportValue" operation="add" />
+                          <!--Avoid clashes by adding a little to the report value-->
+                          <do_while value="$InsufficientBuildTable.{$ReportValue}?">
+                            <set_value name="$ReportValue" exact="1" operation="add" />
+                          </do_while>
+                          <set_value name="$InsufficientBuildTable.{$ReportValue}" exact="table[$Station = $Station, $Ware = $Ware]" />
+                        </do_if>
+                      </do_all>
+                    </do_if>
+
+                    <!--Build wares in short supply-->
+                    <!--<do_if value="$OwnerReports.{$Station}.$ShortageBuildWares?">
+                      <set_value name="$TableRef" exact="$OwnerReports.{$Station}.$ShortageBuildWares"/>
+                      <set_value name="$TableRefKeys" exact="$TableRef.keys.list"/>
+                      <do_all exact="$TableRefKeys.count" counter="$k">
+                        <set_value name="$Ware" exact="$TableRefKeys.{$k}"/>
+                        <set_value name="$ReportValue" exact="$TableRef.{$Ware} * 1.5"/>
+                        <do_if value="not $SectorShortageBuildTable.{$Sector}?">
+                          <set_value name="$SectorShortageBuildTable.{$Sector}" exact="table[]"/>
+                        </do_if>
+                        <set_value name="$SectorShortageBuildTable.{$Sector}.{$Ware}" exact="$ReportValue" operation="add"/>
+                        <set_value name="$AggregatedShortageBuildTable.{$Ware}" exact="$ReportValue" operation="add"/>
+                        <do_if value="$DebugChance == 100">
+                          <do_while value="$ShortageBuildTable.{$ReportValue}?">
+                            <set_value name="$ReportValue" exact="1" operation="add"/>
+                          </do_while>
+                          <set_value name="$ShortageBuildTable.{$ReportValue}" exact="table[$Station = $Station, $Ware = $Ware]"/>
+                        </do_if>
+                      </do_all>
+                    </do_if>-->
+
+                    <!--Buy offers-->
+                    <do_if value="$OwnerReports.{$Station}.$BuyOfferAmounts?">
+                      <set_value name="$TableRef" exact="$OwnerReports.{$Station}.$BuyOfferAmounts" />
+                      <set_value name="$TableRefKeys" exact="$TableRef.keys.list" />
+                      <do_all exact="$TableRefKeys.count" counter="$k">
+                        <set_value name="$Ware" exact="$TableRefKeys.{$k}" />
+                        <set_value name="$ReportValue" exact="$TableRef.{$Ware}" />
+                        <do_if value="not $SectorBuyOfferAmountsTable.{$Sector}?">
+                          <set_value name="$SectorBuyOfferAmountsTable.{$Sector}" exact="table[]" />
+                        </do_if>
+                        <set_value name="$SectorBuyOfferAmountsTable.{$Sector}.{$Ware}" exact="$ReportValue" operation="add" />
+                        <do_if value="$DebugChance == 100">
+                          <set_value name="$AggregatedBuyOfferAmountsTable.{$Ware}" exact="$ReportValue" operation="add" />
+                          <!--Avoid clashes by adding a little to the report value-->
+                          <do_while value="$BuyOfferAmountsTable.{$ReportValue}?">
+                            <set_value name="$ReportValue" exact="1" operation="add" />
+                          </do_while>
+                          <set_value name="$BuyOfferAmountsTable.{$ReportValue}" exact="table[$Station = $Station, $Ware = $Ware]" />
+                        </do_if>
+                      </do_all>
+                    </do_if>
+
+                    <!--Sell offers-->
+                    <do_if value="$OwnerReports.{$Station}.$SellOfferAmounts?">
+                      <set_value name="$TableRef" exact="$OwnerReports.{$Station}.$SellOfferAmounts" />
+                      <set_value name="$TableRefKeys" exact="$TableRef.keys.list" />
+                      <do_all exact="$TableRefKeys.count" counter="$k">
+                        <set_value name="$Ware" exact="$TableRefKeys.{$k}" />
+                        <set_value name="$ReportValue" exact="$TableRef.{$Ware}" />
+                        <do_if value="not $SectorSellOfferAmountsTable.{$Sector}?">
+                          <set_value name="$SectorSellOfferAmountsTable.{$Sector}" exact="table[]" />
+                        </do_if>
+                        <set_value name="$SectorSellOfferAmountsTable.{$Sector}.{$Ware}" exact="$ReportValue" operation="add" />
+                        <do_if value="$DebugChance == 100">
+                          <set_value name="$AggregatedSellOfferAmountsTable.{$Ware}" exact="$ReportValue" operation="add" />
+                          <!--Avoid clashes by adding a little to the report value-->
+                          <do_while value="$SellOfferAmountsTable.{$ReportValue}?">
+                            <set_value name="$ReportValue" exact="1" operation="add" />
+                          </do_while>
+                          <set_value name="$SellOfferAmountsTable.{$ReportValue}" exact="table[$Station = $Station, $Ware = $Ware]" />
+                        </do_if>
+                      </do_all>
+                    </do_if>
+
+                  </do_if>
+                </do_all>
+                <remove_value name="$ReportKeys" />
+                <remove_value name="$OwnerReports" />
+
+                <do_if value="$DebugChance == 100">
+                  <debug_text text="'Insufficient production wares'" context="false" />
+                  <set_value name="$TableRef" exact="$AggregatedInsufficientProductsTable" />
+                  <include_actions ref="md.FactionEconomy_Libraries.AggregatedReportTableHelper" />
+
+                  <!--<debug_text text="'Production ware shortages'" context="false"/>
+                  <set_value name="$TableRef" exact="$AggregatedShortageProductsTable"/>
+                  <include_actions ref="md.FactionEconomy_Libraries.AggregatedReportTableHelper"/>-->
+
+                  <debug_text text="'Production ware overflow'" context="false" />
+                  <set_value name="$TableRef" exact="$AggregatedOverflowProductsTable" />
+                  <include_actions ref="md.FactionEconomy_Libraries.AggregatedReportTableHelper" />
+
+                  <debug_text text="'Insufficient workforce res.'" context="false" />
+                  <set_value name="$TableRef" exact="$AggregatedInsufficientWorkforceTable" />
+                  <include_actions ref="md.FactionEconomy_Libraries.AggregatedReportTableHelper" />
+
+                  <!--<debug_text text="'Workforce ware shortages'" context="false"/>
+                  <set_value name="$TableRef" exact="$AggregatedShortageWorkforceTable"/>
+                  <include_actions ref="md.FactionEconomy_Libraries.AggregatedReportTableHelper"/>-->
+
+                  <debug_text text="'Insufficient build res.'" context="false" />
+                  <set_value name="$TableRef" exact="$AggregatedInsufficientBuildTable" />
+                  <include_actions ref="md.FactionEconomy_Libraries.AggregatedReportTableHelper" />
+
+                  <!--<debug_text text="'Build ware shortages'" context="false"/>
+                  <set_value name="$TableRef" exact="$AggregatedShortageBuildTable"/>
+                  <include_actions ref="md.FactionEconomy_Libraries.AggregatedReportTableHelper"/>-->
+
+                  <debug_text text="'Buy offers'" context="false" />
+                  <set_value name="$TableRef" exact="$AggregatedBuyOfferAmountsTable" />
+                  <include_actions ref="md.FactionEconomy_Libraries.AggregatedReportTableHelper" />
+
+                  <debug_text text="'Sell offers'" context="false" />
+                  <set_value name="$TableRef" exact="$AggregatedSellOfferAmountsTable" />
+                  <include_actions ref="md.FactionEconomy_Libraries.AggregatedReportTableHelper" />
+
+                  <set_value name="$TableRef" exact="$InsufficientProductsTable" />
+                  <debug_text text="'Worst insufficient production ware reports (of ' + $TableRef.keys.count + ')'" context="false" />
+                  <set_value name="$DebugReportType" exact="'insufficient'" />
+                  <include_actions ref="md.FactionEconomy_Libraries.SortedReportTableHelper" />
+
+                  <!--<set_value name="$TableRef" exact="$ShortageProductsTable"/>
+                  <debug_text text="'Worst production ware shortage reports (of ' + $TableRef.keys.count + ')'" context="false"/>
+                  <set_value name="$DebugReportType" exact="'short'"/>
+                  <include_actions ref="md.FactionEconomy_Libraries.SortedReportTableHelper"/>-->
+
+                  <set_value name="$TableRef" exact="$OverflowProductsTable" />
+                  <debug_text text="'Worst production ware overflow reports (of ' + $TableRef.keys.count + ')'" context="false" />
+                  <set_value name="$DebugReportType" exact="'overflowing'" />
+                  <include_actions ref="md.FactionEconomy_Libraries.SortedReportTableHelper" />
+
+                  <set_value name="$TableRef" exact="$InsufficientWorkforceTable" />
+                  <debug_text text="'Worst insufficient workforce ware reports (of ' + $TableRef.keys.count + ')'" context="false" />
+                  <set_value name="$DebugReportType" exact="'insufficient'" />
+                  <include_actions ref="md.FactionEconomy_Libraries.SortedReportTableHelper" />
+
+                  <!--<set_value name="$TableRef" exact="$ShortageWorkforceTable"/>
+                  <debug_text text="'Worst workforce ware shortage reports (of ' + $TableRef.keys.count + ')'" context="false"/>
+                  <set_value name="$DebugReportType" exact="'short'"/>
+                  <include_actions ref="md.FactionEconomy_Libraries.SortedReportTableHelper"/>-->
+
+                  <set_value name="$TableRef" exact="$InsufficientBuildTable" />
+                  <debug_text text="'Worst insufficient build ware reports (of ' + $TableRef.keys.count + ')'" context="false" />
+                  <set_value name="$DebugReportType" exact="'insufficient'" />
+                  <include_actions ref="md.FactionEconomy_Libraries.SortedReportTableHelper" />
+
+                  <!--<set_value name="$TableRef" exact="$ShortageBuildTable"/>
+                  <debug_text text="'Worst build ware shortage reports (of ' + $TableRef.keys.count + ')'" context="false"/>
+                  <set_value name="$DebugReportType" exact="'short'"/>
+                  <include_actions ref="md.FactionEconomy_Libraries.SortedReportTableHelper"/>-->
+
+                  <set_value name="$TableRef" exact="$BuyOfferAmountsTable" />
+                  <debug_text text="'Largest amount of buy offers (of ' + $TableRef.keys.count + ')'" context="false" />
+                  <set_value name="$DebugReportType" exact="'buyoffers'" />
+                  <include_actions ref="md.FactionEconomy_Libraries.SortedReportTableHelper" />
+
+                  <set_value name="$TableRef" exact="$SellOfferAmountsTable" />
+                  <debug_text text="'Largest amount of sell offers (of ' + $TableRef.keys.count + ')'" context="false" />
+                  <set_value name="$DebugReportType" exact="'selloffers'" />
+                  <include_actions ref="md.FactionEconomy_Libraries.SortedReportTableHelper" />
+
+                  <set_value name="$TableRef" exact="$SectorInsufficientProductsTable" />
+                  <debug_text text="'Aggregated insufficient production ware reports by sector'" context="false" />
+                  <set_value name="$DebugReportType" exact="'insufficient'" />
+                  <include_actions ref="md.FactionEconomy_Libraries.SectorReportTableHelper" />
+
+                  <!--<set_value name="$TableRef" exact="$SectorShortageProductsTable"/>
+                  <debug_text text="'Aggregated production ware shortage reports by sector'" context="false"/>
+                  <set_value name="$DebugReportType" exact="'shortage'"/>
+                  <include_actions ref="md.FactionEconomy_Libraries.SectorReportTableHelper"/>-->
+
+                  <set_value name="$TableRef" exact="$SectorOverflowProductsTable" />
+                  <debug_text text="'Aggregated production ware overflow reports by sector'" context="false" />
+                  <set_value name="$DebugReportType" exact="'overflow'" />
+                  <include_actions ref="md.FactionEconomy_Libraries.SectorReportTableHelper" />
+
+                  <set_value name="$TableRef" exact="$SectorInsufficientWorkforceTable" />
+                  <debug_text text="'Aggregated insufficient workforce ware reports by sector'" context="false" />
+                  <set_value name="$DebugReportType" exact="'insufficient'" />
+                  <include_actions ref="md.FactionEconomy_Libraries.SectorReportTableHelper" />
+
+                  <!--<set_value name="$TableRef" exact="$SectorShortageWorkforceTable"/>
+                  <debug_text text="'Aggregated workforce ware shortage reports by sector'" context="false"/>
+                  <set_value name="$DebugReportType" exact="'shortage'"/>
+                  <include_actions ref="md.FactionEconomy_Libraries.SectorReportTableHelper"/>-->
+
+                  <set_value name="$TableRef" exact="$SectorInsufficientBuildTable" />
+                  <debug_text text="'Aggregated insufficient build ware reports by sector'" context="false" />
+                  <set_value name="$DebugReportType" exact="'insufficient'" />
+                  <include_actions ref="md.FactionEconomy_Libraries.SectorReportTableHelper" />
+
+                  <!--<set_value name="$TableRef" exact="$SectorShortageBuildTable"/>
+                  <debug_text text="'Aggregated build ware shortage reports by sector'" context="false"/>
+                  <set_value name="$DebugReportType" exact="'shortage'"/>
+                  <include_actions ref="md.FactionEconomy_Libraries.SectorReportTableHelper"/>-->
+
+                  <set_value name="$TableRef" exact="$SectorBuyOfferAmountsTable" />
+                  <debug_text text="'Aggregated buy offer amounts by sector'" context="false" />
+                  <set_value name="$DebugReportType" exact="'buyoffers'" />
+                  <include_actions ref="md.FactionEconomy_Libraries.SectorReportTableHelper" />
+
+                  <set_value name="$TableRef" exact="$SectorSellOfferAmountsTable" />
+                  <debug_text text="'Aggregated sell offer amounts by sector'" context="false" />
+                  <set_value name="$DebugReportType" exact="'selloffers'" />
+                  <include_actions ref="md.FactionEconomy_Libraries.SectorReportTableHelper" />
+                </do_if>
+
+                <!--Decide which reports to act on-->
+                <set_value name="$TransportationThresholds" exact="table[]" />
+                <set_value name="$TransportationThresholds.$request_commandeerable_freighter" exact="3000" />
+                <set_value name="$TransportationThresholds.$request_freighter" exact="6000" />
+                <set_value name="$TransportationThresholds.$request_prio_commandeerable_freighter" exact="10000" />
+                <set_value name="$TransportationThresholds.$request_priority_freighter" exact="17000" />
+                <set_value name="$TransportationThresholdsKeys" exact="$TransportationThresholds.keys.sorted" />
+
+                <set_value name="$ProductionThresholds" exact="table[]" />
+                <set_value name="$ProductionThresholds.$request_production" exact="14400" />
+                <set_value name="$ProductionThresholds.$request_factory" exact="57600" />
+                <set_value name="$ProductionThresholds.$not_viable" exact="230400" />
+                <set_value name="$ProductionThresholdsKeys" exact="$ProductionThresholds.keys.sorted" />
+
+                <set_value name="$OverflowWareThreshold" exact="7200" />
+                <set_value name="$OverflowInsufficientWareThreshold" exact="20000" />
+
+                <set_value name="$InsufficientNeighbourMultiplier" exact="0.2" comment="Factor of which to take neighbouring insufficient resources into account" />
+                <set_value name="$TradeOfferNeighbourMultiplier" exact="0.75" comment="Factor of which to take neighbouring trade offers into account" />
+                <set_value name="$NeighbourActionMultiplier" exact="0.5" comment="Factor of which to take the action score of neighbouring sectors for this ware into account" />
+                <set_value name="$NewProductionInsufficientResourceLimit" exact="600"
+                  comment="Insufficient ware score which must not be exceeded by resource wares when building new productions. Higher values increase the tolerance and may lead to more productions." />
+
+                <!--Check the exising actions to see if any should be disregarded-->
+                <set_value name="$EscalatedActions" exact="[]" />
+                <set_value name="$DisregardedActions" exact="[]" />
+                <run_actions ref="md.FactionEconomy_Libraries.CheckRunningActions">
+                  <param name="Faction" value="$Faction" />
+                  <param name="ActionReports" value="$ActionReports" />
+                  <param name="DisregardedActions" value="$DisregardedActions" />
+                  <param name="EscalatedActions" value="$EscalatedActions" />
+                  <param name="Remove_Factory_Cue" value="md.FactionEconomy_Tasks.Remove_Factory" />
+                  <param name="DebugChance" value="$DebugChance" />
+                </run_actions>
+
+                <!--If any disregarded actions involved building a station, check if it should be removed-->
+                <do_for_each name="$DisregardedAction" in="$DisregardedActions">
+                  <set_value name="$DisregardedActionDef" exact="$DisregardedAction.$ActionDef" />
+                  <do_if value="$DisregardedActionDef.$Type == '$request_factory' and @$DisregardedActionDef.$RemoveFactory and $DisregardedActionDef.$Station.exists">
+                    <set_value name="$Sector" exact="$DisregardedAction.$Sector" />
+                    <set_value name="$NewActionDef" exact="table[]" />
+                    <set_value name="$NewActionDef.$Type" exact="'$remove_factory'" />
+                    <!-- todo: move to industry? -->
+                    <signal_cue_instantly cue="md.FactionEconomy_Tasks.Remove_Factory" param="[$NewActionDef, $DisregardedAction.$Sector, $DisregardedAction.$Ware, $DisregardedActionDef.$Station, $Faction, $DebugText]" />
+                    <do_if value="$NewActionDef.$Station?">
+                      <!--curtime, object_name, object_id, object_idcode, sector_name, faction_id, ware, station_id, station_idcode-->
+                      <debug_text filter="economy_verbose" text="'#FLE#;%1;RemoveFactory;%2;%3;%4;%5;%6;%7'.[player.age, $NewActionDef.$Station.knownname, $NewActionDef.$Station, $NewActionDef.$Station.idcode, $Sector.knownname, $Faction.id, $DisregardedAction.$Ware, '', '']" context="false" />
+                      <set_value name="$NewAction" exact="table[]" />
+                      <set_value name="$NewAction.$ActionDef" exact="$NewActionDef" />
+                      <set_value name="$NewAction.$StartTime" exact="player.age" />
+                      <set_value name="$NewAction.$Sector" exact="$Sector" />
+                      <set_value name="$NewAction.$Ware" exact="$DisregardedAction.$Ware" />
+                      <set_value name="$NewAction.$AggregatedValue" exact="$DisregardedAction.$AggregatedValue" />
+                      <debug_text text="'Successfully added new action ' + $NewAction" context="false" chance="$DebugChance" />
+                      <do_if value="not $ActionReports.{$Sector}?">
+                        <set_value name="$ActionReports.{$Sector}" exact="[]" />
+                      </do_if>
+                      <append_to_list name="$ActionReports.{$Sector}" exact="$NewAction" />
+                      <debug_text text="'Faction now has econ related actions in ' + $ActionReports.keys.count + ' sector(s). '+ $ActionReports.{$Sector}.count +' action(s) in sector ' + $Sector.knownname" context="false" chance="$DebugChance" />
+                    </do_if>
+                  </do_if>
+                </do_for_each>
+                <remove_value name="$DisregardedActionDef" />
+
+                <!--shortage table data is currently not collected or processed-->
+                <set_value name="$ReportTablesToProcess" exact="[$SectorInsufficientProductsTable, $SectorInsufficientWorkforceTable, $SectorInsufficientBuildTable]" />
+
+                <!-- Find overflowing factories and pause productions as needed -->
+                <do_if value="$Faction.isactive and $SectorOverflowProductsTable.keys.count">
+                  <set_value name="$SectorOverflowProductsKeys" exact="$SectorOverflowProductsTable.keys.list" />
+                  <do_all exact="$SectorOverflowProductsKeys.count" counter="$k">
+                    <set_value name="$Sector" exact="$SectorOverflowProductsKeys.{$k}" />
+                    <set_value name="$OverflowWares" exact="$SectorOverflowProductsTable.{$Sector}" />
+                    <set_value name="$OverflowWareKeys" exact="$OverflowWares.keys.list" />
+                    <debug_text text="'processing %1 overflowing wares in sector %2'.[$OverflowWareKeys.count, $Sector.knownname]" context="false" chance="$DebugChance" />
+                    <do_all exact="$OverflowWareKeys.count" counter="$o" reverse="true">
+                      <set_value name="$Ware" exact="$OverflowWareKeys.{$o}" />
+                      <set_value name="$SectorValue" exact="$OverflowWares.{$Ware}" />
+
+                      <do_if value="$SectorValue gt $OverflowWareThreshold">
+                        <set_value name="$WareIsInsufficient" exact="false" />
+                        <!--Do not pause productions here if the product is insufficient for this sector unless it is very extreme.-->
+                        <do_if value="$SectorValue lt $OverflowInsufficientWareThreshold">
+                          <do_for_each name="$ReportTable" in="$ReportTablesToProcess">
+                            <do_if value="$ReportTable.{$Sector}.{$Ware}?">
+                              <set_value name="$WareIsInsufficient" exact="true" />
+                              <break />
+                            </do_if>
+                          </do_for_each>
+                        </do_if>
+                        <do_if value="not $WareIsInsufficient">
+                          <set_value name="$NewActionDef" exact="table[]" />
+                          <set_value name="$NewActionDef.$Type" exact="'$pause_production'" />
+                          <signal_cue_instantly cue="md.FactionEconomy_Tasks.Pause_Production_Module" param="[$NewActionDef, $Sector, $Ware, null, $Faction, $DebugText]" />
+                          <do_if value="$NewActionDef.$Station?">
+                            <!--curtime, object_name, object_id, object_idcode, sector_name, faction_id, ware, station_id, station_idcode-->
+                            <debug_text filter="economy_verbose" text="'#FLE#;%1;PauseProduction;%2;%3;%4;%5;%6;%7'.[player.age, $NewActionDef.$Station.knownname, $NewActionDef.$Station, $NewActionDef.$Station.idcode, $Sector.knownname, $Faction.id, $Ware, '', '']" context="false" />
+                            <set_value name="$NewAction" exact="table[]" />
+                            <set_value name="$NewAction.$ActionDef" exact="$NewActionDef" />
+                            <set_value name="$NewAction.$StartTime" exact="player.age" />
+                            <set_value name="$NewAction.$Sector" exact="$Sector" />
+                            <set_value name="$NewAction.$Ware" exact="$Ware" />
+                            <set_value name="$NewAction.$AggregatedValue" exact="$SectorValue" />
+                            <debug_text text="'Successfully added new action ' + $NewAction" context="false" chance="$DebugChance" />
+                            <do_if value="not $ActionReports.{$Sector}?">
+                              <set_value name="$ActionReports.{$Sector}" exact="[]" />
+                            </do_if>
+                            <append_to_list name="$ActionReports.{$Sector}" exact="$NewAction" />
+                            <debug_text text="'Faction now has econ related actions in ' + $ActionReports.keys.count + ' sector(s). '+ $ActionReports.{$Sector}.count +' action(s) in sector ' + $Sector.knownname" context="false" chance="$DebugChance" />
+                          </do_if>
+                        </do_if>
+                      </do_if>
+                    </do_all>
+                  </do_all>
+                  <remove_value name="$SectorOverflowProductsKeys" />
+                  <remove_value name="$WareIsInsufficient" />
+                </do_if>
+
+                <!-- process any escalated actions and insert them into the appropriate ActionReports -->
+                <assert value="$Faction.isactive or $EscalatedActions.count == 0" text="$Faction + ' is inactive and should not be escalating actions [Owen]'" />
+                <do_all exact="$EscalatedActions.count" counter="$e">
+                  <set_value name="$NewAction" exact="$EscalatedActions.{$e}" />
+                  <debug_text text="'Successfully added escalated action ' + $NewAction" context="false" chance="$DebugChance" />
+                  <do_if value="not $ActionReports.{$NewAction.$Sector}?">
+                    <set_value name="$ActionReports.{$NewAction.$Sector}" exact="[]" />
+                  </do_if>
+                  <append_to_list name="$ActionReports.{$NewAction.$Sector}" exact="$NewAction" />
+                  <debug_text text="'Faction now has econ related actions in ' + $ActionReports.keys.count + ' sector(s). '+ $ActionReports.{$NewAction.$Sector}.count +' action(s) in sector ' + $NewAction.$Sector.knownname" context="false" chance="$DebugChance" />
+                </do_all>
+
+                <!--Check the insufficient production resources-->
+                <set_value name="$ReportTablesIndex" exact="1" />
+                <set_value name="$TableRefIndex" exact="1" />
+              </do_if>
+            </do_if>
+
+            <do_if value="not $HadReports">
+              <!--We need to check the running actions but don't need to store disregarded actions. Only escalate if the faction is active.-->
+              <debug_text text="$Faction + ' had no reports. Checking if any actions are to be disregarded'" chance="$DebugChance" />
+              <run_actions ref="md.FactionEconomy_Libraries.CheckRunningActions">
+                <param name="Faction" value="$Faction" />
+                <param name="ActionReports" value="$ActionReports" />
+                <param name="DisregardedActions" value="[]" />
+                <param name="EscalatedActions" value="[]" comment="" />
+                <param name="DebugChance" value="$DebugChance" />
+              </run_actions>
+              <reset_cue cue="EvaluateShortages" />
+            </do_if>
+            <!-- start with a clean group for this run so we do not have leftover entries from last time -->
+            <create_group groupname="$BusyStations" />
+          </actions>
+          <patch sinceversion="2">
+            <set_value name="$NewProductionInsufficientResourceLimit" exact="600" />
+            <set_value name="$OverflowInsufficientWareThreshold" exact="20000" />
+          </patch>
+          <cues>
+            <cue name="EvaluateSectorShortage" onfail="cancel">
+              <conditions>
+                <check_value value="@$ReportTablesIndex gt 0 and $ReportTablesIndex le $ReportTablesToProcess.count" />
+                <check_value value="@$TableRefIndex gt 0" />
+              </conditions>
+              <delay min="100ms" max="250ms" />
+              <actions>
+                <set_value name="$TableRef" exact="$ReportTablesToProcess.{$ReportTablesIndex}" />
+                <!--TableRef keys are sectors-->
+                <set_value name="$TableRefKeys" exact="$TableRef.keys.list" />
+                <do_if value="$TableRefIndex le $TableRefKeys.count">
+                  <set_value name="$Sector" exact="$TableRefKeys.{$TableRefIndex}" />
+                  <debug_text text="'\n' + $DebugText + 'Checking sector ' + $Sector + ' ' + $Sector.knownname" context="false" chance="$DebugChance" />
+                  <set_value name="$SubTable" exact="$TableRef.{$Sector}" />
+                  <set_value name="$SubTableRefKeys" exact="$SubTable.keys.list" />
+                  <do_all exact="$SubTableRefKeys.count" counter="$k" reverse="true">
+                    <set_value name="$Ware" exact="$SubTableRefKeys.{$k}" />
+                    <set_value name="$SectorValue" exact="$SubTable.{$Ware}" />
+                    <debug_text text="'Sector ' + $Sector + ' ' + $Sector.knownname + ' has insufficient ware ' + $Ware + ' at value ' + $SectorValue" context="false" chance="$DebugChance" />
+
+                    <set_value name="$SectorBuyOfferValue" exact="@$SectorBuyOfferAmountsTable.{$Sector}.{$Ware}" />
+                    <set_value name="$SectorSellOfferValue" exact="@$SectorSellOfferAmountsTable.{$Sector}.{$Ware}" />
+
+                    <do_if value="$SectorNeighbourTable.{$Sector}?">
+                      <set_value name="$NeighbouringSectorTable" exact="$SectorNeighbourTable.{$Sector}" />
+                    </do_if>
+                    <do_else>
+                      <!--TODO @Owen This sector is not currently owned by $Faction but has stations reporting about wares (contested?)-->
+                      <set_value name="$NeighbouringSectorTable" exact="table[{0} = [$Sector]]" />
+                    </do_else>
+
+                    <!--Check if the neighboring sectors have reports for the same ware. Take them into account but with the $NeighbourFactor and respecting the $NeighbourCap-->
+                    <!--TODO @Owen - only if positive?-->
+                    <set_value name="$NeighbouringSectorDistanceKeys" exact="$NeighbouringSectorTable.keys.list" />
+                    <do_all exact="$NeighbouringSectorDistanceKeys.count" counter="$NSDK_i">
+                      <set_value name="$JumpDist" exact="$NeighbouringSectorDistanceKeys.{$NSDK_i}" />
+                      <set_value name="$NeighbourScoreFactor" exact="1.0 / (($JumpDist)f + 1.0)" />
+                      <set_value name="$NeighbourOfferFactor" exact="1.0 / ((($JumpDist)f / 3) + 1.0)" />
+                      <set_value name="$NeighbourCap" exact="if $JumpDist then 69000 / ($JumpDist * 1.2) else -1" />
+                      <do_all exact="$NeighbouringSectorTable.{$JumpDist}.count" counter="$sector_i">
+                        <set_value name="$NeighbourSector" exact="$NeighbouringSectorTable.{$JumpDist}.{$sector_i}" />
+                        <do_if value="$NeighbourSector != $Sector">
+                          <do_if value="$TableRef.{$NeighbourSector}?">
+                            <!-- check insufficient state in neighbour sectors -->
+                            <set_value name="$NeighbourSubTable" exact="$TableRef.{$NeighbourSector}" />
+                            <do_if value="$NeighbourSubTable.{$Ware}?">
+                              <do_if value="$NeighbourCap gt 0">
+                                <set_value name="$NeighbourValue" exact="[$NeighbourSubTable.{$Ware} * $NeighbourScoreFactor, $NeighbourCap].min" />
+                              </do_if>
+                              <do_else>
+                                <set_value name="$NeighbourValue" exact="$NeighbourSubTable.{$Ware} * $NeighbourScoreFactor" />
+                              </do_else>
+                              <set_value name="$SectorValue" exact="$NeighbourValue" operation="add" />
+                              <debug_text text="'Neighbouring sector ' + $NeighbourSector + ' ' + $NeighbourSector.knownname + ' at dist ' + $JumpDist + ' also has insufficient ware ' + $Ware + ' with value ' + $NeighbourSubTable.{$Ware} + ' and will add ' + $NeighbourValue + ' for a new value of ' + $SectorValue" context="false" chance="$DebugChance" />
+                            </do_if>
+                          </do_if>
+                          <do_if value="$SectorBuyOfferAmountsTable.{$NeighbourSector}?">
+                            <!-- check buy offers in neighbour sectors -->
+                            <set_value name="$NeighbourSubTable" exact="$SectorBuyOfferAmountsTable.{$NeighbourSector}" />
+                            <do_if value="$NeighbourSubTable.{$Ware}?">
+                              <debug_text text="$NeighbourSector.knownname + ' buy offer score: ' + $NeighbourSubTable.{$Ware} * $NeighbourOfferFactor" chance="$DebugChance" />
+                              <set_value name="$SectorBuyOfferValue" exact="$NeighbourSubTable.{$Ware} * $NeighbourOfferFactor" operation="add" />
+                            </do_if>
+                          </do_if>
+                          <do_if value="$SectorSellOfferAmountsTable.{$NeighbourSector}?">
+                            <!-- check sell offers in neighbour sectors -->
+                            <set_value name="$NeighbourSubTable" exact="$SectorSellOfferAmountsTable.{$NeighbourSector}" />
+                            <do_if value="$NeighbourSubTable.{$Ware}?">
+                              <debug_text text="$NeighbourSector.knownname + ' sell offer score: ' + $NeighbourSubTable.{$Ware} * $NeighbourOfferFactor" chance="$DebugChance" />
+                              <set_value name="$SectorSellOfferValue" exact="$NeighbourSubTable.{$Ware} * $NeighbourOfferFactor" operation="add" />
+                            </do_if>
+                          </do_if>
+                        </do_if>
+                      </do_all>
+                    </do_all>
+                    <remove_value name="$JumpDist" />
+                    <remove_value name="$NeighbourScoreFactor" />
+                    <remove_value name="$NeighbourOfferFactor" />
+                    <remove_value name="$NeighbourCap" />
+
+                    <!--Is this ware also overflowing?-->
+                    <set_value name="$OverflowValue" exact="@$SectorOverflowProductsTable.{$Sector}.{$Ware}" />
+
+                    <debug_text text="'total buy val ' + $SectorBuyOfferValue" chance="$DebugChance" />
+                    <debug_text text="'total sell val ' + $SectorSellOfferValue" chance="$DebugChance" />
+
+                    <do_if value="not $CanProduceTable?">
+                      <set_value name="$CanProduceTable" exact="table[]" />
+                    </do_if>
+                    <do_if value="not $CanProduceTable.{$Ware}?">
+                      <set_value name="$CanProduceTable.{$Ware}" exact="false" />
+                      <do_if value="not $Ware.hastag.minable and not $Ware.isprocessed">
+                        <get_module_definition reference="this.$ProductionDefinition" ware="$Ware" faction="$Faction" />
+                        <set_value name="$CanProduceTable.{$Ware}" exact="this.$ProductionDefinition != null" />
+                      </do_if>
+                    </do_if>
+                    <set_value name="$IsProductionIssue" exact="$CanProduceTable.{$Ware} and $SectorSellOfferValue lt ($SectorBuyOfferValue * 0.6f) and not $OverflowValue" />
+                    <do_if value="$IsProductionIssue">
+                      <run_actions ref="md.FactionEconomy_Libraries.Check_Production_Location_Suitablility" result="$IsProductionIssue">
+                        <param name="Sector" value="$Sector" />
+                        <param name="Ware" value="$Ware" />
+                        <param name="Faction" value="$Faction" />
+                      </run_actions>
+                    </do_if>
+                    <do_if value="$IsProductionIssue">
+                      <!-- we are dealing with a production problem (minable resources cannot have a production problem and need to be treated as a transportation problem, mining ships will be requested instead) -->
+                      <set_value name="$ActionThresholds" exact="$ProductionThresholds" />
+                      <set_value name="$ActionThresholdsKeys" exact="$ProductionThresholdsKeys" />
+                      <set_value name="$OtherActionThresholds" exact="$TransportationThresholds" />
+                      <set_value name="$OtherActionThresholdsKeys" exact="$TransportationThresholdsKeys" />
+                      <debug_text text="'Sector %1 (and neighbours) seem to have a PRODUCTION PROBLEM of %2 at time %3'.[$Sector.knownname, $Ware, player.age]" context="false" chance="$DebugChance" />
+                      <run_actions ref="md.FactionEconomy_Libraries.AddProductionIssue">
+                        <param name="Faction" value="$Faction" />
+                        <param name="Sector" value="$Sector" />
+                        <param name="Ware" value="$Ware" />
+                        <param name="SectorValue" value="$SectorValue" />
+                      </run_actions>
+                    </do_if>
+                    <do_else>
+                      <!-- we are dealing with a transportation problem -->
+                      <set_value name="$ActionThresholds" exact="$TransportationThresholds" />
+                      <set_value name="$ActionThresholdsKeys" exact="$TransportationThresholdsKeys" />
+                      <set_value name="$OtherActionThresholds" exact="$ProductionThresholds" />
+                      <set_value name="$OtherActionThresholdsKeys" exact="$ProductionThresholdsKeys" />
+                      <debug_text text="'Sector %1 (and neighbours) seem to have a TRANSPORTATION PROBLEM of %2 at time %3'.[$Sector.knownname, $Ware, player.age]" context="false" chance="$DebugChance" />
+                    </do_else>
+
+                    <set_value name="$HighestActionCost" exact="0" />
+                    <set_value name="$HighestDisregardedActionCost" exact="0" />
+                    <do_all exact="$DisregardedActions.count" counter="$o">
+                      <do_if value="$DisregardedActions.{$o}.$Sector == $Sector and $DisregardedActions.{$o}.$Ware == $Ware">
+                        <set_value name="$ActionType" exact="$DisregardedActions.{$o}.$ActionDef.$Type" />
+                        <do_if value="$ActionThresholds.{$ActionType}? and $ActionThresholds.{$ActionType} gt $HighestDisregardedActionCost">
+                          <!--This was a disregarded action for this sector, remember how much worth it had so an action of higher worth can be queued
+                          Note: We do not need to check against $OtherActionThresholds as we're looking to try a different set of actions-->
+                          <set_value name="$HighestDisregardedActionCost" exact="$ActionThresholds.{$ActionType}" />
+                          <debug_text text="'Disregarded action had the highest cost so far of ' + $HighestDisregardedActionCost" context="false" chance="$DebugChance" />
+                        </do_if>
+                      </do_if>
+                    </do_all>
+
+                    <set_value name="$ExistingActionsCost" exact="0" />
+                    <set_value name="$PursueNewAction" exact="true" />
+                    <!--Related action reports are those undertaken by this $Faction and any $ConsumedFaction-->
+                    <set_value name="$RelatedActionReportsList" exact="[$ActionReports, $Faction]" />
+                    <do_for_each name="$ConsumedFaction" in="$ConsumedFactions">
+                      <set_value name="$ComsumedFactionActionsTable" exact="table[]" />
+                      <signal_cue_instantly cue="md.FactionLogic.FactionSignalled" param="[$ConsumedFaction, 'get_economic_actions', $ComsumedFactionActionsTable]" />
+                      <append_to_list name="$RelatedActionReportsList" exact="$ComsumedFactionActionsTable" />
+                      <append_to_list name="$RelatedActionReportsList" exact="$ConsumedFaction" />
+                    </do_for_each>
+                    <do_for_each name="$RelatedActionReports" in="$RelatedActionReportsList" counter="$RARL_i">
+                      <do_if value="typeof $RelatedActionReports == datatype.table">
+                        <set_value name="$RelatedReportFaction" exact="$RelatedActionReportsList.{$RARL_i + 1}" />
+                        <debug_text text="'Faction ' + $Faction + ' is checking for existing actions for ' + $Ware + ' by faction ' + $RelatedReportFaction" context="false" chance="$DebugChance" />
+                        <set_value name="$ActionReportKeys" exact="$RelatedActionReports.keys.list" />
+                        <do_all exact="$ActionReportKeys.count" counter="$ARK_i">
+                          <set_value name="$ActionReportList" exact="$RelatedActionReports.{$ActionReportKeys.{$ARK_i}}" />
+                          <do_all exact="$ActionReportList.count" counter="$ARL_i">
+                            <do_if value="$ActionReportList.{$ARL_i}.$Ware == $Ware">
+                              <set_value name="$SectorMatch" exact="false" />
+                              <!-- do the sectors that are no more than 3 jumps away have reported actions for the same ware? -->
+                              <do_all exact="[$NeighbouringSectorDistanceKeys.count, 3].min" counter="$NSDK_j">
+                                <set_value name="$JumpDist" exact="$NeighbouringSectorDistanceKeys.{$NSDK_j}" />
+                                <do_if value="$NeighbouringSectorTable.{$JumpDist}.indexof.{$ActionReportKeys.{$ARK_i}}">
+                                  <set_value name="$SectorMatch" exact="true" />
+                                  <break />
+                                </do_if>
+                              </do_all>
+                              <do_if value="$SectorMatch">
+                                <set_value name="$ActionReport" exact="$ActionReportList.{$ARL_i}" />
+                                <set_value name="$ActionReportDef" exact="$ActionReport.$ActionDef" />
+                                <set_value name="$ExistingActionCost" exact="if $ActionThresholds.{$ActionReportDef.$Type}? then $ActionThresholds.{$ActionReportDef.$Type} else @$OtherActionThresholds.{$ActionReportDef.$Type}" />
+                                <do_if value="$ExistingActionCost">
+                                  <!--The action still has time to help fix the issue-->
+                                  <do_if value="$ActionReport.$Sector == $Sector">
+                                    <do_if value="$ExistingActionCost gt $HighestActionCost">
+                                      <!--If this was a disregarded action for this sector, remember how much worth it had so an action of higher worth can be queued-->
+                                      <set_value name="$HighestActionCost" exact="$ExistingActionCost" />
+                                    </do_if>
+                                    <set_value name="$ExistingActionsCost" exact="$ExistingActionCost" operation="subtract" />
+                                    <debug_text text="'Action ' + $ActionReportDef.$Type + ' based in ' + $ActionReport.$Sector.knownname + ' is allowed to continue as it may still aid this situation. $ExistingActionCost: ' + $ExistingActionCost + ' - Action ' + $ActionReport" context="false" chance="$DebugChance" />
+                                  </do_if>
+                                  <do_else>
+                                    <set_value name="$ExistingActionsCost" exact="$ExistingActionCost * $NeighbourActionMultiplier" operation="subtract" />
+                                    <debug_text text="'Action ' + $ActionReportDef.$Type + ' based in ' + $ActionReport.$Sector.knownname + ' is allowed to continue as it may still aid this situation. $ExistingActionCost: ' + ($ExistingActionCost * $NeighbourActionMultiplier) + ' - Action ' + $ActionReport" context="false" chance="$DebugChance" />
+                                  </do_else>
+                                </do_if>
+                                <do_else>
+                                  <debug_text text="'Action ' + $ActionReportDef.$Type + ' based in ' + $ActionReport.$Sector.knownname + ' is ignored as the action category has changed. Action ' + $ActionReport" context="false" chance="$DebugChance" />
+                                </do_else>
+                              </do_if>
+                            </do_if>
+                          </do_all>
+                        </do_all>
+                        <debug_text text="'$ExistingActionsCost ' + $ExistingActionsCost" context="false" chance="$DebugChance" />
+                      </do_if>
+                    </do_for_each>
+                    <remove_value name="$RelatedReportFaction" />
+                    <remove_value name="$ExistingActionCost" />
+
+                    <set_value name="$AdjustedSectorValue" exact="$SectorValue + $ExistingActionsCost" />
+
+                    <do_if value="$IsProductionIssue">
+                      <debug_text filter="economy_verbose" text="'#ECO#;%1;%2;EvaluateSector_Production;%3;%4;%5;%6;%7;%8;%9'.[player.age, null, null, null, null, $Sector.knownname, $Faction.id, $Ware, $AdjustedSectorValue]" context="false" />
+                    </do_if>
+                    <do_else>
+                      <debug_text filter="economy_verbose" text="'#ECO#;%1;%2;EvaluateSector_Transport;%3;%4;%5;%6;%7;%8;%9'.[player.age, null, null, null, null, $Sector.knownname, $Faction.id, $Ware, $AdjustedSectorValue]" context="false" />
+                    </do_else>
+
+                    <do_if value="$AdjustedSectorValue le 0">
+                      <set_value name="$PursueNewAction" exact="false" />
+                    </do_if>
+                    <!--Even if there is an action happening in the sector, if $AdjustedSectorValue gets too high, do something else about it-->
+                    <!--TODO @Owen review.-->
+                    <!--TODO @Owen move this factor to params-->
+                    <do_elseif value="$AdjustedSectorValue lt $HighestActionCost * 2">
+                      <set_value name="$PursueNewAction" exact="false" />
+                    </do_elseif>
+
+                    <set_value name="$NewActionValid" exact="false" />
+                    <do_if value="$PursueNewAction">
+                      <set_value name="$ChosenAction" exact="null" />
+
+                      <!--Check if the resources for this ware are also insufficient. This may have some actions not be chosen.-->
+                      <set_value name="$ResourcesInsufficient" exact="false" />
+                      <do_for_each name="$WareResource" in="$Ware.raceresources.{$Faction.primaryrace}.list">
+                        <!--TODO @Owen check if the resources are a shortage in another table-->
+                        <do_if value="@$SubTable.{$WareResource} gt $NewProductionInsufficientResourceLimit">
+                          <debug_text text="'Sector ' + $Sector + ' ' + $Sector.knownname + ' has insufficient resource ' + $WareResource + ' to produce ' + $Ware + '. This may result in new productions not being considered.'" chance="$DebugChance" />
+                          <set_value name="$ResourcesInsufficient" exact="true" />
+                          <break />
+                        </do_if>
+                      </do_for_each>
+
+                      <do_all exact="$ActionThresholdsKeys.count" counter="$ATK_i" reverse="true">
+                        <set_value name="$ActionCost" exact="$ActionThresholds.{$ActionThresholdsKeys.{$ATK_i}}" />
+                        <do_if value="$ActionCost le $HighestDisregardedActionCost">
+                          <debug_text text="'No viable action to take as a more high-cost action was already attempted'" context="false" chance="$DebugChance" />
+                          <break />
+                        </do_if>
+                        <!--Adjusted sector value is high enouth to justify this action and this action is as high or higher cost than the previously disregarded action
+                            The highest cost actions are evaluated first, so the most drastic action is taken-->
+                        <do_elseif value="$AdjustedSectorValue ge $ActionCost">
+                          <set_value name="$ChosenAction" exact="$ActionThresholdsKeys.{$ATK_i}" />
+                          <do_if value="$ChosenAction">
+                            <debug_text text="'ACTION: Sector ' + $Sector + ' ' + $Sector.knownname + ' will see if it can solve issues with ware ' + $Ware + ' (priority: ' + $AdjustedSectorValue + ') with action ' + $ChosenAction" context="false" chance="$DebugChance" />
+                            <set_value name="$NewAction" exact="table[]" />
+                            <do_if value="$ChosenAction == '$request_commandeerable_freighter'">
+                              <set_value name="$NewActionDef" exact="table[]" />
+                              <set_value name="$NewActionDef.$Type" exact="$ChosenAction" />
+                              <signal_cue_instantly cue="md.FactionEconomy_Tasks.Request_Commandeerable_Freighter" param="[$NewActionDef, $Sector, $Ware, false, $Faction, $DebugText]" />
+                              <do_if value="$NewActionDef.$Ship?">
+                                <!--curtime, object_name, object_id, object_idcode, sector_name, faction_id, ware, station_id, station_idcode-->
+                                <debug_text filter="economy_verbose" text="'#FLE#;%1;RequestCommandeerableFreighter;%2;%3;%4;%5;%6;%7'.[player.age, $NewActionDef.$Ship.knownname, $NewActionDef.$Ship, $NewActionDef.$Ship.idcode, $Sector.knownname, $Faction.id, $Ware, '', '']" context="false" />
+                                <set_value name="$NewAction.$ActionDef" exact="$NewActionDef" />
+                                <set_value name="$NewActionValid" exact="true" />
+                              </do_if>
+                            </do_if>
+                            <do_elseif value="$ChosenAction == '$request_prio_commandeerable_freighter'">
+                              <set_value name="$NewActionDef" exact="table[]" />
+                              <set_value name="$NewActionDef.$Type" exact="$ChosenAction" />
+                              <signal_cue_instantly cue="md.FactionEconomy_Tasks.Request_Commandeerable_Freighter" param="[$NewActionDef, $Sector, $Ware, true, $Faction, $DebugText]" />
+                              <do_if value="$NewActionDef.$Ship?">
+                                <!--curtime, object_name, object_id, object_idcode, sector_name, faction_id, ware, station_id, station_idcode-->
+                                <debug_text filter="economy_verbose" text="'#FLE#;%1;RequestPrioCommandeerableFreighter;%2;%3;%4;%5;%6;%7'.[player.age, $NewActionDef.$Ship.knownname, $NewActionDef.$Ship, $NewActionDef.$Ship.idcode, $Sector.knownname, $Faction.id, $Ware, '', '']" context="false" />
+                                <set_value name="$NewAction.$ActionDef" exact="$NewActionDef" />
+                                <set_value name="$NewActionValid" exact="true" />
+                              </do_if>
+                            </do_elseif>
+                            <do_elseif value="$ChosenAction == '$request_freighter'">
+                              <set_value name="$NewActionDef" exact="table[]" />
+                              <set_value name="$NewActionDef.$Type" exact="$ChosenAction" />
+                              <signal_cue_instantly cue="md.FactionEconomy_Tasks.Request_Freighter" param="[$NewActionDef, $Sector, $Ware, false, null, $Faction, $DebugText]" />
+                              <do_if value="$NewActionDef.$Ship?">
+                                <!--curtime, object_name, object_id, object_idcode, sector_name, faction_id, ware, station_id, station_idcode-->
+                                <debug_text filter="economy_verbose" text="'#FLE#;%1;RequestGenericTransporter;%2;%3;%4;%5;%6;%7'.[player.age, $NewActionDef.$Ship.knownname, $NewActionDef.$Ship, $NewActionDef.$Ship.idcode, $Sector.knownname, $Faction.id, $Ware, '', '']" context="false" />
+                                <set_value name="$NewAction.$ActionDef" exact="$NewActionDef" />
+                                <set_value name="$NewActionValid" exact="true" />
+                              </do_if>
+                            </do_elseif>
+                            <do_elseif value="$ChosenAction == '$request_priority_freighter'">
+                              <set_value name="$NewActionDef" exact="table[]" />
+                              <set_value name="$NewActionDef.$Type" exact="$ChosenAction" />
+                              <signal_cue_instantly cue="md.FactionEconomy_Tasks.Request_Freighter" param="[$NewActionDef, $Sector, $Ware, true, null, $Faction, $DebugText]" />
+                              <do_if value="$NewActionDef.$Ship?">
+                                <!--curtime, object_name, object_id, object_idcode, sector_name, faction_id, ware, station_id, station_idcode-->
+                                <debug_text filter="economy_verbose" text="'#FLE#;%1;RequestSpecialisedTransporter;%2;%3;%4;%5;%6;%7'.[player.age, $NewActionDef.$Ship.knownname, $NewActionDef.$Ship, $NewActionDef.$Ship.idcode, $Sector.knownname, $Faction.id, $Ware, '', '']" context="false" />
+                                <set_value name="$NewAction.$ActionDef" exact="$NewActionDef" />
+                                <set_value name="$NewActionValid" exact="true" />
+                              </do_if>
+                            </do_elseif>
+                            <do_elseif value="$ChosenAction == '$request_production'">
+                              <do_if value="$ResourcesInsufficient">
+                                <debug_text text="'Sector ' + $Sector + ' ' + $Sector.knownname + ' wanted to add a production for ' + $Ware + ' but also has insufficient resources to produce it. Will attempt to solve another way.'" chance="$DebugChance" />
+                              </do_if>
+                              <do_elseif value="$SectorSellOfferValue gt ($SectorBuyOfferValue * 0.9f)">
+                                <debug_text text="'Sector ' + $Sector + ' ' + $Sector.knownname + ' wanted to add a production for ' + $Ware + ' but there are already %1 being sold and only %2 being bought - production is not the problem. Will attempt to solve another way.'.[$SectorSellOfferValue, $SectorBuyOfferValue]" chance="$DebugChance" />
+                              </do_elseif>
+                              <do_else>
+                                <set_value name="$NewActionDef" exact="table[]" />
+                                <set_value name="$NewActionDef.$Type" exact="$ChosenAction" />
+                                <signal_cue_instantly cue="md.FactionEconomy_Tasks.Request_Production_Module" param="[$NewActionDef, $Sector, $Ware, $NeighbouringSectorTable, null, $Faction, $BusyStations, $DebugText]" />
+                                <do_if value="$NewActionDef.$Station?">
+                                  <!--curtime, object_name, object_id, object_idcode, sector_name, faction_id, ware, station_id, station_idcode-->
+                                  <do_if value="$NewActionDef.$UnpausedProduction?">
+                                    <debug_text filter="economy_verbose" text="'#FLE#;%1;RequestNewProduction_UnpauseProduction;%2;%3;%4;%5;%6;%7'.[player.age, $NewActionDef.$Station.knownname, $NewActionDef.$Station, $NewActionDef.$Station.idcode, $Sector.knownname, $Faction.id, $Ware, '', '']" context="false" />
+                                  </do_if>
+                                  <set_value name="$NewAction.$ActionDef" exact="$NewActionDef" />
+                                  <set_value name="$NewActionValid" exact="true" />
+                                </do_if>
+                              </do_else>
+                            </do_elseif>
+                            <do_elseif value="$ChosenAction == '$request_factory'">
+                              <do_if value="$ResourcesInsufficient">
+                                <debug_text text="'Sector ' + $Sector + ' ' + $Sector.knownname + ' wanted to add a factory for ' + $Ware + ' but also has insufficient resources to produce it. Will attempt to solve another way.'" chance="$DebugChance" />
+                              </do_if>
+                              <do_elseif value="$SectorSellOfferValue gt ($SectorBuyOfferValue * 0.9f)">
+                                <debug_text text="'Sector ' + $Sector + ' ' + $Sector.knownname + ' wanted to add a factory for ' + $Ware + ' but there are already %1 being sold and only %2 being bought - production is not the problem. Will attempt to solve another way.'.[$SectorSellOfferValue, $SectorBuyOfferValue]" chance="$DebugChance" />
+                              </do_elseif>
+                              <do_else>
+                                <set_value name="$NewActionDef" exact="table[]" />
+                                <set_value name="$NewActionDef.$Type" exact="$ChosenAction" />
+                                <signal_cue_instantly cue="md.FactionEconomy_Tasks.Request_Factory" param="[$NewActionDef, $Sector, $Ware, $NeighbouringSectorTable, null, $Faction, $DebugText]" />
+                                <do_if value="$NewActionDef.$Station?">
+                                  <!--curtime, object_name, object_id, object_idcode, sector_name, faction_id, ware, station_id, station_idcode-->
+                                  <do_if value="$NewActionDef.$UnpausedProduction?">
+                                    <debug_text filter="economy_verbose" text="'#FLE#;%1;RequestNewFactory_UnpauseProduction;%2;%3;%4;%5;%6;%7'.[player.age, $NewActionDef.$Station.knownname, $NewActionDef.$Station, $NewActionDef.$Station.idcode, $Sector.knownname, $Faction.id, $Ware, '', '']" context="false" />
+                                  </do_if>
+                                  <do_else>
+                                    <debug_text filter="economy_verbose" text="'#FLE#;%1;RequestNewFactory;%2;%3;%4;%5;%6;%7'.[player.age, $NewActionDef.$Station.knownname, $NewActionDef.$Station, $NewActionDef.$Station.idcode, $Sector.knownname, $Faction.id, $Ware, '', '']" context="false" />
+                                  </do_else>
+                                  <set_value name="$NewAction.$ActionDef" exact="$NewActionDef" />
+                                  <set_value name="$NewActionValid" exact="true" />
+                                </do_if>
+                              </do_else>
+                            </do_elseif>
+                            <do_elseif value="$ChosenAction == '$not_viable'">
+                              <!--TODO @Owen - find a station to remove the production of-->
+                              <!--<debug_text filter="economy_verbose" text="'$FlagProductionNotViable;%1;%2;%3;component.{%4};%5;%6;component.{%7}'.[player.age, $Ware, $Sector.knownname, $Sector, $Faction.knownname, $NewActionDef.$Station.knownname, $NewActionDef.$Station]"/>-->
+                              <do_if value="$SectorSellOfferValue gt ($SectorBuyOfferValue * 1.2f)">
+                                <debug_text text="'Sector ' + $Sector + ' ' + $Sector.knownname + ' wanted to remove a factory for ' + $Ware + ' but there is still demand for %1 while only %2 are being sold - removing productions will not help. Will attempt to solve another way.'.[$SectorBuyOfferValue, $SectorSellOfferValue]" chance="$DebugChance" />
+                              </do_if>
+                              <do_else>
+                                <do_if value="true">
+                                  <debug_text filter="economy_verbose" text="'#FLE#;%1;FakeRemoveFactory;%2;%3;%4;%5;%6;%7'.[player.age, null, null, null, $Sector.knownname, $Faction.id, $Ware, '', '']" context="false" />
+                                </do_if>
+                                <do_else>
+                                  <set_value name="$NewActionDef" exact="table[]" />
+                                  <set_value name="$NewActionDef.$Type" exact="$ChosenAction" />
+                                  <signal_cue_instantly cue="md.FactionEconomy_Tasks.Remove_Factory" param="[$NewActionDef, $Sector, $Ware, null, $Faction, $DebugText]" />
+                                  <do_if value="$NewActionDef.$Station?">
+                                    <!--curtime, object_name, object_id, object_idcode, sector_name, faction_id, ware, station_id, station_idcode-->
+                                    <debug_text filter="economy_verbose" text="'#FLE#;%1;RemoveFactory;%2;%3;%4;%5;%6;%7'.[player.age, $NewActionDef.$Station.knownname, $NewActionDef.$Station, $NewActionDef.$Station.idcode, $Sector.knownname, $Faction.id, $Ware, '', '']" context="false" />
+                                    <set_value name="$NewAction.$ActionDef" exact="$NewActionDef" />
+                                    <set_value name="$NewActionValid" exact="true" />
+                                  </do_if>
+                                </do_else>
+                              </do_else>
+                            </do_elseif>
+                            <do_else>
+                              <debug_text text="'Unknown economic action: ' + $ChosenAction" filter="error" />
+                            </do_else>
+
+                            <do_if value="$NewActionValid">
+                              <set_value name="$NewAction.$StartTime" exact="player.age" />
+                              <set_value name="$NewAction.$Sector" exact="$Sector" />
+                              <set_value name="$NewAction.$Ware" exact="$Ware" />
+                              <set_value name="$NewAction.$AggregatedValue" exact="$AdjustedSectorValue" />
+                              <debug_text text="'Successfully added new action ' + $NewAction" context="false" chance="$DebugChance" />
+                              <do_if value="not $ActionReports.{$Sector}?">
+                                <set_value name="$ActionReports.{$Sector}" exact="[]" />
+                              </do_if>
+                              <append_to_list name="$ActionReports.{$Sector}" exact="$NewAction" />
+                              <debug_text text="'Faction now has econ related actions in ' + $ActionReports.keys.count + ' sector(s). '+ $ActionReports.{$Sector}.count +' action(s) in sector ' + $Sector.knownname" context="false" chance="$DebugChance" />
+                              <break />
+                            </do_if>
+                            <do_elseif value="$ChosenAction == '$not_viable'">
+                              <do_all chance="50">
+                                <debug_text text="'Situation for ware has been deemed not viable. Not taking action.'" context="false" chance="$DebugChance" />
+                                <break />
+                              </do_all>
+                            </do_elseif>
+                          </do_if>
+                        </do_elseif>
+                      </do_all>
+                    </do_if>
+
+                    <do_if value="not $NewActionValid">
+                      <debug_text text="'NO ACTION: Sector ' + $Sector + ' ' + $Sector.knownname + ' decided to take no action for ware ' + $Ware + ' (priority: ' + $AdjustedSectorValue + ')'" context="false" chance="$DebugChance" />
+                    </do_if>
+                  </do_all>
+                </do_if>
+
+                <!-- increment $TableRefIndex -->
+                <set_value name="$TableRefIndex" operation="add" />
+                <do_if value="$TableRefIndex gt $TableRef.keys.count">
+                  <!-- reached the end of $TableRef, increment $ReportTablesIndex -->
+                  <set_value name="$ReportTablesIndex" operation="add" />
+                  <do_if value="$ReportTablesIndex gt $ReportTablesToProcess.count">
+                    <!-- we are done processing everything -->
+
+                    <!-- cleanup -->
+                    <remove_value name="$ReportTablesIndex" />
+                    <remove_value name="$TableRefIndex" />
+                    <remove_value name="$DisregardedActions" />
+                    <remove_value name="$ReportTablesToProcess" />
+                    <remove_value name="$TableRefKeys" />
+                    <remove_value name="$TableRef" />
+                    <remove_value name="$SubTableRefKeys" />
+                    <remove_value name="$SubTable" />
+                    <remove_value name="$ActionThresholdsKeys" />
+                    <remove_value name="$ActionThresholds" />
+                    <remove_value name="$OtherActionThresholdsKeys" />
+                    <remove_value name="$OtherActionThresholds" />
+                    <remove_value name="$IsProductionIssue" />
+                    <remove_value name="$NeighbourSector" />
+                    <remove_value name="$NeighbourSubTable" />
+                    <remove_value name="$NeighbouringSectorTable" />
+                    <remove_value name="$NeighbouringSectorDistanceKeys" />
+                    <remove_value name="$NewAction" />
+                    <remove_value name="$NewActionDef" />
+                    <remove_value name="$CanProduceTable" />
+
+                    <!-- inform listeners that we have evaluated data -->
+                    <signal_cue_instantly cue="md.FactionLogic.FactionSignalled" param="[$Faction, 'shortages evaluated', Econ_Manager]" />
+                    <reset_cue cue="EvaluateShortages" />
+                  </do_if>
+                  <do_else>
+                    <!-- another round of sector processing with a new $ReportTablesIndex, reset $TableRefIndex -->
+                    <set_value name="$TableRefIndex" exact="1" />
+                  </do_else>
+                </do_if>
+                <do_if value="@$ReportTablesIndex and @$TableRefIndex">
+                  <reset_cue cue="EvaluateSectorShortage" />
+                </do_if>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="ReportActions" instantiate="true">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <actions>
+            <include_actions ref="md.FactionEconomy_Reports.ReportActions" />
+          </actions>
+        </cue>
+
+        <!-- deprecated -->
+        <!-- <cue name="GenerateShortageData_Delay" instantiate="true">
+      <conditions>
+        <event_cue_signalled />
+      </conditions>
+      <delay exact="5s" />
+      <actions>
+        <signal_cue cue="GenerateShortageData" />
+      </actions>
+    </cue> -->
+
+        <cue name="GlobalStorageData">
+          <actions>
+            <set_value name="$DebugChance" exact="0" />
+            <set_value name="$Reports" exact="table[]" />
+            <set_value name="$NextShortageDelay" min="25min" max="30min" />
+          </actions>
+          <cues>
+            <cue name="GenerateShortageData_Ticker">
+              <delay exact="$NextShortageDelay" />
+              <actions>
+                <do_if value="GenerateShortageData.state == cuestate.waiting and (not GlobalStorageData.$LastRunTime? or player.age gt GlobalStorageData.$LastRunTime + 15s)">
+                  <signal_cue cue="GenerateShortageData" />
+                </do_if>
+                <set_value name="$NextShortageDelay" min="15min" max="20min" />
+                <reset_cue cue="GenerateShortageData_Ticker" />
+              </actions>
+            </cue>
+
+            <!--event.param = [$faction(optional)]-->
+            <cue name="GenerateShortageData" namespace="this">
+              <conditions>
+                <event_cue_signalled />
+              </conditions>
+              <actions>
+                <set_value name="$DebugChance" exact="0" />
+
+                <set_value name="$Objects" exact="[]" />
+                <set_value name="$Faction" exact="if @event.param.count ge 1 then event.param.{1} else null" />
+                <set_value name="$FactionTable" exact="null" />
+                <set_value name="$IgnoredSectorsTable" exact="table[]" />
+                <do_if value="$Faction">
+                  <!--Report for faction. Only clear that faction's entry-->
+                  <set_value name="$FactionTable" exact="@GlobalStorageData.$Reports.{$Faction}" />
+                  <do_if value="not $FactionTable">
+                    <set_value name="$FactionTable" exact="table[]" />
+                    <set_value name="GlobalStorageData.$Reports.{$Faction}" exact="$FactionTable" />
+                    <do_if value="@global.$FactionManagers.{$Faction}.$EconomicallyExcludedSectors.count">
+                      <set_value name="$IgnoredSectorsTable.{$Faction}" exact="global.$FactionManagers.{$Faction}.$EconomicallyExcludedSectors.clone" />
+                    </do_if>
+                  </do_if>
+                  <find_station_by_true_owner name="$Objects" faction="$Faction" space="player.galaxy" multiple="true" checkoperational="false">
+                    <match state="componentstate.wreck" negate="true" />
+                  </find_station_by_true_owner>
+                </do_if>
+                <do_else>
+                  <!--Global report. Clear all-->
+                  <set_value name="GlobalStorageData.$Reports" exact="table[]" />
+                  <do_if value="@global.$FactionManagers">
+                    <do_for_each name="$ThisFaction" in="global.$FactionManagers">
+                      <find_station_by_true_owner name="$Objects" faction="$ThisFaction" space="player.galaxy" multiple="true" append="true" checkoperational="false">
+                        <match state="componentstate.wreck" negate="true" />
+                      </find_station_by_true_owner>
+                      <do_if value="@global.$FactionManagers.{$ThisFaction}.$EconomicallyExcludedSectors.count">
+                        <set_value name="$IgnoredSectorsTable.{$ThisFaction}" exact="global.$FactionManagers.{$ThisFaction}.$EconomicallyExcludedSectors.clone" />
+                      </do_if>
+                    </do_for_each>
+                  </do_if>
+                </do_else>
+
+                <set_value name="$ObjectCount" exact="$Objects.count" />
+                <resize_list list="$Objects" count="$ObjectCount * 2" />
+                <do_all exact="$ObjectCount" counter="$i">
+                  <set_value name="$Objects.{$ObjectCount + $i}" exact="$Objects.{$i}.buildstorage" />
+                </do_all>
+                <remove_value name="$ObjectCount" />
+              </actions>
+              <cues>
+                <cue name="ProcessStations" instantiate="true" checkinterval="100ms">
+                  <actions>
+                    <set_value name="$NumToProcess" exact="[15, $Objects.count].min" />
+                    <do_all exact="$NumToProcess" counter="$i" reverse="true">
+                      <set_value name="$Object" exact="$Objects.{$i}" />
+
+                      <do_if value="$Object.isoperational">
+                        <set_value name="$Owner" exact="$Object.trueowner" />
+                        <do_if value="$IgnoredSectorsTable.{$Owner}? and $IgnoredSectorsTable.{$Owner}.indexof.{$Object.sector}">
+                          <debug_text text="'Ignoring ' + $Object + ' ' + $Object.knownname + ' in ' + $Object.sector.knownname" chance="$DebugChance" />
+                          <remove_value name="$Objects.{$i}" />
+                          <continue />
+                        </do_if>
+
+                        <!--Prepare a report table-->
+                        <set_value name="$Report" exact="table[]" />
+
+                        <do_if value="not $Object.tradenpc.exists">
+                          <set_value name="$controllable" exact="$Object" />
+                          <include_actions ref="md.InitUniverse.CreateTradeManagerEntity" />
+                          <!--TODO @Owen stop this happening to the HQ in the discovery plot-->
+                          <debug_text text="'%s missing manager on %s in %s'.[if $Object.tradenpc.exists then 'Successfully restored' else 'FAILED to restore', $Object.debugname, $Object, @$Object.sector.knownname]" context="false" />
+                          <remove_value name="$controllable" />
+                        </do_if>
+                        <do_if value="not $Object.shiptrader.exists and $Object.canequipships">
+                          <set_value name="$controllable" exact="$Object" />
+                          <include_actions ref="md.InitUniverse.CreateShipDealerEntity" />
+                          <debug_text text="'%s missing shiptrader on %s in %s'.[if $Object.shiptrader.exists then 'Successfully restored' else 'FAILED to restore', $Object.debugname, @$Object.sector.knownname]" context="false" />
+                          <remove_value name="$controllable" />
+                        </do_if>
+
+                        <!--Only stations process production and workforce-->
+                        <do_if value="$Object.isclass.station">
+                          <generate_shortage_reports object="$Object" insufficient="$InsufficientReport" shortage="$ShortageReport" overflow="$OverflowReport" type="class.production" log="true" />
+                          <debug_text text="'Production reports for ' + $Object + ' ' + $Object.knownname + ' Insufficient: ' + $InsufficientReport + ' Shortage: ' + $ShortageReport + ' Overflow: ' + $OverflowReport" context="false" chance="$DebugChance" />
+
+                          <do_if value="$InsufficientReport.keys.count">
+                            <set_value name="$Report.$InsufficientProductionWares" exact="$InsufficientReport" />
+                          </do_if>
+                          <!--<do_if value="$ShortageReport.keys.count">
+                        <set_value name="$Report.$ShortageProductionWares" exact="$ShortageReport"/>
+                      </do_if>-->
+                          <do_if value="$OverflowReport.keys.count">
+                            <set_value name="$Report.$OverflowProductionWares" exact="$OverflowReport" />
+                          </do_if>
+
+                          <generate_shortage_reports object="$Object" insufficient="$InsufficientReport" shortage="$ShortageReport" type="class.habitation" log="true" />
+                          <debug_text text="'Workforce reports for ' + $Object + ' ' + $Object.knownname + ' Insufficient: ' + $InsufficientReport + ' Shortage: ' + $ShortageReport" context="false" chance="$DebugChance" />
+
+                          <do_if value="$InsufficientReport.keys.count">
+                            <set_value name="$Report.$InsufficientWorkforceWares" exact="$InsufficientReport" />
+                          </do_if>
+                          <!--<do_if value="$ShortageReport.keys.count">
+                        <set_value name="$Report.$ShortageWorkforceWares" exact="$ShortageReport"/>
+                      </do_if>-->
+                        </do_if>
+
+                        <!--Both stations and buildstorage-->
+                        <generate_shortage_reports object="$Object" insufficient="$InsufficientReport" shortage="$ShortageReport" type="class.buildmodule" log="true" />
+                        <debug_text text="'Build reports for ' + $Object + ' ' + $Object.knownname + ' Insufficient: ' + $InsufficientReport + ' Shortage: ' + $ShortageReport" context="false" chance="$DebugChance" />
+
+                        <do_if value="$InsufficientReport.keys.count">
+                          <set_value name="$Report.$InsufficientBuildWares" exact="$InsufficientReport" />
+                        </do_if>
+                        <!--<do_if value="$ShortageReport.keys.count">
+                      <set_value name="$Report.$ShortageBuildWares" exact="$ShortageReport"/>
+                    </do_if>-->
+
+                        <find_buy_offer result="$BuyOffers" buyer="$Object" multiple="true" />
+                        <do_if value="$BuyOffers.count">
+                          <set_value name="$Report.$BuyOfferAmounts" exact="table[]" />
+                          <do_for_each name="$BuyOffer" in="$BuyOffers">
+                            <set_value name="$Report.$BuyOfferAmounts.{$BuyOffer.ware}" exact="$BuyOffer.offeramount" operation="add" />
+                          </do_for_each>
+                        </do_if>
+
+                        <find_sell_offer result="$SellOffers" seller="$Object" multiple="true" />
+                        <do_if value="$SellOffers.count">
+                          <set_value name="$Report.$SellOfferAmounts" exact="table[]" />
+                          <do_for_each name="$SellOffer" in="$SellOffers">
+                            <set_value name="$SellOfferWare" exact="$SellOffer.ware" />
+                            <!--If the sell offer ware is overflowing, boost the amount score by a factor-->
+                            <do_if value="$OverflowReport.{$SellOfferWare}?">
+                              <set_value name="$OverflowMaxBonus" exact="0.2" />
+                              <set_value name="$OverflowMaxBonusTime" exact="3000f" />
+                              <do_if value="$OverflowReport.{$SellOfferWare} gt $OverflowMaxBonusTime">
+                                <set_value name="$Report.$SellOfferAmounts.{$SellOfferWare}" exact="$SellOffer.offeramount * (1.0 + $OverflowMaxBonus)" operation="add" />
+                                <debug_text text="'Overflow for ware ' + $SellOfferWare + ' on ' + $Object + ' ' + $Object.knownname + ', overflowing for ' + $OverflowReport.{$SellOfferWare} + ', sell score changed from ' + $SellOffer.offeramount + ' to ' + $SellOffer.offeramount * (1.0 + $OverflowMaxBonus)" chance="$DebugChance" />
+                              </do_if>
+                              <do_else>
+                                <set_value name="$Report.$SellOfferAmounts.{$SellOfferWare}" exact="$SellOffer.offeramount * (1.0 + ($OverflowMaxBonus * (($OverflowReport.{$SellOfferWare})f / $OverflowMaxBonusTime)))" operation="add" />
+                                <debug_text text="'Overflow for ware ' + $SellOfferWare + ' on ' + $Object + ' ' + $Object.knownname + ', overflowing for ' + $OverflowReport.{$SellOfferWare} + ', sell score changed from ' + $SellOffer.offeramount + ' to ' + ($SellOffer.offeramount * (1.0 + ($OverflowMaxBonus * (($OverflowReport.{$SellOfferWare})f / $OverflowMaxBonusTime))))" chance="$DebugChance" />
+                              </do_else>
+                            </do_if>
+                            <do_else>
+                              <set_value name="$Report.$SellOfferAmounts.{$SellOfferWare}" exact="$SellOffer.offeramount" operation="add" />
+                            </do_else>
+                          </do_for_each>
+                        </do_if>
+
+                        <do_if value="$Report.keys.count">
+                          <do_if value="$FactionTable">
+                            <set_value name="$FactionTable.{$Object}" exact="$Report" />
+                          </do_if>
+                          <do_else>
+                            <set_value name="$TempFactionTable" exact="@GlobalStorageData.$Reports.{$Owner}" />
+                            <do_if value="not $TempFactionTable">
+                              <set_value name="$TempFactionTable" exact="table[]" />
+                              <set_value name="GlobalStorageData.$Reports.{$Owner}" exact="$TempFactionTable" />
+                            </do_if>
+                            <set_value name="GlobalStorageData.$Reports.{$Owner}.{$Object}" exact="$Report" />
+                          </do_else>
+                          <set_value name="$Report.$Time" exact="player.age" />
+                          <debug_text text="'Report for ' + $Object.knownname + ' is ' + $Report" context="false" chance="$DebugChance" />
+                        </do_if>
+                      </do_if>
+
+                      <remove_value name="$Objects.{$i}" />
+
+                      <!--<debug_text text="$Faction + ' ' + $Reports.keys.count + ' reports. New: ' + $Report" context="false"/>-->
+                    </do_all>
+
+                    <do_if value="$Objects.count == 0">
+                      <do_if value="$DebugChance == 100">
+                        <do_if value="$Faction and $FactionTable">
+                          <debug_text text="'Done generating for faction: ' + $Faction + ' ' + $FactionTable.keys.count + ' reports'" context="false" />
+                        </do_if>
+                        <do_else>
+                          <debug_text text="'Done generating for ' + GlobalStorageData.$Reports.keys.count + ' factions'" context="false" />
+                          <set_value name="$ReportsKeys" exact="GlobalStorageData.$Reports.keys.list" />
+                          <do_all exact="$ReportsKeys.count" counter="$i">
+                            <debug_text text="GlobalStorageData.$Reports.{$ReportsKeys.{$i}}.keys.count + ' reports for faction ' + $ReportsKeys.{$i}.id" context="false" />
+                          </do_all>
+                        </do_else>
+                        <debug_text text="'Done generating ' + GlobalStorageData.$Reports.keys.count + ' reports\n'" context="false" />
+                      </do_if>
+                      <set_value name="GlobalStorageData.$LastRunTime" exact="player.age" />
+                      <signal_cue cue="ShortageDataGenerated" check="false" />
+                      <reset_cue cue="GenerateShortageData" />
+                    </do_if>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="ShortageDataGenerated" />
+
+            <cue name="EvaluateGlobalShortages" instantiate="true" namespace="this">
+              <conditions>
+                <event_cue_signalled />
+                <check_value value="GenerateShortageData.state == cuestate.waiting" />
+              </conditions>
+              <actions>
+                <set_value name="$DebugChance" exact="0" />
+
+                <do_if value="@GlobalStorageData.$Reports">
+                  <set_value name="$InsufficientProductsTable" exact="table[]" />
+                  <set_value name="$ShortageProductsTable" exact="table[]" />
+                  <set_value name="$OverflowProductsTable" exact="table[]" />
+                  <set_value name="$InsufficientWorkforceTable" exact="table[]" />
+                  <set_value name="$ShortageWorkforceTable" exact="table[]" />
+                  <set_value name="$InsufficientBuildTable" exact="table[]" />
+                  <set_value name="$ShortageBuildTable" exact="table[]" />
+                  <set_value name="$BuyOfferAmountsTable" exact="table[]" />
+                  <set_value name="$SellOfferAmountsTable" exact="table[]" />
+                  <set_value name="$OwnerKeys" exact="@GlobalStorageData.$Reports.keys.list" />
+
+                  <do_all exact="$OwnerKeys.count" counter="$o">
+                    <set_value name="$OwnerReports" exact="@GlobalStorageData.$Reports.{$OwnerKeys.{$o}}" />
+                    <set_value name="$TableRef" exact="null" />
+                    <set_value name="$TableRefKeys" exact="null" />
+                    <set_value name="$ReportKeys" exact="$OwnerReports.keys.list" />
+                    <do_all exact="$ReportKeys.count" counter="$i">
+                      <do_if value="$OwnerReports.{$ReportKeys.{$i}}.$InsufficientProductionWares?">
+                        <do_for_each name="$TableWare" valuename="$TableWareAmount" in="$OwnerReports.{$ReportKeys.{$i}}.$InsufficientProductionWares">
+                          <set_value name="$InsufficientProductsTable.{$TableWare}" exact="$TableWareAmount" operation="add" />
+                        </do_for_each>
+                      </do_if>
+                      <!--<do_if value="$OwnerReports.{$ReportKeys.{$i}}.$ShortageProductionWares?">
+                    <set_value name="$TableRef" exact="$OwnerReports.{$ReportKeys.{$i}}.$ShortageProductionWares"/>
+                    <set_value name="$TableRefKeys" exact="$TableRef.keys.list"/>
+                    <do_all exact="$TableRefKeys.count" counter="$k">
+                      <set_value name="$ShortageProductsTable.{$TableRefKeys.{$k}}" exact="$TableRef.{$TableRefKeys.{$k}}" operation="add"/>
+                    </do_all>
+                  </do_if>-->
+                      <do_if value="$OwnerReports.{$ReportKeys.{$i}}.$OverflowProductionWares?">
+                        <do_for_each name="$TableWare" valuename="$TableWareAmount" in="$OwnerReports.{$ReportKeys.{$i}}.$OverflowProductionWares">
+                          <set_value name="$OverflowProductsTable.{$TableWare}" exact="$TableWareAmount" operation="add" />
+                        </do_for_each>
+                      </do_if>
+                      <do_if value="$OwnerReports.{$ReportKeys.{$i}}.$InsufficientWorkforceWares?">
+                        <do_for_each name="$TableWare" valuename="$TableWareAmount" in="$OwnerReports.{$ReportKeys.{$i}}.$InsufficientWorkforceWares">
+                          <set_value name="$InsufficientWorkforceTable.{$TableWare}" exact="$TableWareAmount" operation="add" />
+                        </do_for_each>
+                      </do_if>
+                      <!--<do_if value="$OwnerReports.{$ReportKeys.{$i}}.$ShortageWorkforceWares?">
+                    <set_value name="$TableRef" exact="$OwnerReports.{$ReportKeys.{$i}}.$ShortageWorkforceWares"/>
+                    <set_value name="$TableRefKeys" exact="$TableRef.keys.list"/>
+                    <do_all exact="$TableRefKeys.count" counter="$k">
+                      <set_value name="$ShortageWorkforceTable.{$TableRefKeys.{$k}}" exact="$TableRef.{$TableRefKeys.{$k}}" operation="add"/>
+                    </do_all>
+                  </do_if>-->
+                      <debug_text text="@$OwnerReports.{$ReportKeys.{$i}}.$InsufficientBuildWares" />
+                      <do_if value="$OwnerReports.{$ReportKeys.{$i}}.$InsufficientBuildWares?">
+                        <do_for_each name="$TableWare" valuename="$TableWareAmount" in="$OwnerReports.{$ReportKeys.{$i}}.$InsufficientBuildWares">
+                          <set_value name="$InsufficientBuildTable.{$TableWare}" exact="$TableWareAmount" operation="add" />
+                        </do_for_each>
+                      </do_if>
+                      <!--<do_if value="$OwnerReports.{$ReportKeys.{$i}}.$ShortageBuildWares?">
+                    <set_value name="$TableRef" exact="$OwnerReports.{$ReportKeys.{$i}}.$ShortageBuildWares"/>
+                    <set_value name="$TableRefKeys" exact="$TableRef.keys.list"/>
+                    <do_all exact="$TableRefKeys.count" counter="$k">
+                      <set_value name="$ShortageWorkforceTable.{$TableRefKeys.{$k}}" exact="$TableRef.{$TableRefKeys.{$k}}" operation="add"/>
+                    </do_all>
+                  </do_if>-->
+                      <do_if value="$OwnerReports.{$ReportKeys.{$i}}.$BuyOfferAmounts?">
+                        <do_for_each name="$BuyOfferWare" valuename="$BuyOfferAmount" in="$OwnerReports.{$ReportKeys.{$i}}.$BuyOfferAmounts">
+                          <set_value name="$BuyOfferAmountsTable.{$BuyOfferWare}" exact="$BuyOfferAmount" operation="add" />
+                        </do_for_each>
+                      </do_if>
+                      <do_if value="$OwnerReports.{$ReportKeys.{$i}}.$SellOfferAmounts?">
+                        <do_for_each name="$SellOfferWare" valuename="$SellOfferAmount" in="$OwnerReports.{$ReportKeys.{$i}}.$SellOfferAmounts">
+                          <set_value name="$SellOfferAmountsTable.{$SellOfferWare}" exact="$SellOfferAmount" operation="add" />
+                        </do_for_each>
+                      </do_if>
+                    </do_all>
+                  </do_all>
+                  <remove_value name="$ReportKeys" />
+                  <remove_value name="$OwnerReports" />
+
+                  <debug_text text="'Insufficient products'" context="false" />
+                  <set_value name="$TableRef" exact="$InsufficientProductsTable" />
+                  <set_value name="$TableRefKeys" exact="$TableRef.keys.sorted" />
+                  <do_all exact="$TableRefKeys.count" counter="$i" reverse="true">
+                    <debug_text text="'Ware: ' + $TableRefKeys.{$i} + ' value: ' + $TableRef.{$TableRefKeys.{$i}}" context="false" />
+                  </do_all>
+
+                  <!--<debug_text text="'Shortage products'" context="false"/>
+              <set_value name="$TableRef" exact="$ShortageProductsTable"/>
+              <set_value name="$TableRefKeys" exact="$TableRef.keys.sorted"/>
+              <do_all exact="$TableRefKeys.count" counter="$i" reverse="true">
+                <debug_text text="'Ware: ' + $TableRefKeys.{$i} + ' value: ' + $TableRef.{$TableRefKeys.{$i}}" context="false"/>
+              </do_all>-->
+
+                  <debug_text text="'Overflow products'" context="false" />
+                  <set_value name="$TableRef" exact="$OverflowProductsTable" />
+                  <set_value name="$TableRefKeys" exact="$TableRef.keys.sorted" />
+                  <do_all exact="$TableRefKeys.count" counter="$i" reverse="true">
+                    <debug_text text="'Ware: ' + $TableRefKeys.{$i} + ' value: ' + $TableRef.{$TableRefKeys.{$i}}" context="false" />
+                  </do_all>
+
+                  <debug_text text="'Insufficient workforce res.'" context="false" />
+                  <set_value name="$TableRef" exact="$InsufficientWorkforceTable" />
+                  <set_value name="$TableRefKeys" exact="$TableRef.keys.sorted" />
+                  <do_all exact="$TableRefKeys.count" counter="$i" reverse="true">
+                    <debug_text text="'Ware: ' + $TableRefKeys.{$i} + ' value: ' + $TableRef.{$TableRefKeys.{$i}}" context="false" />
+                  </do_all>
+
+                  <!--<debug_text text="'Shortage workforce res.'" context="false"/>
+              <set_value name="$TableRef" exact="$ShortageWorkforceTable"/>
+              <set_value name="$TableRefKeys" exact="$TableRef.keys.sorted"/>
+              <do_all exact="$TableRefKeys.count" counter="$i" reverse="true">
+                <debug_text text="'Ware: ' + $TableRefKeys.{$i} + ' value: ' + $TableRef.{$TableRefKeys.{$i}}" context="false"/>
+              </do_all>-->
+
+                  <debug_text text="'Insufficient build res.'" context="false" />
+                  <set_value name="$TableRef" exact="$InsufficientBuildTable" />
+                  <set_value name="$TableRefKeys" exact="$TableRef.keys.sorted" />
+                  <do_all exact="$TableRefKeys.count" counter="$i" reverse="true">
+                    <debug_text text="'Ware: ' + $TableRefKeys.{$i} + ' value: ' + $TableRef.{$TableRefKeys.{$i}}" context="false" />
+                  </do_all>
+
+                  <!--<debug_text text="'Shortage build res.'" context="false"/>
+              <set_value name="$TableRef" exact="$ShortageBuildTable"/>
+              <set_value name="$TableRefKeys" exact="$TableRef.keys.sorted"/>
+              <do_all exact="$TableRefKeys.count" counter="$i" reverse="true">
+                <debug_text text="'Ware: ' + $TableRefKeys.{$i} + ' value: ' + $TableRef.{$TableRefKeys.{$i}}" context="false"/>
+              </do_all>-->
+
+                  <debug_text text="'Buy offers'" context="false" />
+                  <set_value name="$TableRef" exact="$BuyOfferAmountsTable" />
+                  <set_value name="$TableRefKeys" exact="$TableRef.keys.sorted" />
+                  <do_all exact="$TableRefKeys.count" counter="$i" reverse="true">
+                    <debug_text text="'Ware: ' + $TableRefKeys.{$i} + ' value: ' + $TableRef.{$TableRefKeys.{$i}}" context="false" />
+                  </do_all>
+
+                  <debug_text text="'Sell offers'" context="false" />
+                  <set_value name="$TableRef" exact="$SellOfferAmountsTable" />
+                  <set_value name="$TableRefKeys" exact="$TableRef.keys.sorted" />
+                  <do_all exact="$TableRefKeys.count" counter="$i" reverse="true">
+                    <debug_text text="'Ware: ' + $TableRefKeys.{$i} + ' value: ' + $TableRef.{$TableRefKeys.{$i}}" context="false" />
+                  </do_all>
+
+                </do_if>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+      </cues>
+    </library>
+
+
+    <cue name="Debug_ProductionIssues" namespace="this">
+      <conditions>
+        <event_cue_signalled />
+      </conditions>
+      <actions>
+        <debug_text text="'global.$ProductionIssues.keys.list: %s'.[@global.$ProductionIssues.keys.list]" />
+        <do_if value="@global.$ProductionIssues">
+          <do_for_each name="$Faction" valuename="$ProductionIssues_ForFaction" in="@global.$ProductionIssues">
+            <debug_text text="'$Faction: %s'.[$Faction]" />
+            <do_for_each name="$Sector" valuename="$ProductionIssues_InSector" in="$ProductionIssues_ForFaction">
+              <debug_text text="'    $Sector: %s'.[$Sector.knownname]" />
+              <set_value name="$Wares" exact="$ProductionIssues_InSector.keys.list" />
+              <sort_list list="$Wares" sortbyvalue="$ProductionIssues_InSector.{loop.element}" sortdescending="true" />
+              <do_for_each name="$Ware" in="$Wares">
+                <set_value name="$SectorValue" exact="$ProductionIssues_InSector.{$Ware}" />
+                <debug_text text="'        %s, $SectorValue: %s'.[$Ware.name, $SectorValue]" />
+              </do_for_each>
+            </do_for_each>
+          </do_for_each>
+        </do_if>
+        <reset_cue cue="this" />
+      </actions>
+    </cue>
+  </cues>
+</mdscript>

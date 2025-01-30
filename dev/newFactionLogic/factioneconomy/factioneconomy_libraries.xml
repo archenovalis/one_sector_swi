@@ -1,0 +1,900 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="FactionEconomy_Libraries" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../xsd/md.xsd">
+  <cues>
+
+    <library name="UpdateSectorNeighbourTable">
+      <actions>
+        <assert value="$Faction? and $SectorNeighbourTable?" text="'Variable $Faction or $SectorNeighbourTable not set. [Owen]'" break="1" />
+        <do_if value="$Faction? and $SectorNeighbourTable?">
+          <clear_table table="$SectorNeighbourTable" />
+
+          <!--Find all sectors with stations owned by this faction-->
+          <set_value name="$Sectors" exact="[]" />
+          <find_station_by_true_owner name="$OwnedStations" faction="$Faction" space="player.galaxy" multiple="true" checkoperational="false">
+            <match state="componentstate.wreck" negate="true" />
+          </find_station_by_true_owner>
+          <do_for_each in="$OwnedStations">
+            <do_if value="not $Sectors.indexof.{loop.element.sector}">
+              <append_to_list name="$Sectors" exact="loop.element.sector" />
+            </do_if>
+          </do_for_each>
+
+          <do_for_each in="$Sectors" name="$Sector" reverse="true">
+            <do_if value="not $SectorNeighbourTable.{$Sector}?">
+              <set_value name="$SectorNeighbourTable.{$Sector}" exact="table[{0} = [$Sector]]" />
+            </do_if>
+            <do_elseif value="not $SectorNeighbourTable.{$Sector}.{0}?">
+              <set_value name="$SectorNeighbourTable.{$Sector}.{0}" exact="[$Sector]" />
+            </do_elseif>
+            <do_else>
+              <append_to_list name="$SectorNeighbourTable.{$Sector}.{0}" exact="$Sector" />
+            </do_else>
+            <!--
+            Removed optimisation. Prior to the Terran DLC we had no sectors connected with a single super highway, so we could calculate the distance once and use it for both sectors.
+            <remove_value name="$Sectors.{loop.index}" /> -->
+
+            <find_sector_in_range distances="$DistanceTable" object="$Sector" maxdistance="5" multiple="true" />
+            <do_for_each in="$Sectors" name="$OtherSector">
+              <do_if value="$Sector != $OtherSector and $DistanceTable.{$OtherSector}?">
+                <set_value name="$JumpDistance" exact="$DistanceTable.{$OtherSector}" />
+                <!--Prepare the tables to store these two sectors-->
+                <do_if value="not $SectorNeighbourTable.{$Sector}.{$JumpDistance}?">
+                  <set_value name="$SectorNeighbourTable.{$Sector}.{$JumpDistance}" exact="[]" />
+                </do_if>
+
+                <do_if value="not $SectorNeighbourTable.{$OtherSector}?">
+                  <set_value name="$SectorNeighbourTable.{$OtherSector}" exact="table[{$JumpDistance} = []]" />
+                </do_if>
+                <do_elseif value="not $SectorNeighbourTable.{$OtherSector}.{$JumpDistance}?">
+                  <set_value name="$SectorNeighbourTable.{$OtherSector}.{$JumpDistance}" exact="[]" />
+                </do_elseif>
+
+                <append_to_list name="$SectorNeighbourTable.{$Sector}.{$JumpDistance}" exact="$OtherSector" />
+              </do_if>
+            </do_for_each>
+          </do_for_each>
+          <remove_value name="$Sectors" />
+          <remove_value name="$OwnedStations" />
+          <remove_value name="$DistanceTable" />
+        </do_if>
+      </actions>
+    </library>
+
+    <!--Note: Does not check if faction has a valid module production definition-->
+    <library name="Check_Production_Location_Suitablility" purpose="run_actions">
+      <params>
+        <param name="Sector" />
+        <param name="Ware" />
+        <param name="Faction" />
+      </params>
+      <actions>
+        <do_if value="$Ware == ware.energycells and $Sector.sunlight lt 0.4f">
+          <return value="false" />
+        </do_if>
+        <do_if value="$Sector.containsthewave">
+          <get_module_definition reference="$ProductionDefinition" ware="$Ware" faction="$Faction" tags="tag.condensate" />
+          <do_if value="not $ProductionDefinition">
+            <return value="false" />
+          </do_if>
+        </do_if>
+        <return value="true" />
+      </actions>
+    </library>
+
+    <!--Library to check if running actions should be disregarded or escalated-->
+    <library name="CheckRunningActions" purpose="run_actions">
+      <params>
+        <param name="Faction" />
+        <param name="ActionReports" comment="Action reports table to process" />
+        <param name="DisregardedActions" comment="List to populate with disregarded actions" />
+        <param name="EscalatedActions" comment="List to populate with escalated actions" />
+        <param name="Remove_Factory_Cue" default="null" comment="Static cue to signal for an escalating RemoveFactory action" />
+        <param name="DebugChance" default="0" />
+      </params>
+      <actions>
+        <set_value name="$Request_Commandeerable_Freighter_Release_Time" exact="90min" comment="Time after which the ship will be released" />
+
+        <set_value name="$Request_Freighter_Spawn_Wait_Time" exact="20min" comment="Time to allow the freighter to start being placed in a shipyard" />
+        <set_value name="$Request_Freighter_Build_Wait_Time" exact="1h" comment="Fallback time to allow the freighter to be built by the shipyard after spawning.
+                                                                                         Spawning usually only happens when all resources are present and building can start." />
+
+        <set_value name="$Request_Pri_Freighter_Spawn_Wait_Time" exact="30min" comment="Time to allow the freighter to start being placed in a shipyard" />
+        <set_value name="$Request_Pri_Freighter_Build_Wait_Time" exact="1h" comment="Fallback time to allow the freighter to be built by the shipyard after spawning.
+                                                                                             Spawning usually only happens when all resources are present and building can start." />
+
+        <set_value name="$Dismantle_Station_Timeout" exact="12h" comment="Time after which to consider dismantling a station if all productions are paused" />
+        <set_value name="$Pause_Production_Timeout" exact="24h" comment="Time to monitor a paused production" />
+
+        <set_value name="$Request_Production_Build_Wait_Time" exact="5h" comment="Time to allow the building to start" />
+        <set_value name="$Request_Production_Build_Timeout" exact="5h" comment="Time to allow the build to progress before disregarding" />
+        <set_value name="$Request_Production_Working_Timeout" exact="5h" comment="Time to allow the factory to work before disregarding" />
+
+        <set_value name="$Request_Factory_Build_Wait_Time" exact="15h" comment="Time to allow the building to start, where any module is operational or buildmodule is building" />
+        <set_value name="$Request_Factory_Build_Timeout" exact="10h" comment="Time to allow the build to progress before disregarding" />
+        <set_value name="$Request_Factory_Working_Timeout" exact="5h" comment="Time to allow the factory to work before disregarding" />
+
+        <do_for_each valuename="$ActionReportList" in="$ActionReports">
+          <do_for_each name="$ActionReport" in="$ActionReportList" counter="$ARL_i" reverse="true">
+            <set_value name="$DisregardAction" exact="false" />
+            <set_value name="$DisregardReason" exact="'UNKNOWN'" chance="$DebugChance" />
+            <set_value name="$DisregardObject" exact="null" />
+            <set_value name="$DisregardParam" exact="null" />
+
+            <set_value name="$ActionReportDef" exact="$ActionReport.$ActionDef" />
+
+            <!--CHECK REQUEST_COMMANDEERABLE_FREIGHTER and REQUEST_PRIO_COMMANDEERABLE_FREIGHTER ACTIONS-->
+            <do_if value="$ActionReportDef.$Type == '$request_commandeerable_freighter' or $ActionReportDef.$Type == '$request_prio_commandeerable_freighter'">
+              <set_value name="$CommandeeredShip" exact="$ActionReportDef.$Ship" />
+              <do_if value="$CommandeeredShip.isoperational and $CommandeeredShip.isjobship and not @$ActionReportDef.$Disregard" comment="$ActionReportDef.$Disregard can be set in the action handler itself">
+                <!--Ship is still an existing job ship-->
+                <do_if value="player.age ge $ActionReportDef.$CommandeerTime + $Request_Commandeerable_Freighter_Release_Time">
+                  <!--Ship is no longer a requested ship. Disregard action report-->
+                  <set_value name="$DisregardAction" exact="true" />
+                  <set_value name="$DisregardReason" exact="'Ship is to be released as a commandeered freighter'" chance="$DebugChance" />
+                  <set_value name="$DisregardObject" exact="$CommandeeredShip" />
+                </do_if>
+              </do_if>
+              <do_else>
+                <!--Ship is no longer a requested ship. Disregard action report-->
+                <set_value name="$DisregardAction" exact="true" />
+                <set_value name="$DisregardReason" exact="'Ship is no longer a suitable job ship'" chance="$DebugChance" />
+                <set_value name="$DisregardObject" exact="$CommandeeredShip" />
+              </do_else>
+              <remove_value name="$CommandeeredShip" />
+            </do_if>
+
+            <!--CHECK REQUEST_FREIGHTER ACTION-->
+            <do_elseif value="$ActionReportDef.$Type == '$request_freighter'">
+              <set_value name="$RequestedShip" exact="$ActionReportDef.$Ship" />
+              <do_if value="($RequestedShip.exists or @$RequestedShip.state == componentstate.operational) and $RequestedShip.isrequestedjobship">
+                <!--Ship is still an existing requested job ship or is an operational ship waiting to be built somewhere-->
+                <!--TODO @Owen - parameters for things such as how long to wait for requested ships-->
+                <do_if value="not $RequestedShip.exists and not $RequestedShip.build">
+                  <do_if value="$ActionReport.$StartTime lt player.age - $Request_Freighter_Spawn_Wait_Time">
+                    <!--DISREGARD-->
+                    <!--However, the ship still does not exist and it was requested some time ago. Kill and try something else-->
+                    <destroy_object object="$RequestedShip" />
+                    <set_value name="$DisregardAction" exact="true" />
+                    <set_value name="$DisregardReason" exact="'Time elapsed and it never existed'" chance="$DebugChance" />
+                  </do_if>
+                </do_if>
+                <do_elseif value="$RequestedShip.isoperational">
+                  <!--TODO @Owen, check if actually doing something. Any trade runs?-->
+                  <!--<do_elseif value="$ActionReportDef.$LaunchTime lt xxxxs and the situation is around the same or worse">
+                          try another freighter or a more drastic measure?
+                          </do_elseif>-->
+                </do_elseif>
+                <do_elseif value="$RequestedShip.isconstruction">
+                  <do_if value="@$ActionReportDef.$SpawnTime lt player.age - $Request_Freighter_Build_Wait_Time">
+                    <!--DISREGARD-->
+                    <!--Ship has not been built yet-->
+                    <!--TODO @Owen. Check state of the build. Is it close to finishing? Allow a bit more time?-->
+                    <!--TODO @Owen Recycle-->
+                    <destroy_object object="$RequestedShip" />
+                    <set_value name="$DisregardAction" exact="true" />
+                    <set_value name="$DisregardReason" exact="'Ship took too long to finish building'" chance="$DebugChance" />
+                  </do_if>
+                </do_elseif>
+                <do_elseif value="$RequestedShip.iswreck">
+                  <!--DISREGARD-->
+                  <!--Requested job ship is destroyed-->
+                  <set_value name="$DisregardAction" exact="true" />
+                  <set_value name="$DisregardReason" exact="'Ship is destroyed.'" chance="$DebugChance" />
+                  <set_value name="$DisregardObject" exact="$RequestedShip" />
+                </do_elseif>
+              </do_if>
+              <do_else>
+                <!--Ship is no longer a requested ship. Disregard action report-->
+                <set_value name="$DisregardAction" exact="true" />
+                <set_value name="$DisregardReason" exact="'Ship is no longer a requested job ship'" chance="$DebugChance" />
+                <set_value name="$DisregardObject" exact="$RequestedShip" />
+              </do_else>
+              <remove_value name="$RequestedShip" />
+            </do_elseif>
+
+            <!--CHECK REQUEST_PRIORITY_FREIGHTER ACTION-->
+            <do_elseif value="$ActionReportDef.$Type == '$request_priority_freighter'">
+              <set_value name="$RequestedShip" exact="$ActionReportDef.$Ship" />
+              <do_if value="($RequestedShip.exists or @$RequestedShip.state == componentstate.operational) and $RequestedShip.isrequestedjobship">
+                <!--Ship is still an existing requested job ship or is an operational ship waiting to be built somewhere-->
+                <!--TODO @Owen - parameters for things such as how long to wait for requested ships-->
+                <do_if value="not $RequestedShip.exists and not $RequestedShip.build">
+                  <do_if value="$ActionReport.$StartTime lt player.age - $Request_Pri_Freighter_Spawn_Wait_Time">
+                    <!--DISREGARD-->
+                    <!--However, the ship still does not exist and it was requested some time ago. Kill and try something else-->
+                    <destroy_object object="$RequestedShip" />
+                    <set_value name="$DisregardAction" exact="true" />
+                    <set_value name="$DisregardReason" exact="'Time elapsed and it never existed'" chance="$DebugChance" />
+                  </do_if>
+                </do_if>
+                <do_elseif value="$RequestedShip.isoperational">
+                  <!--TODO @Owen, check if actually doing something. Any trade runs?-->
+                  <!--<do_elseif value="$ActionReportDef.$LaunchTime lt xxxxs and the situation is around the same or worse">
+                          try another freighter or a more drastic measure?
+                          </do_elseif>-->
+                </do_elseif>
+                <do_elseif value="$RequestedShip.isconstruction">
+                  <do_if value="@$ActionReportDef.$SpawnTime lt player.age - $Request_Pri_Freighter_Build_Wait_Time">
+                    <!--DISREGARD-->
+                    <!--Ship has not been built yet-->
+                    <!--TODO @Owen. Check state of the build. Is it close to finishing? Allow a bit more time?-->
+                    <!--TODO @Owen Recycle-->
+                    <destroy_object object="$RequestedShip" />
+                    <set_value name="$DisregardAction" exact="true" />
+                    <set_value name="$DisregardReason" exact="'Ship took too long to finish building'" chance="$DebugChance" />
+                  </do_if>
+                </do_elseif>
+                <do_elseif value="$RequestedShip.iswreck">
+                  <!--DISREGARD-->
+                  <!--Requested job ship is destroyed-->
+                  <set_value name="$DisregardAction" exact="true" />
+                  <set_value name="$DisregardReason" exact="'Ship is destroyed.'" chance="$DebugChance" />
+                  <set_value name="$DisregardObject" exact="$RequestedShip" />
+                </do_elseif>
+              </do_if>
+              <do_else>
+                <set_value name="$DisregardAction" exact="true" />
+                <set_value name="$DisregardReason" exact="'Ship is no longer a requested job ship'" chance="$DebugChance" />
+                <set_value name="$DisregardObject" exact="$RequestedShip" />
+              </do_else>
+              <remove_value name="$RequestedShip" />
+            </do_elseif>
+
+            <!--CHECK PAUSE_PRODUCTION ACTION-->
+            <do_elseif value="$ActionReportDef.$Type == '$pause_production'">
+              <set_value name="$Station" exact="$ActionReportDef.$Station" />
+              <do_if value="not $Station.exists">
+                <!--DISREGARD-->
+                <!--The station no longer exists-->
+                <set_value name="$DisregardAction" exact="true" />
+                <set_value name="$DisregardReason" exact="'Station no longer exists'" chance="$DebugChance" />
+              </do_if>
+              <do_elseif value="not $ActionReportDef.$PauseModule.isoperational">
+                <!--DISREGARD-->
+                <!--Paused production is no longer operational-->
+                <set_value name="$DisregardAction" exact="true" />
+                <set_value name="$DisregardReason" exact="'Paused production module is no longer operational'" chance="$DebugChance" />
+                <set_value name="$DisregardObject" exact="$Station" />
+                <set_value name="$DisregardParam" exact="$ActionReportDef.$PauseModule" />
+              </do_elseif>
+              <do_elseif value="not $ActionReportDef.$PauseModule.ispausedmanually">
+                <!--DISREGARD-->
+                <!--Production is no longer paused-->
+                <set_value name="$DisregardAction" exact="true" />
+                <set_value name="$DisregardReason" exact="'Production module is no longer paused'" chance="$DebugChance" />
+                <set_value name="$DisregardObject" exact="$Station" />
+                <set_value name="$DisregardParam" exact="$ActionReportDef.$PauseModule" />
+              </do_elseif>
+              <do_else>
+                <!--Production paused - if the station is already ownerless it'll be dismantled soon, so ignore -->
+                <do_if value="$Faction.isactive and $Remove_Factory_Cue and not $Station.isownerless and ($ActionReportDef.$PauseTime lt (player.age - $Dismantle_Station_Timeout))">
+                  <!-- productions have been paused for a long time, try to dismantle station -->
+                  <set_value name="$NewActionDef" exact="table[]" />
+                  <set_value name="$NewActionDef.$Type" exact="'$remove_factory'" />
+                  <set_value name="$Sector" exact="$Station.sector" />
+                  <signal_cue_instantly cue="$Remove_Factory_Cue" param="[$NewActionDef, $Sector, null, $Station, null, $Faction, $DebugText]" />
+                  <do_if value="$NewActionDef.$Station?">
+                    <set_value name="$NewActionDef.$Sector" exact="$Sector" />
+                    <set_value name="$NewAction" exact="table[]" />
+                    <set_value name="$NewAction.$ActionDef" exact="$NewActionDef" />
+                    <set_value name="$NewAction.$StartTime" exact="player.age" />
+                    <set_value name="$NewAction.$Sector" exact="$Sector" />
+                    <set_value name="$NewAction.$Ware" exact="$ActionReport.$Ware" />
+                    <set_value name="$NewAction.$AggregatedValue" exact="$ActionReport.$AggregatedValue" />
+                    <append_to_list name="$EscalatedActions" exact="$NewAction" />
+                    <!-- we are escalating -->
+                    <set_value name="$DisregardAction" exact="true" />
+                    <set_value name="$DisregardReason" exact="'Factory %1 (%2, %3) has been scheduled for deconstruction, beginning evacuation.'.[$Station.knownname, $Station, $Station.idcode]" chance="$DebugChance" />
+                    <set_value name="$DisregardObject" exact="$Station" />
+                    <set_value name="$DisregardParam" exact="$ActionReportDef.$PauseModule" />
+                  </do_if>
+                </do_if>
+                <do_if value="not $DisregardAction and $ActionReportDef.$PauseTime lt (player.age - $Pause_Production_Timeout)">
+                  <!--DISREGARD-->
+                  <!--Production has been paused for some time and we cannot dismantle the factory, disregard the action which will lead it to resume production. -->
+                  <set_value name="$DisregardAction" exact="true" />
+                  <set_value name="$DisregardReason" exact="'Factory has had paused production %1 (%2) for %3'.[$ActionReportDef.$PauseModule.knownname, $ActionReportDef.$PauseModule, $Pause_Production_Timeout]" chance="$DebugChance" />
+                  <set_value name="$DisregardObject" exact="$Station" />
+                  <set_value name="$DisregardParam" exact="$ActionReportDef.$PauseModule" />
+                  <debug_text filter="economy_verbose" text="'#FLE#;%1;UnpauseProduction_Timeout;%2;%3;%4;%5;%6;%7'.[player.age, $Station.knownname, $Station, $Station.idcode, $Station.sector.knownname, $Faction.id, $ActionReport.$Ware, '', '']" context="false" />
+                </do_if>
+              </do_else>
+              <remove_value name="$Station" />
+            </do_elseif>
+
+            <!--CHECK REQUEST_PRODUCTION ACTION-->
+            <do_elseif value="$ActionReportDef.$Type == '$request_production'">
+              <set_value name="$Station" exact="$ActionReportDef.$Station" />
+              <do_if value="not $Station.exists">
+                <!--DISREGARD-->
+                <!--The station no longer exists-->
+                <set_value name="$DisregardAction" exact="true" />
+                <set_value name="$DisregardReason" exact="'Station no longer exists'" chance="$DebugChance" />
+              </do_if>
+              <do_elseif value="@$ActionReportDef.$BuiltTime">
+                <!--All productions were finished-->
+                <!--TODO @Owen check if the factory is actually producing?-->
+                <do_if value="$ActionReportDef.$BuiltTime lt player.age - $Request_Production_Working_Timeout">
+                  <!--DISREGARD-->
+                  <!--Productions have been complete for some time.-->
+                  <set_value name="$DisregardAction" exact="true" />
+                  <set_value name="$DisregardReason" exact="'Factory has had the new productions for ' + $Request_Production_Working_Timeout" chance="$DebugChance" />
+                  <set_value name="$DisregardObject" exact="$Station" />
+                </do_if>
+              </do_elseif>
+              <do_elseif value="@$ActionReportDef.$StartBuildTime or @$ActionReportDef.$LastBuildTime">
+                <!--Some module has begun construction-->
+                <do_if value="[$ActionReportDef.$StartBuildTime, @$ActionReportDef.$LastBuildTime].max lt player.age - $Request_Production_Build_Timeout">
+                  <!--DISREGARD-->
+                  <!--Factory has been expanding for a long time.-->
+                  <set_value name="$DisregardAction" exact="true" />
+                  <set_value name="$DisregardReason" exact="'Factory has been expanding for ' + $Request_Production_Build_Timeout" chance="$DebugChance" />
+                  <set_value name="$DisregardObject" exact="$Station" />
+                </do_if>
+              </do_elseif>
+              <do_else>
+                <!--Building has not started yet-->
+                <do_if value="$ActionReport.$StartTime lt player.age - $Request_Production_Build_Wait_Time">
+                  <!--DISREGARD-->
+                  <!--Construction has not started on the factory for a long time.-->
+                  <set_value name="$DisregardAction" exact="true" />
+                  <set_value name="$DisregardReason" exact="'Expansion has not started on factory for' + $Request_Production_Build_Wait_Time" chance="$DebugChance" />
+                  <set_value name="$DisregardObject" exact="$Station" />
+                </do_if>
+              </do_else>
+              <remove_value name="$Station" />
+            </do_elseif>
+            <!--CHECK REQUEST_FACTORY ACTION-->
+            <do_elseif value="$ActionReportDef.$Type == '$request_factory'">
+              <set_value name="$Station" exact="$ActionReportDef.$Station" />
+              <do_if value="not $Station.exists or $Station.iswreck">
+                <!--DISREGARD-->
+                <!--The module did exist, but no longer-->
+                <set_value name="$DisregardAction" exact="true" />
+                <set_value name="$DisregardReason" exact="'Station no longer exists'" chance="$DebugChance" />
+              </do_if>
+              <do_elseif value="@$ActionReportDef.$UnpausedProduction">
+                <!--The request to construct a factory resulted in unpausing a module-->
+                <do_if value="$ActionReportDef.$BuiltTime lt player.age - $Request_Factory_Working_Timeout">
+                  <!--DISREGARD-->
+                  <!--Module was been unpaused for a while-->
+                  <set_value name="$DisregardAction" exact="true" />
+                  <set_value name="$DisregardReason" exact="'Unpaused module has been working for ' + $Request_Factory_Working_Timeout" chance="$DebugChance" />
+                  <set_value name="$DisregardObject" exact="$Station" />
+                </do_if>
+              </do_elseif>
+              <do_elseif value="@$ActionReportDef.$BuiltTime">
+                <!--Build has finished-->
+                <!--TODO @Owen check if the factory is actually producing?-->
+                <do_if value="$ActionReportDef.$BuiltTime lt player.age - $Request_Factory_Working_Timeout">
+                  <!--DISREGARD-->
+                  <!--Factory has been complete for some time.-->
+                  <set_value name="$DisregardAction" exact="true" />
+                  <set_value name="$DisregardReason" exact="'Factory has been working for ' + $Request_Factory_Working_Timeout" chance="$DebugChance" />
+                  <set_value name="$DisregardObject" exact="$Station" />
+                </do_if>
+              </do_elseif>
+              <do_elseif value="@$ActionReportDef.$StartBuildTime">
+                <!--Build has started-->
+                <do_if value="$ActionReportDef.$StartBuildTime lt player.age - $Request_Factory_Build_Timeout">
+                  <!--DISREGARD-->
+                  <!--Factory has been building for a long time.-->
+                  <set_value name="$DisregardAction" exact="true" />
+                  <set_value name="$DisregardReason" exact="'Factory has been building for ' + $Request_Factory_Build_Timeout" chance="$DebugChance" />
+                  <set_value name="$DisregardObject" exact="$Station" />
+                  <set_value name="$ActionReportDef.$RemoveFactory" exact="true" />
+                </do_if>
+              </do_elseif>
+              <do_else>
+                <!--Building has not started yet-->
+                <do_if value="$ActionReport.$StartTime lt player.age - $Request_Factory_Build_Wait_Time">
+                  <!--DISREGARD-->
+                  <!--Construction has not started on the factory for a long time.-->
+                  <set_value name="$DisregardAction" exact="true" />
+                  <set_value name="$DisregardReason" exact="'Construction has not started on factory for' + $Request_Factory_Build_Timeout" chance="$DebugChance" />
+                  <set_value name="$DisregardObject" exact="$Station" />
+                  <set_value name="$ActionReportDef.$RemoveFactory" exact="true" />
+                </do_if>
+              </do_else>
+              <remove_value name="$Station" />
+            </do_elseif>
+            <!--CHECK REMOVE_FACTORY ACTION-->
+            <do_elseif value="$ActionReportDef.$Type == '$remove_factory'">
+              <set_value name="$Station" exact="$ActionReportDef.$Station" />
+              <do_if value="not $Station.exists">
+                <!--DISREGARD-->
+                <!--The station did exist, but no longer-->
+                <set_value name="$DisregardAction" exact="true" />
+                <set_value name="$DisregardReason" exact="'Station no longer exists'" chance="$DebugChance" />
+              </do_if>
+              <!-- TODO: do we need to bother with other checks? Once the recycling has started there is no going back anyway -->
+              <remove_value name="$Station" />
+            </do_elseif>
+            <do_else>
+              <assert value="false" text="'Unknown action type ' + $ActionReportDef.$Type + ' [Owen]'" break="1" />
+            </do_else>
+
+            <do_if value="$DisregardAction">
+              <debug_text text="'Disregarding action with reason: ' + $DisregardReason + ' Action: ' + $ActionReport" context="false" chance="$DebugChance" />
+              <do_if value="$DisregardObject and $DisregardObject.isclass.component">
+                <!--.isclass.component check as $DisregardObject may be disconnected and .exists may not work-->
+                <signal_objects object="$DisregardObject" param="'factionlogic_econ_disregard'" param2="$ActionReportDef.$Type" param3="$DisregardParam" />
+              </do_if>
+              <!-- also clear any sub-action this action may have had -->
+              <do_if value="$ActionReportDef.$SubActionDefs?">
+                <do_all exact="$ActionReportDef.$SubActionDefs.count" counter="$sa">
+                  <set_value name="$SubActionDef" exact="$ActionReportDef.$SubActionDefs.{$sa}" />
+                  <set_value name="$DisregardObject" exact="if $SubActionDef.$Ship then $SubActionDef.$Ship else $SubActionDef.$Station" />
+                  <do_if value="$DisregardObject and $DisregardObject.isclass.component">
+                    <!--.isclass.component check as $DisregardObject may be disconnected and .exists may not work-->
+                    <debug_text text="'Disregarding sub-action with reason: Primary action disregarded Action: ' + $SubActionDef" context="false" chance="$DebugChance" />
+                    <signal_objects object="$DisregardObject" param="'factionlogic_econ_disregard'" param2="$SubActionDef.$Type" />
+                  </do_if>
+                </do_all>
+              </do_if>
+
+              <append_to_list name="$DisregardedActions" exact="$ActionReport" />
+              <remove_value name="$ActionReportList.{$ARL_i}" />
+            </do_if>
+          </do_for_each>
+        </do_for_each>
+      </actions>
+    </library>
+
+    <!--
+      adds a production issue at the sector for the faction.
+      called from EvaluateSectorShortage at $IsProductionIssue.
+    -->
+    <!--
+      global.$ProductionIssues = table[
+        $Faction = table[
+          $Sector = table[
+            $Ware = time, ...
+          ], ...
+        ], ...
+      ]
+    -->
+    <library name="AddProductionIssue" purpose="run_actions">
+      <params>
+        <param name="Faction" />
+        <param name="Sector" />
+        <param name="Ware" />
+        <param name="SectorValue" />
+        <param name="DebugChance" default="0" />
+      </params>
+      <actions>
+        <!-- <set_value name="$DebugChance" exact="100" /> -->
+        <do_if value="not global.$ProductionIssues?">
+          <set_value name="global.$ProductionIssues" exact="table[]" />
+        </do_if>
+        <do_if value="not global.$ProductionIssues.{$Faction}?">
+          <set_value name="global.$ProductionIssues.{$Faction}" exact="table[]" />
+        </do_if>
+        <do_if value="not global.$ProductionIssues.{$Faction}.{$Sector}?">
+          <set_value name="global.$ProductionIssues.{$Faction}.{$Sector}" exact="table[]" />
+        </do_if>
+        <set_value operation="add" name="global.$ProductionIssues.{$Faction}.{$Sector}.{$Ware}" exact="$SectorValue" />
+        <debug_text text="'%s, $Sector: %s, $Ware: %s, $SectorValue: %s'.[$Faction, $Sector.knownname, $Ware.name, $SectorValue]" chance="$DebugChance" />
+      </actions>
+    </library>
+
+    <!--
+      removes the data for the faction at the sector.
+      called from EvaluateSectorShortage before the sector is evaluated for the faction.
+    -->
+    <library name="CleanProductionIssueForFaction" purpose="run_actions">
+      <params>
+        <param name="Faction" />
+        <param name="DebugChance" default="0" />
+      </params>
+      <actions>
+        <!-- <set_value name="$DebugChance" exact="100" /> -->
+        <do_if value="global.$ProductionIssues.{$Faction}?">
+          <remove_value name="global.$ProductionIssues.{$Faction}" />
+        </do_if>
+        <debug_text text="$Faction" chance="$DebugChance" />
+      </actions>
+    </library>
+
+    <!--
+      returns a list of wares that the faction had a production issue at the sector since the last EvaluateSectorShortage.
+      called from gm_buildstation.
+    -->
+    <library name="GetProductionIssue" purpose="run_actions">
+      <params>
+        <param name="Faction" />
+        <param name="Sector" />
+        <param name="DebugChance" default="0" />
+      </params>
+      <actions>
+        <!-- <set_value name="$DebugChance" exact="100" /> -->
+        <set_value name="$Wares" exact="@global.$ProductionIssues.{$Faction}.{$Sector}.keys.list" />
+        <do_if value="$Wares">
+          <sort_list list="$Wares" sortbyvalue="global.$ProductionIssues.{$Faction}.{$Sector}.{loop.element}" sortdescending="true" />
+        </do_if>
+        <do_else>
+          <set_value name="$Wares" exact="[]" />
+        </do_else>
+        <do_if value="$DebugChance == 100">
+          <debug_text text="'%s, $Sector: %s, $Wares: %s'.[$Faction, $Sector.knownname, $Wares]" chance="$DebugChance" />
+          <do_for_each name="$Ware" in="$Wares">
+            <debug_text text="'    $Ware: %s'.[$Ware.name]" chance="$DebugChance" />
+          </do_for_each>
+        </do_if>
+        <return value="$Wares" />
+      </actions>
+    </library>
+
+
+    <library name="AggregatedReportTableHelper">
+      <actions>
+        <do_if value="$DebugChance == 100">
+          <set_value name="$TableRefKeys" exact="$TableRef.keys.sorted" />
+          <do_all exact="$TableRefKeys.count" counter="$arth_i" reverse="true">
+            <debug_text text="'Ware: ' + $TableRefKeys.{$arth_i} + ' value: ' + $TableRef.{$TableRefKeys.{$arth_i}}" context="false" />
+          </do_all>
+        </do_if>
+      </actions>
+    </library>
+
+    <library name="SortedReportTableHelper">
+      <actions>
+        <do_if value="$DebugChance == 100">
+          <do_if value="$TableRef.keys.count">
+            <set_value name="$TableRefKeys" exact="$TableRef.keys.list" />
+            <do_all exact="$TableRefKeys.count" counter="$srt_i" reverse="true">
+              <debug_text text="'Ware ' + $TableRef.{$TableRefKeys.{$srt_i}}.$Ware + ' was reported ' + $DebugReportType + ' for ' + $TableRefKeys.{$srt_i} + ' seconds by station: ' + $TableRef.{$TableRefKeys.{$srt_i}}.$Station + ' ' + $TableRef.{$TableRefKeys.{$srt_i}}.$Station.knownname + ' in ' + $TableRef.{$TableRefKeys.{$srt_i}}.$Station.sector.knownname" context="false" />
+              <do_if value="$srt_i le $TableRefKeys.count - 15">
+                <break />
+              </do_if>
+            </do_all>
+            <remove_value name="$TableRefKeys" />
+          </do_if>
+        </do_if>
+      </actions>
+    </library>
+
+    <library name="SectorReportTableHelper">
+      <actions>
+        <do_if value="$DebugChance == 100">
+          <do_if value="$TableRef.keys.count">
+            <set_value name="$TableRefKeys" exact="$TableRef.keys.list" />
+            <do_all exact="$TableRefKeys.count" counter="$srt_i">
+              <set_value name="$SubTable" exact="$TableRef.{$TableRefKeys.{$srt_i}}" />
+              <set_value name="$SubTableRefKeys" exact="$SubTable.keys.list" />
+              <do_all exact="$SubTableRefKeys.count" counter="$srt_k" reverse="true">
+                <debug_text text="'Sector ' + $TableRefKeys.{$srt_i} + ' ' + $TableRefKeys.{$srt_i}.knownname + ' has ' + $DebugReportType + ' of ware ' + $SubTableRefKeys.{$srt_k} + ' of value ' + $SubTable.{$SubTableRefKeys.{$srt_k}}" context="false" />
+              </do_all>
+            </do_all>
+          </do_if>
+        </do_if>
+      </actions>
+    </library>
+
+    <library name="Find_Location_And_Build_Station" purpose="run_actions">
+      <params>
+        <!--Faction params-->
+        <param name="Faction" />
+        <param name="StationHistory" />
+        <param name="RelevantSectors" />
+        <param name="ClaimedSectors" />
+        <param name="PreferredSectors" default="[]" />
+
+        <!--Station params-->
+        <param name="NumStations" default="1" />
+        <param name="StationDefinitions" />
+        <param name="ModuleSetMacro" />
+        <param name="LoadoutLevel" default="0.9" />
+        <param name="InitialState" default="componentstate.construction" />
+        <param name="InGravidarObscuringRegion" default="false" />
+
+        <!--Sector scores-->
+        <param name="ExistingStationScore" default="null" comment="If null, defaults to -100.0f" />
+        <param name="OwnedSectorScore" default="null" comment="If null, defaults to 0.7f" />
+        <param name="ClaimedSectorScore" default="null" comment="If null, defaults to 0.5f" />
+        <param name="UnclaimedSectorScore" default="null" comment="If null, defaults to 0.3f" />
+
+        <!--Station history analysis-->
+        <param name="ExistingStationValName" comment="String used in the station history to identify existing stations of this type e.g. '$IsTradeStation'" />
+        <param name="PastStationValName" comment="String used in the station history to identify past stations of this type e.g. '$WasTradeStation'" />
+        <param name="PastStationMaxScoreTable" default="null" comment="Table with past station type identifier strings as keys, with a score value. e.g. table[$WasTradeStation = 1.0f]" />
+
+        <param name="DebugText" default="''" />
+        <param name="DebugChance" default="0" />
+      </params>
+      <actions>
+        <!--Parameter defaults-->
+        <do_if value="typeof $ExistingStationScore == datatype.null">
+          <set_value name="$ExistingStationScore" exact="-100.0f" />
+        </do_if>
+        <do_if value="typeof $OwnedSectorScore == datatype.null">
+          <set_value name="$OwnedSectorScore" exact="0.7f" />
+        </do_if>
+        <do_if value="typeof $ClaimedSectorScore == datatype.null">
+          <set_value name="$ClaimedSectorScore" exact="0.5f" />
+        </do_if>
+        <do_if value="typeof $UnclaimedSectorScore == datatype.null">
+          <set_value name="$UnclaimedSectorScore" exact="0.3f" />
+        </do_if>
+
+        <set_value name="$NewStations" exact="[]" />
+        <do_if value="$StationDefinitions.count">
+
+          <debug_text text="'RelevantSectors ' + $RelevantSectors.count" chance="$DebugChance" />
+          <debug_text text="'ClaimedSectors ' + $ClaimedSectors.count" chance="$DebugChance" />
+
+          <!--Table of sectors scoring by preference-->
+          <set_value name="$PotentialSectors" exact="table[]" />
+
+          <do_if value="$InGravidarObscuringRegion">
+            <do_for_each name="$RelevantSector" in="$RelevantSectors">
+              <do_if value="not $RelevantSector.hasgravidarobscuringregion">
+                <set_value name="$PotentialSectors.{$RelevantSector}" exact="-100.0f" />
+              </do_if>
+            </do_for_each>
+          </do_if>
+
+          <set_value name="$MaxExistScoreTime" exact="5h" />
+
+          <!--Table of sectors and suitable God IDs of stations to respawn-->
+          <set_value name="$GodEntryIDTable" exact="table[]" />
+          <!--Check the history to see if there was a station in a sector which the faction still considers relevant-->
+          <do_for_each name="$StationEntry" in="$StationHistory">
+            <do_if value="$RelevantSectors.indexof.{$StationEntry.$Sector} and @$PotentialSectors.{$StationEntry.$Sector} ge 0">
+              <do_if value="$StationEntry.$Station.exists">
+                <do_if value="@$StationEntry.{$ExistingStationValName}">
+                  <set_value name="$Score" exact="$ExistingStationScore" />
+                  <set_value name="$PotentialSectors.{$StationEntry.$Sector}" operation="add" exact="$Score" />
+                  <debug_text text="$DebugText + 'Sector ' + $StationEntry.$Sector + ' ' + $StationEntry.$Sector.knownname + ' has a station flagged as ' + $ExistingStationValName + '. Scoring ' + $Score + ' for a total of ' + $PotentialSectors.{$StationEntry.$Sector}" chance="$DebugChance" context="false" />
+                </do_if>
+              </do_if>
+              <do_else>
+                <do_if value="@$StationEntry.{$PastStationValName} and $StationEntry.$GodEntryID?">
+                  <find_station_by_true_owner name="$ExistingGodStation" faction="$Faction" godstationentry="$StationEntry.$GodEntryID" space="$StationEntry.$Sector" checkoperational="false" />
+                  <do_if value="$ExistingGodStation">
+                    <!--TODO @Owen support god definitions with quotas greater than 1?-->
+                    <debug_text text="'Sector ' + $StationEntry.$Sector.knownname + ' already contains a station with God ID ' + $StationEntry.$GodEntryID + ' skipping this entry for scoring the sector'" chance="$DebugChance" />
+                    <continue />
+                  </do_if>
+                  <do_else>
+                    <do_if value="not $GodEntryIDTable.{$StationEntry.$Sector}?">
+                      <set_value name="$GodEntryIDTable.{$StationEntry.$Sector}" exact="[$StationEntry.$GodEntryID]" />
+                    </do_if>
+                    <do_else>
+                      <append_to_list name="$GodEntryIDTable.{$StationEntry.$Sector}" exact="$StationEntry.$GodEntryID" />
+                    </do_else>
+                  </do_else>
+                </do_if>
+                <do_if value="$PastStationMaxScoreTable">
+                  <do_for_each name="$PastStationScoreName" valuename="$PastStationMaxScore" in="$PastStationMaxScoreTable">
+                    <set_value name="$MaxExistScoreTime" exact="5h" />
+                    <set_value name="$Score" exact="([$MaxExistScoreTime, ($StationEntry.$LastKnownTime - $StationEntry.$FirstKnownTime)].min / $MaxExistScoreTime)f * $PastStationMaxScore" />
+                    <set_value name="$PotentialSectors.{$StationEntry.$Sector}" operation="add" exact="$Score" />
+                    <debug_text text="$DebugText + 'Sector ' + $StationEntry.$Sector + ' ' + $StationEntry.$Sector.knownname + ' previously had a station flagged as ' + $PastStationScoreName + '. Scoring ' + $Score + ' for a total of ' + $PotentialSectors.{$StationEntry.$Sector}" chance="$DebugChance" context="false" />
+                  </do_for_each>
+                </do_if>
+              </do_else>
+            </do_if>
+          </do_for_each>
+
+          <!--If a preferred sector is currently also a relevant sector, and not dismissed (negative), give it a high score-->
+          <do_for_each name="$PreferredSector" in="$PreferredSectors">
+            <do_if value="@$PotentialSectors.{$PreferredSector} ge 0">
+              <set_value name="$PotentialSectors.{$PreferredSector}" operation="add" exact="100.0f" />
+            </do_if>
+          </do_for_each>
+
+          <!--Check all relevant sectors to see how suitable they are-->
+          <do_all exact="$RelevantSectors.count" counter="$i">
+            <set_value name="$PotentialSector" exact="$RelevantSectors.{$i}" />
+            <do_if value="@$PotentialSectors.{$PotentialSector} ge 0">
+              <do_if value="$PotentialSector.owner == $Faction">
+                <set_value name="$PotentialSectors.{$PotentialSector}" operation="add" exact="$OwnedSectorScore" />
+                <debug_text text="$DebugText + 'Sector ' + $PotentialSector + ' ' + $PotentialSector.knownname + ' is an owned sector. Scoring ' + $OwnedSectorScore + ' for a total of ' + $PotentialSectors.{$PotentialSector}" chance="$DebugChance" context="false" />
+              </do_if>
+              <do_elseif value="$ClaimedSectors.indexof.{$PotentialSector}">
+                <set_value name="$PotentialSectors.{$PotentialSector}" operation="add" exact="$ClaimedSectorScore" />
+                <debug_text text="$DebugText + 'Sector ' + $PotentialSector + ' ' + $PotentialSector.knownname + ' is a claimed sector. Scoring ' + $ClaimedSectorScore + ' for a total of ' + $PotentialSectors.{$PotentialSector}" chance="$DebugChance" context="false" />
+              </do_elseif>
+              <do_else>
+                <!--TODO @Owen not a claimed sector. Score based on factions? Allies/Enemies? Will it contest control? Helper script property for $constructionsequence.canclaimownership?-->
+                <set_value name="$PotentialSectors.{$PotentialSector}" operation="add" exact="$UnclaimedSectorScore" />
+                <debug_text text="$DebugText + 'Sector ' + $PotentialSector + ' ' + $PotentialSector.knownname + ' is not a claimed sector. Scoring ' + $UnclaimedSectorScore + ' for a total of ' + $PotentialSectors.{$PotentialSector}" chance="$DebugChance" context="false" />
+              </do_else>
+            </do_if>
+          </do_all>
+
+          <do_for_each name="$PotentialSector" valuename="$PotentialSectorScore" in="$PotentialSectors" reverse="true">
+            <do_if value="$PotentialSectorScore lt 0">
+              <debug_text text="'Potential sector ' + $PotentialSector + ' ' + $PotentialSector.knownname + ' had a negative score and will be skipped'" chance="$DebugChance" />
+              <remove_value name="$PotentialSectors.{$PotentialSector}" />
+            </do_if>
+          </do_for_each>
+
+          <do_all exact="$NumStations">
+            <include_actions ref="SelectSuitableSector" />
+            <do_if value="$ChosenSector">
+              <do_if value="@$GodEntryIDTable.{$ChosenSector}.count">
+                <set_value name="$SelectedGodEntry" exact="$GodEntryIDTable.{$ChosenSector}.random" />
+                <remove_from_list name="$GodEntryIDTable.{$ChosenSector}" exact="$SelectedGodEntry" />
+                <create_god_station name="$NewStation" id="$SelectedGodEntry" state="componentstate.construction" />
+                <do_if value="$NewStation">
+                  <debug_text text="$DebugText + 'Created new god station ' + $NewStation.knownname + ' ' + $NewStation + ' - God ID: ' + $SelectedGodEntry + ' in ' + $ChosenSector + ' ' + $ChosenSector.knownname" context="false" chance="$DebugChance" />
+                  <append_to_list name="$NewStations" exact="$NewStation" />
+                </do_if>
+              </do_if>
+              <do_else>
+                <set_value name="$SelectedDefinition" exact="$StationDefinitions.random" />
+
+                <debug_text text="$DebugText + 'Selected ' + $ChosenSector + ' ' + $ChosenSector.knownname + ' to build new station'" context="false" chance="$DebugChance" />
+                <remove_value name="$PotentialSectors.{$ChosenSector}" />
+                <set_value name="$IsMacroStation" exact="false" />
+                <set_value name="$IsConstructionPlanStation" exact="false" />
+                <do_if value="typeof $SelectedDefinition == datatype.macro">
+                  <set_value name="$IsMacroStation" exact="true" />
+                  <!--TODO @Owen creating landmark stations currently results in them being instantly completed, not constructed.-->
+                </do_if>
+                <do_elseif value="$ModuleSetMacro and typeof $SelectedDefinition == datatype.list and typeof $SelectedDefinition.{1} == datatype.constructionsequence and (typeof $SelectedDefinition.{2}).isstring">
+                  <set_value name="$IsConstructionPlanStation" exact="true" />
+                </do_elseif>
+
+                <do_if value="$IsMacroStation or $IsConstructionPlanStation">
+                  <set_value name="$SpawnZone" exact="null" />
+                  <set_value name="$NewStation" exact="null" />
+                  <set_value name="$Position" exact="null" />
+                  <do_if value="not $InGravidarObscuringRegion">
+                    <find_zone name="$SpawnZone" space="$ChosenSector" chance="50">
+                      <match_child class="class.station" owner="$Faction" min="1" max="2" checkoperational="false" />
+                      <match_distance space="$ChosenSector" value="$ChosenSector.coreposition" max="[$ChosenSector.coresize / 2.0f, 400km].min" />
+                    </find_zone>
+                  </do_if>
+                  <do_if value="$SpawnZone">
+                    <create_position name="$Position" max="40km" />
+                    <set_value name="$Y_Position" min="-5km" max="5km" />
+                    <set_value name="$Position" exact="position.[$Position.x, $Y_Position, $Position.z]" />
+                    <do_if value="$IsMacroStation">
+                      <!-- todo: move to industry build stations
+                      <create_station name="$NewStation" zone="$SpawnZone" owner="$Faction" macro="$SelectedDefinition" state="$InitialState">
+                        <safepos value="$Position" allowyaxis="false" includeplotbox="true" />
+                      </create_station>
+                      -->
+                      <debug_text text="$DebugText + 'Spawned new station ' + $NewStation.knownname + ' ' + $NewStation + ' in ' + $ChosenSector + ' ' + $ChosenSector.knownname" context="false" chance="$DebugChance" />
+                    </do_if>
+                    <do_elseif value="$IsConstructionPlanStation">
+                      <!-- todo: move to industry build stations
+                      <create_station name="$NewStation" zone="$SpawnZone" owner="$Faction" macro="$ModuleSetMacro" rawname="$SelectedDefinition.{2}" state="$InitialState">
+                        <safepos value="$Position" allowyaxis="false" includeplotbox="true" />
+                      </create_station>
+                      -->
+                    </do_elseif>
+                    <!--TODO @Owen #important init_station?-->
+                  </do_if>
+                  <do_else>
+                    <do_if value="$InGravidarObscuringRegion">
+                      <run_actions ref="md.LIB_Generic.GetGravidarObscuringSectorPosition" result="$Position">
+                        <param name="Sector" value="$ChosenSector" />
+                        <!--TODO @Owen get radius of construction plan?-->
+                        <param name="SafeposRadius" value="4km" />
+                        <param name="CoreSizeFactor" value="1.2f" />
+                        <param name="DebugChance" value="$DebugChance" />
+                      </run_actions>
+                    </do_if>
+                    <do_else>
+                      <include_actions ref="GetRandomCorePosition_1" comment="Sets $Position" />
+                    </do_else>
+
+                    <do_if value="$Position">
+                      <do_if value="$IsMacroStation">
+                        <!-- todo: move to industry build stations
+                        <create_station name="$NewStation" sector="$ChosenSector" owner="$Faction" macro="$SelectedDefinition" state="$InitialState">
+                          <safepos value="$Position" allowyaxis="false" includeplotbox="true" />
+                        </create_station>
+                        -->
+                        <debug_text text="$DebugText + 'Spawned new station ' + $NewStation.knownname + ' ' + $NewStation + ' in ' + $ChosenSector + ' ' + $ChosenSector.knownname" context="false" chance="$DebugChance" />
+                      </do_if>
+                      <do_elseif value="$IsConstructionPlanStation">
+                        <!-- todo: move to industry build stations
+                        <create_station name="$NewStation" sector="$ChosenSector" owner="$Faction" macro="$ModuleSetMacro" rawname="$SelectedDefinition.{2}" state="$InitialState">
+                          <safepos value="$Position" allowyaxis="false" includeplotbox="true" />
+                        </create_station>
+                        -->
+                      </do_elseif>
+                    </do_if>
+                  </do_else>
+                  <!-- todo: move to industry build stations
+                  <do_if value="$NewStation and $IsConstructionPlanStation">
+                    <generate_loadout sequence="$SelectedDefinition.{1}" level="$LoadoutLevel" result="$Loadouts" faction="$Faction" />
+                    <do_all exact="$Loadouts.count" counter="$l">
+                      <apply_loadout sequence="$SelectedDefinition.{1}" index="$l" loadout="$Loadouts.{$l}" />
+                    </do_all>
+                    <add_build_to_expand_station object="$NewStation.buildstorage" buildobject="$NewStation" constructionplan="$SelectedDefinition.{1}" result="$BuildID" />
+                    <debug_text text="$DebugText + 'Started construction of station ' + $NewStation.knownname + ' ' + $NewStation + ' - Build ID: ' + $BuildID + ' in ' + $ChosenSector + ' ' + $ChosenSector.knownname" context="false" chance="$DebugChance" />
+                  </do_if>                  
+                  -->
+                  <do_if value="$NewStation">
+                    <!-- todo: move to industry build stations
+                    <do_if value="$InitialState == componentstate.operational">
+                      <signal_objects object="player.galaxy" param="'init station'" param2="$NewStation" param3="false" />
+                    </do_if>
+                    -->
+                    <append_to_list name="$NewStations" exact="$NewStation" />
+                  </do_if>
+                </do_if>
+              </do_else>
+
+            </do_if>
+          </do_all>
+        </do_if>
+
+        <return value="$NewStations" />
+      </actions>
+    </library>
+
+    <!-- Select a suitable sector from a table of scored sectors
+            Required variables: $PotentialSectors (table. key = sector, value = score)
+            Result variables: $ChosenSector-->
+    <library name="SelectSuitableSector">
+      <actions>
+        <set_value name="$ChosenSector" exact="null" />
+
+        <do_if value="$PotentialSectors.keys.count">
+          <set_value name="$SortedSectors" exact="$PotentialSectors.keys.sorted" />
+          <do_all exact="$SortedSectors.count" counter="$i" reverse="true">
+            <debug_text text="'Potential sector ' + $SortedSectors.{$i} + ' ' + $SortedSectors.{$i}.knownname + ' Score: ' + $PotentialSectors.{$SortedSectors.{$i}}" chance="$DebugChance" context="false" />
+          </do_all>
+          <!--Only select from the top 3 sectors to avoid selecting something too dumb-->
+          <set_value name="$HighestScoringSectors" exact="[]" />
+          <set_value name="$MaxWeightScore" exact="0" />
+          <do_all exact="$SortedSectors.count" counter="$i" reverse="true">
+            <append_to_list name="$HighestScoringSectors" exact="$SortedSectors.{$i}" />
+            <set_value name="$MaxWeightScore" operation="add" exact="$PotentialSectors.{$SortedSectors.{$i}}" />
+            <debug_text text="'One of the best sectors to select is ' + $SortedSectors.{$i}.knownname + ' with a score of ' + $PotentialSectors.{$SortedSectors.{$i}}" chance="$DebugChance" />
+            <do_if value="$HighestScoringSectors.count ge 3">
+              <break />
+            </do_if>
+          </do_all>
+          <set_value name="$AggregatedWeightScore" exact="0" />
+          <set_value name="$SelectedWeightScore" min="0" max="$MaxWeightScore" />
+          <do_all exact="$HighestScoringSectors.count" counter="$i">
+            <set_value name="$AggregatedWeightScore" operation="add" exact="$PotentialSectors.{$HighestScoringSectors.{$i}}" />
+            <do_if value="$SelectedWeightScore le $AggregatedWeightScore">
+              <set_value name="$ChosenSector" exact="$HighestScoringSectors.{$i}" />
+              <break />
+            </do_if>
+          </do_all>
+          <do_if value="not $ChosenSector">
+            <assert value="not $ChosenSector" text="'Unable to select a sector by a random weight score of ' + $SelectedWeightScore + '. Selecting one randomly [Owen]'" />
+            <set_value name="$ChosenSector" exact="$HighestScoringSectors.random" />
+          </do_if>
+
+          <remove_value name="$HighestScoringSectors" />
+          <remove_value name="$MaxWeightScore" />
+          <remove_value name="$AggregatedWeightScore" />
+          <remove_value name="$SelectedWeightScore" />
+          <remove_value name="$SortedSectors" />
+        </do_if>
+      </actions>
+    </library>
+
+    <!--TODO @Owen convert to run_actions-->
+    <!-- Get a random position in a sector based on its core size
+            Required variables: $ChosenSector
+            Result variables: $Position-->
+    <library name="GetRandomCorePosition_1">
+      <actions>
+        <set_value name="$CorePosition" exact="$ChosenSector.coreposition" />
+        <set_value name="$CoreRadius" exact="[$ChosenSector.size / 2.0f, 400km].min" comment="Limited for very large sector core bounds" />
+        <set_value name="$Y_Offset" min="-5km" max="5km" />
+        <set_value name="$Yaw" min="0deg" max="360deg" />
+        <set_value name="$CoreRange" max="$CoreRadius" />
+        <set_value name="$Position" exact="position.[$CorePosition.x + (sin($Yaw) * $CoreRange), $CorePosition.y + $Y_Offset, $CorePosition.z + (cos($Yaw) * $CoreRange)]" />
+        <debug_text text="'Selected sector position ' + $Position" chance="$DebugChance" />
+        <remove_value name="$CorePosition" />
+        <remove_value name="$CoreRadius" />
+        <remove_value name="$Y_Offset" />
+        <remove_value name="$Yaw" />
+        <remove_value name="$CoreRange" />
+      </actions>
+    </library>
+  </cues>
+</mdscript>

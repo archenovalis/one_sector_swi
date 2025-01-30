@@ -1,0 +1,796 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="FactionIndustry_Stations" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../xsd/md.xsd">
+  <cues>
+    <!--Faction logic module to manage the presence of major stations of a faction throughout the galaxy
+    Depending on faction, this library will trigger the building of new Shipyards, Wharfs, Trade stations and Pirate bases
+    Defence stations will be handled by faction goals-->
+
+    <library name="Manage_Stations" namespace="this" version="5">
+      <params>
+        <param name="FactionManagerCue" />
+        <param name="Faction" />
+        <param name="DebugChance" default="0" />
+      </params>
+      <actions>
+        <set_value name="$DebugText" exact="'(' + $Faction.id + ') Manage_Stations - '" />
+
+        <!--History list. This list contains tables with data on different types of stations, where they were and how long they existed for. We use this table to judge prefered location for new stations.-->
+        <set_value name="$StationHistory" exact="[]" />
+        <create_group groupname="$ExcludedStations" />
+
+        <!--Table containing overriding scores for past stations when looking at station history
+          key:   Current station type string identifier e.g. '$IsShipyard'
+          value: table of past station strings and their scores e.g. table[$WasShipyard = 1.0f, $WasWharf = 0.6f, $WasTradeStation = 0.3f]-->
+        <set_value name="$PastStationMaxScoreTableOverrides" exact="table[]" />
+
+        <!--Savegame patching-->
+        <do_if value="$Faction == faction.buccaneers and player.age gt 10s">
+          <set_value name="$5_00_Buccaneer_Patch" exact="true" />
+          <debug_text text="'Preparing to patch in the missing Buccaneer depot stations. Faction logic was NOT active'" filter="savegame" />
+        </do_if>
+      </actions>
+      <patch sinceversion="2" state="complete">
+        <do_all exact="$StationHistory.count" counter="$i">
+          <do_if value="@$StationHistory.{$i}.$IsShipyard">
+            <set_value name="$StationHistory.{$i}.$WasShipyard" exact="true" />
+          </do_if>
+          <do_if value="@$StationHistory.{$i}.$IsWharf">
+            <set_value name="$StationHistory.{$i}.$WasWharf" exact="true" />
+          </do_if>
+          <do_if value="@$StationHistory.{$i}.$IsEquipmentDock">
+            <set_value name="$StationHistory.{$i}.$WasEquipmentDock" exact="true" />
+          </do_if>
+          <do_if value="@$StationHistory.{$i}.$IsDefenceStation">
+            <set_value name="$StationHistory.{$i}.$WasDefenceStation" exact="true" />
+          </do_if>
+          <do_if value="@$StationHistory.{$i}.$IsTradeStation">
+            <set_value name="$StationHistory.{$i}.$WasTradeStation" exact="true" />
+          </do_if>
+          <do_if value="@$StationHistory.{$i}.$IsPirateBase">
+            <set_value name="$StationHistory.{$i}.$WasPirateBase" exact="true" />
+          </do_if>
+        </do_all>
+      </patch>
+      <patch sinceversion="3">
+        <do_if value="$Faction == faction.buccaneers">
+          <set_value name="$5_00_Buccaneer_Patch" exact="true" />
+          <debug_text text="'Preparing to patch in the missing Buccaneer depot stations. Faction logic was already active'" filter="savegame" />
+          <do_if value="Process.state == cuestate.complete">
+            <!--force an instant update-->
+            <reset_cue cue="Process" />
+          </do_if>
+        </do_if>
+      </patch>
+      <patch sinceversion="4">
+        <create_group groupname="$ExcludedStations" />
+      </patch>
+      <patch sinceversion="5">
+        <set_value name="$PastStationMaxScoreTableOverrides" exact="table[]" />
+      </patch>
+      <cues>
+        <cue name="Generate_Report" instantiate="true">
+          <conditions>
+            <check_any>
+              <check_all>
+                <event_cue_signalled cue="md.FactionLogic.FactionSignalled" />
+                <check_value value="@event.param.{1} == $Faction and @event.param.{2} == 'Generate Report'" />
+              </check_all>
+              <event_cue_signalled />
+            </check_any>
+          </conditions>
+          <actions>
+            <include_actions ref="md.FactionEconomy_Reports.Generate_Stations_Report" />
+          </actions>
+        </cue>
+
+        <cue name="Process">
+          <actions>
+            <set_value name="$ShipyardCount" exact="0" />
+            <set_value name="$WharfCount" exact="0" />
+            <set_value name="$EquipmentDockCount" exact="0" />
+            <set_value name="$DefenceStationCount" exact="0" />
+            <set_value name="$TradeStationCount" exact="0" />
+            <set_value name="$PirateBaseCount" exact="0" />
+            <find_sector name="$SectorsToProcess" multiple="true">
+              <match_parent normalcluster="true" />
+            </find_sector>
+            <set_value name="$RelevantSectors" exact="[]" comment="Has faction stations" />
+            <set_value name="$ClaimedSectors" exact="[]" comment="Owned or contested by the faction" />
+            <set_value name="$KnownStationTables" exact="table[]" />
+
+            <!--Go over the $StationHistory and remove excess entries for stations which no longer exist-->
+            <set_value name="$DeadEntries" exact="[]" />
+            <do_all exact="$StationHistory.count" counter="$i">
+              <do_if value="$StationHistory.{$i}.$Station.exists">
+                <set_value name="$KnownStationTables.{$StationHistory.{$i}.$Station}" exact="$StationHistory.{$i}" />
+              </do_if>
+              <do_else>
+                <append_to_list name="$DeadEntries" exact="$i" />
+              </do_else>
+            </do_all>
+            <!--Only allow a certain number of dead entries-->
+            <do_if value="$DeadEntries.count gt 15">
+              <do_all exact="$DeadEntries.count - 15" counter="$i" reverse="true">
+                <debug_text text="'Removing dead entry ' + $StationHistory.{$DeadEntries.{$i}} + ' at index ' + $DeadEntries.{$i}" chance="$DebugChance" />
+                <remove_value name="$StationHistory.{$DeadEntries.{$i}}" />
+              </do_all>
+            </do_if>
+            <remove_value name="$DeadEntries" />
+          </actions>
+          <cues>
+            <cue name="Analyse_Sectors" checktime="10s">
+              <cues>
+                <!--Iterate over a few sectors per cycle-->
+                <cue name="Sector_Iterate" instantiate="true" checkinterval="100ms">
+                  <actions>
+                    <!--TODO @Owen better deal with factions with no stations-->
+                    <set_value name="$NumToProcess" exact="[5, $SectorsToProcess.count].min" />
+                    <do_all exact="$NumToProcess" counter="$i" reverse="true">
+                      <set_value name="$Sector" exact="$SectorsToProcess.{$i}" />
+
+                      <!--Find all stations owned by this faction in this sector, including constructions and wrecks-->
+                      <find_station_by_true_owner name="$Stations" faction="$Faction" space="$Sector" checkoperational="false" excluded="$ExcludedStations" multiple="true" />
+                      <do_if value="$Stations.count">
+                        <append_to_list name="$RelevantSectors" exact="$Sector" />
+
+                        <do_if value="$Sector.owner == $Faction or $Sector.iscontestedby.{$Faction}">
+                          <debug_text text="$DebugText + 'Sector ' + $Sector + ' ' + $Sector.knownname + ' is owned or contested by ' + $Faction" chance="$DebugChance" context="false" />
+                          <append_to_list name="$ClaimedSectors" exact="$Sector" />
+                        </do_if>
+
+                        <do_all exact="$Stations.count" counter="$k">
+                          <set_value name="$StationData" exact="null" />
+                          <set_value name="$Station" exact="$Stations.{$k}" />
+                          <set_value name="$WasKnown" exact="false" />
+                          <!--Check if the station is already known in the $StationHistory-->
+                          <do_if value="$KnownStationTables?">
+                            <!--Newer, quicker method using a table of known stations populated in 'Process'-->
+                            <do_if value="$KnownStationTables.{$Station}?">
+                              <!--Station is already known. Update the table in $StationHistory-->
+                              <set_value name="$StationData" exact="$KnownStationTables.{$Station}" />
+                              <set_value name="$WasKnown" exact="true" />
+                            </do_if>
+                          </do_if>
+                          <do_else>
+                            <!--Older, slower method, but kept to reduce complexity when patching-->
+                            <do_all exact="$StationHistory.count" counter="$m">
+                              <do_if value="$StationHistory.{$m}.$Station == $Station">
+                                <!--Station is already known. Update the table in $StationHistory-->
+                                <set_value name="$StationData" exact="$StationHistory.{$m}" />
+                                <set_value name="$WasKnown" exact="true" />
+                                <break />
+                              </do_if>
+                            </do_all>
+                          </do_else>
+
+                          <do_if value="not $StationData">
+                            <!--Only create a new table if it doesn't exist.-->
+                            <set_value name="$StationData" exact="table[]" />
+                          </do_if>
+
+                          <do_if value="$Station.isplannedshipyard">
+                            <!--TODO @Owen - could also store if the shipyard was having supply issues. If so, score the sector lower when creating a replacement-->
+                            <set_value name="$StationData.$IsShipyard" exact="true" />
+                            <set_value name="$StationData.$WasShipyard" exact="true" />
+                            <set_value name="$ShipyardCount" operation="add" />
+                          </do_if>
+                          <do_else>
+                            <remove_value name="$StationData.$IsShipyard" />
+                          </do_else>
+
+                          <do_if value="$Station.isplannedwharf">
+                            <set_value name="$StationData.$IsWharf" exact="true" />
+                            <set_value name="$StationData.$WasWharf" exact="true" />
+                            <set_value name="$WharfCount" operation="add" />
+                          </do_if>
+                          <do_else>
+                            <remove_value name="$StationData.$IsWharf" />
+                          </do_else>
+
+                          <do_if value="$Station.isplannedequipmentdock">
+                            <set_value name="$StationData.$IsEquipmentDock" exact="true" />
+                            <set_value name="$StationData.$WasEquipmentDock" exact="true" />
+                            <set_value name="$EquipmentDockCount" operation="add" />
+                          </do_if>
+                          <do_else>
+                            <remove_value name="$StationData.$IsEquipmentDock" />
+                          </do_else>
+
+                          <do_if value="$Station.isplanneddefencestation">
+                            <set_value name="$StationData.$IsDefenceStation" exact="true" />
+                            <set_value name="$StationData.$WasDefenceStation" exact="true" />
+                            <set_value name="$DefenceStationCount" operation="add" />
+                          </do_if>
+                          <do_else>
+                            <remove_value name="$StationData.$IsDefenceStation" />
+                          </do_else>
+
+                          <do_if value="$Station.istradestation">
+                            <set_value name="$StationData.$IsTradeStation" exact="true" />
+                            <set_value name="$StationData.$WasTradeStation" exact="true" />
+                            <set_value name="$TradeStationCount" operation="add" />
+                          </do_if>
+                          <do_else>
+                            <remove_value name="$StationData.$IsTradeStation" />
+                          </do_else>
+
+                          <do_if value="$Station.ispiratebase">
+                            <set_value name="$StationData.$IsPirateBase" exact="true" />
+                            <set_value name="$StationData.$WasPirateBase" exact="true" />
+                            <set_value name="$PirateBaseCount" operation="add" />
+                          </do_if>
+                          <do_else>
+                            <remove_value name="$StationData.$IsPirateBase" />
+                          </do_else>
+
+                          <do_if value="not $StationData.$GodEntryID? and $Station.isrespawnablegodobject">
+                            <set_value name="$StationData.$GodEntryID" exact="$Station.godentry" />
+                          </do_if>
+
+                          <do_if value="$StationData.keys.count">
+                            <!--Update this station's last known time-->
+                            <set_value name="$StationData.$LastKnownTime" exact="player.age" />
+                            <do_if value="not $WasKnown">
+                              <set_value name="$StationData.$Station" exact="$Station" />
+                              <set_value name="$StationData.$Sector" exact="$Station.sector" />
+                              <set_value name="$StationData.$FirstKnownTime" exact="player.age" />
+                              <append_to_list name="$StationHistory" exact="$StationData" />
+                              <debug_text text="$DebugText + 'New station known: ' + $Station.knownname + ' ' + $StationData" chance="$DebugChance" context="false" />
+                            </do_if>
+                            <remove_value name="$StationData" />
+                          </do_if>
+                        </do_all>
+                      </do_if>
+
+                      <remove_value name="$SectorsToProcess.{$i}" />
+                    </do_all>
+
+                    <do_if value="$SectorsToProcess.count == 0">
+                      <!--Done-->
+                      <remove_value name="$Stations" />
+                      <remove_value name="$SectorsToProcess" />
+                      <remove_value name="$KnownStationTables" />
+
+                      <do_if value="$Faction == faction.buccaneers">
+                        <!--Buccaneers consider any base sector with a gravidar obscuring region as relevant-->
+                        <find_sector name="$RelevantSectors" excluded="$RelevantSectors" hasgravidarobscuringregion="true" extension="''" multiple="true" append="true" />
+                      </do_if>
+
+                      <!--TODO @Owen maybe make this a secondary list of 'backup' sectors so they can be considered even if the faction currently has suitable sectors, but with a lower chance-->
+                      <do_if value="$RelevantSectors.count == 0">
+                        <debug_text text="'Faction ' + $Faction + ' has no relevant sectors. Look at the station history to see if any past sectors can be considered'" chance="$DebugChance" />
+                        <do_for_each name="$StationHistoryEntry" in="$StationHistory">
+                          <do_if value="$StationHistoryEntry.$Sector.exists and $RelevantSectors.indexof.{$StationHistoryEntry.$Sector} == 0">
+                            <append_to_list name="$RelevantSectors" exact="$StationHistoryEntry.$Sector" />
+                          </do_if>
+                        </do_for_each>
+                      </do_if>
+
+                      <signal_cue cue="Analyse_Stations" />
+                      <cancel_cue cue="Analyse_Sectors" />
+                    </do_if>
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+
+            <cue name="Analyse_Stations_Inactive">
+              <conditions>
+                <event_cue_signalled cue="Analyse_Stations" />
+                <check_value value="not $Faction.isactive" />
+              </conditions>
+              <delay min="5min" max="6min" />
+              <actions>
+                <reset_cue cue="Process" />
+              </actions>
+            </cue>
+
+            <cue name="Analyse_Stations">
+              <conditions>
+                <event_cue_signalled />
+                <check_value value="$Faction.isactive" />
+              </conditions>
+              <actions>
+                <debug_text text="$DebugText + 'Prepare to analyse known stations. Number of relevant sectors: ' + $RelevantSectors.count" chance="$DebugChance" context="false" />
+                <set_value name="$PreferredSectors" exact="[]" />
+
+                <!--TODO @Owen - number of desired shipyards/wharfs based on who the faction is and what their current demand/aggression is-->
+                <!--***SHIPYARDS***-->
+                <set_value name="$DesiredShipyards" exact="0" />
+                <set_value name="$ShipyardsToBuild" exact="0" />
+                <do_if value="[faction.argon, faction.antigone, faction.paranid, faction.holyorder, faction.alliance, faction.teladi, faction.ministry].indexof.{$Faction}">
+                  <set_value name="$DesiredShipyards" exact="1" />
+                  <do_if value="$Faction == faction.antigone">
+                    <find_sector name="$Sector_AtiyasMisfortune_1" macro="macro.cluster_26_sector001_macro" />
+                    <do_if value="$RelevantSectors.indexof.{$Sector_AtiyasMisfortune_1} and $Sector_AtiyasMisfortune_1.cluster.terraforming.mission.complete">
+                      <!-- allow Antigone Republic to build an additional Shipyard-->
+                      <set_value name="$DesiredShipyards" operation="add" exact="1" />
+                      <append_to_list name="$PreferredSectors" exact="$Sector_AtiyasMisfortune_1" />
+                    </do_if>
+                    <remove_value name="$Sector_AtiyasMisfortune_1" />
+                  </do_if>
+                </do_if>
+                <do_elseif value="$Faction == faction.trinity">
+                  <set_value name="$DesiredShipyards" exact="2" />
+                </do_elseif>
+                <do_elseif value="$Faction == faction.xenon">
+                  <set_value name="$DesiredShipyards" exact="4" />
+                </do_elseif>
+                <do_elseif value="$Faction == faction.buccaneers and @md.FactionLogic.BuccaneersFactionLogic_Manager.$ParanidStory_Stage2">
+                  <set_value name="$DesiredShipyards" exact="1" />
+                </do_elseif>
+                <!--DLC patch marker-->
+                <do_elseif value="@$DesiredShipyardPatchMarker">
+
+                </do_elseif>
+
+                <do_if value="$ShipyardCount lt $DesiredShipyards">
+                  <debug_text text="$DebugText + 'Has ' + $ShipyardCount + ' shipyards but desires ' + $DesiredShipyards" chance="$DebugChance" context="false" />
+                  <!--There is only a chance to build a shipyard on this iteration-->
+                  <set_value name="$ShipyardsToBuild" exact="1" chance="5" />
+
+                  <do_if value="$ShipyardsToBuild gt 0">
+                    <!--Check if this faction is capable of building a shipyard, and where.-->
+
+                    <!--Get any suitable construction plans and station macros of non-modular stations. Select something valid at random.-->
+                    <set_value name="$StationDefinitions" exact="[]" />
+                    <set_value name="$StationTypeTag" exact="tag.shipyard" />
+                    <get_module_set_macro result="$ModuleSetMacro" race="$Faction.primaryrace" type="'shipyard'" comment="try to get 'shipyard' set if it exists" />
+                    <do_if value="not $ModuleSetMacro and $Faction.primaryrace != race.xenon">
+                      <get_module_set_macro result="$ModuleSetMacro" race="$Faction.primaryrace" type="'factory'" comment="Note: non-Xenon races use the 'factory' set" />
+                    </do_if>
+                    <do_if value="$ModuleSetMacro">
+                      <get_construction_plan result="$ConstructionPlans" rawname="$ConstructionPlanNames" faction="$Faction" tags="$StationTypeTag" multiple="true" />
+                      <do_all exact="$ConstructionPlans.count" counter="$i">
+                        <append_to_list name="$StationDefinitions" exact="[$ConstructionPlans.{$i}, $ConstructionPlanNames.{$i}]" />
+                      </do_all>
+                    </do_if>
+                    <!--TODO @Owen - don't spawn landmark stations as they can't yet be 'constructed'
+                    <get_station_definition macro="$LandmarkStationMacros" faction="$Faction" tags="$StationTypeTag" multiple="true"/>
+                    <append_list_elements name="$StationDefinitions" other="$LandmarkStationMacros"/>-->
+
+                    <do_if value="$PastStationMaxScoreTableOverrides.$IsShipyard?">
+                      <set_value name="$PastStationMaxScoreTable" exact="$PastStationMaxScoreTableOverrides.$IsShipyard" />
+                    </do_if>
+                    <do_else>
+                      <!--Default table-->
+                      <set_value name="$PastStationMaxScoreTable" exact="table[
+                               $WasShipyard = 1.0f,
+                               $WasWharf = 0.5f,
+                               $WasEquipmentDock = 0.25f]" />
+                    </do_else>
+
+                    <do_if value="$StationDefinitions.count">
+                      <debug_text text="$DebugText + 'Faction is capable of constructing shipyards. Will now search for a location'" chance="$DebugChance" context="false" />
+                      <run_actions ref="md.FactionEconomy_Libraries.Find_Location_And_Build_Station" result="$NewStations">
+                        <!--Faction params-->
+                        <param name="Faction" value="$Faction" />
+                        <param name="StationHistory" value="$StationHistory" />
+                        <param name="RelevantSectors" value="$RelevantSectors" />
+                        <param name="ClaimedSectors" value="$ClaimedSectors" />
+                        <param name="PreferredSectors" value="$PreferredSectors" />
+
+                        <!--Station params-->
+                        <param name="NumStations" value="$ShipyardsToBuild" />
+                        <param name="StationDefinitions" value="$StationDefinitions" />
+                        <param name="ModuleSetMacro" value="$ModuleSetMacro" />
+                        <!--TODO @Owen base the loadout level on the sector / station type-->
+                        <param name="LoadoutLevel" value="0.9" />
+
+                        <!--Station history analysis-->
+                        <param name="ExistingStationValName" value="'$IsShipyard'" />
+                        <param name="PastStationValName" value="'$WasShipyard'" />
+                        <param name="PastStationMaxScoreTable" value="$PastStationMaxScoreTable" />
+
+                        <param name="DebugText" value="$DebugText" />
+                        <param name="DebugChance" value="$DebugChance" />
+                      </run_actions>
+                      <set_value name="$ShipyardCount" operation="add" exact="$NewStations.count" />
+                    </do_if>
+                  </do_if>
+                </do_if>
+
+                <clear_list list="$PreferredSectors" />
+
+                <!--***WHARFS***-->
+                <set_value name="$DesiredWharfs" exact="0" />
+                <set_value name="$WharfsToBuild" exact="0" />
+                <do_if value="[faction.argon, faction.antigone, faction.paranid, faction.holyorder, faction.alliance, faction.teladi, faction.ministry].indexof.{$Faction}">
+                  <set_value name="$DesiredWharfs" exact="1" />
+                  <do_if value="$Faction == faction.antigone">
+                    <find_cluster name="$Sector_FrontierEdge" macro="macro.cluster_49_sector001_macro" />
+                    <do_if value="$RelevantSectors.indexof.{$Sector_FrontierEdge} and $Sector_FrontierEdge.cluster.terraforming.mission.complete">
+                      <!-- allow Antigone Republic to build an additional Wharf-->
+                      <set_value name="$DesiredWharfs" operation="add" exact="1" />
+                      <append_to_list name="$PreferredSectors" exact="$Sector_FrontierEdge" />
+                    </do_if>
+                    <remove_value name="$Sector_FrontierEdge" />
+                  </do_if>
+                </do_if>
+                <do_elseif value="$Faction == faction.trinity">
+                  <set_value name="$DesiredWharfs" exact="2" />
+                </do_elseif>
+                <do_elseif value="$Faction == faction.xenon">
+                  <set_value name="$DesiredWharfs" exact="4" />
+                </do_elseif>
+                <!--DLC patch marker-->
+                <do_elseif value="@$DesiredWharfPatchMarker">
+
+                </do_elseif>
+
+                <do_if value="$WharfCount lt $DesiredWharfs">
+                  <debug_text text="$DebugText + 'Has ' + $WharfCount + ' wharfs but desires ' + $DesiredWharfs" chance="$DebugChance" context="false" />
+                  <!--There is only a chance to build a wharf on this iteration-->
+                  <set_value name="$WharfsToBuild" exact="1" chance="5" />
+
+                  <do_if value="$WharfsToBuild gt 0">
+                    <!--Check if this faction is capable of building a wharf, and where.-->
+
+                    <!--Get any suitable construction plans and station macros of non-modular stations. Select something valid at random.-->
+                    <set_value name="$StationDefinitions" exact="[]" />
+                    <set_value name="$StationTypeTag" exact="tag.wharf" />
+
+                    <get_module_set_macro result="$ModuleSetMacro" race="$Faction.primaryrace" type="'shipyard'" comment="try to get 'shipyard' set if it exists, 'wharf' is not a set" />
+                    <do_if value="not $ModuleSetMacro and $Faction.primaryrace != race.xenon">
+                      <get_module_set_macro result="$ModuleSetMacro" race="$Faction.primaryrace" type="'factory'" comment="Note: non-Xenon races use the 'factory' set" />
+                    </do_if>
+                    <do_if value="$ModuleSetMacro">
+                      <get_construction_plan result="$ConstructionPlans" rawname="$ConstructionPlanNames" faction="$Faction" tags="$StationTypeTag" multiple="true" />
+                      <do_all exact="$ConstructionPlans.count" counter="$i">
+                        <append_to_list name="$StationDefinitions" exact="[$ConstructionPlans.{$i}, $ConstructionPlanNames.{$i}]" />
+                      </do_all>
+                    </do_if>
+                    <debug_text text="'Station definition: ' + $StationDefinitions" chance="$DebugChance" />
+                    <!--TODO @Owen - don't spawn landmark stations as they can't yet be 'constructed'
+                    <get_station_definition macro="$LandmarkStationMacros" faction="$Faction" tags="tag.wharf" multiple="true"/>
+                    <append_list_elements name="$StationDefinitions" other="$LandmarkStationMacros"/>-->
+
+
+                    <do_if value="$PastStationMaxScoreTableOverrides.$IsWharf?">
+                      <set_value name="$PastStationMaxScoreTable" exact="$PastStationMaxScoreTableOverrides.$IsWharf" />
+                    </do_if>
+                    <do_else>
+                      <!--Default table-->
+                      <set_value name="$PastStationMaxScoreTable" exact="table[
+                               $WasWharf = 1.0f,
+                               $WasShipyard = 0.5f,
+                               $WasEquipmentDock = 0.25f]" />
+                    </do_else>
+
+                    <do_if value="$StationDefinitions.count">
+                      <debug_text text="$DebugText + 'Faction is capable of constructing wharfs. Will now search for a location'" chance="$DebugChance" context="false" />
+
+                      <run_actions ref="md.FactionEconomy_Libraries.Find_Location_And_Build_Station" result="$NewStations">
+                        <!--Faction params-->
+                        <param name="Faction" value="$Faction" />
+                        <param name="StationHistory" value="$StationHistory" />
+                        <param name="RelevantSectors" value="$RelevantSectors" />
+                        <param name="ClaimedSectors" value="$ClaimedSectors" />
+                        <param name="PreferredSectors" value="$PreferredSectors" />
+
+                        <!--Station params-->
+                        <param name="NumStations" value="$WharfsToBuild" />
+                        <param name="StationDefinitions" value="$StationDefinitions" />
+                        <param name="ModuleSetMacro" value="$ModuleSetMacro" />
+                        <!--TODO @Owen base the loadout level on the sector / station type-->
+                        <param name="LoadoutLevel" value="0.9" />
+
+                        <!--Station history analysis-->
+                        <param name="ExistingStationValName" value="'$IsWharf'" />
+                        <param name="PastStationValName" value="'$WasWharf'" />
+                        <param name="PastStationMaxScoreTable" value="$PastStationMaxScoreTable" />
+
+                        <param name="DebugText" value="$DebugText" />
+                        <param name="DebugChance" value="$DebugChance" />
+                      </run_actions>
+                      <set_value name="$WharfCount" operation="add" exact="$NewStations.count" />
+                    </do_if>
+                  </do_if>
+                </do_if>
+
+                <clear_list list="$PreferredSectors" />
+
+                <!--***EQUIPMENT DOCKS***-->
+                <set_value name="$DesiredEquipmentDocks" exact="0" />
+                <set_value name="$EquipmentDocksToBuild" exact="0" />
+                <do_if value="$Faction == faction.argon or $Faction == faction.trinity">
+                  <set_value name="$DesiredEquipmentDocks" exact="2" />
+                </do_if>
+                <do_elseif value="[faction.antigone, faction.paranid, faction.holyorder, faction.teladi, faction.ministry].indexof.{$Faction}">
+                  <set_value name="$DesiredEquipmentDocks" exact="1" />
+                </do_elseif>
+                <!--DLC patch marker-->
+                <do_elseif value="@$DesiredEquipmentDockPatchMarker">
+
+                </do_elseif>
+
+                <do_if value="$EquipmentDockCount lt $DesiredEquipmentDocks">
+                  <debug_text text="$DebugText + 'Has ' + $EquipmentDockCount + ' equipment docks but desires ' + $DesiredEquipmentDocks" chance="$DebugChance" context="false" />
+                  <!--There is only a chance to build a equipment docks on this iteration-->
+                  <set_value name="$EquipmentDocksToBuild" exact="1" chance="5" />
+
+                  <do_if value="$EquipmentDocksToBuild gt 0">
+                    <!--Check if this faction is capable of building equipment docks, and where.-->
+
+                    <!--Get any suitable construction plans and station macros of non-modular stations. Select something valid at random.-->
+                    <set_value name="$StationDefinitions" exact="[]" />
+                    <set_value name="$StationTypeTag" exact="tag.equipmentdock" />
+                    <get_module_set_macro result="$ModuleSetMacro" race="$Faction.primaryrace" type="'equipmentdock'" comment="try to get 'equipmentdock' set if it exists" />
+                    <do_if value="not $ModuleSetMacro and $Faction.primaryrace != race.xenon">
+                      <get_module_set_macro result="$ModuleSetMacro" race="$Faction.primaryrace" type="'factory'" comment="Note: non-Xenon races use the 'factory' set" />
+                    </do_if>
+                    <do_if value="$ModuleSetMacro">
+                      <get_construction_plan result="$ConstructionPlans" rawname="$ConstructionPlanNames" faction="$Faction" tags="$StationTypeTag" multiple="true" />
+                      <do_all exact="$ConstructionPlans.count" counter="$i">
+                        <append_to_list name="$StationDefinitions" exact="[$ConstructionPlans.{$i}, $ConstructionPlanNames.{$i}]" />
+                      </do_all>
+                    </do_if>
+                    <!--TODO @Owen - don't spawn landmark stations as they can't yet be 'constructed'
+                    <get_station_definition macro="$LandmarkStationMacros" faction="$Faction" tags="tag.equipmentdock" multiple="true"/>
+                    <append_list_elements name="$StationDefinitions" other="$LandmarkStationMacros"/>-->
+
+                    <do_if value="$PastStationMaxScoreTableOverrides.$IsEquipmentDock?">
+                      <set_value name="$PastStationMaxScoreTable" exact="$PastStationMaxScoreTableOverrides.$IsEquipmentDock" />
+                    </do_if>
+                    <do_else>
+                      <!--Default table-->
+                      <set_value name="$PastStationMaxScoreTable" exact="table[
+                               $WasEquipmentDock = 1.0f,
+                               $WasShipyard = 0.25f,
+                               $WasWharf = 0.25f]" />
+                    </do_else>
+
+                    <do_if value="$StationDefinitions.count">
+                      <debug_text text="$DebugText + 'Faction is capable of constructing equipment dock. Will now search for a location'" chance="$DebugChance" context="false" />
+
+                      <run_actions ref="md.FactionEconomy_Libraries.Find_Location_And_Build_Station" result="$NewStations">
+                        <!--Faction params-->
+                        <param name="Faction" value="$Faction" />
+                        <param name="StationHistory" value="$StationHistory" />
+                        <param name="RelevantSectors" value="$RelevantSectors" />
+                        <param name="ClaimedSectors" value="$ClaimedSectors" />
+                        <param name="PreferredSectors" value="$PreferredSectors" />
+
+                        <!--Station params-->
+                        <param name="NumStations" value="$EquipmentDocksToBuild" />
+                        <param name="StationDefinitions" value="$StationDefinitions" />
+                        <param name="ModuleSetMacro" value="$ModuleSetMacro" />
+                        <!--TODO @Owen base the loadout level on the sector / station type-->
+                        <param name="LoadoutLevel" value="0.9" />
+
+                        <!--Station history analysis-->
+                        <param name="ExistingStationValName" value="'$IsEquipmentDock'" />
+                        <param name="PastStationValName" value="'$WasEquipmentDock'" />
+                        <param name="PastStationMaxScoreTable" value="$PastStationMaxScoreTable" />
+
+                        <param name="DebugText" value="$DebugText" />
+                        <param name="DebugChance" value="$DebugChance" />
+                      </run_actions>
+                      <set_value name="$EquipmentDockCount" operation="add" exact="$NewStations.count" />
+                    </do_if>
+                  </do_if>
+                </do_if>
+
+                <clear_list list="$PreferredSectors" />
+
+                <!--***TRADE STATIONS***-->
+                <set_value name="$DesiredTradeStation" exact="0" />
+                <set_value name="$TradeStationsToBuild" exact="0" />
+                <do_if value="$Faction == faction.teladi">
+                  <set_value name="$DesiredTradeStation" exact="3" />
+                </do_if>
+                <do_elseif value="$Faction == faction.trinity">
+                  <set_value name="$DesiredTradeStation" exact="2" />
+                </do_elseif>
+                <do_elseif value="[faction.argon, faction.antigone, faction.hatikvah, faction.paranid, faction.holyorder].indexof.{$Faction}">
+                  <set_value name="$DesiredTradeStation" exact="1" />
+                  <do_if value="$Faction == faction.antigone">
+                    <find_sector name="$Sector_GetsuFune" macro="macro.cluster_48_sector001_macro" />
+                    <do_if value="$RelevantSectors.indexof.{$Sector_GetsuFune} and $Sector_GetsuFune.cluster.terraforming.mission.complete">
+                      <!-- allow Antigone Republic to build an additional Trade Station-->
+                      <set_value name="$DesiredTradeStation" operation="add" exact="1" />
+                      <append_to_list name="$PreferredSectors" exact="$Sector_GetsuFune" />
+                    </do_if>
+                    <remove_value name="$Sector_GetsuFune" />
+                  </do_if>
+                </do_elseif>
+                <!--DLC patch marker-->
+                <do_elseif value="@$DesiredTradeStationPatchMarker">
+
+                </do_elseif>
+
+                <do_if value="$DesiredTradeStation and ($ShipyardCount lt $DesiredShipyards or $WharfCount lt $DesiredWharfs)">
+                  <!--If the faction wants to build a shipyard or a wharf, prioritise those instead of a trade station-->
+                  <set_value name="$DesiredTradeStation" exact="0" />
+                </do_if>
+                <do_if value="$TradeStationCount lt $DesiredTradeStation">
+                  <debug_text text="$DebugText + 'Has ' + $TradeStationCount + ' trade stations but desires ' + $DesiredTradeStation" chance="$DebugChance" context="false" />
+                  <!--There is only a chance to build a trade stations on this iteration-->
+                  <set_value name="$TradeStationsToBuild" exact="1" chance="5" />
+
+                  <do_if value="$TradeStationsToBuild gt 0">
+                    <!--Check if this faction is capable of building trade stations, and where.-->
+
+                    <!--Get any suitable construction plans and station macros of non-modular stations. Select something valid at random.-->
+                    <set_value name="$StationDefinitions" exact="[]" />
+                    <set_value name="$StationTypeTag" exact="tag.tradestation" />
+                    <get_module_set_macro result="$ModuleSetMacro" race="$Faction.primaryrace" type="'tradingstation'" comment="try to get 'tradingstation' set if it exists" />
+                    <do_if value="not $ModuleSetMacro and $Faction.primaryrace != race.xenon">
+                      <get_module_set_macro result="$ModuleSetMacro" race="$Faction.primaryrace" type="'factory'" comment="Note: non-Xenon races use the 'factory' set" />
+                    </do_if>
+                    <do_if value="$ModuleSetMacro">
+                      <get_construction_plan result="$ConstructionPlans" rawname="$ConstructionPlanNames" faction="$Faction" tags="$StationTypeTag" multiple="true" />
+                      <do_all exact="$ConstructionPlans.count" counter="$i">
+                        <append_to_list name="$StationDefinitions" exact="[$ConstructionPlans.{$i}, $ConstructionPlanNames.{$i}]" />
+                      </do_all>
+                    </do_if>
+                    <!--TODO @Owen - don't spawn landmark stations as they can't yet be 'constructed'
+                    <get_station_definition macro="$LandmarkStationMacros" faction="$Faction" tags="tag.tradestation" multiple="true"/>
+                    <append_list_elements name="$StationDefinitions" other="$LandmarkStationMacros"/>-->
+
+                    <do_if value="$PastStationMaxScoreTableOverrides.$IsTradeStation?">
+                      <set_value name="$PastStationMaxScoreTable" exact="$PastStationMaxScoreTableOverrides.$IsTradeStation" />
+                    </do_if>
+                    <do_else>
+                      <!--Default table-->
+                      <set_value name="$PastStationMaxScoreTable" exact="table[
+                               $WasTradeStation = 1.0f,
+                               $WasEquipmentDock = 0.25f,
+                               $WasShipyard = 0.25f,
+                               $WasWharf = 0.25f]" />
+                    </do_else>
+
+                    <!--TODO @Owen what if there are no stations defined but a god entry is allowed? Just remove this check?-->
+                    <do_if value="$StationDefinitions.count">
+                      <debug_text text="$DebugText + 'Faction is capable of constructing a trade station. Will now search for a location'" chance="$DebugChance" context="false" />
+
+                      <run_actions ref="md.FactionEconomy_Libraries.Find_Location_And_Build_Station" result="$NewStations">
+                        <!--Faction params-->
+                        <param name="Faction" value="$Faction" />
+                        <param name="StationHistory" value="$StationHistory" />
+                        <param name="RelevantSectors" value="$RelevantSectors" />
+                        <param name="ClaimedSectors" value="$ClaimedSectors" />
+                        <param name="PreferredSectors" value="$PreferredSectors" />
+
+                        <!--Station params-->
+                        <param name="NumStations" value="$TradeStationsToBuild" />
+                        <param name="StationDefinitions" value="$StationDefinitions" />
+                        <param name="ModuleSetMacro" value="$ModuleSetMacro" />
+                        <!--TODO @Owen base the loadout level on the sector / station type-->
+                        <param name="LoadoutLevel" value="0.9" />
+
+                        <!--Station history analysis-->
+                        <param name="ExistingStationValName" value="'$IsTradeStation'" />
+                        <param name="PastStationValName" value="'$WasTradeStation'" />
+                        <param name="PastStationMaxScoreTable" value="$PastStationMaxScoreTable" />
+
+                        <param name="DebugText" value="$DebugText" />
+                        <param name="DebugChance" value="$DebugChance" />
+                      </run_actions>
+                      <set_value name="$TradeStationCount" operation="add" exact="$NewStations.count" />
+                    </do_if>
+                  </do_if>
+                </do_if>
+
+                <set_value name="$DesiredPirateBase" exact="0" />
+                <set_value name="$PirateBasesToBuild" exact="0" />
+                <set_value name="$Depot" exact="false" />
+                <set_value name="$HideInGravidarRegion" exact="false" />
+                <do_if value="$Faction == faction.buccaneers">
+                  <set_value name="$DesiredPirateBase" exact="6" />
+                  <set_value name="$Depot" exact="true" />
+                  <set_value name="$HideInGravidarRegion" exact="true" />
+                </do_if>
+                <do_elseif value="$Faction == faction.scaleplate">
+                  <set_value name="$DesiredPirateBase" exact="2" />
+                </do_elseif>
+                <!--DLC patch marker-->
+                <do_elseif value="@$DesiredPirateBasePatchMarker">
+
+                </do_elseif>
+
+                <do_if value="not @$5_00_Buccaneer_Patch and $DesiredPirateBase and ($ShipyardCount lt $DesiredShipyards or $WharfCount lt $DesiredWharfs)">
+                  <!--If the faction wants to build a shipyard or a wharf, prioritise those instead of a pirate base-->
+                  <set_value name="$DesiredPirateBase" exact="0" />
+                </do_if>
+                <do_if value="$PirateBaseCount lt $DesiredPirateBase">
+                  <debug_text text="$DebugText + 'Has ' + $PirateBaseCount + ' pirate bases but desires ' + $DesiredPirateBase" chance="$DebugChance" context="false" />
+
+                  <do_if value="@$5_00_Buccaneer_Patch">
+                    <set_value name="$PirateBasesToBuild" exact="$DesiredPirateBase - $PirateBaseCount" />
+                  </do_if>
+                  <do_else>
+                    <!--There is only a chance to build a pirate base on this iteration-->
+                    <set_value name="$PirateBasesToBuild" exact="1" chance="5" />
+                  </do_else>
+
+                  <do_if value="$PirateBasesToBuild gt 0">
+                    <!--Check if this faction is capable of building pirate bases, and where.-->
+
+                    <!--Get any suitable construction plans and station macros of non-modular stations. Select something valid at random.-->
+                    <set_value name="$StationDefinitions" exact="[]" />
+                    <set_value name="$StationTypeTag" exact="if $Depot then tag.piratedepot else tag.piratebase" />
+                    <get_module_set_macro result="$ModuleSetMacro" race="$Faction.primaryrace" type="'piratebase'" comment="try to get 'piratebase' set if it exists" />
+                    <do_if value="not $ModuleSetMacro">
+                      <get_module_set_macro result="$ModuleSetMacro" race="race.paranid" type="'piratebase'" comment="try to get 'piratebase' set if it exists" />
+                    </do_if>
+                    <do_if value="$ModuleSetMacro">
+                      <get_construction_plan result="$ConstructionPlans" rawname="$ConstructionPlanNames" faction="$Faction" tags="$StationTypeTag" multiple="true" />
+                      <do_all exact="$ConstructionPlans.count" counter="$i">
+                        <append_to_list name="$StationDefinitions" exact="[$ConstructionPlans.{$i}, $ConstructionPlanNames.{$i}]" />
+                      </do_all>
+                    </do_if>
+
+                    <do_if value="$PastStationMaxScoreTableOverrides.$IsPirateBase?">
+                      <set_value name="$PastStationMaxScoreTable" exact="$PastStationMaxScoreTableOverrides.$IsPirateBase" />
+                    </do_if>
+                    <do_else>
+                      <!--Default table-->
+                      <set_value name="$PastStationMaxScoreTable" exact="table[
+                               $WasPirateBase = 0.5f]" />
+                    </do_else>
+
+                    <do_if value="$StationDefinitions.count">
+                      <debug_text text="$DebugText + 'Faction is capable of constructing a pirate base. Will now search for a location'" chance="$DebugChance" context="false" />
+
+                      <!--Table of sectors scoring by preference-->
+                      <set_value name="$PotentialSectors" exact="table[]" />
+
+                      <run_actions ref="md.FactionEconomy_Libraries.Find_Location_And_Build_Station" result="$NewStations">
+                        <!--Faction params-->
+                        <param name="Faction" value="$Faction" />
+                        <param name="StationHistory" value="$StationHistory" />
+                        <param name="RelevantSectors" value="$RelevantSectors" />
+                        <param name="ClaimedSectors" value="$ClaimedSectors" />
+                        <param name="PreferredSectors" value="$PreferredSectors" />
+
+                        <!--Station params-->
+                        <param name="NumStations" value="$PirateBasesToBuild" />
+                        <param name="StationDefinitions" value="$StationDefinitions" />
+                        <param name="ModuleSetMacro" value="$ModuleSetMacro" />
+                        <!--TODO @Owen base the loadout level on the sector / station type-->
+                        <param name="LoadoutLevel" value="0.9" />
+                        <param name="InitialState" value="if @$5_00_Buccaneer_Patch then componentstate.operational else componentstate.construction" />
+                        <param name="InGravidarObscuringRegion" value="$StationTypeTag == tag.piratedepot" />
+
+                        <!--Station history analysis-->
+                        <param name="ExistingStationValName" value="'$IsPirateBase'" />
+                        <param name="PastStationValName" value="'$WasPirateBase'" />
+                        <param name="PastStationMaxScoreTable" value="$PastStationMaxScoreTable" />
+
+                        <param name="DebugText" value="$DebugText" />
+                        <param name="DebugChance" value="$DebugChance" />
+                      </run_actions>
+                      <set_value name="$PirateBaseCount" operation="add" exact="$NewStations.count" />
+
+                      <do_if value="@$5_00_Buccaneer_Patch">
+                        <debug_text text="'Created ' + $NewStations.count + ' new Buccaneer depot stations. ' + $NewStations" filter="savegame" />
+                      </do_if>
+                    </do_if>
+                  </do_if>
+                </do_if>
+
+                <remove_value name="$StationDefinitions" />
+                <remove_value name="$RelevantSectors" />
+                <remove_value name="$ClaimedSectors" />
+                <remove_value name="$PastStationMaxScoreTable" />
+
+                <!--Remove patch marker-->
+                <remove_value name="$5_00_Buccaneer_Patch" />
+              </actions>
+              <cues>
+                <cue name="Process_Reset">
+                  <delay min="1min" max="2min" />
+                  <actions>
+                    <reset_cue cue="Process" />
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+          </cues>
+        </cue>
+      </cues>
+    </library>
+
+  </cues>
+</mdscript>
