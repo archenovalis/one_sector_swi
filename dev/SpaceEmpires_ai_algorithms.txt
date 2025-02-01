@@ -1,4 +1,4 @@
-Economy Score Algorithm:
+Economy Score Algorithm (Empire and Sector):
 Description: 
 
     Measures the economic vitality of the empire, considering resource management, trade, and market dynamics.
@@ -6,40 +6,17 @@ Description:
 
 Components:
 
-    Resource Scores: For each resource type:
-        Availability: How accessible resources are within claimed sectors.
+    Resource Scores for Empire: For each resource type:
+        Availability: Resources available to be extracted.
         On Hand: Current inventory, accounting for storage capacity.
-        Extraction Rate: Efficiency of mining ships and facilities, adjusted for wear and upgrades.
-        Transport Efficiency: Logistics effectiveness, including ship speed, trade routes, and piracy risks.
-        Market Demand: Demand within the empire and through trade with others, including export potential.
-        Market Saturation: How saturated the market is for each resource, potentially lowering value.
-        Trade Agreements: Positive or negative impacts from trade deals.
-
-
-Formula:
-def calculate_resource_score(availability, on_hand, extraction_rate, transport_efficiency, demand, saturation, trade_impact):
-    # Adjustable weights for each factor
-    weighted_availability = availability * 0.3
-    weighted_on_hand = on_hand * 0.2
-    weighted_extraction = extraction_rate * 0.2
-    weighted_transport = transport_efficiency * 0.1
-    weighted_demand = demand * 0.1
-    weighted_saturation = (1 - saturation) * 0.1
-    
-    # Trade deals can boost or reduce the score
-    return (weighted_availability + weighted_on_hand + weighted_extraction + weighted_transport + 
-            weighted_demand + weighted_saturation) * (1 + trade_impact)
-
-def economy_score(resources):
-    resource_scores = [calculate_resource_score(r['availability'], r['on_hand'], r['extraction_rate'], 
-                                                r['transport_efficiency'], r['demand'], r['saturation'], 
-                                                r['trade_impact']) for r in resources]
-    return sum(resource_scores) / len(resource_scores) if resources else 0
-
+        Extraction Rate: Number of each size of mining ships.
+        Transport Efficiency: Number of container trading and piracy risks (calculated based on number of pirate attacks over last x number of cycles).
+        Market Demand: Max production demands for intermediate and end products, and resources spent building ship and stations.
+        Market Saturation: On hand divided by demand.
 
 Influence:
 
-    High economy scores drive expansion or investment in new industries; lower scores might push for consolidation or trade negotiations.
+    High economy scores drive expansion; lower scores push for consolidation.
 
 
 
@@ -52,24 +29,14 @@ Description:
 
 Components:
 
-    Defensive Structures: Including stations, forts, and automated defenses.
-    Defensive Ships: Patrols, border guards, and sector-specific defense forces.
-    Offensive Ships: Fleets for combat or strategic strikes, including carrier support.
-    Logistics: Supply lines, repair capabilities, and the ability to sustain long engagements.
-    Intelligence: Quality of reconnaissance and espionage affecting strategic advantage.
-
-
-Formula:
-def military_score(defensive_structures, defensive_ships, offensive_ships, logistics, intelligence):
-    # Weighting reflects strategic importance
-    defensive_score = sum(defensive_structures) * 0.4 + sum(defensive_ships) * 0.3
-    offensive_score = sum(offensive_ships) * 0.5
-    return (defensive_score + offensive_score) * (1 + logistics * 0.1 + intelligence * 0.1)
-
+    Defensive Structures: Number of defensive stations (minimum 2 per border sector (a sector that borders a neutral zone (a sector that borders another empire)), minimum 1 per core sector(non-border sectors), minimum 2(minimum 1 if no enemy empires are known) per sector with shipyard/wharf/planetary tradestation).
+    Defensive Ships: Border guards and sector-specific defense forces.
+    Offensive Ships: Patrol ships, commandeerable for offensive operations.
+    Recon Ships: Number of recon ships.
 
 Influence:
 
-    Dictates when to transition into or out of war or defense states, impacts strategic decisions like launching attacks or fortifying.
+    Dictates when to transition into defense state (a non-war defense focused consolidation state) and between war_invade, war_consolidate, and war_defense (war states are only available when at war), and impacts strategic decisions like declaring war, accepting peace, and requesting peace.
 
 
 
@@ -82,35 +49,298 @@ Description:
 
 Components:
 
-    Ship Types: Mining, transport, combat (offensive/defensive), construction:
-        Demand: Immediate and forecasted based on current state and expansion plans.
-        Production Capacity: Number, efficiency, and specialization of shipyards.
-        Current Production: What's currently in the queue or being produced.
-        Upgrade Potential: Ability to improve existing ships or facilities.
+    Ship Building:
+        Demand: Current list of requested ships.
+        Production Capacity: Number of slots of each size (Wharf buildmodules can build S and M, and each Shipyard buildmodule is limited to building L, XL, or XXL).
+        Downtime: How much downtime each module had during the last x cycles
     Station Building: 
-        Demand for New Stations: Based on strategic needs, resource availability, and expansion goals.
-        Construction Ships: Number and efficiency of ships capable of station construction.
-        Resource Availability: For station construction, considering both on-hand and extractable resources.
-        Construction Speed: How quickly new stations can be built or existing ones upgraded.
-
-
-Formula:
-def ship_type_score(demand, production_capacity, current_production, upgrade_potential):
-    return ((current_production / demand if demand > 0 else 1) * 
-            (production_capacity / max_production_capacity) * 
-            (1 + upgrade_potential * 0.1))
-
-def station_building_score(demand, construction_ships, resource_availability, construction_speed):
-    return (demand / (demand + construction_ships)) * resource_availability * construction_speed
-
-def industry_score(ship_types, stations):
-    ship_scores = [ship_type_score(type['demand'], type['production_capacity'], type['current_production'], 
-                                   type['upgrade_potential']) for type in ship_types]
-    station_score = station_building_score(stations['demand'], stations['construction_ships'], 
-                                           stations['resource_availability'], stations['construction_speed'])
-    return (sum(ship_scores) / len(ship_scores) if ship_scores else 0) * station_score
+        Demand: Current list of requested stations.
+        Construction Ships: Number of station construction by size (L and XL).
+        Downtime: How much downtime each construction ship had during the last x cycles
 
 
 Influence:
 
-    Indicates readiness for expansion, the ability to shift production focus (e.g., from civilian to military needs), and how well the empire can adapt to new strategic demands.
+    Indicates readiness for expansion.
+
+
+import enum
+
+class State(enum.Enum):
+    EXPANSION = 1
+    CONSOLIDATE = 2
+    DEFENSE = 3
+    WAR_INVADE = 4
+    WAR_DEFENSE = 5
+    WAR_CONSOLIDATE = 6
+
+class FactionManager:
+    def __init__(self):
+        self.state = State.CONSOLIDATE
+        self.previous_state = self.state
+        self.pirate_activity = 0
+        self.weighted_scores = {
+            'economy': 0.0,
+            'military': 0.0,
+            'industry': 0.0
+        }
+        self.sectors = []
+        self.resources = []
+        self.shipyards = []
+        self.ships = []
+        self.stations = []
+        self.score_weights = {
+            'economy': 0.4,
+            'military': 0.3,
+            'industry': 0.3
+        }
+        self.score_emergency_threshholds = {
+            'economy': 0.2,
+            'military': 0.1,
+            'industry': 0.1
+        }
+        self.score_emergency_weights = {
+            'economy': 0.7,
+            'military': 0.7,
+            'industry': 0.7
+        }
+        self.resource_weights = {
+            'availability': 0.3,
+            'on_hand': 0.2,
+            'extraction_rate': 0.2,
+            'transport_efficiency': 0.1,
+            'demand': 0.1,
+            'saturation': 0.1
+        }
+        self.military_weights = {
+            'scouts': 0.1,
+            'stations': 0.6,
+            'defensive': 0.4,
+            'offensive': 0.3,
+        }
+        self.state_threshholds = {
+            'eco_expansion': 0.7,
+            'eco_consolidation': 0.5,
+            'ind_expansion': 0.5,
+            'ind_consolidation': 0.3,
+            'mil_expansion': 0.5,
+            'mil_defense': 0.3,
+            'mil_invade': 0.7
+        }
+        self.sector_strategicValue = {
+            'border': 200,
+            'core': 100,
+            'primary': 200,
+            'gates': [20, 50, 150, 300]
+        }
+
+    def update(self):
+            self.run_scoring_and_state_check()
+
+    def run_scoring_and_state_check(self):
+        raw_scores = self.calculate_raw_scores()
+        emergencies = self.check_emergencies(raw_scores)
+        self.check_state_change(raw_scores)
+        self.weighted_scores = self.apply_weights(raw_scores, emergencies)        
+
+    def calculate_raw_scores(self):
+        total_desired_defense_threatscore = sum(self.calculate_sector_desired_threatscore(sector) for sector in self.sectors)
+        economy_score = self.calculate_raw_economy_score()
+        military_score = self.calculate_raw_military_score(total_desired_defense_threatscore)
+        industry_score = self.calculate_raw_industry_score()
+        return (economy_score, military_score, industry_score)
+
+    def calculate_raw_economy_score(self):
+        return sum(self.calculate_resource_score(resource) for resource in self.resources) / len(self.resources)
+
+    def calculate_resource_score(self, resource):
+        weights = self.resource_weights
+        availability = sum(sector.resource_amount for sector in self.sectors)
+        extraction_rate = sum(ship.threatscore for ship in self.ships if ship.type == "Miner")
+        transport_efficiency = sum(ship.load_capacity for ship in self.ships if ship.type == "Transport") * (1-self.pirate_activity)
+        demand = sum(demand.demand_amount for demand in self.resources if demand.resource_type == resource.type)
+        on_hand = resource.stockpile
+        saturation = on_hand / demand
+
+        return (availability * weights['availability'] + 
+            on_hand * weights['on_hand'] + 
+            extraction_rate * weights['extraction'] +
+            transport_efficiency * weights['transport'] + 
+            demand * weights['demand'] + 
+            saturation * weights['saturation'])
+
+    def calculate_sector_desired_threatscore(self, sector):
+        resource_value = self.get_resource_value(sector.resources)
+        strategic_value = self.get_strategic_value(sector)
+        economic_value = sum(station.price * 2 if station.iswharf or station.isshipyard else station.price for station in sector.stations)
+        pirate_activity = sector.pirate_activity # number of ships destroyed by pirates / total number of non-military ships assigned to sector
+        self.pirate_activity = (self.pirate_activity + pirate_activity) / 2 if self.pirate_activity > 0 else pirate_activity
+        total_value = resource_value + strategic_value + economic_value + pirate_activity
+        return total_value / self.valuePerSectorThreatscorePerSector
+
+    def get_strategic_value(self, sector):
+        value = 0
+        if sector.isborder:
+            value = self.sector_strategicValue['border']
+        else:
+            value = self.sector_strategicValue['core']
+        if sector.hasWharf or sector.hasShipyard:
+            value += self.sector_strategicValue['primary']
+        value += self.sector_strategicValue[sector.numGates-1]
+
+    def normalize(value, min_value, max_value):
+        return (value - min_value) / (max_value - min_value) if max_value > min_value else 1
+
+    def calculate_raw_military_score(self, total_desired_defense_threatscore):
+        raw_scores = self.calculate_raw_military_threatscore()
+        weighted_scores = {
+            'defensive': raw_scores['defensive'] * self.military_weights['defensive'],
+            'offensive': raw_scores['offensive'] * self.military_weights['offensive'],
+            'stations': raw_scores['stations'] * self.military_weights['stations']
+        }
+        combined_score = sum(weighted_scores.values())
+        
+        return self.normalize(combined_score, 0, total_desired_defense_threatscore)
+
+    def calculate_raw_military_threatscore(self):
+        defensive_ship_threatscore = sum(ship.threatscore for ship in self.ships if ship.is_defensive)
+        offensive_ship_threatscore = sum(ship.threatscore for ship in self.ships if ship.is_offensive or ship.is_scout)
+        station_threatscore = sum(station.threatscore for station in self.stations)
+        
+        return {
+            'defensive': defensive_ship_threatscore,
+            'offensive': offensive_ship_threatscore,
+            'stations': station_threatscore
+        }
+
+    def calculate_raw_industry_score(self):
+        ship_scores = [self.ship_type_score(ship_type) for ship_type in self.shipyards]
+        station_score = self.station_building_score()
+        return (sum(ship_scores) / len(ship_scores) if ship_scores else 0) * station_score
+
+    def ship_type_score(self, ship_type):
+        demand = sum(need.amount for need in self.resources if need.ship_type == ship_type.type)
+        production_capacity = sum(yard.capacity for yard in self.shipyards if yard.produces == ship_type.type) / (len(self.shipyards) * ship_type.max_yard_capacity)
+        current_production = len([ship for ship in self.ships if ship.type == ship_type.type and ship.status == "Building"])
+
+        return ((current_production / demand if demand > 0 else 1) * production_capacity)
+
+    def station_building_score(self):
+        demand = sum(station.demand for station in self.stations if station.status == "Planned")
+        construction_ships = sum(ship.efficiency for ship in self.ships if ship.type == "Construction")
+
+        return (demand / (demand + construction_ships))
+
+    def check_emergencies(self, scores):
+        threshhold = self.score_emergency_threshholds
+
+        economy_score, military_score, industry_score = scores
+        return {
+            'economy': economy_score < threshhold['economy'],
+            'military': military_score < threshhold['military'],
+            'industry': industry_score < threshhold['industry']
+        }
+
+    def apply_weights(self, scores, emergencies):
+        weights = self.score_weights
+        emergency_weights = self.score_emergency_weights
+        economy_score, military_score, industry_score = scores
+        weights = {
+            'economy': weights['economy'] if not emergencies['economy'] else emergency_weights['economy'],
+            'military': weights['military'] if not emergencies['military'] else emergency_weights['military'],
+            'industry': weights['industry'] if not emergencies['industry'] else emergency_weights['industry']
+        }
+        # state affects scores (simplified)
+        if self.state == State.WAR_INVADE:
+            economy_score *= 0.8
+            military_score *= 1.2
+            industry_score *= 0.8
+        elif self.state == State.WAR_DEFENSE:
+            economy_score *= 0.8
+            military_score *= 1.2
+            industry_score *= 1.0
+        elif self.state == State.WAR_CONSOLIDATE:
+            economy_score *= 1.0
+            military_score *= 1.2
+            industry_score *= 1.2
+        elif self.state == State.DEFENSE:
+            economy_score *= 1.0
+            military_score *= 1.2
+            industry_score *= 1.0
+        elif self.state == State.CONSOLIDATE:
+            economy_score *= 1.2
+            military_score *= 1.0
+            industry_score *= 1.2
+        elif self.state == State.EXPANSION:
+            economy_score *= 1.0
+            military_score *= 1.0
+            industry_score *= 1.2
+
+        return {
+            'economy': economy_score * weights['economy'],
+            'military': military_score * weights['military'],
+            'industry': industry_score * weights['industry']
+        }
+
+    def check_state_change(self, scores):
+        economy_score, military_score, industry_score = scores
+        threshholds = self.state_threshholds
+
+        if self.state == State.EXPANSION:
+            if military_score < threshholds['mil_defense']:
+                self.state = State.DEFENSE
+            elif economy_score < threshholds['eco_consolidation'] or industry_score < threshholds['ind_consolidation']:
+                self.state = State.CONSOLIDATE
+        
+        elif self.state == State.CONSOLIDATE:
+            if military_score < threshholds['mil_defense']:
+                self.state = State.DEFENSE
+            elif economy_score > threshholds['eco_expansion'] and industry_score > threshholds['ind_expansion'] and military_score > threshholds['mil_expansion']:
+                self.state = State.EXPANSION
+
+        elif self.state == State.DEFENSE:
+            if economy_score > threshholds['eco_expansion'] and industry_score > threshholds['ind_expansion'] and military_score > threshholds['mil_expansion']:
+                self.state = State.EXPANSION
+            elif military_score > threshholds['mil_consolidation']:
+                self.state = State.CONSOLIDATE
+
+        elif self.state == State.WAR_INVADE:
+            if military_score < threshholds['mil_defense']:
+                self.state = State.WAR_DEFENSE
+            elif economy_score < threshholds['eco_consolidation'] or industry_score < threshholds['ind_consolidation']:
+                self.state = State.WAR_CONSOLIDATE
+
+        elif self.state == State.WAR_DEFENSE:
+            if economy_score < threshholds['eco_consolidation'] or industry_score < threshholds['ind_consolidation']:
+                self.state = State.WAR_CONSOLIDATE
+            elif military_score > threshholds['mil_invade']:
+                self.state = State.WAR_INVADE
+
+        elif self.state == State.WAR_CONSOLIDATE:
+            if military_score < threshholds['mil_defense']:
+                self.state = State.WAR_DEFENSE
+            elif military_score > threshholds['mil_invade'] and economy_score > threshholds['eco_consolidation'] and industry_score > threshholds['ind_consolidation']:
+                self.state = State.WAR_INVADE
+
+        if self.state != self.previous_state:
+            self.notify_state_change(self.previous_state, self.state)
+            self.previous_state = self.state
+
+def prioritize_build_order(self):
+    if self.state == State.EXPANSION:
+        return ['Construction Ship', 'Wharf', 'Miner (Solid)', 'Miner (Fluid)']
+    elif self.state == State.CONSOLIDATE:
+        return ['Factory', 'Trade Station', 'Transport (Container)']
+    elif self.state == State.DEFENSE:
+        return ['Defense Station', 'Defensive Ship', 'Scout']
+    elif self.state == State.WAR_INVADE:
+        return ['Offensive Ship', 'Scout', 'Defensive Ship']
+    elif self.state == State.WAR_DEFENSE:
+        return ['Defensive Ship', 'Defense Station', 'Scout']
+    elif self.state == State.WAR_CONSOLIDATE:
+        return ['Offensive Ship', 'Defensive Ship', 'Factory']
+
+    def run_turn(self):
+        economy, military, industry = self.update_scores()
+        self.update_state(economy, military, industry)
+        build_order = self.prioritize_build_order()
