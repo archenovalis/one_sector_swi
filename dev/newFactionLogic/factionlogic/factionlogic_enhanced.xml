@@ -4,11 +4,22 @@
   <cues>
     <library name="Run_Scoring_and_State_Check">
       <actions>
+        <!-- Manager Variables
+          
+
+        -->
+        <!-- Instantiated Variables -->
+
+
         <!-- raw_scores = self.Calculate_Raw_Scores() -->
         <include_actions ref="Calculate_Raw_Scores" />
         <!-- emergencies = self.Check_Emergencies(raw_scores) -->
+        <include_actions ref="Check_Emergencies" />
         <!-- self.Check_State_Change(raw_scores) -->
+        <include_actions ref="Check_State_Change" />
         <!-- self.weighted_scores = self.Apply_Weights(raw_scores, emergencies) -->
+        <include_actions ref="Apply_Weights" />
+        <include_actions ref="Set_Build_Order_Priority" />
       </actions>
       <cues>
         <library name="Calculate_Raw_Scores">
@@ -22,140 +33,153 @@
               industry_score = self.Calculate_Raw_Industry_Score()
               return (economy_score, military_score, industry_score)
           -->
-        </library>
-        <library name="Calculate_Raw_Economy_Score">
-          <!-- 
-          def Calculate_Raw_Economy_Score(self):
-              # Average score of all resources, aligning with the economy score concept
-              return sum(self.Calculate_Resource_Score(resource) for resource in self.resources.values()) / len(self.resources) if self.resources else 0
-          -->
-        </library>
-        <library name="Calculate_Resource_Score">
-          <!-- 
-          def Calculate_Resource_Score(self, resource):
-              weights = self.resource_weights
-              availability = sum(sector.resource_amount for sector in self.sectors)
-              extraction_rate = sum(ship.threatscore for ship in self.ships if ship.type == "Miner")
-              # Incorporate pirate activity to affect transport efficiency
-              transport_efficiency = sum(ship.load_capacity for ship in self.ships if ship.type == "Transport") * (1-self.pirate_activity)
-              
-              # Flatten list of demands and on_hand resources from all stations
-              demand = sum(resource.amount for station in self.stations for moduleResource in station.productionModules for resource in moduleResource.resources if resource.type == resource.type)
-              on_hand = sum(resource.amount for station in self.stations for stationResource in station.resources if stationResource.type == resource.type)
-              saturation = on_hand / demand if demand > 0 else 0
+          <cues>
+            <library name="Calculate_Sector_Desired_Threatscore">
+              <!-- 
+              def Calculate_Sector_Desired_Threatscore(self, sector):
+                  # Calculates strategic importance of a sector for military scoring
+                  resource_value = self.Get_Resource_Value(sector.resources)
+                  strategic_value = self.Get_Strategic_Value(sector)
+                  economic_value = sum(station.price * 2 if station.iswharf or station.isshipyard else station.price for station in sector.stations)
+                  
+                  # Pirate activity affects both economy and military scores
+                  pirate_activity = sector.pirate_activity  # Number of ships destroyed by pirates / total number of non-military ships assigned to sector
+                  self.pirate_activity = (self.pirate_activity + pirate_activity) / 2 if self.pirate_activity > 0 else pirate_activity
+                  
+                  total_value = resource_value + strategic_value + economic_value + pirate_activity
+                  return total_value / self.valuePerSectorThreatscorePerSector
+              -->
+              <cues>
+                <library name="Get_Resource_Value">
+                  <!-- 
+                  def Get_Resource_Value(self, resources):
+                      # Calculates resource value based on available resources
+                      return sum(resource.amount * resource.demand for resource in resources) if resources else 0 
+                  -->
+                </library>
+                <library name="Get_Strategic_Value">
+                  <!-- 
+                  def Get_Strategic_Value(self, sector):
+                      # Calculates strategic value based on sector type and infrastructure
+                      value = self.sector_strategicValue['core'] if not sector.isborder else self.sector_strategicValue['border']
+                      if sector.hasWharf or sector.hasShipyard:
+                          value += self.sector_strategicValue['primary']
+                      if sector.numGates > 0:
+                          value += self.sector_strategicValue['gates'][min(sector.numGates - 1, 3)]
+                      return value 
+                  -->
+                </library>
+              </cues>
+            </library>
 
-              # Update resource stats
-              if resource.type not in self.resources:
-                  self.resources[resource.type] = {
-                      'demand': 0,
-                      'on_hand': 0,
-                      'saturation': None
+            <library name="Calculate_Raw_Economy_Score">
+              <!-- 
+              def Calculate_Raw_Economy_Score(self):
+                  # Average score of all resources, aligning with the economy score concept
+                  return sum(self.Calculate_Resource_Score(resource) for resource in self.resources.values()) / len(self.resources) if self.resources else 0
+              -->
+              <cues>
+                <library name="Calculate_Resource_Score">
+                  <!-- 
+                  def Calculate_Resource_Score(self, resource):
+                      weights = self.resource_weights
+                      availability = sum(sector.resource_amount for sector in self.sectors)
+                      extraction_rate = sum(ship.threatscore for ship in self.ships if ship.type == "Miner")
+                      # Incorporate pirate activity to affect transport efficiency
+                      transport_efficiency = sum(ship.load_capacity for ship in self.ships if ship.type == "Transport") * (1-self.pirate_activity)
+                      
+                      # Flatten list of demands and on_hand resources from all stations
+                      demand = sum(resource.amount for station in self.stations for moduleResource in station.productionModules for resource in moduleResource.resources if resource.type == resource.type)
+                      on_hand = sum(resource.amount for station in self.stations for stationResource in station.resources if stationResource.type == resource.type)
+                      saturation = on_hand / demand if demand > 0 else 0
+
+                      # Update resource stats
+                      if resource.type not in self.resources:
+                          self.resources[resource.type] = {
+                              'demand': 0,
+                              'on_hand': 0,
+                              'saturation': None
+                          }
+                      self.resources[resource.type]['demand'] += demand
+                      self.resources[resource.type]['on_hand'] += on_hand
+                      self.resources[resource.type]['saturation'] = (self.resources[resource.type]['saturation'] + saturation) / 2 if self.resources[resource.type]['saturation'] is not None else saturation
+
+                      return (availability * weights['availability'] + 
+                              on_hand * weights['on_hand'] + 
+                              extraction_rate * weights['extraction_rate'] +
+                              transport_efficiency * weights['transport_efficiency'] + 
+                              demand * weights['demand'] + 
+                              saturation * weights['saturation'])
+                  -->
+                </library>
+              </cues>
+            </library>
+
+            <library name="Calculate_Raw_Military_Score">
+              <!--
+              def Calculate_Raw_Military_Score(self, total_desired_defense_threatscore):
+                  raw_scores = self.Calculate_Raw_Military_Threatscore()
+                  weighted_scores = {
+                      'defensive': raw_scores['defensive'] * self.military_weights['defensive'],
+                      'offensive': raw_scores['offensive'] * self.military_weights['offensive'],
+                      'stations': raw_scores['stations'] * self.military_weights['stations']
                   }
-              self.resources[resource.type]['demand'] += demand
-              self.resources[resource.type]['on_hand'] += on_hand
-              self.resources[resource.type]['saturation'] = (self.resources[resource.type]['saturation'] + saturation) / 2 if self.resources[resource.type]['saturation'] is not None else saturation
+                  combined_score = sum(weighted_scores.values())
+                  
+                  return self.normalize(combined_score, 0, total_desired_defense_threatscore)
+              -->
+              <cues>
+                <library name="Calculate_Raw_Military_Threatscore">
+                  <!--
+                  def Calculate_Raw_Military_Threatscore(self):
+                      # Calculates military strength based on ship and station threat scores
+                      return {
+                          'defensive': sum(ship.threatscore for ship in self.ships if ship.is_defensive),
+                          'offensive': sum(ship.threatscore for ship in self.ships if ship.is_offensive or ship.is_scout),
+                          'stations': sum(station.threatscore for station in self.stations)
+                      }
+                  -->
+                </library>
+              </cues>
+            </library>
 
-              return (availability * weights['availability'] + 
-                      on_hand * weights['on_hand'] + 
-                      extraction_rate * weights['extraction_rate'] +
-                      transport_efficiency * weights['transport_efficiency'] + 
-                      demand * weights['demand'] + 
-                      saturation * weights['saturation'])
-          -->
-        </library>
-        <library name="Calculate_Sector_Desired_Threatscore">
-          <!-- 
-          def Calculate_Sector_Desired_Threatscore(self, sector):
-              # Calculates strategic importance of a sector for military scoring
-              resource_value = self.Get_Resource_Value(sector.resources)
-              strategic_value = self.Get_Strategic_Value(sector)
-              economic_value = sum(station.price * 2 if station.iswharf or station.isshipyard else station.price for station in sector.stations)
-              
-              # Pirate activity affects both economy and military scores
-              pirate_activity = sector.pirate_activity  # Number of ships destroyed by pirates / total number of non-military ships assigned to sector
-              self.pirate_activity = (self.pirate_activity + pirate_activity) / 2 if self.pirate_activity > 0 else pirate_activity
-              
-              total_value = resource_value + strategic_value + economic_value + pirate_activity
-              return total_value / self.valuePerSectorThreatscorePerSector
-          -->
-        </library>
-        <library name="Get_Resource_Value">
-          <!-- 
-          def Get_Resource_Value(self, resources):
-              # Calculates resource value based on available resources
-              return sum(resource.amount * resource.demand for resource in resources) if resources else 0 
-          -->
-        </library>
-        <library name="Get_Strategic_Value">
-          <!-- 
-          def Get_Strategic_Value(self, sector):
-              # Calculates strategic value based on sector type and infrastructure
-              value = self.sector_strategicValue['core'] if not sector.isborder else self.sector_strategicValue['border']
-              if sector.hasWharf or sector.hasShipyard:
-                  value += self.sector_strategicValue['primary']
-              if sector.numGates > 0:
-                  value += self.sector_strategicValue['gates'][min(sector.numGates - 1, 3)]
-              return value 
-          -->
-        </library>
-        <library name="Calculate_Raw_Military_Score">
-          <!--
-          def Calculate_Raw_Military_Score(self, total_desired_defense_threatscore):
-              raw_scores = self.Calculate_Raw_Military_Threatscore()
-              weighted_scores = {
-                  'defensive': raw_scores['defensive'] * self.military_weights['defensive'],
-                  'offensive': raw_scores['offensive'] * self.military_weights['offensive'],
-                  'stations': raw_scores['stations'] * self.military_weights['stations']
-              }
-              combined_score = sum(weighted_scores.values())
-              
-              return self.normalize(combined_score, 0, total_desired_defense_threatscore)
-          -->
-        </library>
-        <library name="Calculate_Raw_Military_Threatscore">
-          <!--
-          def Calculate_Raw_Military_Threatscore(self):
-              # Calculates military strength based on ship and station threat scores
-              return {
-                  'defensive': sum(ship.threatscore for ship in self.ships if ship.is_defensive),
-                  'offensive': sum(ship.threatscore for ship in self.ships if ship.is_offensive or ship.is_scout),
-                  'stations': sum(station.threatscore for station in self.stations)
-              }
-          -->
-        </library>
-        <library name="Calculate_Raw_Industry_Score">
-          <!--
-          def Calculate_Raw_Industry_Score(self):
-              # Adjusts for ship and station construction capabilities
-              # fix thix
-              ship_scores = [self.Calculate_Ship_Building_Score(ship_type) for ship_type in self.shipyards]
-              station_score = self.Calculate_Station_Building_Score()
-              return (sum(ship_scores) / len(ship_scores) if ship_scores else 0) * station_score if station_score else 0
-          -->
+            <library name="Calculate_Raw_Industry_Score">
+              <!--
+              def Calculate_Raw_Industry_Score(self):
+                  # Adjusts for ship and station construction capabilities
+                  # fix thix
+                  ship_scores = [self.Calculate_Ship_Building_Score(ship_type) for ship_type in self.shipyards]
+                  station_score = self.Calculate_Station_Building_Score()
+                  return (sum(ship_scores) / len(ship_scores) if ship_scores else 0) * station_score if station_score else 0
+              -->
+              <cues>
+                <library name="Calculate_Ship_Building_Score">
+                  <!--
+                  def Calculate_Ship_Building_Score(self, ship_type):
+                      # fix thix
+                      demand = sum(need.amount for need in self.shipQueue if need.get('ship_type', None) == ship_type.type)
+                      production_capacity = sum(yard.capacity for yard in self.shipyards if yard.produces == ship_type.type) / (len(self.shipyards) * ship_type.max_yard_capacity)
+                      downtime = 1 - (ship_type.downtimePercent)
+
+                      return (demand / production_capacity if production_capacity > 0 else 0) * downtime
+                  -->
+                </library>
+                <library name="Calculate_Calculate_Station_Building_Score">
+                  <!--
+                  def Calculate_Station_Building_Score(self):
+                      # Scoring for station construction, focusing on demand vs. construction capability
+                      demand = sum(station.demand for station in self.stations if station.status == "Planned")
+                      construction_ships = sum(ship.efficiency for ship in self.ships if ship.type == "Construction")
+                      downtime = 1 - sum(ship.downtimePercent for ship in self.ships if ship.type == "Construction") / len(self.ships)
+
+                      return (demand / (demand + construction_ships)) * downtime if demand + construction_ships > 0 else 0
+                  -->
+                </library>
+              </cues>
+            </library>
+          </cues>
         </library>
 
-        <library name="Calculate_Ship_Building_Score">
-          <!--
-          def Calculate_Ship_Building_Score(self, ship_type):
-              # fix thix
-              demand = sum(need.amount for need in self.shipQueue if need.get('ship_type', None) == ship_type.type)
-              production_capacity = sum(yard.capacity for yard in self.shipyards if yard.produces == ship_type.type) / (len(self.shipyards) * ship_type.max_yard_capacity)
-              downtime = 1 - (ship_type.downtimePercent)
-
-              return (demand / production_capacity if production_capacity > 0 else 0) * downtime
-          -->
-        </library>
-        <library name="Calculate_Calculate_Station_Building_Score">
-          <!--
-          def Calculate_Station_Building_Score(self):
-              # Scoring for station construction, focusing on demand vs. construction capability
-              demand = sum(station.demand for station in self.stations if station.status == "Planned")
-              construction_ships = sum(ship.efficiency for ship in self.ships if ship.type == "Construction")
-              downtime = 1 - sum(ship.downtimePercent for ship in self.ships if ship.type == "Construction") / len(self.ships)
-
-              return (demand / (demand + construction_ships)) * downtime if demand + construction_ships > 0 else 0
-          -->
-        </library>
         <library name="Check_Emergencies">
           <!-- 
           def Check_Emergencies(self, scores):
@@ -169,21 +193,7 @@
               }
           -->
         </library>
-        <library name="Apply_Weights">
-          <!-- 
-          def Apply_Weights(self, scores, emergencies):
-              weights = self.score_weights
-              stateWeights = self.state_weights[self.state]
-              emergency_weights = self.score_emergency_weights
-              economy_score, military_score, industry_score = scores
 
-              return {
-                  'economy': economy_score * (weights['economy'] if not emergencies['economy'] else emergency_weights['economy']) * stateWeights['economy'],
-                  'military': military_score * (weights['military'] if not emergencies['military'] else emergency_weights['military'])  * stateWeights['military'],
-                  'industry': industry_score * (weights['industry'] if not emergencies['industry'] else emergency_weights['industry'])  * stateWeights['industry']
-              }
-          -->
-        </library>
         <library name="Check_State_Change">
           <!--
           def Check_State_Change(self, scores):
@@ -225,9 +235,25 @@
           -->
         </library>
 
-        <library name="Prioritize_Build_Order">
+        <library name="Apply_Weights">
           <!-- 
-          def Prioritize_Build_Order(self):
+          def Apply_Weights(self, scores, emergencies):
+              weights = self.score_weights
+              stateWeights = self.state_weights[self.state]
+              emergency_weights = self.score_emergency_weights
+              economy_score, military_score, industry_score = scores
+
+              return {
+                  'economy': economy_score * (weights['economy'] if not emergencies['economy'] else emergency_weights['economy']) * stateWeights['economy'],
+                  'military': military_score * (weights['military'] if not emergencies['military'] else emergency_weights['military'])  * stateWeights['military'],
+                  'industry': industry_score * (weights['industry'] if not emergencies['industry'] else emergency_weights['industry'])  * stateWeights['industry']
+              }
+          -->
+        </library>
+
+        <library name="Set_Build_Order_Priority">
+          <!-- 
+          def Set_Build_Order_Priority(self):
               # Returns a list of priorities based on current state
               if self.state == State.EXPANSION:
                   return ['Construction Ship', 'Wharf', 'Miner (Solid)', 'Miner (Fluid)']
@@ -243,28 +269,29 @@
                   return ['Offensive Ship', 'Defensive Ship', 'Factory']
           -->
         </library>
-
-        <!--
-        @staticmethod
-        def normalize(value, min_value (optional, default=0), max_value):
-            return (value - min_value) / (max_value - min_value) if max_value > min_value else 1
-        -->
-        <library name="Normalize" purpose="run_actions">
-          <params>
-            <param name="value" />
-            <param name="max_value" />
-            <param name="min_value" default="0" />
-          </params>
-          <actions>
-            <do_if value="$max_value gt $min_value">
-              <return value="($value - $min_value) / ($max_value - $min_value)" />
-            </do_if>
-            <do_else>
-              <return value="1" />
-            </do_else>
-          </actions>
-        </library>
       </cues>
+    </library>
+
+    <!--
+    # normalizes data to be between 0 and 1
+    @staticmethod
+    def normalize(value, min_value (optional, default=0), max_value):
+        return (value - min_value) / (max_value - min_value) if max_value > min_value else 1
+    -->
+    <library name="Normalize" purpose="run_actions">
+      <params>
+        <param name="value" />
+        <param name="max_value" />
+        <param name="min_value" default="0" />
+      </params>
+      <actions>
+        <do_if value="$max_value gt $min_value">
+          <return value="($value - $min_value) / ($max_value - $min_value)" />
+        </do_if>
+        <do_else>
+          <return value="1" />
+        </do_else>
+      </actions>
     </library>
   </cues>
 </mdscript>
