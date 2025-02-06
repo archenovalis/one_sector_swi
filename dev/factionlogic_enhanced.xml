@@ -1,0 +1,639 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="FactionLogic_Enhanced" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../xsd/md.xsd">
+  <cues>
+    <!-- Manager Variables
+        global.$EnhancedLogic.$NeutralZones = group[sector] (ownerless sectors adjacent to owned sectors)
+        
+        $Enhanced_State = string ('EXPANSION', 'CONSOLIDATE', 'DEFENSE', 'WAR_INVADE', 'WAR_DEFENSE', 'WAR_CONSOLIDATE')
+        $Enhanced_PreviousState = string ('EXPANSION', 'CONSOLIDATE', 'DEFENSE', 'WAR_INVADE', 'WAR_DEFENSE', 'WAR_CONSOLIDATE')
+        $Enhanced_Scores = table[
+          $economy = float
+          $military = float
+          $industry = float
+        ]
+        $Enhanced_PirateActivity = float (0 through 1)
+
+        $Enhanced_PrimeSectors = group[sector] (stations that have ship buildmodules)
+        $Enhanced_ColonySectors = group[sector] (sectors with colonies)
+        
+        $Enhanced_Resources = table[
+          {$resource} = table[
+            $available = largeint (faction-wide availability)
+            $demand = int (faction-wide productionmodule demand)
+            $on_hand = int (faction-wide resources stored in stations)
+            $saturation = float ($on_hand / $demand)
+          ]
+        ]
+
+        $Enhanced_Sectors = table[
+          {$sector} = table[
+            $Values = table[
+              $economic = int
+              $resource = int
+              $stategic = int
+            ]
+            $NumProductionModules = table[
+              $moduletype = int
+            ]
+            $NumBuildModules = table[
+              $moduletype = int
+            ]
+            $desiredThreatscore = int
+          ]
+        ]
+        
+        $Enhanced_Ships = table[
+          $defensive = [ship]
+          $offensive = [ship]
+          $recon = [ship]
+          $mining = table[
+            {$baskettype} = [ship]
+          ],
+          $transport = table[
+            {$baskettype} = [ship]
+          ],
+          $construction = [ship]
+        ]
+
+        $Enhanced_Stations = table[
+          {$station} = table[
+            $isPlanetaryTradestation = bool
+            $demands = table[
+              {$resource} = int (per hour)
+            ]
+            $products = table[
+              {$products} = int (per hour)
+            ]
+          ] 
+        ]
+      -->
+    <cue name="Init">
+      <conditions>
+        <event_cue_signalled cue="md.Setup.Start" />
+      </conditions>
+      <delay exact="1ms" />
+      <actions>
+        <set_value name="$DebugChance" exact="100" />
+        <create_group groupname="$NeutralZones" />
+        <set_value name="global.$EnhancedLogic" exact="table[
+          $NeutralZones = $NeutralZones
+          $GalaxyResourceAverages = table[
+            ware.ore = 0L,
+            ware.hydrogen = 0L,
+            ware.ice = 0L,
+            ware.silicone = 0L,
+            ware.helium = 0L,
+            ware.nividium = 0L,
+            ware.methane = 0L
+          ]
+        ]" />
+        <!-- get galaxy resources -->
+        <find_sector name="$sectors" space="player.galaxy" multiple="true" />
+        <do_for_each name="$sector" in="$sectors">
+          <do_for_each name="$resource" in="$sector.averagemaxyield">
+            <set_value name="global.$EnhancedLogic.$GalaxyResourceAverages.{$resource}" operation="add" exact="$sector.averagemaxyield.{$resource}" />
+          </do_for_each>
+        </do_for_each>
+        <do_for_each name="$resource" in="global.$EnhancedLogic.$GalaxyResourceAverages">
+          <set_value name="global.$EnhancedLogic.$GalaxyResourceAverages.{$resource}" exact="global.$EnhancedLogic.$GalaxyResourceAverages.{$resource} / ($sectors.count)L" />
+        </do_for_each>
+        <remove_value name="$sectors" />
+      </actions>
+      <cues>
+
+        <library name="Run_Scoring_and_State_Check">
+          <actions>
+            <!-- enhanced todo: save old values? -->
+            <!-- clear old values -->
+            <set_value name="$Enhanced_Resources" exact="table[]" />
+
+            <!-- raw_scores = self.Calculate_Raw_Scores() -->
+            <include_actions ref="Calculate_Raw_Scores" />
+            <!-- emergencies = self.Check_Emergencies(raw_scores) -->
+            <include_actions ref="Check_Emergencies" />
+            <!-- self.Check_State_Change(raw_scores) -->
+            <include_actions ref="Check_State_Change" />
+            <!-- self.weighted_scores = self.Apply_Weights(raw_scores, emergencies) -->
+            <include_actions ref="Apply_Weights" />
+            <include_actions ref="Set_Build_Order_Priority" />
+          </actions>
+        </library>
+        <library name="Calculate_Raw_Scores">
+          <!-- 
+        def Calculate_Raw_Scores(self):
+            # Calculate total defense needed across all sectors
+            total_desired_defense_threatscore = sum(self.Calculate_Sector_Desired_Threatscore(sector) for sector in self.sectors)
+            
+            economy_score = self.Calculate_Raw_Economy_Score()
+            military_score = self.Calculate_Raw_Military_Score(total_desired_defense_threatscore)
+            industry_score = self.Calculate_Raw_Industry_Score()
+            return (economy_score, military_score, industry_score)
+        -->
+          <actions>
+            <include_actions ref="Process_Objects" />
+            <!-- economy_score = self.Calculate_Raw_Economy_Score() -->
+            <!-- military_score = self.Calculate_Raw_Military_Score(total_desired_defense_threatscore) -->
+            <!-- industry_score = self.Calculate_Raw_Industry_Score() -->
+          </actions>
+        </library>
+        <library name="Process_Objects">
+          <actions>
+            <include_actions ref="Process_Sectors" />
+            <include_actions ref="Process_Stations" />
+            <include_actions ref="Process_Ships" />
+          </actions>
+        </library>
+        <library name="Process_Sectors">
+          <actions>
+            <find_sector name="$Sectors" trueowner="$Faction" multiple="true" />
+            <do_for_each name="$sector" in="$Sectors">
+              <include_actions ref="Calculate_Sector_Value" />
+            </do_for_each>
+          </actions>
+        </library>
+        <library name="Calculate_Sector_Value">
+          <!-- 
+          def Calculate_Sector_Desired_Threatscore(self, sector):
+              # Calculates strategic importance of a sector for military scoring
+              resource_value = self.Get_Resource_Value(sector.resources)
+              strategic_value = self.Get_Strategic_Value(sector)
+              economic_value = sum(station.price * 2 if station.iswharf or station.isshipyard else station.price for station in sector.stations)
+              
+              # Pirate activity affects both economy and military scores
+              pirate_activity = sector.pirate_activity  # Number of ships destroyed by pirates / total number of non-military ships assigned to sector
+              self.pirate_activity = (self.pirate_activity + pirate_activity) / 2 if self.pirate_activity > 0 else pirate_activity
+              
+              total_value = resource_value + strategic_value + economic_value + pirate_activity
+              return total_value / self.Enhanced_ValuePerSectorThreatscore
+          -->
+          <actions>
+            <debug_text text="'calculate sector value: '+$sector.knownname" chance="$DebugChance" />
+            <!-- total_desired_defense_threatscore = sum(self.Calculate_Sector_Desired_Threatscore(sector) for sector in self.sectors) -->
+            <set_value name="$total_desired_defense_threatscore" exact="0" />
+
+            <do_if value="no @$Enhanced_Sectors.{$sector}.exists">
+              <set_value name="$Enhanced_Sectors.{$sector}" exact="table[
+                          $Values = table[]
+                        ]" />
+            </do_if>
+            <!-- resource_value = self.Get_Resource_Value(sector.resources) -->
+            <include_actions ref="Get_Resource_Value" />
+            <!-- strategic_value = self.Get_Strategic_Value(sector) -->
+            <include_actions ref="Get_Strategic_Value" />
+            <!-- economic_value = sum(station.price * 2 if station.iswharf or station.isshipyard else station.price for station in sector.stations) -->
+            <include_actions ref="Get_Economic_Value" />
+
+            <!-- enhanced todo: pirate activity metric -->
+            <!-- # Pirate activity affects both economy and military scores
+                          pirate_activity = sector.pirate_activity # Number of ships destroyed by pirates / total number of non-military ships assigned to sector
+                          self.pirate_activity = (self.pirate_activity + pirate_activity) / 2 if self.pirate_activity > 0 else pirate_activity -->
+            <set_value name="$Enhanced_Sectors.{$sector}.$desiredthreatscore" exact="$total_desired_defense_threatscore" />
+
+          </actions>
+        </library>
+        <library name="Get_Resource_Value">
+          <!-- 
+            def Get_Resource_Value(self, resources):
+                # Calculates resource value based on available resources
+                return sum(resource.amount * resource.demand for resource in resources) if resources else 0 
+            -->
+          <actions>
+            <debug_text text="'sunlight: '+$sector.sunlight" chance="$DebugChance" />
+            <set_value name="$value" exact="$sector.sunlight" />
+            <debug_text text="'resources: '+$sector.averagemaxyield" chance="$DebugChance" />
+            <do_for_each name="$resource" in="$sector.averagemaxyield">
+              <do_if value="not @$Enhanced_Resources.{$resource}.exists">
+                <set_value name="$Enhanced_Resources.{$resource}" exact="table[]" />
+              </do_if>
+              <debug_text text="'$score exact=$sector.averagemaxyield.{$resource} / global.$EnhancedLogic.$GalaxyResourceAverages.{$resource} : '+ $score + ' = '+$sector.averagemaxyield.{$resource} / global.$EnhancedLogic.$GalaxyResourceAverages.{$resource}" chance="$DebugChance" />
+              <set_value name="$average" exact="$sector.averagemaxyield.{$resource}" />
+              <set_value name="$Enhanced_Resources.{$resource}.$Available" operation="add" exact="$average" />
+              <set_value name="$resourceValue" exact="$average / global.$EnhancedLogic.$GalaxyResourceAverages.{$resource}" />
+              <set_value name="$value" operation="add" exact="$resourceValue" />
+              <debug_text text="$resource.knownname+' resourceValue: '+$resourceValue+' | '+$average" chance="$DebugChance" />
+
+            </do_for_each>
+            <set_value name="$Enhanced_Sectors.{$sector}.$Values.$resource" exact="$value" />
+            <debug_text text="'Get_Resource_Value: '+$value" chance="$DebugChance" />
+            <set_value name="$total_desired_defense_threatscore" operation="add" exact="$value" />
+          </actions>
+        </library>
+        <library name="Get_Strategic_Value">
+          <!-- 
+                      def Get_Strategic_Value(self, sector):
+                          # Calculates strategic value based on sector type and infrastructure
+                          value = self.sector_strategicValue['core'] if not sector.isborder else self.sector_strategicValue['border']
+                          if sector.hasWharf or sector.hasShipyard:
+                              value += self.sector_strategicValue['primary']
+                          if sector.numGates > 0:
+                              value += self.sector_strategicValue['gates'][min(sector.numGates - 1, 3)]
+                          return value 
+                      -->
+          <actions>
+            <do_if value="$sector.haslocationtag.border">
+              <set_value name="$value" exact="$Enhanced_SectorStrategicValue.$border" />
+            </do_if>
+            <do_else>
+              <set_value name="$value" exact="$Enhanced_SectorStrategicValue.$core" />
+            </do_else>
+
+            <do_if value="@$Enhanced_PrimeSectors.indexof.{$sector}">
+              <set_value name="$value" operation="add" exact="$Enhanced_SectorStrategicValue.$prime" />
+            </do_if>
+            <do_else>
+              <find_object name="$station" space="$sector" trueowner="$Faction" class="class.station" canbuildships="true" />
+              <do_if value="$station != null">
+                <set_value name="$value" operation="add" exact="$Enhanced_SectorStrategicValue.$prime" />
+                <add_to_group groupname="$Enhanced_PrimeSectors" object="$sector" />
+              </do_if>
+            </do_else>
+
+            <do_if value="@$ColonySectors.indexof.{$sector}">
+              <set_value name="$value" operation="add" exact="$Enhanced_SectorStrategicValue.$colony" />
+            </do_if>
+            <find_gate name="$gates" space="$sector" multiple="true" />
+            <set_value name="$value" operation="add" exact="$Enhanced_SectorStrategicValue.$gates.{[$gates.count,4].min}" />
+            <set_value name="$Enhanced_Sectors.{$sector}.$Values.$strategic" exact="$value" />
+            <debug_text text="'Get_Strategic_Value: '+$value" chance="$DebugChance" />
+            <set_value name="$total_desired_defense_threatscore" operation="add" exact="$value" />
+          </actions>
+        </library>
+        <library name="Get_Economic_Value">
+          <!-- economic_value = sum(station.price * 2 if station.iswharf or station.isshipyard else station.price for station in sector.stations) -->
+          <actions>
+            <set_value name="$value" exact="0" />
+            <find_station_by_true_owner name="$stations" faction="$Faction" space="$sector" multiple="true" />
+            <do_for_each name="$station" in="$stations">
+              <get_object_value object="$station" result="$stationvalue" />
+              <set_value name="$value" operation="add" exact="$stationvalue" />
+            </do_for_each>
+            <set_value name="$Enhanced_Sectors.{$sector}.$Values.$economic" exact="$value" />
+            <debug_text text="'Get_Economic_Value: '+$value" chance="$DebugChance" />
+            <set_value name="$total_desired_defense_threatscore" operation="add" exact="$value" />
+          </actions>
+        </library>
+        <!-- end Calculate_Sector_Value Libraries -->
+        <!-- end Process_Sectors Libraries -->
+        <library name="Process_Stations">
+          <!-- 
+            $Enhanced_Sectors = table[
+              {$sector} = table[
+                $NumProductionModules = table[
+                  {$moduletype} = int
+                ]
+                $NumBuildModules = table[
+                  {$moduletype} = int
+                ] 
+              ]
+            ]
+            
+            $Enhanced_Stations = table[
+              {$station} = table[
+                $isPlanetaryTradestation = bool
+                $demands = table[
+                  {$resource} = int (per hour)
+                ]
+                $products = table[
+                  {$products} = int (per hour)
+                ]
+              ] 
+            ]
+          -->
+          <actions>
+          </actions>
+        </library>
+        <!-- end Process_Stations Libraries -->
+        <library name="Process_Ships">
+          <!-- 
+            $Enhanced_Ships = table[
+              $Mining = table[
+                {$ware} = int
+              ],
+              $Transporting = table[
+                {$ware} = int
+              ]
+            ] -->
+          <actions>
+            <!-- transports -->
+            <set_value name="$purpose" exact="purpose.trade" />
+            <find_ship_by_true_owner name="$Ships" faction="$Faction" space="player.galaxy" multiple="true" primarypurpose="$purpose" />
+            <do_for_each name="$ship" in="$Ships">
+              <include_actions ref="Process_Ship" />
+            </do_for_each>
+            <!-- miners -->
+            <set_value name="$purpose" exact="purpose.mine" />
+            <find_ship_by_true_owner name="$Ships" faction="$Faction" space="player.galaxy" multiple="true" primarypurpose="$purpose" />
+            <do_for_each name="$ship" in="$Ships">
+              <include_actions ref="Process_Ship" />
+            </do_for_each>
+          </actions>
+        </library>
+        <library name="Process_Ship">
+          <!-- 
+            requires $ship and $purpose
+            optional: $remove
+          -->
+          <actions>
+            <set_value name="$class" exact="$ship.class" />
+            <do_if value="$class == class.size_m">
+              <set_value name="$value" exact="1" />
+            </do_if>
+            <do_elseif value="$class == class.size_l">
+              <set_value name="$value" exact="3" />
+            </do_elseif>
+            <do_elseif value="$class == class.size_xl">
+              <set_value name="$value" exact="5" />
+            </do_elseif>
+            <do_if value="@$remove">
+              <do_if value="$purpose == purpose.trade">
+                <do_for_each name="$ware" in="$ship.warebasket">
+                  <set_value name="$Enhanced_Ships.$Transporting.{$ware}" operation="subtract" exact="$value" />
+                </do_for_each>
+              </do_if>
+              <do_elseif value="$purpose == purpose.mine">
+                <do_for_each name="$ware" in="$ship.warebasket">
+                  <set_value name="$Enhanced_Ships.$Mining.{$ware}" operation="subtract" exact="$value" />
+                </do_for_each>
+              </do_elseif>
+            </do_if>
+            <do_else>
+              <do_if value="$purpose == purpose.trade">
+                <do_for_each name="$ware" in="$ship.warebasket">
+                  <set_value name="$Enhanced_Ships.$Transporting.{$ware}" operation="add" exact="$value" />
+                </do_for_each>
+              </do_if>
+              <do_elseif value="$purpose == purpose.mine">
+                <do_for_each name="$ware" in="$ship.warebasket">
+                  <set_value name="$Enhanced_Ships.$Mining.{$ware}" operation="add" exact="$value" />
+                </do_for_each>
+              </do_elseif>
+            </do_else>
+          </actions>
+        </library>
+        <!-- end Process_Ships Libraries -->
+        <!-- end Process_Objects Libraries -->
+        <library name="Calculate_Raw_Economy_Score">
+          <!-- def Calculate_Raw_Economy_Score(self):
+          # Average score of all resources, aligning with the economy score concept
+          return sum(self.Calculate_Resource_Score(resource) for resource in self.resources.values()) / len(self.resources) if self.resources else 0 -->
+          <actions>
+            <!-- calculate resource scores-->
+            <include_actions ref="Calculate_Resource_Score" />
+            <!-- calculate production scores -->
+            <include_actions ref="Calculate_Production_Score" /> <!-- enhanced todo: design -->
+          </actions>
+        </library>
+        <library name="Calculate_Resource_Score">
+          <!-- def Calculate_Resource_Score(self, resource):
+              weights = self.resource_weights
+              availability = sum(sector.resource_amount for sector in self.sectors)
+              extraction_rate = sum(ship.threatscore for ship in self.ships if ship.type == "Miner")
+              # Incorporate pirate activity to affect transport efficiency
+              transport_efficiency = sum(ship.load_capacity for ship in self.ships if ship.type == "Transport") * (1-self.pirate_activity)
+              
+              # Flatten list of demands and on_hand resources from all stations
+              demand = sum(resource.amount for station in self.stations for moduleResource in station.productionModules for resource in moduleResource.resources if resource.type == resource.type)
+              on_hand = sum(resource.amount for station in self.stations for stationResource in station.resources if stationResource.type == resource.type)
+              saturation = on_hand / demand if demand > 0 else 0
+
+              # Update resource stats
+              if resource.type not in self.resources:
+                  self.resources[resource.type] = {
+                      'demand': 0,
+                      'on_hand': 0,
+                      'saturation': None
+                  }
+              self.resources[resource.type]['demand'] += demand
+              self.resources[resource.type]['on_hand'] += on_hand
+              self.resources[resource.type]['saturation'] = (self.resources[resource.type]['saturation'] + saturation) / 2 if self.resources[resource.type]['saturation'] is not None else saturation
+
+              return (availability * weights['availability'] + 
+                      on_hand * weights['on_hand'] + 
+                      extraction_rate * weights['extraction_rate'] +
+                      transport_efficiency * weights['transport_efficiency'] + 
+                      demand * weights['demand'] + 
+                      saturation * weights['saturation'])
+                    -->
+          <actions>
+            <!-- relevant variables
+              $Enhanced_Sectors = table[
+                {$sector} = table[
+                  $Values = table[
+                    $economic = int
+                    $resource = int
+                    $stategic = int
+                  ]
+                  $NumProductionModules = table[
+                    {$moduletype} = int
+                  ]
+                  $NumBuildModules = table[
+                    {$moduletype} = int
+                  ]
+                  $desiredThreatscore = int
+                ]
+              ]
+              
+              $Enhanced_Resources = table[
+                {$resource} = table[
+                  $available = largeint (faction-wide availability)
+                  $on_hand = int (faction-wide resources stored in stations)
+                  $demand = int (faction-wide productionmodule demand)
+                  $saturation = float ($on_hand / $demand)
+                ]
+              ]
+              
+              $Enhanced_Ships = table[
+                $defensive = [ship]
+                $offensive = [ship]
+                $recon = [ship]
+                $mining = table[
+                  {$baskettype} = [ship]
+                ],
+                $transport = table[
+                  {$baskettype} = [ship]
+                ],
+                $construction = [ship]
+              ] -->
+            <!-- calculate mining efficiency -->
+            <!-- calculate transport efficiency -->
+
+
+          </actions>
+        </library>
+        <!-- end Calculate_Raw_Economy_Score Libraries -->
+        <library name="Calculate_Raw_Military_Score">
+          <!--
+              def Calculate_Raw_Military_Score(self, total_desired_defense_threatscore):
+                  raw_scores = self.Calculate_Raw_Military_Threatscore()
+                  weighted_scores = {
+                      'defensive': raw_scores['defensive'] * self.military_weights['defensive'],
+                      'offensive': raw_scores['offensive'] * self.military_weights['offensive'],
+                      'stations': raw_scores['stations'] * self.military_weights['stations']
+                  }
+                  combined_score = sum(weighted_scores.values())
+                  
+                  return self.normalize(combined_score, 0, total_desired_defense_threatscore)
+              -->
+        </library>
+        <library name="Calculate_Raw_Military_Threatscore">
+          <!--
+                  def Calculate_Raw_Military_Threatscore(self):
+                      # Calculates military strength based on ship and station threat scores
+                      return {
+                          'defensive': sum(ship.threatscore for ship in self.ships if ship.is_defensive),
+                          'offensive': sum(ship.threatscore for ship in self.ships if ship.is_offensive or ship.is_scout),
+                          'stations': sum(station.threatscore for station in self.stations)
+                      }
+                  -->
+        </library>
+        <!-- end Calculate_Raw_Military_Score Libraries -->
+        <library name="Calculate_Raw_Industry_Score">
+          <!--
+              def Calculate_Raw_Industry_Score(self):
+                  # Adjusts for ship and station construction capabilities
+                  # fix thix
+                  ship_scores = [self.Calculate_Ship_Building_Score(ship_type) for ship_type in self.shipyards]
+                  station_score = self.Calculate_Station_Building_Score()
+                  return (sum(ship_scores) / len(ship_scores) if ship_scores else 0) * station_score if station_score else 0
+              -->
+        </library>
+        <library name="Calculate_Ship_Building_Score">
+          <!--
+                  def Calculate_Ship_Building_Score(self, ship_type):
+                      # fix thix
+                      demand = sum(need.amount for need in self.shipQueue if need.get('ship_type', None) == ship_type.type)
+                      production_capacity = sum(yard.capacity for yard in self.shipyards if yard.produces == ship_type.type) / (len(self.shipyards) * ship_type.max_yard_capacity)
+                      downtime = 1 - (ship_type.downtimePercent)
+
+                      return (demand / production_capacity if production_capacity > 0 else 0) * downtime
+                  -->
+        </library>
+        <library name="Calculate_Calculate_Station_Building_Score">
+          <!--
+                  def Calculate_Station_Building_Score(self):
+                      # Scoring for station construction, focusing on demand vs. construction capability
+                      demand = sum(station.demand for station in self.stations if station.status == "Planned")
+                      construction_ships = sum(ship.efficiency for ship in self.ships if ship.type == "Construction")
+                      downtime = 1 - sum(ship.downtimePercent for ship in self.ships if ship.type == "Construction") / len(self.ships)
+
+                      return (demand / (demand + construction_ships)) * downtime if demand + construction_ships > 0 else 0
+                  -->
+        </library>
+        <!-- end Calculate_Raw_Industry_Score Libraries -->
+        <!-- end Calculate_Raw_Scores Libraries -->
+        <library name="Check_Emergencies">
+          <!-- 
+          def Check_Emergencies(self, scores):
+              # Determines if an emergency state should be declared for each sector
+              threshhold = self.score_emergency_threshholds
+              economy_score, military_score, industry_score = scores
+              return {
+                  'economy': economy_score< threshhold['economy'],
+                  'military': military_score < threshhold['military'],
+                  'industry': industry_score < threshhold['industry']
+              }
+          -->
+        </library>
+
+        <library name="Check_State_Change">
+          <!--
+          def Check_State_Change(self, scores):
+              economy_score, military_score, industry_score = scores
+              threshholds = self.state_threshholds
+
+              if self.state == State.EXPANSION:
+                  if military_score< threshholds ['mil_defense' ]:
+                  self.state= State.DEFENSE
+                  elif economy_score < threshholds ['eco_consolidation' ] or industry_score < threshholds ['ind_consolidation' ]:
+                  self.state= State.CONSOLIDATE
+                  elif self.state== State.CONSOLIDATE:
+                  if military_score < threshholds['mil_defense']:
+                      self.state = State.DEFENSE
+                  elif economy_score > threshholds['eco_expansion'] and industry_score > threshholds['ind_expansion'] and military_score > threshholds['mil_expansion']:
+                      self.state = State.EXPANSION
+
+              elif self.state == State.DEFENSE:
+                  if economy_score > threshholds['eco_expansion'] and industry_score > threshholds['ind_expansion'] and military_score > threshholds['mil_expansion']:
+                      self.state = State.EXPANSION
+                  elif military_score > threshholds['mil_consolidation']:
+                      self.state = State.CONSOLIDATE
+
+              elif self.state == State.WAR_INVADE:
+                  if military_score < threshholds ['mil_defense' ]:
+                  self.state= State.WAR_DEFENSE
+                  elif economy_score < threshholds ['eco_consolidation' ] or industry_score < threshholds ['ind_consolidation' ]:
+                  self.state= State.WAR_CONSOLIDATE
+                  elif self.state== State.WAR_DEFENSE:
+                  if economy_score < threshholds ['eco_consolidation' ] or industry_score < threshholds['ind_consolidation']:
+                      self.state = State.WAR_CONSOLIDATE
+                  elif military_score > threshholds['mil_invade']:
+                      self.state = State.WAR_INVADE
+
+              elif self.state == State.WAR_CONSOLIDATE:
+                  if military_score < threshholds['mil_defense']:
+                      self.state = State.WAR_DEFENSE
+                  elif military_score > threshholds['mil_invade'] and economy_score > threshholds['eco_consolidation'] and industry_score > threshholds['ind_consolidation']: self.state = State.WAR_INVADE if self.state != self.previous_state: self.notify_state_change(self.previous_state, self.state) self.previous_state = self.state
+          -->
+        </library>
+
+        <library name="Apply_Weights">
+          <!-- 
+          def Apply_Weights(self, scores, emergencies):
+              weights = self.score_weights
+              stateWeights = self.state_weights[self.state]
+              emergency_weights = self.score_emergency_weights
+              economy_score, military_score, industry_score = scores
+
+              return {
+                  'economy': economy_score * (weights['economy'] if not emergencies['economy'] else emergency_weights['economy']) * stateWeights['economy'],
+                  'military': military_score * (weights['military'] if not emergencies['military'] else emergency_weights['military'])  * stateWeights['military'],
+                  'industry': industry_score * (weights['industry'] if not emergencies['industry'] else emergency_weights['industry'])  * stateWeights['industry']
+              }
+          -->
+        </library>
+
+        <library name="Set_Build_Order_Priority">
+          <!-- 
+          def Set_Build_Order_Priority(self):
+              # Returns a list of priorities based on current state
+              if self.state == State.EXPANSION:
+                  return ['Construction Ship', 'Wharf', 'Miner (Solid)', 'Miner (Fluid)']
+              elif self.state == State.CONSOLIDATE:
+                  return ['Factory', 'Trade Station', 'Transport (Container)']
+              elif self.state == State.DEFENSE:
+                  return ['Defense Station', 'Defensive Ship', 'Scout']
+              elif self.state == State.WAR_INVADE:
+                  return ['Offensive Ship', 'Scout', 'Defensive Ship']
+              elif self.state == State.WAR_DEFENSE:
+                  return ['Defensive Ship', 'Defense Station', 'Scout']
+              elif self.state == State.WAR_CONSOLIDATE:
+                  return ['Offensive Ship', 'Defensive Ship', 'Factory']
+          -->
+        </library>
+        <!-- end Run_Scoring_and_State_Check Libraries -->
+
+        <library name="Normalize" purpose="run_actions">
+          <!--
+    # normalizes data to be between 0 and 1
+    @staticmethod
+    def normalize(value, min_value (optional, default=0), max_value):
+        return (value - min_value) / (max_value - min_value) if max_value > min_value else 1
+    -->
+          <params>
+            <param name="value" />
+            <param name="max_value" />
+            <param name="min_value" default="0" />
+          </params>
+          <actions>
+            <do_if value="$max_value gt $min_value">
+              <return value="($value - $min_value) / ($max_value - $min_value)" />
+            </do_if>
+            <do_else>
+              <return value="1" />
+            </do_else>
+          </actions>
+        </library>
+      </cues>
+    </cue>
+  </cues>
+</mdscript>
