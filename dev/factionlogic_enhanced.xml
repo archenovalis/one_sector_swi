@@ -1,6 +1,179 @@
 <?xml version="1.0" encoding="utf-8"?>
 <mdscript name="FactionLogic_Enhanced" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../xsd/md.xsd">
   <cues>
+    <library name="Process_Objects">
+      <actions>
+        <!-- sectors -->
+        <find_sector name="$Sectors" trueowner="$Faction" multiple="true" />
+        <do_for_each name="$sector" in="$Sectors">
+          <run_actions ref="Process_Sector">
+            <param name="Faction" value="$Faction" />
+            <param name="sector" value="$sector" />
+          </run_actions>
+        </do_for_each>
+
+        <!-- stations -->
+        <find_station_by_true_owner name="$stations" faction="$Faction" space="player.galaxy" multiple="true">
+          <match state="componentstate.wreck" negate="true" />
+        </find_station_by_true_owner>
+        <do_for_each name="$station" in="$stations">
+          <run_actions ref="Process_Station">
+            <param name="Faction" value="$Faction" />
+            <param name="station" value="$station" />
+          </run_actions>
+        </do_for_each>
+
+        <!-- ships -->
+        <do_for_each name="$purpose" in="[purpose.trade, purpose.mine]">
+          <find_ship_by_true_owner name="$Ships" faction="$Faction" space="player.galaxy" multiple="true" primarypurpose="$purpose" />
+          <do_for_each name="$ship" in="$Ships">
+            <run_actions ref="Process_Ship">
+              <param name="Faction" value="$Faction" />
+              <param name="ship" value="$ship" />
+            </run_actions>
+          </do_for_each>
+        </do_for_each>
+      </actions>
+    </library>
+    <library name="Process_Sector" purpose="run_actions"> <!-- requires $Faction and $sector -->
+      <params>
+        <param name="Faction" />
+        <param name="sector" />
+      </params>
+      <actions>
+        <set_value name="$Manager" exact="global.$FactionManagers.{$Faction}" />
+        <set_value name="$Enhanced_Sectors" exact="$Manager.$Enhanced_Sectors" />
+        <set_value name="$Enhanced_Resources" exact="$Manager.$Enhanced_Resources" />
+        <set_value name="$Enhanced_SectorStrategicWeights" exact="$Manager.$Enhanced_SectorStrategicWeights" />
+        <set_value name="$Enhanced_PrimeSectors" exact="$Manager.$Enhanced_PrimeSectors" />
+
+        <do_if value="no @$Enhanced_Sectors.{$sector}.exists">
+          <set_value name="$Enhanced_Sectors.{$sector}" exact="table[
+                  $Values = table[]
+                ]" />
+        </do_if>
+        <set_value name="$Enhanced_Sectors.{$sector}.$desiredThreatscore" exact="0" />
+        <include_actions ref="Set_Resource_Value" />
+        <include_actions ref="Update_Sector" />
+      </actions>
+    </library>
+    <library name="Set_Resource_Value">
+      <!-- def Get_Resource_Value(self, resources):
+        # Calculates resource value based on available resources
+        return sum(resource.amount * resource.demand for resource in resources) if resources else 0 
+          -->
+      <actions>
+        <debug_text text="'sunlight: '+$sector.sunlight" chance="$DebugChance" />
+        <set_value name="$value" exact="$sector.sunlight" />
+        <debug_text text="'resources: '+$sector.averagemaxyield" chance="$DebugChance" />
+        <do_for_each name="$resource" in="$sector.averagemaxyield">
+          <do_if value="not @$Enhanced_Resources.{$resource}.exists">
+            <set_value name="$Enhanced_Resources.{$resource}" exact="table[]" />
+          </do_if>
+          <debug_text text="'$score exact=$sector.averagemaxyield.{$resource} / global.$EnhancedLogic.$GalaxyResourceAverages.{$resource} : '+ $score + ' = '+$sector.averagemaxyield.{$resource} / global.$EnhancedLogic.$GalaxyResourceAverages.{$resource}" chance="$DebugChance" />
+          <set_value name="$average" exact="$sector.averagemaxyield.{$resource}" />
+          <set_value name="$Enhanced_Resources.{$resource}.$Available" operation="add" exact="$average" />
+          <set_value name="$resourceValue" exact="$average / global.$EnhancedLogic.$GalaxyResourceAverages.{$resource}" />
+          <set_value name="$value" operation="add" exact="$resourceValue" />
+          <debug_text text="$resource.knownname+' resourceValue: '+$resourceValue+' | '+$average" chance="$DebugChance" />
+
+        </do_for_each>
+        <set_value name="$Enhanced_Sectors.{$sector}.$Values.$resource" exact="$value" />
+        <debug_text text="'Get_Resource_Value: '+$value" chance="$DebugChance" />
+      </actions>
+    </library>
+    <!-- end Process_Sector Libraries -->
+    <library name="Process_Ship" purpose="run_actions"> <!-- requires: $Faction and $ship | optional: $remove -->
+      <params>
+        <param name="Faction" />
+        <param name="ship" />
+        <param name="remove" default="false" />
+      </params>
+      <!-- 
+        $Enhanced_Ships = table[
+          $Mining = table[
+            {$ware} = int
+          ],
+          $Transporting = table[
+            {$ware} = int
+          ]
+        ] -->
+      <actions>
+        <set_value name="$Manager" exact="global.$FactionManagers.{$Faction}" />
+        <set_value name="$Enhanced_Ships" exact="$Manager.$Enhanced_Ships" />
+        <set_value name="$class" exact="$ship.class" />
+        <do_if value="$class == class.size_m">
+          <set_value name="$value" exact="1" />
+        </do_if>
+        <do_elseif value="$class == class.size_l">
+          <set_value name="$value" exact="3" />
+        </do_elseif>
+        <do_elseif value="$class == class.size_xl">
+          <set_value name="$value" exact="5" />
+        </do_elseif>
+        <do_if value="@$remove">
+          <set_value name="$value" exact="-$value" />
+        </do_if>
+        <do_if value="$ship.primarypurpose == purpose.trade">
+          <do_for_each name="$ware" in="$ship.warebasket">
+            <set_value name="$Enhanced_Ships.$Transporting.{$ware}" operation="add" exact="$value" />
+          </do_for_each>
+        </do_if>
+        <do_elseif value="$ship.primarypurpose == purpose.mine">
+          <do_for_each name="$ware" in="$ship.warebasket">
+            <set_value name="$Enhanced_Ships.$Mining.{$ware}" operation="add" exact="$value" />
+          </do_for_each>
+        </do_elseif>
+      </actions>
+    </library>
+    <library name="Process_Station" purpose="run_actions"> <!-- enhanced todo: -->
+      <params>
+        <param name="Faction" />
+        <param name="station" />
+        <param name="remove" default="false" />
+      </params>
+      <!-- 
+          $Enhanced_Sectors = table[
+            {$sector} = table[
+              $NumProductionModules = table[
+                {$moduletype} = int
+              ]
+              $NumBuildModules = table[
+                {$moduletype} = int
+              ] 
+            ]
+          ]
+          Demands and products table:
+            global.$EnhancedLogic.$ProductionDemandOutput 
+            
+          $Enhanced_Stations = table[
+            {$station} = table[
+              $isPlanetaryTradestation = bool (static)
+              $Demands = table[
+                {$resource} = int (per hour) (static)
+              ]
+              $Products = table[
+                {$product} = int (per hour) (static)
+              ]
+            ] 
+          ]
+        -->
+      <actions>
+        <set_value name="$Manager" exact="global.$FactionManagers.{$Faction}" />
+        <set_value name="$Enhanced_Stations" exact="$Manager.$Enhanced_Stations" />
+        <set_value name="$Enhanced_Sectors" exact="$Manager.$Enhanced_Sectors" />
+        <do_for_each name="$production" in="$station.productions">
+          <!-- add module to sector -->
+          <!-- add station to stations table -->
+          <!-- add demand ware to station -->
+          <!-- add product ware to station -->
+          <!-- move secondary demands to demand_secondary -->
+          <!-- is in planetary group? -->
+        </do_for_each>
+        <include_actions ref="Update_Station" />
+      </actions>
+    </library>
+
     <!-- Manager Variables
       global.$EnhancedLogic.$NeutralZones = group[sector] (ownerless sectors adjacent to owned sectors)
       
@@ -18,48 +191,49 @@
       
       $Enhanced_Resources = table[
         {$resource} = table[
-          $available = largeint (faction-wide availability)
-          $demand = int (faction-wide productionmodule demand)
-          $on_hand = int (faction-wide resources stored in stations)
-          $saturation = float ($on_hand / $demand)
+          $available = largeint (faction-wide availability) (static)
+          $demand = int (faction-wide productionmodule demand) (static)
+          $on_hand = int (faction-wide resources stored in stations) (dynamic)
+          $saturation = float ($on_hand / $demand) (dynamic)
         ]
       ]
 
       $Enhanced_Sectors = table[
         {$sector} = table[
           $Values = table[
-            $economic = int
-            $resource = int
-            $stategic = int
+            $economic = int (dynamic)
+            $resource = int (static)
+            $stategic = int (dynamic)
           ]
           $NumProductionModules = table[
-            {$moduletype} = int
+            {$moduletype} = int (static)
           ]
           $NumBuildModules = table[
-            {$moduletype} = int
+            {$moduletype} = int (static)
           ]
-          $desiredThreatscore = int
+          $desiredThreatscore = int (dynamic)
         ]
       ]
       
       $Enhanced_Ships = table[
         $Mining = table[
-          {$ware} = int
+          {$ware} = int (static)
         ],
         $Transporting = table[
-          {$ware} = int
+          {$ware} = int (static)
         ]
       ]
 
       $Enhanced_Stations = table[
         {$station} = table[
-          $isPlanetaryTradestation = bool
+          $isPlanetaryTradestation = bool (static)
           $Demands = table[
-            {$resource} = int (per hour)
+            {$resource} = int (per hour) (static)
           ]
           $Products = table[
-            {$product} = int (per hour)
+            {$product} = int (per hour) (static)
           ]
+          $workforceBonus = float (dynamic)
         ] 
       ]
       -->
@@ -94,15 +268,18 @@
           <set_value name="global.$EnhancedLogic.$GalaxyResourceAverages.{$resource}" exact="global.$EnhancedLogic.$GalaxyResourceAverages.{$resource} / ($sectors.count)L" />
         </do_for_each>
         <remove_value name="$sectors" />
+        <!-- get galaxy production module demand per hour and base products per hour -->
+        <raise_lua_event name="'oneSector.assessProductionDemandOutput'" />
       </actions>
       <cues>
 
         <library name="Run_Scoring_and_State_Check">
           <actions>
-            <!-- enhanced todo: save old values? -->
-            <!-- clear old values -->
-            <set_value name="$Enhanced_Resources" exact="table[]" />
-
+            <do_if value="$Enhanced_RunInit">
+              <!-- process every -->
+              <include_actions ref="Process_Objects" />
+              <set_value name="$Enhanced_RunInit" exact="false" />
+            </do_if>
             <!-- raw_scores = self.Calculate_Raw_Scores() -->
             <include_actions ref="Calculate_Raw_Scores" />
             <!-- emergencies = self.Check_Emergencies(raw_scores) -->
@@ -115,8 +292,7 @@
           </actions>
         </library>
         <library name="Calculate_Raw_Scores">
-          <!-- 
-        def Calculate_Raw_Scores(self):
+          <!-- def Calculate_Raw_Scores(self):
             # Calculate total defense needed across all sectors
             total_desired_defense_threatscore = sum(self.Calculate_Sector_Desired_Threatscore(sector) for sector in self.sectors)
             
@@ -124,30 +300,31 @@
             military_score = self.Calculate_Raw_Military_Score(total_desired_defense_threatscore)
             industry_score = self.Calculate_Raw_Industry_Score()
             return (economy_score, military_score, industry_score)
-        -->
+          -->
           <actions>
-            <include_actions ref="Process_Objects" />
+            <include_actions ref="Update_Objects" />
             <!-- economy_score = self.Calculate_Raw_Economy_Score() -->
             <!-- military_score = self.Calculate_Raw_Military_Score(total_desired_defense_threatscore) -->
             <!-- industry_score = self.Calculate_Raw_Industry_Score() -->
           </actions>
         </library>
-        <library name="Process_Objects">
+        <library name="Update_Objects">
           <actions>
-            <include_actions ref="Process_Sectors" />
-            <include_actions ref="Process_Stations" />
-            <include_actions ref="Process_Ships" />
-          </actions>
-        </library>
-        <library name="Process_Sectors">
-          <actions>
+            <!-- sectors -->
             <find_sector name="$Sectors" trueowner="$Faction" multiple="true" />
             <do_for_each name="$sector" in="$Sectors">
-              <include_actions ref="Calculate_Sector_Value" />
+              <include_actions ref="Update_Sector" />
+            </do_for_each>
+            <!-- stations -->
+            <find_station_by_true_owner name="$stations" faction="$Faction" space="player.galaxy" multiple="true">
+              <match state="componentstate.wreck" negate="true" />
+            </find_station_by_true_owner>
+            <do_for_each name="$station" in="$stations">
+              <include_actions ref="Update_Station" />
             </do_for_each>
           </actions>
         </library>
-        <library name="Calculate_Sector_Value">
+        <library name="Update_Sector">
           <!-- def Calculate_Sector_Desired_Threatscore(self, sector):
       # Calculates strategic importance of a sector for military scoring
       resource_value = self.Get_Resource_Value(sector.resources)
@@ -160,19 +337,9 @@
       
       total_value = resource_value + strategic_value + economic_value + pirate_activity
       return total_value / self.Enhanced_ValuePerSectorThreatscore
-  -->
+          -->
           <actions>
-            <debug_text text="'calculate sector value: '+$sector.knownname" chance="$DebugChance" />
-            <!-- total_desired_defense_threatscore = sum(self.Calculate_Sector_Desired_Threatscore(sector) for sector in self.sectors) -->
-            <set_value name="$total_desired_defense_threatscore" exact="0" />
-
-            <do_if value="no @$Enhanced_Sectors.{$sector}.exists">
-              <set_value name="$Enhanced_Sectors.{$sector}" exact="table[
-                  $Values = table[]
-                ]" />
-            </do_if>
-            <!-- resource_value = self.Get_Resource_Value(sector.resources) -->
-            <include_actions ref="Get_Resource_Value" />
+            <debug_text text="'update sector value: '+$sector.knownname" chance="$DebugChance" />
             <!-- strategic_value = self.Get_Strategic_Value(sector) -->
             <include_actions ref="Get_Strategic_Value" />
             <!-- economic_value = sum(station.price * 2 if station.iswharf or station.isshipyard else station.price for station in sector.stations) -->
@@ -182,34 +349,7 @@
             <!-- # Pirate activity affects both economy and military scores
                   pirate_activity = sector.pirate_activity # Number of ships destroyed by pirates / total number of non-military ships assigned to sector
                   self.pirate_activity = (self.pirate_activity + pirate_activity) / 2 if self.pirate_activity > 0 else pirate_activity -->
-            <set_value name="$Enhanced_Sectors.{$sector}.$desiredthreatscore" exact="$total_desired_defense_threatscore" />
-
-          </actions>
-        </library>
-        <library name="Get_Resource_Value">
-          <!-- def Get_Resource_Value(self, resources):
-        # Calculates resource value based on available resources
-        return sum(resource.amount * resource.demand for resource in resources) if resources else 0 
-    -->
-          <actions>
-            <debug_text text="'sunlight: '+$sector.sunlight" chance="$DebugChance" />
-            <set_value name="$value" exact="$sector.sunlight" />
-            <debug_text text="'resources: '+$sector.averagemaxyield" chance="$DebugChance" />
-            <do_for_each name="$resource" in="$sector.averagemaxyield">
-              <do_if value="not @$Enhanced_Resources.{$resource}.exists">
-                <set_value name="$Enhanced_Resources.{$resource}" exact="table[]" />
-              </do_if>
-              <debug_text text="'$score exact=$sector.averagemaxyield.{$resource} / global.$EnhancedLogic.$GalaxyResourceAverages.{$resource} : '+ $score + ' = '+$sector.averagemaxyield.{$resource} / global.$EnhancedLogic.$GalaxyResourceAverages.{$resource}" chance="$DebugChance" />
-              <set_value name="$average" exact="$sector.averagemaxyield.{$resource}" />
-              <set_value name="$Enhanced_Resources.{$resource}.$Available" operation="add" exact="$average" />
-              <set_value name="$resourceValue" exact="$average / global.$EnhancedLogic.$GalaxyResourceAverages.{$resource}" />
-              <set_value name="$value" operation="add" exact="$resourceValue" />
-              <debug_text text="$resource.knownname+' resourceValue: '+$resourceValue+' | '+$average" chance="$DebugChance" />
-
-            </do_for_each>
-            <set_value name="$Enhanced_Sectors.{$sector}.$Values.$resource" exact="$value" />
-            <debug_text text="'Get_Resource_Value: '+$value" chance="$DebugChance" />
-            <set_value name="$total_desired_defense_threatscore" operation="add" exact="$value" />
+            <set_value name="$Enhanced_Sectors.{$sector}.$desiredthreatscore" exact="$Enhanced_Sectors.{$sector}.$Values.$economic + $Enhanced_Sectors.{$sector}.$Values.$strategic + $Enhanced_Sectors.{$sector}.$Values.$ressource" />
           </actions>
         </library>
         <library name="Get_Strategic_Value">
@@ -224,28 +364,28 @@
               -->
           <actions>
             <do_if value="$sector.haslocationtag.border">
-              <set_value name="$value" exact="$Enhanced_SectorStrategicValue.$border" />
+              <set_value name="$value" exact="$Enhanced_SectorStrategicWeights.$border" />
             </do_if>
             <do_else>
-              <set_value name="$value" exact="$Enhanced_SectorStrategicValue.$core" />
+              <set_value name="$value" exact="$Enhanced_SectorStrategicWeights.$core" />
             </do_else>
 
             <do_if value="@$Enhanced_PrimeSectors.indexof.{$sector}">
-              <set_value name="$value" operation="add" exact="$Enhanced_SectorStrategicValue.$prime" />
+              <set_value name="$value" operation="add" exact="$Enhanced_SectorStrategicWeights.$prime" />
             </do_if>
             <do_else>
               <find_object name="$station" space="$sector" trueowner="$Faction" class="class.station" canbuildships="true" />
               <do_if value="$station != null">
-                <set_value name="$value" operation="add" exact="$Enhanced_SectorStrategicValue.$prime" />
+                <set_value name="$value" operation="add" exact="$Enhanced_SectorStrategicWeights.$prime" />
                 <add_to_group groupname="$Enhanced_PrimeSectors" object="$sector" />
               </do_if>
             </do_else>
 
             <do_if value="@$ColonySectors.indexof.{$sector}">
-              <set_value name="$value" operation="add" exact="$Enhanced_SectorStrategicValue.$colony" />
+              <set_value name="$value" operation="add" exact="$Enhanced_SectorStrategicWeights.$colony" />
             </do_if>
             <find_gate name="$gates" space="$sector" multiple="true" />
-            <set_value name="$value" operation="add" exact="$Enhanced_SectorStrategicValue.$gates.{[$gates.count,4].min}" />
+            <set_value name="$value" operation="add" exact="$Enhanced_SectorStrategicWeights.$gates.{[$gates.count,4].min}" />
             <set_value name="$Enhanced_Sectors.{$sector}.$Values.$strategic" exact="$value" />
             <debug_text text="'Get_Strategic_Value: '+$value" chance="$DebugChance" />
             <set_value name="$total_desired_defense_threatscore" operation="add" exact="$value" />
@@ -265,106 +405,23 @@
             <set_value name="$total_desired_defense_threatscore" operation="add" exact="$value" />
           </actions>
         </library>
-        <!-- end Calculate_Sector_Value Libraries -->
-        <!-- end Process_Sectors Libraries -->
-        <library name="Process_Stations">
-          <!-- 
-            $Enhanced_Sectors = table[
-              {$sector} = table[
-                $NumProductionModules = table[
-                  {$moduletype} = int
-                ]
-                $NumBuildModules = table[
-                  {$moduletype} = int
-                ] 
-              ]
-            ]
-            
+        <!-- end Update_Sector Libraries -->
+        <library name="Update_Station">
+          <!--             
             $Enhanced_Stations = table[
               {$station} = table[
-                $isPlanetaryTradestation = bool
-                $Demands = table[
-                  {$resource} = int (per hour)
-                ]
-                $Products = table[
-                  {$product} = int (per hour)
-                ]
+                $workforceBonus = float (dynamic)
               ] 
             ]
           -->
           <actions>
+            <set_value name="$Enhanced_Stations.{$station}.$workforceBonus" exact="$station.workforce.bonus" />
           </actions>
         </library>
-        <!-- end Process_Stations Libraries -->
-        <library name="Process_Ships">
-          <!-- 
-            $Enhanced_Ships = table[
-              $Mining = table[
-                {$ware} = int
-              ],
-              $Transporting = table[
-                {$ware} = int
-              ]
-            ] -->
-          <actions>
-            <!-- transports -->
-            <set_value name="$purpose" exact="purpose.trade" />
-            <find_ship_by_true_owner name="$Ships" faction="$Faction" space="player.galaxy" multiple="true" primarypurpose="$purpose" />
-            <do_for_each name="$ship" in="$Ships">
-              <include_actions ref="Process_Ship" />
-            </do_for_each>
-            <!-- miners -->
-            <set_value name="$purpose" exact="purpose.mine" />
-            <find_ship_by_true_owner name="$Ships" faction="$Faction" space="player.galaxy" multiple="true" primarypurpose="$purpose" />
-            <do_for_each name="$ship" in="$Ships">
-              <include_actions ref="Process_Ship" />
-            </do_for_each>
-          </actions>
-        </library>
-        <library name="Process_Ship">
-          <!-- 
-            requires $ship and $purpose
-            optional: $remove
-          -->
-          <actions>
-            <set_value name="$class" exact="$ship.class" />
-            <do_if value="$class == class.size_m">
-              <set_value name="$value" exact="1" />
-            </do_if>
-            <do_elseif value="$class == class.size_l">
-              <set_value name="$value" exact="3" />
-            </do_elseif>
-            <do_elseif value="$class == class.size_xl">
-              <set_value name="$value" exact="5" />
-            </do_elseif>
-            <do_if value="@$remove">
-              <do_if value="$purpose == purpose.trade">
-                <do_for_each name="$ware" in="$ship.warebasket">
-                  <set_value name="$Enhanced_Ships.$Transporting.{$ware}" operation="subtract" exact="$value" />
-                </do_for_each>
-              </do_if>
-              <do_elseif value="$purpose == purpose.mine">
-                <do_for_each name="$ware" in="$ship.warebasket">
-                  <set_value name="$Enhanced_Ships.$Mining.{$ware}" operation="subtract" exact="$value" />
-                </do_for_each>
-              </do_elseif>
-            </do_if>
-            <do_else>
-              <do_if value="$purpose == purpose.trade">
-                <do_for_each name="$ware" in="$ship.warebasket">
-                  <set_value name="$Enhanced_Ships.$Transporting.{$ware}" operation="add" exact="$value" />
-                </do_for_each>
-              </do_if>
-              <do_elseif value="$purpose == purpose.mine">
-                <do_for_each name="$ware" in="$ship.warebasket">
-                  <set_value name="$Enhanced_Ships.$Mining.{$ware}" operation="add" exact="$value" />
-                </do_for_each>
-              </do_elseif>
-            </do_else>
-          </actions>
-        </library>
-        <!-- end Process_Ships Libraries -->
-        <!-- end Process_Objects Libraries -->
+        <!-- end Update_Objects Libraries -->
+
+
+        <!-- end Process_Ship Libraries -->
         <library name="Calculate_Raw_Economy_Score">
           <!-- def Calculate_Raw_Economy_Score(self):
           # Average score of all resources, aligning with the economy score concept
