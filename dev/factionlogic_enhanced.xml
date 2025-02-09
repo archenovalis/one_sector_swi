@@ -24,6 +24,8 @@
           $demand = int (faction-wide productionmodule demand, not secondary)
           $secondaryDemand = int (faction-wide productionmodule secondary demand)
           $saturation = float ($on_hand / $demand)
+          $efficiencyRatio = float (transport/mining efficiency ratio, demand/totalDemand or typeAvailability/totalAvailability)
+          * $efficiency = float (enhanced_ships.{$resource} * $efficiencyRatio)
         ]
       ]
 
@@ -110,7 +112,7 @@
         <raise_lua_event name="'oneSector.assessProductionDemandOutput'" />
       </actions>
       <cues>
-
+        <!-- Set Static Values -->
         <library name="Process_Objects">
           <actions>
             <!-- sectors -->
@@ -144,10 +146,10 @@
           </actions>
         </library>
         <library name="Process_Sector" purpose="run_actions"> <!-- requires $Faction and $sector -->
-
           <params>
             <param name="Faction" />
             <param name="sector" />
+            <param name="remove" default="false" />
           </params>
           <actions>
             <set_value name="$Manager" exact="global.$FactionManagers.{$Faction}" />
@@ -156,7 +158,7 @@
             <set_value name="$Enhanced_SectorStrategicWeights" exact="$Manager.$Enhanced_SectorStrategicWeights" />
             <set_value name="$Enhanced_PrimeSectors" exact="$Manager.$Enhanced_PrimeSectors" />
             <set_value name="$Enhanced_valuePerSectorThreatscore" exact="$Manager.$Enhanced_valuePerSectorThreatscore" />
-
+            <!-- enhanced todo: remove sector -->
             <do_if value="no @$Enhanced_Sectors.{$sector}.exists">
               <set_value name="$Enhanced_Sectors.{$sector}" exact="table[
                   $Values = table[],
@@ -167,11 +169,12 @@
             </do_if>
             <set_value name="$SectorData" exact="$Enhanced_Sectors.{$sector}" />
             <set_value name="$SectorData.$desiredThreatscore" exact="0" />
-            <include_actions ref="Set_Resource_Value" />
+            <include_actions ref="Process_Resource_Value" />
+            <include_actions ref="Process_Mining_EfficiencyRatio" />
             <include_actions ref="Update_Sector" />
           </actions>
         </library>
-        <library name="Set_Resource_Value">
+        <library name="Process_Resource_Value">
           <!-- applicable variables
           $Enhanced_Sectors = table[
             {$sector} = table[
@@ -195,12 +198,14 @@
           ]
           $Enhanced_Resources = table[
             {$resource} = table[
-              * $available = largeint (faction-wide availability) (static)
-              $production = int (faction-wide productionmodule products) (static)
-              $on_hand = int (faction-wide resources stored in stations) (dynamic)
-              $demand = int (faction-wide productionmodule demand, not secondary) (static)
-              $secondaryDemand = int (faction-wide productionmodule secondary demand) (static)
-              $saturation = float ($on_hand / $demand) (dynamic)
+              $available = largeint (faction-wide availability)
+              $production = int (faction-wide productionmodule products)
+              $on_hand = int (faction-wide resources stored in stations)
+              $demand = int (faction-wide productionmodule demand, not secondary)
+              $secondaryDemand = int (faction-wide productionmodule secondary demand)
+              $saturation = float ($on_hand / $demand)
+              $efficiencyRatio = float (transport/mining efficiency ratio, demand/totalDemand or typeAvailability/totalAvailability)
+              $efficiency = float (enhanced_ships.{$resource} * $efficiencyRatio)
             ]
           ]
 
@@ -231,6 +236,24 @@
             <debug_text text="'Get_Resource_Value: '+$value" chance="$DebugChance" />
           </actions>
         </library>
+        <library name="Process_Mining_EfficiencyRatio">
+          <actions>
+            <!-- get minable resource efficiency ratios (static) -->
+            <get_ware_definition result="$gas" group="gasses" />
+            <get_ware_definition result="$solid" tags="[tag.solid, tag.minable]" />
+            <do_for_each name="$list" in="[$gas, $solid]">
+              <do_for_each name="$resource" in="$list">
+                <do_if value="not $Enhanced_Resources.{$resource}.exists">
+                  <set_value name="$Enhanced_Resources.{$resource}" exact="table[$available=0]" />
+                </do_if>
+                <set_value name="$resourceSum" operation="add" exact="$Enhanced_Resources.{$resource}.$available" />
+              </do_for_each>
+              <do_for_each name="$resource" in="$list">
+                <set_value name="$Enhanced_Resources.{$resource}.$efficiencyRatio" exact="$Enhanced_Resources.{$resource}.$available / $resourceSum" />
+              </do_for_each>
+            </do_for_each>
+          </actions>
+        </library>
         <!-- end Process_Sector -->
         <library name="Process_Ship" purpose="run_actions"> <!-- requires: $Faction and $ship | optional: $remove -->
           <params>
@@ -238,15 +261,15 @@
             <param name="ship" />
             <param name="remove" default="false" />
           </params>
-          <!-- 
-        $Enhanced_Ships = table[
-          $Mining = table[
-            {$ware} = int
-          ],
-          $Transporting = table[
-            {$ware} = int
-          ]
-        ] -->
+          <!-- relevant variables
+          $Enhanced_Ships = table[
+            $Mining = table[
+              {$ware} = int
+            ],
+            $Transporting = table[
+              {$ware} = int
+            ]
+          ] -->
           <actions>
             <set_value name="$Manager" exact="global.$FactionManagers.{$Faction}" />
             <set_value name="$Enhanced_Ships" exact="$Manager.$Enhanced_Ships" />
@@ -260,7 +283,7 @@
             <do_elseif value="$class == class.size_xl">
               <set_value name="$value" exact="5" />
             </do_elseif>
-            <do_if value="@$remove">
+            <do_if value="$remove">
               <set_value name="$value" exact="-$value" />
             </do_if>
             <do_if value="$ship.primarypurpose == purpose.trade">
@@ -273,13 +296,56 @@
                 <set_value name="$Enhanced_Ships.$Mining.{$ware}" operation="add" exact="$value" />
               </do_for_each>
             </do_elseif>
+            <include_actions ref="Process_Efficiencies" />
           </actions>
         </library>
-        <library name="Process_Station" purpose="run_actions"> <!-- enhanced todo: -->
+        <library name="Process_Efficiencies">
+          <!-- relevant variables
+            $Enhanced_Resources = table[
+              {$resource} = table[
+                $available = largeint (faction-wide availability)
+                $production = int (faction-wide productionmodule products)
+                $on_hand = int (faction-wide resources stored in stations)
+                $demand = int (faction-wide productionmodule demand, not secondary)
+                $secondaryDemand = int (faction-wide productionmodule secondary demand)
+                $saturation = float ($on_hand / $demand)
+                * $efficiencyRatio = float (transport/mining efficiency ratio, demand/totalDemand or typeAvailability/totalAvailability)
+                * $efficiency = float (enhanced_ships.{$resource} * $efficiencyRatio)
+              ]
+            ]
+
+            $Enhanced_Ships = table[
+              $Mining = table[
+                {$resource} = int (number of ships that mine this resource) (static)
+              ],
+              $Transporting = table[
+                {$resource} = int (number of ships that can carry this resource) (static)
+              ]
+            ]
+          -->
+          <actions>
+            <set_value name="$Enhanced_Resources" exact="$Manager.$Enhanced_Resources" />
+            <do_for_each name="$resource" in="$Enhanced_Resources">
+              <!-- mining efficiency -->
+              <do_if value="$ship.primarypurpose == purpose.mine">
+                <set_value name="$Enhanced_Resources.{$resource}.$efficiency"
+                  exact="$Enhanced_Ships.$Mining.{$resource} * $Enhanced_Resources.{$resource}.$efficiencyRatio" />
+              </do_if>
+              <!-- transportation efficiency -->
+              <do_elseif value="$ship.primarypurpose == purpose.trade">
+                <set_value name="$Enhanced_Resources.{$resource}.$efficiency"
+                  exact="$Enhanced_Ships.$Transporting.{$resource} * $Enhanced_Resources.{$resource}.$efficiencyRatio" />
+              </do_elseif>
+            </do_for_each>
+          </actions>
+        </library>
+        <!-- end Process_Ship -->
+        <library name="Process_Station" purpose="run_actions"> <!-- requires: $Faction and $station | optional: $remove or $module -->
           <params>
             <param name="Faction" />
             <param name="station" />
             <param name="remove" default="false" />
+            <param name="module" default="null" comment="process station's new module" />
           </params>
           <!-- applicable variables
           $Enhanced_Sectors = table[
@@ -338,6 +404,8 @@
               * $demand = int (faction-wide productionmodule demand, not secondary)
               * $secondaryDemand = int (faction-wide productionmodule secondary demand)
               $saturation = float ($on_hand / $demand)
+              $efficiencyRatio = float (transport/mining efficiency ratio, demand/totalDemand or typeAvailability/totalAvailability)
+              $efficiency = float (enhanced_ships.{$resource} * $efficiencyRatio)
             ]
           ]
           -->
@@ -346,6 +414,7 @@
             <set_value name="$Enhanced_Stations" exact="$Manager.$Enhanced_Stations" />
             <set_value name="$Enhanced_Resources" exact="$Manager.$Enhanced_Resources" />
             <set_value name="$SectorData" exact="$Manager.$Enhanced_Sectors.{$station.sector}" />
+            <set_value name="$ProdValues" exact="global.$EnhancedLogic.$ProductionDemandOutput" />
             <!-- add station to stations table -->
             <do_if value="not $Enhanced_Stations.{$station}.exists">
               <set_value name="$Enhanced_Stations.{$station}" exact="table[
@@ -356,61 +425,135 @@
               ]" />
             </do_if>
             <set_value name="$StationData" exact="$Enhanced_Stations.{$station}" />
-            <set_value name="$ProdValues" exact="global.$EnhancedLogic.$ProductionDemandOutput" />
-            <do_if value="md.OneSector_PlanetaryAid.Init.exists and md.OneSector_PlanetaryAid.Init.$PlanetaryTradestation.indexof.{$station}">
-              <set_value name="$StationData.$isPlanetaryTradestation" exact="true" />
+            <!-- process new module -->
+            <do_if value="@$module">
+              <set_value name="$macro" exact="$module.macro" />
+              <do_if value="$module.class.production">
+                <set_value name="$ModuleData" exact="$ProdValues.{$macro}" />
+                <!-- add module to sector -->
+                <set_value name="$SectorData.$NumProductionModules.{$macro}" operation="add" exact="1" />
+                <!-- add demands and products to station and faction -->
+                <do_for_each name="$demand" in="$ModuleData.$Demands">
+                  <set_value name="$StationData.$Demands.{$demand}" operation="add" exact="$ModuleData.$Demands.{$demand}" />
+                  <do_if value="not $Enhanced_Resources.{$demand}.exists">
+                    <set_value name="$Enhanced_Resources.{$demand}" exact="table[]" />
+                  </do_if>
+                  <set_value name="$Enhanced_Resources.{$demand}.$demand" operation="add" exact="$ModuleData.$Demands.{$demand}" />
+                </do_for_each>
+                <do_for_each name="$product" in="$ModuleData.$Products">
+                  <set_value name="$StationData.$Products.{$product}" operation="add" exact="$ModuleData.$Products.{$product}" />
+                  <do_if value="not $Enhanced_Resources.{$product}.exists">
+                    <set_value name="$Enhanced_Resources.{$product}" exact="table[]" />
+                  </do_if>
+                  <set_value name="$Enhanced_Resources.{$product}.$production" operation="add" exact="$ModuleData.$Products.{$product}" />
+                </do_for_each>
+                <do_for_each name="$secondary" in="$ModuleData.$Secondary">
+                  <set_value name="$StationData.$Secondary.{$secondary}" operation="add" exact="$ModuleData.$Secondary.{$secondary}" />
+                  <do_if value="not $Enhanced_Resources.{$secondary}.exists">
+                    <set_value name="$Enhanced_Resources.{$secondary}" exact="table[]" />
+                  </do_if>
+                  <set_value name="$Enhanced_Resources.{$secondary}.$secondaryDemand" operation="add" exact="$ModuleData.$Secondary.{$secondary}" />
+                </do_for_each>
+              </do_if>
+              <do_elseif value="$module.class.buildmodule">
+                <!-- add module to sector -->
+                <set_value name="$SectorData.$NumBuildModules.{$macro}" operation="add" exact="1" />
+              </do_elseif>
             </do_if>
-            <!-- production modules -->
-            <do_for_each name="$production" in="$station.productions">
-              <do_if value="not $SectorData.$NumProductionModules.exists">
-                <set_value name="$SectorData.$NumProductionModules" exact="table[]" />
+            <!-- process entire station -->
+            <do_else>
+              <do_if value="md.OneSector_PlanetaryAid.Init.exists and md.OneSector_PlanetaryAid.Init.$PlanetaryTradestation.indexof.{$station}">
+                <set_value name="$StationData.$isPlanetaryTradestation" exact="true" />
               </do_if>
-              <set_value name="$macro" exact="$production.macro" />
-              <set_value name="$ModuleData" exact="$ProdValues.{$macro}" />
-              <!-- add module to sector -->
-              <set_value name="$SectorData.$NumProductionModules.{$macro}" operation="add" exact="1" />
-              <!-- add demands and products to station and faction -->
-              <do_for_each name="$demand" in="$ModuleData.$Demands">
-                <set_value name="$StationData.$Demands.{$demand}" operation="add" exact="$ModuleData.$Demands.{$demand}" />
-                <do_if value="not $Enhanced_Resources.{$demand}.exists">
-                  <set_value name="$Enhanced_Resources.{$demand}" exact="table[]" />
-                </do_if>
-                <set_value name="$Enhanced_Resources.{$demand}.$demand" operation="add" exact="$ModuleData.$Demands.{$demand}" />
-              </do_for_each>
-              <do_for_each name="$product" in="$ModuleData.$Products">
-                <set_value name="$StationData.$Products.{$product}" operation="add" exact="$ModuleData.$Products.{$product}" />
-                <do_if value="not $Enhanced_Resources.{$product}.exists">
-                  <set_value name="$Enhanced_Resources.{$product}" exact="table[]" />
-                </do_if>
-                <set_value name="$Enhanced_Resources.{$product}.$production" operation="add" exact="$ModuleData.$Products.{$product}" />
-              </do_for_each>
-              <do_for_each name="$secondary" in="$ModuleData.$Secondary">
-                <set_value name="$StationData.$Secondary.{$secondary}" operation="add" exact="$ModuleData.$Secondary.{$secondary}" />
-                <do_if value="not $Enhanced_Resources.{$secondary}.exists">
-                  <set_value name="$Enhanced_Resources.{$secondary}" exact="table[]" />
-                </do_if>
-                <set_value name="$Enhanced_Resources.{$secondary}.$secondaryDemand" operation="add" exact="$ModuleData.$Secondary.{$secondary}" />
-              </do_for_each>
-            </do_for_each>
-            <!-- build modules -->
-            <do_for_each name="$buildModule" in="$station.buildmodules">
-              <do_if value="not $SectorData.$NumBuildModules.exists">
-                <set_value name="$SectorData.$NumBuildModules" exact="table[]" />
+              <do_if value="$remove">
+                <set_value name="$removal" exact="-1" />
               </do_if>
-              <set_value name="$macro" exact="$buildModule.macro" />
-              <!-- add module to sector -->
-              <set_value name="$SectorData.$NumBuildModules.{$macro}" operation="add" exact="1" />
-            </do_for_each>
-            <!-- get dynamic values (workforceBonus, resources/products stored) -->
-            <include_actions ref="Update_Station" />
+              <do_else>
+                <set_value name="$removal" exact="1" />
+              </do_else>
+              <!-- production modules -->
+              <do_for_each name="$production" in="$station.productions">
+                <do_if value="not $SectorData.$NumProductionModules.exists">
+                  <set_value name="$SectorData.$NumProductionModules" exact="table[]" />
+                </do_if>
+                <set_value name="$macro" exact="$production.macro" />
+                <set_value name="$ModuleData" exact="$ProdValues.{$macro}" />
+                <!-- add module to sector -->
+                <set_value name="$SectorData.$NumProductionModules.{$macro}" operation="add" exact="1 * $removal" />
+                <!-- add demands and products to station and faction -->
+                <do_for_each name="$demand" in="$ModuleData.$Demands">
+                  <set_value name="$StationData.$Demands.{$demand}" operation="add" exact="$ModuleData.$Demands.{$demand} * $removal" />
+                  <do_if value="not $Enhanced_Resources.{$demand}.exists">
+                    <set_value name="$Enhanced_Resources.{$demand}" exact="table[]" />
+                  </do_if>
+                  <set_value name="$Enhanced_Resources.{$demand}.$demand" operation="add" exact="$ModuleData.$Demands.{$demand} * $removal" />
+                </do_for_each>
+                <do_for_each name="$product" in="$ModuleData.$Products">
+                  <set_value name="$StationData.$Products.{$product}" operation="add" exact="$ModuleData.$Products.{$product} * $removal" />
+                  <do_if value="not $Enhanced_Resources.{$product}.exists">
+                    <set_value name="$Enhanced_Resources.{$product}" exact="table[]" />
+                  </do_if>
+                  <set_value name="$Enhanced_Resources.{$product}.$production" operation="add" exact="$ModuleData.$Products.{$product} * $removal" />
+                </do_for_each>
+                <do_for_each name="$secondary" in="$ModuleData.$Secondary">
+                  <set_value name="$StationData.$Secondary.{$secondary}" operation="add" exact="$ModuleData.$Secondary.{$secondary} * $removal" />
+                  <do_if value="not $Enhanced_Resources.{$secondary}.exists">
+                    <set_value name="$Enhanced_Resources.{$secondary}" exact="table[]" />
+                  </do_if>
+                  <set_value name="$Enhanced_Resources.{$secondary}.$secondaryDemand" operation="add" exact="$ModuleData.$Secondary.{$secondary} * $removal" />
+                </do_for_each>
+              </do_for_each>
+              <!-- build modules -->
+              <do_for_each name="$buildModule" in="$station.buildmodules">
+                <do_if value="not $SectorData.$NumBuildModules.exists">
+                  <set_value name="$SectorData.$NumBuildModules" exact="table[]" />
+                </do_if>
+                <set_value name="$macro" exact="$buildModule.macro" />
+                <!-- add module to sector -->
+                <set_value name="$SectorData.$NumBuildModules.{$macro}" operation="add" exact="1 * $removal" />
+              </do_for_each>
+              <!-- get dynamic values (workforceBonus, resources/products in station cargo) -->
+              <do_if value="$remove">
+                <remove_value name="$Enhanced_Stations.{$station}" />
+              </do_if>
+              <do_else>
+                <include_actions ref="Update_Station" />
+              </do_else>
+            </do_else>
+            <include_actions ref="Process_Transportation_EfficiencyRatio" />
           </actions>
         </library>
+        <library name="Process_Transportation_EfficiencyRatio">
+          <actions>
+            <!-- get demand ratio for transportation
+              run when demand changes
+
+              transport and mining efficiency are also static because they only need to be calculated when a ship is built/destroyed
+            
+            transportationEfficiencyRatio
+
+            - calculate transportation efficiency -
+            - consider demand, volume -
+            -->
+            <get_ware_definition result="$products" tags="[tag.container, tag.economy]" />
+            <do_for_each name="$resource" in="$products">
+              <do_if value="not $Enhanced_Resources.{$resource}.exists">
+                <set_value name="$Enhanced_Resources.{$resource}" exact="table[$demand=0]" />
+              </do_if>
+              <set_value name="$sum" operation="add" exact="$Enhanced_Resources.{$resource}.$demand" />
+            </do_for_each>
+            <do_for_each name="$resource" in="$products">
+              <set_value name="$Enhanced_Resources.{$resource}.$efficiencyRatio" exact="$Enhanced_Resources.{$resource}.$demand / $sum" />
+            </do_for_each>
+          </actions>
+        </library>
+        <!-- end Process_Station -->
         <!-- end Process_Objects -->
 
         <library name="Run_Scoring_and_State_Check">
           <actions>
             <do_if value="$Enhanced_runInit">
-              <!-- process every -->
+              <!-- process everything on first run -->
               <include_actions ref="Process_Objects" />
               <set_value name="$Enhanced_runInit" exact="false" />
             </do_if>
@@ -544,7 +687,7 @@
             <set_value name="$total_desired_defense_threatscore" operation="add" exact="$value" />
           </actions>
         </library>
-        <library name="Get_Economic_Value">
+        <library name="Get_Economic_Value"> <!-- enhanced todo: since static, move to process station? -->
           <!-- economic_value = sum(station.price * 2 if station.iswharf or station.isshipyard else station.price for station in sector.stations) -->
           <actions>
             <set_value name="$value" exact="0" />
@@ -586,6 +729,8 @@
                 $demand = int (faction-wide productionmodule demand, not secondary)
                 $secondaryDemand = int (faction-wide productionmodule secondary demand)
                 $saturation = float ($on_hand / $demand)
+                $efficiencyRatio = float (transport/mining efficiency ratio, demand/totalDemand or typeAvailability/totalAvailability)
+                $efficiency = float (enhanced_ships.{$resource} * $efficiencyRatio)
               ]
             ]
           -->
@@ -607,14 +752,17 @@
           return sum(self.Calculate_Resource_Score(resource) for resource in self.resources.values()) / len(self.resources) if self.resources else 0 -->
           <actions>
             <!-- calculate resource scores-->
+            <set_value name="$resourceScore" exact="0" />
             <include_actions ref="Calculate_Resource_Score" />
             <!-- calculate production scores -->
-            <include_actions ref="Calculate_Production_Score" /> <!-- enhanced todo: design -->
+            <!-- enhanced todo: design 
+            <include_actions ref="Calculate_Production_Score" /> -->
           </actions>
         </library>
         <library name="Calculate_Resource_Score">
           <actions>
             <!-- notes: 
+                calculate current saturation
                 average of all saturation scores * weight
                 average of all mining efficiency * weight
                 average of all transport efficiency * weight
@@ -623,72 +771,39 @@
             $Enhanced_Resources = table[
               {$resource} = table[
                 $available = largeint (faction-wide availability)
-                $production = int (faction-wide productionmodule products)
-                $on_hand = int (faction-wide resources stored in stations)
-                $demand = int (faction-wide productionmodule demand, not secondary)
+                * $production = int (faction-wide productionmodule products)
+                * $on_hand = int (faction-wide resources stored in stations)
+                * $demand = int (faction-wide productionmodule demand, not secondary)
                 $secondaryDemand = int (faction-wide productionmodule secondary demand)
-                $saturation = float ($on_hand / $demand)
-                $miningEfficiencyRatio = float
-                $miningEfficiency = float
-              ]
-            ]
-
-            $Enhanced_Ships = table[
-              $Mining = table[
-                {$resource} = int (number of ships that mine this resource) (static)
-              ],
-              $Transporting = table[
-                {$resource} = int (number of ships that can carry this resource) (static)
+                * $saturation = float ($on_hand / $demand)
+                $efficiencyRatio = float (transport/mining efficiency ratio, demand/totalDemand or typeAvailability/totalAvailability)
+                * $efficiency = float (enhanced_ships.{$resource} * $efficiencyRatio)
               ]
             ]
             -->
-
-            <!-- 
-            enhanced todo: move to process library
-            get resource ratios (static)
-
-            <get_ware_definition result="$gas" group="gasses" />
-            <get_ware_definition result="$solid" tags="[tag.solid, tag.minable]" />
-            <do_for_each name="$list" in="[$gas, $solid]">
-              <do_for_each name="$resource" in="$list">
-                <set_value name="$resourceSum" operation="add" exact="$Enhanced_Resources.{$resource}.$available" />
-              </do_for_each>
-              <do_for_each name="$resource" in="$list">
-                <set_value name="$Enhanced_Resources.{$resource}.$miningEfficiencyRatio" exact="$Enhanced_Resources.{$resource}.$available / $resourceSum" />
-              </do_for_each>
-            </do_for_each>
-
-            - get demand ratio for transportation
-              static? runs only when ships are build / destroyed?
-              transport and mining efficiency are also static because they only need to be calculated when a ship is built/destroyed
-            
-            - calculate mining efficiency -
-            <set_value name="$Enhanced_Resources.{$resource}.$miningEfficiency"
-              exact="$Enhanced_Ships.$Mining.{$resource} * $Enhanced_Resources.{$resource}.$miningEfficiencyRatio" />
-
-            - calculate transportation efficiency -
-            - consider demand, volume -
-            <get_ware_definition result="$products" tags="[tag.container, tag.economy]" />
-            -->
-
-
+            <!-- calculate current saturation -->
             <get_ware_definition result="$minables" tags="[tag.minable]" />
-
-            <!-- calculate saturation -->
             <do_for_each name="$resource" in="$Enhanced_Resources">
-              <!-- products -->
               <do_if value="not $minables.indexof.{$resource}">
-                <set_value name="$Enhanced_Resources.{$resource}.$saturation"
-                  exact="[$Enhanced_Resources.{$resource}.$on_hand / [$Enhanced_Resources.{$resource}.$demand - $Enhanced_Resources.{$resource}.$production, 1].max, 1].min" />
-              </do_if>
-              <!-- minables  -->
-              <do_else>
+                <!-- products saturation -->
                 <set_value name="$Enhanced_Resources.{$resource}.$saturation"
                   exact="[$Enhanced_Resources.{$resource}.$on_hand / 
-                    ([$Enhanced_Resources.{$resource}.$demand - ($Enhanced_Resources.{$resource}.$miningEfficiency * $Enhanced_ResourceWeights.$extraction_rate / $resource.volume), 1].max)
+                    [$Enhanced_Resources.{$resource}.$demand - ($Enhanced_Resources.{$resource}.$efficiency * $Enhanced_Resources.{$resource}.$production / $resource.volume), 1].max
+                    , 1].min" />
+              </do_if>
+              <do_else>
+                <!-- minables saturation  -->
+                <set_value name="$Enhanced_Resources.{$resource}.$saturation"
+                  exact="[$Enhanced_Resources.{$resource}.$on_hand / 
+                    [$Enhanced_Resources.{$resource}.$demand - ($Enhanced_Resources.{$resource}.$efficiency * $Enhanced_ResourceWeights.$extraction_rate / $resource.volume), 1].max
                     , 1].min" />
               </do_else>
+              <set_value name="$sum" operation="add" exact="$Enhanced_Resources.{$resource}.$saturation" />
             </do_for_each>
+            <!--
+                average of all saturation * weight
+            -->
+            <set_value name="$resourceScore" exact="$sum / $Enhanced_Resources.count" />
           </actions>
         </library>
         <!-- end Calculate_Raw_Economy_Score -->
