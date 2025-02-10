@@ -75,7 +75,7 @@ class FactionManager:
             'primary': 400,  # Additional value for sectors with shipyards or wharfs
             'gates': [50, 100, 300, 600]
         }
-        self.valuePerSectorThreatscorePerSector = 100
+        self.sectorValuePerThreatscorePerSector = 100
 
     def update(self):
         # Updates all scores and checks for state changes
@@ -141,7 +141,7 @@ class FactionManager:
         self.pirate_activity = (self.pirate_activity + pirate_activity) / 2 if self.pirate_activity > 0 else pirate_activity
         
         total_value = resource_value + strategic_value + economic_value + pirate_activity
-        return total_value / self.valuePerSectorThreatscorePerSector
+        return total_value / self.sectorValuePerThreatscorePerSector
 
     def get_resource_value(self, resources):
         # Calculates resource value based on available resources
