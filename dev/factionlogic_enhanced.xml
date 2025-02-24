@@ -2,7 +2,18 @@
 <mdscript name="FactionLogic_Enhanced" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../xsd/md.xsd">
   <cues>
     <!-- Manager Variables
-      global.$EnhancedLogic.$NeutralZones = group[sector] (ownerless sectors adjacent to owned sectors)
+      $Enhanced_State = table[
+        $state = 'CONSOLIDATE',
+        $atWar = false
+      ]
+      $Enhanced_StateWeights = table[
+        $EXPANSION = table[    $economy = 0,    $military = 0,    $industry = 0.2  ],
+        $CONSOLIDATE = table[  $economy = 0.2,  $military = 0,    $industry = 0    ],
+        $DEFENSE = table[      $economy = 0,    $military = 0.2,  $industry = 0    ],
+        $WAR = table[          $economy = 0,    $military = 0.2,  $industry = 0    ] (modifies other three states when at war)
+      ]
+
+      enhanced todo: global.$EnhancedLogic.$NeutralZones = group[sector] (ownerless sectors adjacent to owned sectors)
       
       $Enhanced_State = string ('EXPANSION', 'CONSOLIDATE', 'DEFENSE', 'WAR_INVADE', 'WAR_DEFENSE', 'WAR_CONSOLIDATE')
       $Enhanced_PreviousState = string ('EXPANSION', 'CONSOLIDATE', 'DEFENSE', 'WAR_INVADE', 'WAR_DEFENSE', 'WAR_CONSOLIDATE')
@@ -156,7 +167,7 @@
       </actions>
       <cues>
         <!-- Set Static Values -->
-        <library name="Process_Objects">
+        <library name="Init_Process_Objects">
           <actions>
             <!-- sectors -->
             <find_sector name="$Sectors" trueowner="$Faction" multiple="true" />
@@ -188,6 +199,8 @@
             </do_for_each>
           </actions>
         </library>
+
+        <!-- begin Process_Sector -->
         <library name="Process_Sector" purpose="run_actions"> <!-- requires: $Faction and $sector-->
           <params>
             <param name="Faction" />
@@ -279,8 +292,10 @@
         </library>
         <library name="Process_Mining_EfficiencyRatio">
           <actions>
-            <!-- get minable resource efficiency ratios (static) -->
-            <get_ware_definition result="$gas" group="gasses" />
+            <!-- update empire minable resource efficiency ratios (static)
+              solid and gas are compared separately
+            -->
+            <get_ware_definition result="$gas" group="'gasses'" />
             <get_ware_definition result="$solid" tags="[tag.solid, tag.minable]" />
             <do_for_each name="$list" in="[$gas, $solid]">
               <do_for_each name="$resource" in="$list">
@@ -296,6 +311,8 @@
           </actions>
         </library>
         <!-- end Process_Sector -->
+
+        <!-- begin Process_Ship-->
         <library name="Process_Ship" purpose="run_actions"> <!-- requires: $Faction and $ship | optional: $remove -->
           <params>
             <param name="Faction" />
@@ -384,21 +401,56 @@
           -->
           <actions>
             <set_value name="$Enhanced_Resources" exact="$Manager.$Enhanced_Resources" />
-            <do_for_each name="$resource" in="$Enhanced_Resources">
-              <!-- mining efficiency -->
-              <do_if value="$ship.primarypurpose == purpose.mine">
-                <set_value name="$Enhanced_Resources.{$resource}.$efficiency"
-                  exact="$Enhanced_Ships.$Mining.{$resource} * $Enhanced_Resources.{$resource}.$efficiencyRatio" />
+            <set_value name="$Enhanced_Ships" exact="$Manager.$Enhanced_Ships" />
+            <set_value name="$Enhanced_BuildPriority" exact="$Manager.$Enhanced_BuildPriority" />
+            <!-- mining efficiency -->
+            <do_if value="$ship.primarypurpose == purpose.mine">
+              <do_if value="$ship.cargo.capacity.solid gt 0">
+                <get_ware_definition result="$solid" tags="[tag.solid, tag.minable]" />
+                <do_for_each name="$resource" in="$solid">
+                  <set_value name="$Enhanced_Resources.{$resource}.$efficiency" exact="$Enhanced_Ships.$Mining.{$resource} * $Enhanced_Resources.{$resource}.$efficiencyRatio" />
+                  <set_value name="$maxDemandVolume" exact="[@$maxDemandVolume, $Enhanced_Resources.{$resource}.$demand * $resource.volume].max" />
+                </do_for_each>
+                <do_for_each name="$resource" in="$solid">
+                  <set_value name="$score" exact="[1, $Enhanced_Resources.{$resource}.$efficiency].min * $Enhanced_Resources.{$resource}.$demand / $maxDemandVolume" />
+                  <set_value name="$Enhanced_BuildPriority.$Mine.$Solid.{$resource}" exact="$score" />
+                  <set_value name="$resourceSum" operation="add" exact="$score" />
+                </do_for_each>
+                <set_value name="$Enhanced_BuildPriority.$Mine.$Solid.$score" exact="$resourceSum / $solid.count" />
               </do_if>
-              <!-- transportation efficiency -->
-              <do_elseif value="$ship.primarypurpose == purpose.trade">
-                <set_value name="$Enhanced_Resources.{$resource}.$efficiency"
-                  exact="$Enhanced_Ships.$Transporting.{$resource} * $Enhanced_Resources.{$resource}.$efficiencyRatio" />
-              </do_elseif>
-            </do_for_each>
+              <do_else>
+                <get_ware_definition result="$gas" group="'gasses'" />
+                <do_for_each name="$resource" in="$gas">
+                  <set_value name="$Enhanced_Resources.{$resource}.$efficiency" exact="$Enhanced_Ships.$Mining.{$resource} * $Enhanced_Resources.{$resource}.$efficiencyRatio" />
+                  <set_value name="$maxDemandVolume" exact="[@$maxDemandVolume, $Enhanced_Resources.{$resource}.$demand * $resource.volume].max" />
+                </do_for_each>
+                <do_for_each name="$resource" in="$gas">
+                  <set_value name="$score" exact="[1, $Enhanced_Resources.{$resource}.$efficiency].min * $Enhanced_Resources.{$resource}.$demand / $maxDemandVolume" />
+                  <set_value name="$Enhanced_BuildPriority.$Mine.$Gas.{$resource}" exact="$score" />
+                  <set_value name="$resourceSum" operation="add" exact="$score" />
+                </do_for_each>
+                <set_value name="$Enhanced_BuildPriority.$Mine.$Gas.$score" exact="$resourceSum / $gas.count" />
+              </do_else>
+              <set_value name="$Enhanced_BuildPriority.$Mine.$score" exact="[$Enhanced_BuildPriority.$Mine.$Gas.$score, $Enhanced_BuildPriority.$Mine.$Solid.$score].average" />
+            </do_if>
+            <!-- transportation efficiency -->
+            <do_elseif value="$ship.primarypurpose == purpose.trade">
+              <do_for_each name="$resource" in="$Enhanced_Ships.$Transporting">
+                <set_value name="$Enhanced_Resources.{$resource}.$efficiency" exact="$Enhanced_Ships.$Transporting.{$resource} * $Enhanced_Resources.{$resource}.$efficiencyRatio" />
+                <set_value name="$maxDemandVolume" exact="[@$maxDemandVolume, $Enhanced_Resources.{$resource}.$demand * $resource.volume].max" />
+              </do_for_each>
+              <do_for_each name="$resource" in="$Enhanced_Ships.$Transporting">
+                <set_value name="$score" exact="[1, $Enhanced_Resources.{$resource}.$efficiency].min * $Enhanced_Resources.{$resource}.$demand / $maxDemandVolume" />
+                <set_value name="$Enhanced_BuildPriority.$Trade.{$resource}" exact="$score" />
+                <set_value name="$resourceSum" operation="add" exact="$score" />
+              </do_for_each>
+              <set_value name="$Enhanced_BuildPriority.$Trade.$score" exact="$resourceSum / $Enhanced_Ships.$Transporting.count" />
+            </do_elseif>
           </actions>
         </library>
         <!-- end Process_Ship -->
+
+        <!-- begin Process_Station -->
         <library name="Process_Station" purpose="run_actions"> <!-- requires: $Faction and $station | optional: $remove or $module -->
           <params>
             <param name="Faction" />
@@ -649,35 +701,27 @@
           </actions>
         </library>
         <!-- end Process_Station -->
-        <!-- end Process_Objects -->
+
 
         <library name="Run_Scoring_and_State_Check">
           <actions>
+            <!-- clear variables -->
+            <set_value name="$Enhanced_IndustryBuildShortage" exact="table[]" />
+
             <do_if value="$Enhanced_runInit">
               <!-- process everything on first run -->
-              <include_actions ref="Process_Objects" />
+              <include_actions ref="Init_Process_Objects" />
               <set_value name="$Enhanced_runInit" exact="false" />
             </do_if>
-            <!-- raw_scores = self.Calculate_Raw_Scores() -->
             <include_actions ref="Calculate_Raw_Scores" />
-            <!-- emergencies = self.Check_Emergencies(raw_scores) -->
             <include_actions ref="Check_Emergencies" />
-            <!-- self.Check_State_Change(raw_scores) -->
-            <include_actions ref="Check_State_Change" />
-            <!-- self.weighted_scores = self.Apply_Weights(raw_scores, emergencies) -->
-            <include_actions ref="Apply_Weights" />
+            <!-- <include_actions ref="Check_State_Change" /> -->
             <include_actions ref="Set_Build_Order_Priority" />
           </actions>
         </library>
         <library name="Calculate_Raw_Scores">
-          <!-- def Calculate_Raw_Scores(self):
-            # Calculate total defense needed across all sectors
-            total_desired_defense_threatscore = sum(self.Calculate_Sector_Desired_Threatscore(sector) for sector in self.sectors)
-            
-            economy_score = self.Calculate_Raw_Economy_Score()
-            military_score = self.Calculate_Raw_Military_Score(total_desired_defense_threatscore)
-            industry_score = self.Calculate_Raw_Industry_Score()
-            return (economy_score, military_score, industry_score)
+          <!--
+          
           -->
           <actions>
             <include_actions ref="Update_Objects" />
@@ -694,7 +738,7 @@
               <include_actions ref="Update_Sector" />
             </do_for_each>
             <!-- stations -->
-            <find_station_by_true_owner name="$stations" faction="$Faction" space="player.galaxy" multiple="true">
+            <find_station_by_true_owner name="$stations" faction="$Faction" space="player.galaxy" checkoperational="false" multiple="true">
               <match state="componentstate.wreck" negate="true" />
             </find_station_by_true_owner>
             <do_for_each name="$station" in="$stations">
@@ -750,14 +794,7 @@
           </actions>
         </library>
         <library name="Get_Strategic_Value"> <!-- enhanced todo: move this to process sector? or split into border -->
-          <!-- def Get_Strategic_Value(self, sector):
-                  # Calculates strategic value based on sector type and infrastructure
-                  value = self.sector_strategicValue['core'] if not sector.isborder else self.sector_strategicValue['border']
-                  if sector.hasWharf or sector.hasShipyard:
-                      value += self.sector_strategicValue['primary']
-                  if sector.numGates > 0:
-                      value += self.sector_strategicValue['gates'][min(sector.numGates - 1, 3)]
-                  return value 
+          <!-- 
               -->
           <actions>
             <!-- enhanced todo: move to process sector -->
@@ -913,18 +950,13 @@
               <set_value name="$desiredThreatScore" operation="add" exact="$Enhanced_Sectors.{$sector}.$desiredThreatscore" />
             </do_for_each>
             <set_value name="$Enhanced_Scores.$rawMilitary" exact="$totalThreatScore / $desiredThreatScore" />
+            <set_value name="$Enhanced_BuildPriority.$Ships.$fight" exact="$Enhanced_Scores.$rawMilitary" />
           </actions>
         </library>
         <!-- end Calculate_Raw_Military_Score -->
         <library name="Calculate_Raw_Industry_Score">
           <!--
-              def Calculate_Raw_Industry_Score(self):
-                  # Adjusts for ship and station construction capabilities
-                  # fix thix
-                  ship_scores = [self.Calculate_Ship_Building_Score(ship_type) for ship_type in self.shipyards]
-                  station_score = self.Calculate_Station_Building_Score()
-                  return (sum(ship_scores) / len(ship_scores) if ship_scores else 0) * station_score if station_score else 0
-              -->
+          -->
           <actions>
             <!-- enhanced todo: sent to build ship
               build ship on planet, needs time to construct ship from ware, and spawn point between planet and planetary station spawn point
@@ -982,9 +1014,13 @@
           <!--
                   -->
           <actions>
-            <set_value name="$stationBuildScore" exact="[$Enhanced_Ships.$Construction / $Enhanced_IndustryBuildShortage.$station, 1].min" />
-            <set_value name="$Enhanced_BuildPriority.$Ships.$Construction" exact="$stationBuildScore" />
-            <set_value name="$Enhanced_BuildPriority.$Ships.$Construction" exact="$stationBuildScore" />
+            <do_if value="$Enhanced_IndustryBuildShortage.$station gt 0">
+              <set_value name="$stationBuildScore" exact="[$Enhanced_Ships.$Construction / $Enhanced_IndustryBuildShortage.$station, 1].min" />
+            </do_if>
+            <do_else>
+              <set_value name="$stationBuildScore" exact="1" />
+            </do_else>
+            <set_value name="$Enhanced_BuildPriority.$Ships.$build" exact="$stationBuildScore" />
           </actions>
         </library>
         <!-- end Calculate_Raw_Industry_Score -->
@@ -992,116 +1028,55 @@
 
         <library name="Check_Emergencies">
           <!-- 
-          def Check_Emergencies(self, scores):
-              # Determines if an emergency state should be declared for each sector
-              threshhold = self.score_emergency_threshholds
-              economy_score, military_score, industry_score = scores
-              return {
-                  'economy': economy_score< threshhold['economy'],
-                  'military': military_score < threshhold['military'],
-                  'industry': industry_score < threshhold['industry']
-              }
+          <set_value name="$Enhanced_Scores" exact="table[
+            $rawEconomy = null,
+            $rawMilitary = null,
+            $rawIndustry = null,
+            $weigtedEconomy = null,
+            $weigtedMilitary = null,
+            $weigtedIndustry = null
+          ]" />
           -->
+          <actions>
+            <do_if value="$Enhanced_Scores.$rawEconomy le $Enhanced_EmergencyThreshholds.$economy">
+              <set_value name="$Enhanced_Scores.$weightedEconomy" operation="add"
+                exact="$Enhanced_Scores.$rawEconomy * $Enhanced_EmergencyWeights.$economy" />
+            </do_if>
+            <do_if value="$Enhanced_Scores.$rawIndustry le $Enhanced_EmergencyThreshholds.$industry">
+              <set_value name="$Enhanced_Scores.$weightedIndustry" operation="add"
+                exact="$Enhanced_Scores.$rawIndustry * $Enhanced_EmergencyWeights.$industry" />
+            </do_if>
+            <do_if value="$Enhanced_Scores.$rawMilitary le $Enhanced_EmergencyThreshholds.$military">
+              <set_value name="$Enhanced_Scores.$weightedMilitary" operation="add"
+                exact="$Enhanced_Scores.$rawMilitary * $Enhanced_EmergencyWeights.$military" />
+            </do_if>
+          </actions>
         </library>
 
         <library name="Check_State_Change">
-          <!--
-          def Check_State_Change(self, scores):
-              economy_score, military_score, industry_score = scores
-              threshholds = self.state_threshholds
 
-              if self.state == State.EXPANSION:
-                  if military_score< threshholds ['mil_defense' ]:
-                  self.state= State.DEFENSE
-                  elif economy_score < threshholds ['eco_consolidation' ] or industry_score < threshholds ['ind_consolidation' ]:
-                  self.state= State.CONSOLIDATE
-                  elif self.state== State.CONSOLIDATE:
-                  if military_score < threshholds['mil_defense']:
-                      self.state = State.DEFENSE
-                  elif economy_score > threshholds['eco_expansion'] and industry_score > threshholds['ind_expansion'] and military_score > threshholds['mil_expansion']:
-                      self.state = State.EXPANSION
+          <!-- notes:
+            state influences ship/station build priority, claiming/contesting sectors
+            enhanced todo: war state not implemented - requires changes to vanilla invasion/response logic
 
-              elif self.state == State.DEFENSE:
-                  if economy_score > threshholds['eco_expansion'] and industry_score > threshholds['ind_expansion'] and military_score > threshholds['mil_expansion']:
-                      self.state = State.EXPANSION
-                  elif military_score > threshholds['mil_consolidation']:
-                      self.state = State.CONSOLIDATE
-
-              elif self.state == State.WAR_INVADE:
-                  if military_score < threshholds ['mil_defense' ]:
-                  self.state= State.WAR_DEFENSE
-                  elif economy_score < threshholds ['eco_consolidation' ] or industry_score < threshholds ['ind_consolidation' ]:
-                  self.state= State.WAR_CONSOLIDATE
-                  elif self.state== State.WAR_DEFENSE:
-                  if economy_score < threshholds ['eco_consolidation' ] or industry_score < threshholds['ind_consolidation']:
-                      self.state = State.WAR_CONSOLIDATE
-                  elif military_score > threshholds['mil_invade']:
-                      self.state = State.WAR_INVADE
-
-              elif self.state == State.WAR_CONSOLIDATE:
-                  if military_score < threshholds['mil_defense']:
-                      self.state = State.WAR_DEFENSE
-                  elif military_score > threshholds['mil_invade'] and economy_score > threshholds['eco_consolidation'] and industry_score > threshholds['ind_consolidation']: self.state = State.WAR_INVADE if self.state != self.previous_state: self.notify_state_change(self.previous_state, self.state) self.previous_state = self.state
+            $Enhanced_State = table[
+              $state = 'CONSOLIDATE',
+              $atWar = false
+            ]
+            $Enhanced_StateWeights = table[
+              $EXPANSION = table[    $economy = 0,    $military = 0,    $industry = 0.2  ],
+              $CONSOLIDATE = table[  $economy = 0.2,  $military = 0,    $industry = 0    ],
+              $DEFENSE = table[      $economy = 0,    $military = 0.2,  $industry = 0    ],
+              $WAR = table[          $economy = 0,    $military = 0.2,  $industry = 0    ] (modifies other three states when at war)
+            ]
           -->
-        </library>
-
-        <library name="Apply_Weights">
-          <!-- 
-          def Apply_Weights(self, scores, emergencies):
-              weights = self.score_weights
-              stateWeights = self.state_weights[self.state]
-              emergency_weights = self.score_emergency_weights
-              economy_score, military_score, industry_score = scores
-
-              return {
-                  'economy': economy_score * (weights['economy'] if not emergencies['economy'] else emergency_weights['economy']) * stateWeights['economy'],
-                  'military': military_score * (weights['military'] if not emergencies['military'] else emergency_weights['military'])  * stateWeights['military'],
-                  'industry': industry_score * (weights['industry'] if not emergencies['industry'] else emergency_weights['industry'])  * stateWeights['industry']
-              }
-          -->
-        </library>
-
-        <library name="Set_Build_Order_Priority">
-          <!-- 
-          def Set_Build_Order_Priority(self):
-              # Returns a list of priorities based on current state
-              if self.state == State.EXPANSION:
-                  return ['Construction Ship', 'Wharf', 'Miner (Solid)', 'Miner (Fluid)']
-              elif self.state == State.CONSOLIDATE:
-                  return ['Factory', 'Trade Station', 'Transport (Container)']
-              elif self.state == State.DEFENSE:
-                  return ['Defense Station', 'Defensive Ship', 'Scout']
-              elif self.state == State.WAR_INVADE:
-                  return ['Offensive Ship', 'Scout', 'Defensive Ship']
-              elif self.state == State.WAR_DEFENSE:
-                  return ['Defensive Ship', 'Defense Station', 'Scout']
-              elif self.state == State.WAR_CONSOLIDATE:
-                  return ['Offensive Ship', 'Defensive Ship', 'Factory']
-          -->
-        </library>
-        <!-- end Run_Scoring_and_State_Check -->
-
-        <library name="Normalize" purpose="run_actions">
-          <!--
-    # normalizes data to be between 0 and 1
-    @staticmethod
-    def normalize(value, min_value (optional, default=0), max_value):
-        return (value - min_value) / (max_value - min_value) if max_value > min_value else 1
-    -->
-          <params>
-            <param name="value" />
-            <param name="max_value" />
-            <param name="min_value" default="0" />
-          </params>
           <actions>
-            <do_if value="$max_value gt $min_value">
-              <return value="($value - $min_value) / ($max_value - $min_value)" />
-            </do_if>
-            <do_else>
-              <return value="1" />
-            </do_else>
+            <!-- -->
+
           </actions>
         </library>
+
+        <!-- end Run_Scoring_and_State_Check -->
       </cues>
     </cue>
   </cues>
