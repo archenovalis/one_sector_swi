@@ -1039,23 +1039,46 @@
           -->
           <actions>
             <do_if value="$Enhanced_Scores.$rawEconomy le $Enhanced_EmergencyThreshholds.$economy">
-              <set_value name="$Enhanced_Scores.$weightedEconomy" operation="add"
-                exact="$Enhanced_Scores.$rawEconomy * $Enhanced_EmergencyWeights.$economy" />
+              <set_value name="$Enhanced_Scores.$weightedEconomy" exact="$Enhanced_Scores.$rawEconomy * $Enhanced_EmergencyWeights.$economy" />
             </do_if>
+            <do_else>
+              <set_value name="$Enhanced_Scores.$weightedEconomy" exact="$Enhanced_Scores.$rawEconomy" />
+            </do_else>
             <do_if value="$Enhanced_Scores.$rawIndustry le $Enhanced_EmergencyThreshholds.$industry">
-              <set_value name="$Enhanced_Scores.$weightedIndustry" operation="add"
-                exact="$Enhanced_Scores.$rawIndustry * $Enhanced_EmergencyWeights.$industry" />
+              <set_value name="$Enhanced_Scores.$weightedIndustry" exact="$Enhanced_Scores.$rawIndustry * $Enhanced_EmergencyWeights.$industry" />
             </do_if>
+            <do_else>
+              <set_value name="$Enhanced_Scores.$weightedIndustry" exact="$Enhanced_Scores.$rawIndustry" />
+            </do_else>
             <do_if value="$Enhanced_Scores.$rawMilitary le $Enhanced_EmergencyThreshholds.$military">
-              <set_value name="$Enhanced_Scores.$weightedMilitary" operation="add"
-                exact="$Enhanced_Scores.$rawMilitary * $Enhanced_EmergencyWeights.$military" />
+              <set_value name="$Enhanced_Scores.$weightedMilitary" exact="$Enhanced_Scores.$rawMilitary * $Enhanced_EmergencyWeights.$military" />
             </do_if>
+            <do_else>
+              <set_value name="$Enhanced_Scores.$weightedMilitary" exact="$Enhanced_Scores.$rawMilitary" />
+            </do_else>
           </actions>
         </library>
 
         <library name="Check_State_Change">
-
           <!-- notes:
+              if self.state == State.EXPANSION:
+                  if military_score< threshholds ['mil_defense' ]:
+                      self.state= State.DEFENSE
+                  elif economy_score < threshholds ['eco_consolidation' ] or industry_score < threshholds ['ind_consolidation' ]:
+                      self.state= State.CONSOLIDATE
+
+              elif self.state== State.CONSOLIDATE:
+                  if military_score < threshholds['mil_defense']:
+                      self.state = State.DEFENSE
+                  elif economy_score > threshholds['eco_expansion'] and industry_score > threshholds['ind_expansion'] and military_score > threshholds['mil_expansion']:
+                      self.state = State.EXPANSION
+
+              elif self.state == State.DEFENSE:
+                  if economy_score > threshholds['eco_expansion'] and industry_score > threshholds['ind_expansion'] and military_score > threshholds['mil_expansion']:
+                      self.state = State.EXPANSION
+                  elif military_score > threshholds['mil_consolidation']:
+                      self.state = State.CONSOLIDATE
+
             state influences ship/station build priority, claiming/contesting sectors
             enhanced todo: war state not implemented - requires changes to vanilla invasion/response logic
 
@@ -1071,7 +1094,52 @@
             ]
           -->
           <actions>
-            <!-- -->
+            <!-- enhanced todo: convert from weights to modifiers -->
+            <!-- Retrieve current scores and state -->
+            <set_value name="$currentState" exact="$Enhanced_State.$state" />
+            <set_value name="$economyScore" exact="$Enhanced_Scores.$rawEconomy" />
+            <set_value name="$militaryScore" exact="$Enhanced_Scores.$rawMilitary" />
+            <set_value name="$industryScore" exact="$Enhanced_Scores.$rawIndustry" />
+
+            <!-- State Transitions -->
+            <do_if value="$currentState == 'EXPANSION'">
+              <!-- Check if military is too weak, switch to DEFENSE -->
+              <do_if value="$militaryScore lt $Enhanced_StateThreshholds.$mil_defense">
+                <set_value name="$Enhanced_State.$state" exact="'DEFENSE'" />
+              </do_if>
+              <!-- Check if economy or industry is struggling, switch to CONSOLIDATE -->
+              <do_elseif value="$economyScore lt $Enhanced_StateThreshholds.$eco_consolidation or $industryScore lt $Enhanced_StateThreshholds.$ind_consolidation">
+                <set_value name="$Enhanced_State.$state" exact="'CONSOLIDATE'" />
+              </do_elseif>
+            </do_if>
+
+            <do_elseif value="$currentState == 'CONSOLIDATE'">
+              <!-- Check if military is too weak, switch to DEFENSE -->
+              <do_if value="$militaryScore lt $Enhanced_StateThreshholds.$mil_defense">
+                <set_value name="$Enhanced_State.$state" exact="'DEFENSE'" />
+              </do_if>
+              <!-- Check if all scores are strong enough for EXPANSION -->
+              <do_elseif value="$economyScore gt $Enhanced_StateThreshholds.$eco_expansion and $industryScore gt $Enhanced_StateThreshholds.$ind_expansion and $militaryScore gt $Enhanced_StateThreshholds.$mil_expansion">
+                <set_value name="$Enhanced_State.$state" exact="'EXPANSION'" />
+              </do_elseif>
+            </do_elseif>
+
+            <do_elseif value="$currentState == 'DEFENSE'">
+              <!-- Check if all scores are strong enough for EXPANSION -->
+              <do_if value="$economyScore gt $Enhanced_StateThreshholds.$eco_expansion and $industryScore gt $Enhanced_StateThreshholds.$ind_expansion and $militaryScore gt $Enhanced_StateThreshholds.$mil_expansion">
+                <set_value name="$Enhanced_State.$state" exact="'EXPANSION'" />
+              </do_if>
+              <!-- Check if military is stable enough for CONSOLIDATE -->
+              <do_elseif value="$militaryScore gt $Enhanced_StateThreshholds.$mil_consolidation">
+                <set_value name="$Enhanced_State.$state" exact="'CONSOLIDATE'" />
+              </do_elseif>
+            </do_elseif>
+
+            <!-- Apply State Weights to Build Priorities -->
+            <set_value name="$stateWeights" exact="$Enhanced_StateWeights.{$Enhanced_State.$state}" />
+            <set_value name="$Enhanced_BuildPriority.$Productionmodules.$economy" exact="$stateWeights.$economy" />
+            <set_value name="$Enhanced_BuildPriority.$Ships.$fight" operation="add" exact="$stateWeights.$military" />
+            <set_value name="$Enhanced_BuildPriority.$Buildmodules.$industry" exact="$stateWeights.$industry" />
 
           </actions>
         </library>

@@ -58,9 +58,16 @@
           needs to store 
       -->
       <actions>
-        <!-- save resource requirement of ship -->
+        <!-- save purpose and size-->
+        <set_value name="$waitlist" exact="{'$Waitlist' + $purpose}.{$size}" />
+        <!-- save ship data -->
+        <set_value name="$ship" exact="table[
+          $resources = $resources.clone
+        ]" />
         <!-- ship purpose determines waitlist -->
-
+        <append_to_list name="$waitlist" exact="$ship" />
+        <!-- or -->
+        <set_value name="$waitlist.{$something}" exact="$ship" />
       </actions>
     </library>
 
@@ -113,46 +120,6 @@
           build: construction score (industry)
         -->
 
-        <!-- process each $Enhanced_BuildStation-->
-        <set_value name="$stationslots" exact="table[]" />
-        <do_for_each name="$station" in="$Enhanced_BuildStations">
-          <set_value name="$on_hand" exact="$Enhanced_Stations.{$station}.$On_hand.clone" />
-          <set_value name="$stationslots.{$station}" exact="table[]" />
-          <set_value name="$slots" exact="$stationslots.{$station}" />
-
-          <!-- get available slots -->
-          <do_for_each name="$module" in="$station.buildmodules">
-            <do_for_each name="$processor" in="$module.freebuildprocessors">
-              <do_for_each name="$class" in="[class.size_s, class.size_m, class.size_l, class.size_xl]">
-                <do_if value="$class == class.size_xl and $module.dock.{tag.dock_xxl}">
-                  <set_value name="$slots.{tag.dock_xxl}" operation="add" exact="1" />
-                </do_if>
-                <do_else>
-                  <set_value name="$slots.{$class}" operation="add" exact="$processor.canbuildclass.{$class}" />
-                </do_else>
-              </do_for_each>
-            </do_for_each>
-          </do_for_each>
-        </do_for_each>
-
-        <do_while value="true">
-          <do_any>
-            <set_value name="$waitlist" exact="$waitlistFight" weight="$chanceFight" />
-            <set_value name="$waitlist" exact="$waitlistMine" weight="$chanceMine" />
-            <set_value name="$waitlist" exact="$waitlistTrade" weight="$chanceTrade" />
-            <set_value name="$waitlist" exact="$waitlistBuild" weight="$chanceBuild" />
-          </do_any>
-          <!-- process waitlist until resources are exhausted or all slots used-->
-          <do_for_each name="$ship" in="$waitlist">
-            <!-- if slot matches ships and resources available, then
-              reduce resources by assigned ship
-              reduce slot by assigned ship -->
-          </do_for_each>
-          <set_value name="$sanity" operation="add" exact="1" />
-          <do_if value="$sanity == 25 ">
-            <break />
-          </do_if>
-        </do_while>
         <!-- slots remaining and valid ships in waitlist, add to not enough resources -->
 
         <!-- how many ship builds started and cost (modifies demand)
@@ -160,14 +127,180 @@
 
         <!-- add number remaining in waitlist minus resource shortage to these:
             $Enhanced_IndustryBuildShortage = table[
-              $s = int
-              $m = int
-              $l = int
-              $xl = int
-              $xxl = int
+              class.size_s = int
+              class.size_m = int
+              class.size_l = int
+              class.size_xl = int
+              'xxl' = int
               $station = int
             ]
           -->
+
+        <!-- Ships -->
+        <set_value name="$Sizes" exact="['xxl', class.size_xl, class.size_l, class.size_m, class.size_s]" />
+        <set_value name="$Purposes" exact="['Fight', 'Mine.$Gas', 'Mine.$Solid', 'Trade', 'Build']" />
+
+        <!-- Calculate chances using (1 - score) * (1 + weight) -->
+        <set_value name="$chanceFight" exact="(1 - $Enhanced_Scores.$rawMilitary) * (1 + $Enhanced_Scores.$modifierMilitary)" />
+        <set_value name="$chanceMine" exact="(1 - $Enhanced_Scores.$rawEconomy) * (1 + $Enhanced_Scores.$modifierEconomy)" />
+        <set_value name="$chanceTrade" exact="(1 - $Enhanced_Scores.$rawEconomy) * (1 + $Enhanced_Scores.$modifierEconomy)" />
+        <set_value name="$chanceBuild" exact="(1 - $Enhanced_Scores.$rawIndustry) * (1 + $Enhanced_Scores.$modifierIndustry)" />
+        <set_value name="$chanceSolid" exact="(1 - $Enhanced_Scores.$rawEconomy) * (1 + $Enhanced_Scores.$modifierEconomy)" />
+        <set_value name="$chanceGas" exact="(1 - $Enhanced_Scores.$rawEconomy) * (1 + $Enhanced_Scores.$modifierEconomy)" />
+
+        <!-- Check for Empty Waitlists and Adjust Chances -->
+        <do_for_each name="$purpose" in="$Purposes">
+          <set_value name="$total" exact="0" />
+          <do_for_each name="$size" in="$Sizes">
+            <set_value name="$total" operation="add" exact="@{'$Waitlist' + {$purpose}}.{$size}.count" />
+          </do_for_each>
+          <do_if value="$total == 0">
+            <set_value name="this.{'$chance' + {$purpose}}" exact="0" />
+          </do_if>
+        </do_for_each>
+
+        <!-- Initialize Shortage Tables -->
+        <set_value name="$Enhanced_IndustryBuildShortage" exact="table[class.size_s=0, class.size_m=0, class.size_l=0, class.size_xl=0, 'xxl'=0]" />
+        <set_value name="$Enhanced_ResourceShortage" exact="table[class.size_s=0, class.size_m=0, class.size_l=0, class.size_xl=0, 'xxl'=0]" />
+        <set_value name="$RemainingSlots" exact="table[class.size_s=0, class.size_m=0, class.size_l=0, class.size_xl=0, 'xxl'=0]" />
+
+        <!-- Process Each $Enhanced_BuildStation -->
+        <find_station_by_true_owner name="$Enhanced_BuildStations" faction="$Faction" space="player.galaxy" canbuildships="true" multiple="true" />
+        <do_for_each name="$station" in="$Enhanced_BuildStations">
+          <set_value name="$tempFight" exact="$chanceFight" />
+          <set_value name="$tempMine" exact="$chanceMine" />
+          <set_value name="$tempTrade" exact="$chanceTrade" />
+          <set_value name="$tempBuild" exact="$chanceBuild" />
+          <set_value name="$tempSolid" exact="$chanceSolid" />
+          <set_value name="$tempGas" exact="$chanceGas" />
+
+          <set_value name="$on_hand" exact="$Enhanced_Stations.{$station}.$On_hand.clone" />
+          <set_value name="$slots" exact="table[class.size_s=0, class.size_m=0, class.size_l=0, class.size_xl=0, 'xxl'=0]" />
+
+          <!-- Get Available Slots -->
+          <do_for_each name="$module" in="$station.buildmodules">
+            <do_for_each name="$processor" in="$module.freebuildprocessors">
+              <do_for_each name="$class" in="[class.size_s, class.size_m, class.size_l, class.size_xl]">
+                <do_if value="$class == class.size_xl and $module.dock.{tag.dock_xxl}">
+                  <set_value name="$slots.{'xxl'}" operation="add" exact="1" />
+                </do_if>
+                <do_else>
+                  <set_value name="$slots.{$class}" operation="add" exact="$processor.canbuildclass.{$class}" />
+                </do_else>
+              </do_for_each>
+            </do_for_each>
+          </do_for_each>
+
+          <!-- Process Waitlists -->
+          <set_value name="$sanity" exact="0" />
+          <set_value name="$totalChance" exact="$tempFight + $tempMine + $tempTrade + $tempBuild" />
+          <do_while value="$totalChance gt 0 and $slots.{class.size_s} + $slots.{class.size_m} + $slots.{class.size_l} + $slots.{class.size_xl} + $slots.{'xxl'} gt 0">
+            <!-- Select Waitlist Based on Weighted Chances -->
+            <do_any>
+              <set_value name="$waitlist" exact="$WaitlistFight" weight="$tempFight" />
+              <set_value name="$waitlist" exact="$WaitlistMine" weight="$tempMine" />
+              <set_value name="$waitlist" exact="$WaitlistTrade" weight="$tempTrade" />
+              <set_value name="$waitlist" exact="$WaitlistBuild" weight="$tempBuild" />
+            </do_any>
+
+            <do_if value="$waitlist == $WaitlistMine">
+              <do_any>
+                <set_value name="$waitlist" exact="$WaitlistMine.$Solid" weight="$tempSolid" />
+                <set_value name="$waitlist" exact="$WaitlistMine.$Gas" weight="$tempGas" />
+              </do_any>
+            </do_if>
+
+            <!-- Process Selected Waitlist -->
+            <set_value name="$built" exact="false" />
+            <do_for_each name="$size" in="$Sizes">
+              <do_if value="$slots.{$size} gt 0">
+                <do_for_each name="$ship" in="$waitlist.{$size}">
+                  <set_value name="$resourcesMet" exact="true" />
+                  <do_for_each name="$resource" in="$ship.$resources">
+                    <do_if value="$on_hand.{$resource} lt $ship.$resources.{$resource}">
+                      <set_value name="$resourcesMet" exact="false" />
+                      <break />
+                    </do_if>
+                  </do_for_each>
+                  <do_if value="$resourcesMet">
+                    <!-- Build Ship: Deduct Resources and Slot -->
+                    <do_for_each name="$resource" in="$ship.$resources">
+                      <set_value name="$on_hand.{$resource}" operation="subtract" exact="$ship.$resources.{$resource}" />
+                    </do_for_each>
+                    <set_value name="$slots.{$size}" operation="subtract" exact="1" />
+                    <!-- enhanced todo: Trigger Build -->
+                    <remove_from_list name="$waitlist.{$size}" exact="$ship" />
+                    <set_value name="$built" exact="true" />
+                    <debug_text text="'Building ship ' + $ship.$macro + ' at ' + $station.knownname" chance="$DebugChance" />
+                    <break />
+                  </do_if>
+                </do_for_each>
+                <do_if value="$built">
+                  <break />
+                </do_if>
+              </do_if>
+            </do_for_each>
+
+            <!-- Adjust Chance if No Build Occurred -->
+            <do_if value="not $built">
+              <do_if value="$waitlist == $WaitlistFight">
+                <set_value name="$tempFight" exact="0" />
+              </do_if>
+              <do_elseif value="$waitlist == $WaitlistMine.$Gas or $waitlist == $WaitlistMine.$Solid">
+                <do_if value="$waitlist == $WaitlistMine.$Gas">
+                  <set_value name="$tempGas" exact="0" />
+                </do_if>
+                <do_else>
+                  <set_value name="$tempSolid" exact="0" />
+                </do_else>
+                <do_if value="$tempSolid == 0 and $tempGas == 0">
+                  <set_value name="$tempMine" exact="0" />
+                </do_if>
+              </do_elseif>
+              <do_elseif value="$waitlist == $WaitlistTrade">
+                <set_value name="$tempTrade" exact="0" />
+              </do_elseif>
+              <do_elseif value="$waitlist == $WaitlistBuild">
+                <set_value name="$tempBuild" exact="0" />
+              </do_elseif>
+            </do_if>
+
+            <!-- Sanity Check -->
+            <set_value name="$sanity" operation="add" exact="1" />
+            <do_if value="$sanity ge 500">
+              <debug_text text="'!!!! Sanity limit reached ' + $station.knownname" chance="$DebugChance" />
+              <break />
+            </do_if>
+
+            <set_value name="$totalChance" exact="$tempFight + $tempMine + $tempTrade + $tempBuild" />
+          </do_while>
+
+          <!-- Calculate Resource Shortages for This Station -->
+          <do_for_each name="$size" in="$Sizes">
+            <do_if value="$slots.{$size} gt 0">
+              <set_value name="$matchingShips" exact="0" />
+              <!--  need to go through every waitlist until we find the matches upto $slots.{$size}.count, immediately assume it is due to resources -->
+              <do_for_each name="$purpose" in="$Purposes">
+                <set_value name="$matchingShips" operation="add" exact="@{'$Waitlist' + {$purpose}}.{$size}.count" />
+              </do_for_each>
+              <set_value name="$Enhanced_ResourceShortage.{$size}" operation="add" exact="[$slots.{$size}, $matchingShips].min" />
+              <set_value name="$RemainingSlots.{$size}" operation="add" exact="$slots.{$size}" />
+            </do_if>
+          </do_for_each>
+        </do_for_each>
+
+        <!-- Calculate Industry Shortages After All Stations -->
+        <do_for_each name="$size" in="$Sizes">
+          <do_for_each name="$purpose" in="$Purposes">
+            <set_value name="$remainingShips" exact="@{'$Waitlist' + {$purpose}}.{$size}.count" />
+          </do_for_each>
+          <!-- number ships waiting minus number of slots empty due to resource shortage -->
+          <set_value name="$Enhanced_IndustryBuildShortage.{$size}" exact="[0, $remainingShips - $RemainingSlots.{$size}].max" />
+        </do_for_each>
+
+        <!-- Debug Final Shortages -->
+        <debug_text text="'Resource Shortages: S=' + $Enhanced_ResourceShortage.{class.size_s} + ' M=' + $Enhanced_ResourceShortage.{class.size_m} + ' L=' + $Enhanced_ResourceShortage.{class.size_l} + ' XL=' + $Enhanced_ResourceShortage.{class.size_xl} + ' XXL=' + $Enhanced_ResourceShortage.{'xxl'}" chance="$DebugChance" />
+        <debug_text text="'Industry Shortages: S=' + $Enhanced_IndustryBuildShortage.{class.size_s} + ' M=' + $Enhanced_IndustryBuildShortage.{class.size_m} + ' L=' + $Enhanced_IndustryBuildShortage.{class.size_l} + ' XL=' + $Enhanced_IndustryBuildShortage.{class.size_xl} + ' XXL=' + $Enhanced_IndustryBuildShortage.{'xxl'}" chance="$DebugChance" />
 
         <!-- -->
 
