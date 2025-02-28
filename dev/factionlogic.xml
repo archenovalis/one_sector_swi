@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<mdscript name="FactionLogic"
-  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../xsd/md.xsd">
+<mdscript name="FactionLogic" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../xsd/md.xsd">
   <cues>
     <!--Cue to be signalled to inform the faction manager of something
     The first element in the parameter list must be the faction e.g. param = [$Faction, 'attacked', $Victim]-->
@@ -8,6 +7,21 @@
       <conditions>
         <event_cue_signalled />
       </conditions>
+    </cue>
+
+    <cue name="Generate_Global_Report" instantiate="true">
+      <conditions>
+        <event_cue_signalled />
+      </conditions>
+      <actions>
+        <debug_text text="player.age + ' - GENERATING GLOBAL FACTION LOGIC REPORT'" context="false" />
+        <set_value name="$Factions" exact="global.$FactionManagers.keys.list" />
+        <do_all exact="$Factions.count" counter="$i">
+          <signal_cue_instantly cue="FactionSignalled" param="[$Factions.{$i}, 'Generate Report']" />
+        </do_all>
+        <remove_value name="$Factions" />
+      </actions>
+      <force name="Generate Faction Logic Report" />
     </cue>
 
     <!--
@@ -229,6 +243,7 @@
               <param name="BaseAggressionLevel" value="moodlevel.high" />
               <param name="BaseAvariceLevel" value="moodlevel.low" />
               <param name="BaseLawfulness" value="0.1" />
+              <param name="EconManagerActive" value="false" />
               <param name="PreferredHQSpaceMacro" value="macro.cluster_04_macro" />
               <param name="PreferredHQTypes" value="[]" comment="Appended to from the Paranid story" />
               <param name="SatelliteNetworkGoal" value="2" />
@@ -277,10 +292,10 @@
 
     <!--
     ####################
-          MANAGER
+           MANAGER
     ####################-->
 
-    <library name="Manager" namespace="this" version="14">
+    <library name="Manager" namespace="this" version="15">
       <params>
         <param name="Faction" comment="The faction to be managed" />
         <param name="ConsumedFactions" default="[]" comment="Inactive factions considered to be a part of $Faction. Used to take their old goals or economic actions into account with the new faction." />
@@ -289,6 +304,7 @@
         <param name="BaseLawfulness" default="0.5" />
         <param name="Volatility" default="0.5" comment="The strength of mood shifts" />
         <param name="HasMissions" default="true" comment="Faction spawns missions" />
+        <param name="EconManagerActive" default="true" comment="Start the economy manager analysis as active" />
         <param name="ExpeditionEnemies" default="[]" comment="List of factions to launch long distance expedition 'invasions' against" />
         <param name="SatelliteNetworkGoal" default="0" />
         <param name="LasertowerNetworkGoal" default="0" />
@@ -374,17 +390,74 @@
         <set_value name="$Enhanced_Resources" exact="table[]" />
         <set_value name="$Enhanced_Ships" exact="table[]" />
         <set_value name="$Enhanced_Stations" exact="table[]" />
+        <!-- 
+        $Enhanced_BuildPriority = table[
+          $Stations = table[
+            $Buildmodules = table[          (Calculate_Ship_Building_Score)
+              $wharf = float
+              $l = float
+              $xl = float
+              $xxl = float
+            ]
+            $Productionmodules = table[     (
+              {$resource}
+            ]
+          ]
+          $Ships = table[
+            $Mine = table[                  (Process_Efficiencies)
+              $score = float                    (average of gas and solid score)
+              $Gas = table[
+                $score = float                  (average of all gas scores)
+                {$resource} = float             (efficiency * demandVolume / maxDemandVolume)
+              ]
+              $Solid = table[
+                $score = float                  (average of all solid scores)
+                {$resource} = float             (efficiency * demandVolume / maxDemandVolume)
+              ]
+            ]
+            $Trade = table[                 (Process_Efficiencies)
+              $score = float                    (average of all trade scores)
+              {$resource} = float               (efficiency * demandVolume / maxDemandVolume)
+            ] 
+            $build = float                  (Calculate_Station_Building_Score | )
+            $fight = float                  (Calculate_Raw_Military_Score | $totalThreatScore / $desiredThreatScore = $Enhanced_Scores.$rawMilitary)
+          ]
+        ] -->
         <set_value name="$Enhanced_BuildPriority" exact="table[
-          $Buildmodules = table[],
-          $Productionmodules = table[],
+          $Stations = table[
+            $Buildmodules = table[],
+            $Productionmodules = table[]
+          ]
           $Ships = table[
             $Mine = table[
               $Gas = table[],
               $Solid = table[]
             ],
-            $Trade = table[],
-            $fight = null,
-            $build = null 
+            $Trade = table[]
+          ]
+        ]" />
+        <set_value name="$Enhanced_Waitlists" exact="table[
+          $Fight = table[
+            $Ships = [],
+            $Subordinates = []
+          ],
+          $Trade = table[
+            $Ships = [],
+            $Subordinates = []
+          ],
+          $Mine = table[
+            $Gas = table[
+              $Ships = [],
+              $Subordinates = []
+            ],
+            $Solid = table[
+              $Ships = [],
+              $Subordinates = []
+            ]
+          ],
+          $Build = table[
+            $Ships = [],
+            $Subordinates = []
           ]
         ]" />
 
@@ -527,37 +600,279 @@
       <patch sinceversion="14">
         <set_value name="$NextJobRedeployTime" exact="[player.age, 1h].max" />
       </patch>
+      <patch sinceversion="15">
+        <set_value name="$EconManagerActive" exact="$Faction != faction.buccaneers" />
+      </patch>
       <cues>
+        <cue name="PATCH_ReregisterForPatrolCoordination" onfail="cancel">
+          <conditions>
+            <check_value value="@$DoPatchPatrolCoordination" />
+          </conditions>
+          <delay exact="1s" />
+          <actions>
+            <!--Patching out invalid distress calls may have removed this faction from the patrol coordination master list. Attempt to re-add-->
+            <signal_cue_instantly cue="md.FactionGoal_PatrolCoordinationService.Register_Factions" param="namespace" comment="'namespace' is the manager-cue" />
+            <remove_value name="$DoPatchPatrolCoordination" />
+          </actions>
+        </cue>
 
-        <cue name="Econ_Manager" ref="md.FactionEconomy.Econ_Manager">
+        <cue name="Trigger_Report" instantiate="true" comment="Cue added here for convenience. Signal for faction report.">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <actions>
+            <signal_cue_instantly cue="md.FactionLogic.FactionSignalled" param="[$Faction, 'Generate Report']" />
+          </actions>
+        </cue>
+
+        <!--Libraries-->
+        <cue name="Econ_Manager" ref="md.FactionLogic_Economy.Econ_Manager">
           <param name="FactionManagerCue" value="Manager" />
           <param name="Faction" value="$Faction" />
           <param name="ConsumedFactions" value="$ConsumedFactions" />
           <param name="DebugChance" value="$DebugChance" />
         </cue>
-        <cue name="Industry_Manager" ref="md.FactionIndustry.Industry_Manager">
+
+        <cue name="Maintain_Stations" ref="md.FactionLogic_Stations.Manage_Stations">
           <param name="FactionManagerCue" value="Manager" />
           <param name="Faction" value="$Faction" />
-          <!--<param name="Ref_Shipyards" value="$Shipyards"/>-->
-          <param name="DebugChance" value="$DebugChance" />
+          <param name="DebugChance" value="0" />
         </cue>
-        <cue name="Military_Manager" ref="md.FactionMilitary.Military_Manager">
+
+        <cue name="StaticDefenseManager" ref="md.FactionLogic_StaticDefense.StaticDefenseManager">
           <param name="FactionManagerCue" value="Manager" />
           <param name="Faction" value="$Faction" />
-          <param name="DebugChance" value="$DebugChance" />
+          <param name="DebugChance" value="0" />
         </cue>
+
+        <cue name="Cleanup_Faction_Headquarters" comment="reset it to a state where Find_Faction_Headquarters will find a new HQ">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <actions>
+            <do_if value="$Faction.representative.exists">
+              <debug_text text="'Removing representative %s for faction %s'.[$Faction.representative, $Faction]" chance="0" />
+              <set_value name="this.$rep" exact="$Faction.representative" />
+              <remove_representative faction="$Faction" />
+              <debug_text text="'After removing, representative %s for faction %s'.[$Faction.representative, $Faction]" chance="0" />
+              <do_if value="@this.$rep.room.iswalkable">
+                <signal_objects object="this.$rep" param="'npc_despawn'" />
+              </do_if>
+              <do_else>
+                <remove_actor_from_room actor="this.$rep" destroy="true" />
+              </do_else>
+            </do_if>
+            <do_if value="$Faction.headquarters.exists">
+              <debug_text text="'Removing HQ %s for faction %s'.[$Faction.headquarters, $Faction]" chance="0" />
+              <set_faction_headquarters faction="$Faction" station="$Faction.headquarters" headquarters="false" comment="Undo it being the HQ" />
+            </do_if>
+            <remove_value name="md.$FactionData.{$Faction}.$Headquarters" />
+            <remove_value name="md.$FactionData.{$Faction}.$Representative" comment="can't set it to null, just remove it" />
+            <reset_cue cue="Cleanup_Faction_Headquarters" />
+          </actions>
+        </cue>
+
+        <cue name="Find_Faction_Headquarters" version="5">
+          <actions>
+            <set_value name="$HQNecessary" exact="$Faction.isactive" />
+            <!--Even wrecked HQs are valid-->
+            <set_value name="$HQ" exact="$Faction.headquarters" />
+            <do_if value="$HQ.exists">
+              <debug_text text="$Faction + ' already has headquarters ' + $HQ" chance="$DebugChance" />
+            </do_if>
+            <do_elseif value="not $HQNecessary">
+              <debug_text text="$Faction + ' does not need a HQ'" chance="$DebugChance" />
+            </do_elseif>
+            <do_else>
+              <!-- Preferred Faction HQ location and type depends on the faction -->
+              <debug_text text="'Finding Faction HQ for ' + $Faction" chance="$DebugChance" />
+              <set_value name="$PreferredSpace" exact="null" />
+              <do_if value="$PreferredHQSpaceMacro">
+                <find_cluster name="$PreferredSpace" macro="$PreferredHQSpaceMacro" />
+                <do_if value="not $PreferredSpace">
+                  <find_sector name="$PreferredSpace" macro="$PreferredHQSpaceMacro" />
+                </do_if>
+              </do_if>
+              <do_if value="$PreferredSpace and $PreferredHQTypes.count">
+                <!--2 passes. First with $PreferredSpace(based on $PreferredHQSpaceMacro), second for the whole galaxy-->
+                <set_value name="$SearchSpace" exact="$PreferredSpace" />
+                <do_all exact="2">
+                  <do_all exact="$PreferredHQTypes.count" counter="$i">
+                    <debug_text text="'Attempting to find a suitable HQ for faction ' + $Faction.knownname + ' in space ' + $SearchSpace.knownname + ' of type ' + $PreferredHQTypes.{$i}" chance="$DebugChance" />
+                    <do_if value="typeof $PreferredHQTypes.{$i} == datatype.macro">
+                      <find_station_by_true_owner name="$HQ" space="$SearchSpace" faction="$Faction" macro="$PreferredHQTypes.{$i}" />
+                    </do_if>
+                    <do_elseif value="$PreferredHQTypes.{$i} == 'shipbuilding'">
+                      <find_station_by_true_owner name="$HQ" space="$SearchSpace" faction="$Faction" canbuildships="true" comment="shipyard or wharf" />
+                    </do_elseif>
+                    <do_elseif value="$PreferredHQTypes.{$i} == 'equipmentdock'">
+                      <find_station_by_true_owner name="$HQ" space="$SearchSpace" faction="$Faction" equipmentdock="true" comment="equipment dock" />
+                    </do_elseif>
+                    <do_elseif value="$PreferredHQTypes.{$i} == 'tradestation'">
+                      <find_station_by_true_owner name="$HQ" space="$SearchSpace" faction="$Faction" tradestation="true" />
+                    </do_elseif>
+                    <do_elseif value="$PreferredHQTypes.{$i} == 'defencestation'">
+                      <find_station_by_true_owner name="$HQ" space="$SearchSpace" faction="$Faction" defencestation="true" />
+                    </do_elseif>
+                    <do_elseif value="$PreferredHQTypes.{$i} == 'piratebase'">
+                      <find_station_by_true_owner name="$HQ" space="$SearchSpace" faction="$Faction" piratebase="true" />
+                    </do_elseif>
+                    <do_elseif value="$PreferredHQTypes.{$i} == 'any'">
+                      <find_station_by_true_owner name="$HQ" space="$SearchSpace" faction="$Faction" />
+                    </do_elseif>
+                    <do_if value="$HQ">
+                      <break />
+                    </do_if>
+                  </do_all>
+                  <do_if value="$HQ">
+                    <break />
+                  </do_if>
+                  <do_else>
+                    <set_value name="$SearchSpace" exact="player.galaxy" />
+                  </do_else>
+                </do_all>
+
+                <do_if value="$HQ">
+                  <debug_text text="$Faction + ' HQ set to ' + $HQ.knownname + ' ' + $HQ + ' in ' + $HQ.sector.knownname + ', ' + $HQ.cluster.knownname" chance="$DebugChance" />
+                  <set_value name="md.$FactionData.{$Faction}.$Headquarters" exact="$HQ" />
+                  <set_faction_headquarters faction="$Faction" station="$HQ" />
+                  <signal_cue cue="CreateNewFactionRepresentative" />
+                </do_if>
+                <do_else>
+                  <debug_text text="'No suitable location for ' + $Faction.name  + ' HQ found!'" filter="error" />
+                </do_else>
+              </do_if>
+              <do_else>
+                <set_value name="$HQNecessary" exact="false" />
+                <debug_text text="'Faction is ' + $Faction.name + ' - no Faction HQ is required'" chance="$DebugChance" />
+              </do_else>
+              <remove_value name="$PreferredSpace" />
+            </do_else>
+          </actions>
+          <cues>
+            <cue name="CheckHQStatus" checkinterval="5min">
+              <conditions>
+                <!--parent.time so the conditions don't pass as soon as the parent completes with no HQ-->
+                <check_value value="$HQNecessary and player.age gt (parent.time + 1s) and not $Faction.headquarters.exists" />
+              </conditions>
+              <actions>
+                <debug_text text="$Faction + ' does not have a HQ. Attempt to find a new one.'" chance="$DebugChance" />
+                <reset_cue cue="Find_Faction_Headquarters" />
+              </actions>
+            </cue>
+            <cue name="CheckHQStatus_FactionActivated">
+              <conditions>
+                <event_faction_activated faction="$Faction" />
+                <check_value value="$HQNecessary and player.age gt (parent.time + 1s) and not $Faction.headquarters.exists" />
+              </conditions>
+              <actions>
+                <debug_text text="$Faction + ' active. Attempt to find a HQ.'" chance="$DebugChance" />
+                <reset_cue cue="Find_Faction_Headquarters" />
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+
+        <cue name="PeriodicCallback_Check" checkinterval="5min" instantiate="true">
+          <actions>
+            <do_if value="@$PeriodicCallback">
+              <set_value name="$Table" exact="table[$caller = this, $hqnecessary = $HQNecessary, $hq = $HQ, $PreferredHQSpaceMacro = $PreferredHQSpaceMacro, $preferredhqtypes = $PreferredHQTypes]" />
+              <signal_cue_instantly cue="$PeriodicCallback" param="$Table" />
+            </do_if>
+            <!--do_if value="this.$hqrelocate?">
+              <signal_cue cue="RelocateHQ"/>
+              <remove_value name="this.$hqrelocate"/>
+            </do_if-->
+          </actions>
+        </cue>
+
+        <cue name="RelocateHQ">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <actions>
+            <debug_text text="'Relocating HQ (preferredhqspace=%s preferedhqtypes=%s)'.[$PreferredHQSpaceMacro, $PreferredHQTypes]" chance="0" />
+            <signal_cue cue="Cleanup_Faction_Headquarters" />
+            <reset_cue cue="Find_Faction_Headquarters" />
+          </actions>
+        </cue>
+
+        <cue name="FactionRepresentativeKilled_Check" checkinterval="1s" version="2">
+          <conditions>
+            <check_value value="md.$FactionData.{$Faction}.$Representative?" />
+            <check_value value="md.$FactionData.{$Faction}.$Representative" />
+          </conditions>
+          <patch sinceversion="2" state="waiting">
+            <!-- patch missing factionrep definition in characters.xml in 3.10HF1, cue is waiting because it failed to create it previously" -->
+            <!-- We need to specifically patch faction.court, but can't directly access that, so use a different way to narrow it down to 'relevant' factions -->
+            <do_if value="(md.$FactionData.{$Faction}.$Headquarters?) and (md.$FactionData.{$Faction}.$Headquarters.isoperational) and (not md.$FactionData.{$Faction}.$Representative?)">
+              <signal_cue cue="CreateNewFactionRepresentative" />
+            </do_if>
+          </patch>
+          <cues>
+            <cue name="FactionRepresentativeKilled">
+              <conditions>
+                <event_object_destroyed object="md.$FactionData.{$Faction}.$Representative" />
+              </conditions>
+              <actions>
+                <debug_text text="'Representative for ' + $Faction.name + ', ' + event.object.name + ' ({' + event.object + '}), has been killed'" chance="$DebugChance" />
+                <set_value name="md.$FactionData.{$Faction}.$Representative" exact="null" />
+              </actions>
+            </cue>
+
+            <cue name="CheckRepresentativeStatus" checkinterval="3min">
+              <conditions>
+                <check_value value="(md.$FactionData.{$Faction}.$Headquarters.isoperational) and (not md.$FactionData.{$Faction}.$Representative.exists)" />
+              </conditions>
+              <actions>
+                <signal_cue cue="CreateNewFactionRepresentative" />
+              </actions>
+            </cue>
+
+          </cues>
+        </cue>
+
+        <!-- Create Faction Representative NPCs (at gamestart or when last representative was killed) -->
+        <cue name="CreateNewFactionRepresentative" instantiate="true">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <actions>
+            <debug_text text="'Check if a new faction representative for ' + $Faction.name + ' is needed'" chance="$DebugChance" />
+            <do_if value="not $Faction.representative">
+              <debug_text text="'No faction representative exists for ' + $Faction.name" chance="$DebugChance" />
+              <do_if value="@md.$FactionData.{$Faction}.$Headquarters.isoperational">
+                <create_representative_actor name="$Representative" station="md.$FactionData.{$Faction}.$Headquarters" faction="$Faction" />
+                <do_if value="$Representative">
+                  <debug_text text="'Created ' + $Representative.name + ' ({' + $Representative + '}) as representive of ' + $Faction.name + ' on ' + md.$FactionData.{$Faction}.$Headquarters.knownname + ' ({' + md.$FactionData.{$Faction}.$Headquarters + '}) in ' + md.$FactionData.{$Faction}.$Headquarters.sector.knownname + ', ' + md.$FactionData.{$Faction}.$Headquarters.cluster.knownname" chance="$DebugChance" />
+                  <set_value name="md.$FactionData.{$Faction}.$Representative" exact="$Representative" />
+                  <do_if value="FactionRepresentativeKilled_Check.state" exact="cuestate.complete">
+                    <reset_cue cue="FactionRepresentativeKilled_Check" />
+                  </do_if>
+                  <signal_cue_instantly cue="md.NPC_FactionRepresentative.FactionRepresentativeCreated" param="$Representative" />
+                </do_if>
+                <do_else>
+                  <debug_text text="'Failed to create representative of ' + $Faction.name + ' on ' + md.$FactionData.{$Faction}.$Headquarters.knownname + ' ({' + md.$FactionData.{$Faction}.$Headquarters + '}) in ' + md.$FactionData.{$Faction}.$Headquarters.sector.knownname + ', ' + md.$FactionData.{$Faction}.$Headquarters.cluster.knownname" filter="error" />
+                </do_else>
+              </do_if>
+              <do_else>
+                <debug_text text="'There is no Faction HQ on which to generate the Faction Representative for ' + $Faction.name" filter="error" />
+              </do_else>
+            </do_if>
+          </actions>
+        </cue>
+
         <!--Delay a random amount so not all factions evaluate at the same time-->
         <cue name="Manager_Delay">
-          <delay min="1ms" max="3s" />
+          <delay min="0s" max="30s" />
           <cues>
             <cue name="EvaluateGoals_Wait">
               <conditions>
                 <event_cue_completed cue="Manager_Delay" />
               </conditions>
               <cues>
-
+                <!-- enhanced factionlogic -->
                 <cue name="Run_FactionLogic_Enhanced" checktime="$Enhanced_checktime" checkinterval="5min" instantiate="true">
-                  <delay min="1ms" max="30s" />
                   <actions>
                     <include_actions ref="md.FactionLogic_Enhanced.Run_Scoring_and_State_Check" />
                   </actions>
@@ -582,18 +897,20 @@
                     <event_cue_signalled />
                   </conditions>
                   <cues>
-                    <cue name="Run_FactionLogic_Enhanced_Waitlist" checkinterval="30s" instantiate="true">
+                    <cue name="Run_FactionLogic_Enhanced_Waitlist" instantiate="true">
+                      <delay min="20s" max="40s" />
                       <actions>
                         <include_actions ref="md.FactionLogic_Enhanced_Waitlist.Run" />
                       </actions>
                     </cue>
                   </cues>
                 </cue>
+                <!-- end enhanced factionlogic-->
 
                 <!--Loop over all potential goals, evaluate their weight and attempt to activate one-->
                 <cue name="EvaluateGoals" checkinterval="30s" instantiate="true">
                   <actions>
-                    <include_actions ref="md.FactionLogic_Libraries.UpdateData" />
+                    <include_actions ref="UpdateData" />
 
                     <!--Goals to trigger, regardless of other evaluation scores-->
                     <set_value name="$PriorityGoals" exact="[]" />
@@ -635,6 +952,160 @@
                 </cue>
               </cues>
             </cue>
+
+            <cue name="SectorLost" instantiate="true">
+              <conditions>
+                <event_object_changed_owner group="$ClaimedSectors" previous="$Faction" />
+              </conditions>
+              <actions>
+                <!--Sector which was owned by the faction has either been lost or contested.-->
+                <set_value name="this.$Sector" exact="event.object" />
+                <debug_text text="'Faction ' + $Faction + ' has lost ownership of sector ' + this.$Sector + ' ' + this.$Sector.knownname" chance="$DebugChance" />
+
+                <!--Remove any space tags that the faction may have set for its previous situation-->
+                <include_actions ref="SectorNoLongerBorder" />
+              </actions>
+            </cue>
+
+            <cue name="SectorContested" instantiate="true">
+              <conditions>
+                <event_object_changed_contested_state group="$ClaimedSectors" contested="true" />
+              </conditions>
+              <actions>
+                <!--Sector which was owned by the faction has either been lost or contested.-->
+                <set_value name="this.$Sector" exact="event.object" />
+                <debug_text text="'Faction ' + $Faction + ' is having its ownership of sector ' + this.$Sector + ' ' + this.$Sector.knownname + ' contested'" chance="$DebugChance" />
+
+                <!--Remove any space tags that the faction may have set for its previous situation-->
+                <include_actions ref="SectorNoLongerBorder" comment="Contested sectors are not considered 'border'" />
+              </actions>
+            </cue>
+
+            <!--this.$Sector must be set-->
+            <library name="SectorNoLongerBorder">
+              <actions>
+                <debug_text text="this.$Sector + ' ' + this.$Sector.knownname + ' is no longer considered border for ' + $Faction" chance="if $DebugChance == 100 and this.$Sector.haslocationtag.border then 100 else 0" />
+                <remove_space_location_tag space="this.$Sector" tag="tag.border" />
+              </actions>
+            </library>
+
+            <library name="UpdateData">
+              <actions>
+                <set_value name="$Clusters" exact="[]" />
+                <set_value name="$Zones" exact="[]" />
+
+                <!--Populate $ClaimedSectors will all owned and contested sectors of this faction-->
+                <clear_group group="$ClaimedSectors" />
+                <find_sector name="$Sectors" owner="$Faction" multiple="true" />
+                <add_to_group groupname="$ClaimedSectors" list="$Sectors" />
+                <find_sector groupname="$ClaimedSectors" contestedby="$Faction" />
+
+                <do_for_each name="$Loop_Sector" in="$Sectors">
+                  <do_if value="not $Clusters.indexof.{$Loop_Sector.cluster}">
+                    <append_to_list name="$Clusters" exact="$Loop_Sector.cluster" />
+                  </do_if>
+                </do_for_each>
+
+                <find_zone name="$Zones" space="$Sectors" normalzone="true" multiple="true" />
+
+                <set_value name="$AdjacentSectors" exact="[]" />
+                <set_value name="this.$ExcludedSectors" exact="$Sectors.clone" />
+                <do_if value="$ExcludedSectors.count">
+                  <append_list_elements name="this.$ExcludedSectors" other="$ExcludedSectors" />
+                </do_if>
+
+                <!--Find gates in owned sectors which lead to unowned sectors and list those sectors as adjacent. Flag owned sectors bordering enemies as border.-->
+                <do_for_each name="$OwnSector" in="$Sectors">
+                  <find_gate name="$JumpGates" space="$OwnSector" active="true" multiple="true" />
+                  <find_highway_entry_gate name="$JumpGates" space="$OwnSector" superhighwaygate="true" append="true" multiple="true" />
+                  <set_value name="this.$BorderingEnemy" exact="false" />
+                  <do_for_each name="$JumpGate" in="$JumpGates">
+                    <debug_text text="'gate ' + $OwnSector.knownname + ' dest ' + $JumpGate.destination.sector + ' ' + $JumpGate.destination.sector.knownname" chance="$DebugChance" />
+                    <set_value name="this.$GateDestination" exact="@$JumpGate.destination.sector" />
+                    <do_if value="this.$GateDestination and this.$ExcludedSectors.indexof.{this.$GateDestination} == 0">
+                      <debug_text text="$Faction + ' is checking ' + this.$GateDestination.knownname + ' ' + this.$GateDestination + ' from ' + $OwnSector.knownname" chance="$DebugChance" />
+                      <do_if value="$AdjacentSectors.indexof.{this.$GateDestination} == 0 and this.$GateDestination.owner != $Faction">
+                        <append_to_list name="$AdjacentSectors" exact="this.$GateDestination" />
+                      </do_if>
+
+                      <do_if value="not this.$BorderingEnemy">
+                        <!--Check if the sector of our jumpgate is fully in our control but the gate destination leads to a sector owned or contested by an enemy-->
+                        <do_if value="this.$GateDestination.iscontested">
+                          <do_for_each name="$ContestingFaction" in="this.$GateDestination.contestingfactions">
+                            <do_if value="$Faction.hasrelation.enemy.{$ContestingFaction}">
+                              <set_value name="this.$BorderingEnemy" exact="true" />
+                              <break />
+                            </do_if>
+                          </do_for_each>
+                        </do_if>
+                        <do_elseif value="$Faction.hasrelation.enemy.{this.$GateDestination.owner}">
+                          <set_value name="this.$BorderingEnemy" exact="true" />
+                        </do_elseif>
+                      </do_if>
+                    </do_if>
+                  </do_for_each>
+                  <do_if value="this.$BorderingEnemy">
+                    <do_if value="not $OwnSector.haslocationtag.border">
+                      <debug_text text="'Faction ' + $Faction + ' will flag sector ' + $OwnSector + ' ' + $OwnSector.knownname + ' as a border sector'" chance="$DebugChance" />
+                      <add_space_location_tag space="$OwnSector" tag="tag.border" />
+                    </do_if>
+                  </do_if>
+                  <do_else>
+                    <!--Attempt to clear the border tag-->
+                    <set_value name="this.$Sector" exact="$OwnSector" />
+                    <include_actions ref="SectorNoLongerBorder" />
+                  </do_else>
+                </do_for_each>
+
+                <debug_text text="$Faction.knownname + ' updating space data - Claimed Sectors: ' + $ClaimedSectors.count + ' - Adjacent Sectors: ' + $AdjacentSectors.count" chance="$DebugChance2" />
+
+                <do_if value="player.age ge $NextJobRedeployTime">
+                  <signal_cue cue="RedeployJobShips" check="false" />
+                </do_if>
+
+                <!--<debug_text text="'$AdjacentSectors'"/>
+                <do_all exact="$AdjacentSectors.count" counter="$AdjacentSectorsCounter">
+                  <debug_text text="$AdjacentSectors.{$AdjacentSectorsCounter}.knownname" chance="$DebugChance"/>
+                </do_all>-->
+
+                <!--<set_value name="$MilitaryStrength" exact="0"/>
+                <find_ship name="$MilitaryShips" primarypurpose="purpose.fight" owner="$Faction" space="player.galaxy" multiple="true"/>
+                <do_all exact="$MilitaryShips.count" counter="$MilitaryCounter">
+                  <do_if value="$MilitaryShips.{$MilitaryCounter}.isclass.ship_xs">
+                    <set_value name="$MilitaryStrength" exact="1" operation="add"/>
+                  </do_if>
+                  <do_elseif value="$MilitaryShips.{$MilitaryCounter}.isclass.ship_s">
+                    <set_value name="$MilitaryStrength" exact="5" operation="add"/>
+                  </do_elseif>
+                  <do_elseif value="$MilitaryShips.{$MilitaryCounter}.isclass.ship_m">
+                    <set_value name="$MilitaryStrength" exact="8" operation="add"/>
+                  </do_elseif>
+                  <do_elseif value="$MilitaryShips.{$MilitaryCounter}.isclass.ship_l">
+                    <set_value name="$MilitaryStrength" exact="35" operation="add"/>
+                  </do_elseif>
+                  <do_elseif value="$MilitaryShips.{$MilitaryCounter}.isclass.ship_xl">
+                    <set_value name="$MilitaryStrength" exact="75" operation="add"/>
+                  </do_elseif>
+                </do_all>
+                <append_to_list name="$MilitaryStrengthList" exact="$MilitaryStrength"/>-->
+
+                <!--<debug_text text="$Faction + ' MilitaryStrength: ' + $MilitaryStrength" chance="$DebugChance"/>
+                <do_if value="$MilitaryStrengthList.count" min="2">
+                  <debug_text text="$Faction + ' MilitaryStrength was: ' + $MilitaryStrengthList.{$MilitaryStrengthList.count - 1}" chance="$DebugChance"/>
+                </do_if>-->
+
+              </actions>
+            </library>
+
+            <library name="Purge_Outdated_Data" purpose="include_actions">
+              <actions>
+                <do_all exact="$Crises.count" counter="$crisis_i" reverse="true">
+                  <do_if value="not $Crises.{$crisis_i}.exists">
+                    <remove_value name="$Crises.{$crisis_i}" />
+                  </do_if>
+                </do_all>
+              </actions>
+            </library>
 
             <cue name="Manager_Signalled" instantiate="true">
               <conditions>
@@ -717,13 +1188,32 @@
                   <do_if value="typeof this.$Params.{3} == datatype.cue">
                     <append_to_list name="$Crises" exact="this.$Params.{3}" />
                   </do_if>
-                  <include_actions ref="md.FactionLogic_Libraries.Purge_Outdated_Data" />
+                  <include_actions ref="Purge_Outdated_Data" />
                 </do_elseif>
                 <do_elseif value="this.$Params.{2} == 'remove_crisis'">
                   <do_if value="typeof this.$Params.{3} == datatype.cue">
                     <remove_from_list name="$Crises" exact="this.$Params.{3}" />
                   </do_if>
-                  <include_actions ref="md.FactionLogic_Libraries.Purge_Outdated_Data" />
+                  <include_actions ref="Purge_Outdated_Data" />
+                </do_elseif>
+                <do_elseif value="event.param.{2} == 'set_economic_active' and not $EconManagerActive">
+                  <set_value name="$EconManagerActive" exact="true" />
+                  <!--Find all stations and their buildstorages and clear the critical ware logs to prevent overreaction-->
+                  <find_station_by_true_owner name="this.$Stations" faction="$Faction" space="player.galaxy" multiple="true" checkoperational="false">
+                    <match state="componentstate.wreck" negate="true" />
+                  </find_station_by_true_owner>
+                  <do_for_each name="$StationToClear" in="this.$Stations">
+                    <clear_shortage_reports object="$StationToClear" />
+                    <set_value name="this.$Buildstorage" exact="$StationToClear.buildstorage" />
+                    <do_if value="this.$Buildstorage">
+                      <clear_shortage_reports object="this.$Buildstorage" />
+                    </do_if>
+                  </do_for_each>
+                  <debug_text text="'Setting economy manager processing of ' + $Faction + ' to active. Clearing past critical shortage logs of ' + this.$Stations + ' stations and their buildstorages'" chance="$DebugChance" />
+                </do_elseif>
+                <do_elseif value="event.param.{2} == 'set_economic_inactive' and $EconManagerActive">
+                  <set_value name="$EconManagerActive" exact="false" />
+                  <debug_text text="'Setting economy manager processing of ' + $Faction + ' to inactive.'" chance="$DebugChance" />
                 </do_elseif>
               </actions>
               <cues>
@@ -866,14 +1356,67 @@
                 </cue>
               </cues>
             </cue>
-
           </cues>
         </cue>
+
+        <cue name="Generate_DeployablesReport" instantiate="true">
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <actions>
+            <do_if value="$SatelliteNetworkGoal">
+              <debug_text text="'Satellites: %s (goal=%s)'.[$FactionSatellites.count, $SatelliteNetworkGoal]" />
+            </do_if>
+            <do_if value="$LasertowerNetworkGoal">
+              <debug_text text="'LaserTowers: %s (goal=%s)'.[$FactionLasertowers.count, $LasertowerNetworkGoal]" />
+              <do_for_each name="$LasertowerField" in="$FactionLasertowers">
+                <debug_text text="' - %s'.[$LasertowerField.count]" />
+              </do_for_each>
+            </do_if>
+            <do_if value="$MinefieldGoalPerSector gt 0">
+              <debug_text text="'Minefields: %s (goal=%s)'.[$FactionMinefields.count, $MinefieldGoalPerSector]" />
+              <do_for_each name="$Minefield" in="$FactionMinefields">
+                <debug_text text="' - %s'.[$Minefield.count]" />
+              </do_for_each>
+            </do_if>
+
+          </actions>
+        </cue>
+
+        <cue name="Generate_Report" instantiate="true">
+          <conditions>
+            <event_cue_signalled cue="md.FactionLogic.FactionSignalled" />
+            <check_value value="@event.param.{1} == $Faction and @event.param.{2} == 'Generate Report'" />
+          </conditions>
+          <actions>
+
+            <find_sector name="$SectorsOwned" space="player.galaxy" owner="$Faction" multiple="true" />
+
+            <debug_text text="'\n---------------------------------------------------------------------------------------------------\nGenerating Faction Logic report for ' + $Faction.knownname" context="false" />
+
+            <signal_cue_instantly cue="Generate_DeployablesReport" />
+
+            <debug_text text="'\n' + $Faction.knownname + ' owns ' + $SectorsOwned.count + ' sectors'" context="false" />
+            <do_all exact="$SectorsOwned.count" counter="$i">
+              <debug_text text="'Sector #'+$i+': ' + $SectorsOwned.{$i}.knownname" context="false" />
+            </do_all>
+
+
+            <debug_text text="'\n' + $Faction.knownname + ' has ' + $Goals.count + ' current goals'" context="false" />
+            <do_all exact="$Goals.count" counter="$i">
+              <debug_text text="'\nGoal ' + $i + '/' + $Goals.count" context="false" />
+              <signal_cue_instantly cue="$Goals.{$i}" param="['generate_report']" />
+            </do_all>
+          </actions>
+        </cue>
+
         <!-- Factions try to maintain a satellite network of slowly deteriorating satellites -->
         <cue name="MaintainSatelliteNetwork" onfail="cancel">
           <conditions>
             <check_value value="$SatelliteNetworkGoal" />
           </conditions>
+          <actions>
+          </actions>
           <cues>
             <cue name="MaintainSatelliteNetwork_PeriodicCheck" checkinterval="1800s" instantiate="true">
               <conditions>
@@ -942,6 +1485,7 @@
             </cue>
           </cues>
         </cue>
+
         <!-- Factions try to maintain a lasertower network around important locations ( shipyard, HQ ) -->
         <cue name="MaintainLasertowerNetwork" onfail="cancel">
           <conditions>
@@ -1031,6 +1575,7 @@
             </cue>
           </cues>
         </cue>
+
         <!-- Factions try to maintain some minefields and Pirates rigged-asteroids -->
         <cue name="MaintainMinefields" onfail="cancel" version="3">
           <conditions>
@@ -1407,247 +1952,6 @@
           </cues>
         </cue>
 
-
-        <!-- faction hq cues -->
-        <cue name="Find_Faction_Headquarters" version="5">
-          <actions>
-            <set_value name="$HQNecessary" exact="$Faction.isactive" />
-            <!--Even wrecked HQs are valid-->
-            <set_value name="$HQ" exact="$Faction.headquarters" />
-            <do_if value="$HQ.exists">
-              <debug_text text="$Faction + ' already has headquarters ' + $HQ" chance="$DebugChance" />
-            </do_if>
-            <do_elseif value="not $HQNecessary">
-              <debug_text text="$Faction + ' does not need a HQ'" chance="$DebugChance" />
-            </do_elseif>
-            <do_else>
-              <!-- Preferred Faction HQ location and type depends on the faction -->
-              <debug_text text="'Finding Faction HQ for ' + $Faction" chance="$DebugChance" />
-              <set_value name="$PreferredSpace" exact="null" />
-              <do_if value="$PreferredHQSpaceMacro">
-                <find_cluster name="$PreferredSpace" macro="$PreferredHQSpaceMacro" />
-                <do_if value="not $PreferredSpace">
-                  <find_sector name="$PreferredSpace" macro="$PreferredHQSpaceMacro" />
-                </do_if>
-              </do_if>
-              <do_if value="$PreferredSpace and $PreferredHQTypes.count">
-                <!--2 passes. First with $PreferredSpace(based on $PreferredHQSpaceMacro), second for the whole galaxy-->
-                <set_value name="$SearchSpace" exact="$PreferredSpace" />
-                <do_all exact="2">
-                  <do_all exact="$PreferredHQTypes.count" counter="$i">
-                    <debug_text text="'Attempting to find a suitable HQ for faction ' + $Faction.knownname + ' in space ' + $SearchSpace.knownname + ' of type ' + $PreferredHQTypes.{$i}" chance="$DebugChance" />
-                    <do_if value="typeof $PreferredHQTypes.{$i} == datatype.macro">
-                      <find_station_by_true_owner name="$HQ" space="$SearchSpace" faction="$Faction" macro="$PreferredHQTypes.{$i}" />
-                    </do_if>
-                    <do_elseif value="$PreferredHQTypes.{$i} == 'shipbuilding'">
-                      <find_station_by_true_owner name="$HQ" space="$SearchSpace" faction="$Faction" canbuildships="true" comment="shipyard or wharf" />
-                    </do_elseif>
-                    <do_elseif value="$PreferredHQTypes.{$i} == 'equipmentdock'">
-                      <find_station_by_true_owner name="$HQ" space="$SearchSpace" faction="$Faction" equipmentdock="true" comment="equipment dock" />
-                    </do_elseif>
-                    <do_elseif value="$PreferredHQTypes.{$i} == 'tradestation'">
-                      <find_station_by_true_owner name="$HQ" space="$SearchSpace" faction="$Faction" tradestation="true" />
-                    </do_elseif>
-                    <do_elseif value="$PreferredHQTypes.{$i} == 'defencestation'">
-                      <find_station_by_true_owner name="$HQ" space="$SearchSpace" faction="$Faction" defencestation="true" />
-                    </do_elseif>
-                    <do_elseif value="$PreferredHQTypes.{$i} == 'piratebase'">
-                      <find_station_by_true_owner name="$HQ" space="$SearchSpace" faction="$Faction" piratebase="true" />
-                    </do_elseif>
-                    <do_elseif value="$PreferredHQTypes.{$i} == 'any'">
-                      <find_station_by_true_owner name="$HQ" space="$SearchSpace" faction="$Faction" />
-                    </do_elseif>
-                    <do_if value="$HQ">
-                      <break />
-                    </do_if>
-                  </do_all>
-                  <do_if value="$HQ">
-                    <break />
-                  </do_if>
-                  <do_else>
-                    <set_value name="$SearchSpace" exact="player.galaxy" />
-                  </do_else>
-                </do_all>
-
-                <do_if value="$HQ">
-                  <debug_text text="$Faction + ' HQ set to ' + $HQ.knownname + ' ' + $HQ + ' in ' + $HQ.sector.knownname + ', ' + $HQ.cluster.knownname" chance="$DebugChance" />
-                  <set_value name="md.$FactionData.{$Faction}.$Headquarters" exact="$HQ" />
-                  <set_faction_headquarters faction="$Faction" station="$HQ" />
-                  <signal_cue cue="CreateNewFactionRepresentative" />
-                </do_if>
-                <do_else>
-                  <debug_text text="'No suitable location for ' + $Faction.name  + ' HQ found!'" filter="error" />
-                </do_else>
-              </do_if>
-              <do_else>
-                <set_value name="$HQNecessary" exact="false" />
-                <debug_text text="'Faction is ' + $Faction.name + ' - no Faction HQ is required'" chance="$DebugChance" />
-              </do_else>
-              <remove_value name="$PreferredSpace" />
-            </do_else>
-          </actions>
-          <cues>
-            <cue name="CheckHQStatus" checkinterval="5min">
-              <conditions>
-                <!--parent.time so the conditions don't pass as soon as the parent completes with no HQ-->
-                <check_value value="$HQNecessary and player.age gt (parent.time + 1s) and not $Faction.headquarters.exists" />
-              </conditions>
-              <actions>
-                <debug_text text="$Faction + ' does not have a HQ. Attempt to find a new one.'" chance="$DebugChance" />
-                <reset_cue cue="Find_Faction_Headquarters" />
-              </actions>
-            </cue>
-            <cue name="CheckHQStatus_FactionActivated">
-              <conditions>
-                <event_faction_activated faction="$Faction" />
-                <check_value value="$HQNecessary and player.age gt (parent.time + 1s) and not $Faction.headquarters.exists" />
-              </conditions>
-              <actions>
-                <debug_text text="$Faction + ' active. Attempt to find a HQ.'" chance="$DebugChance" />
-                <reset_cue cue="Find_Faction_Headquarters" />
-              </actions>
-            </cue>
-          </cues>
-        </cue>
-        <cue name="Cleanup_Faction_Headquarters" comment="reset it to a state where Find_Faction_Headquarters will find a new HQ">
-          <conditions>
-            <event_cue_signalled />
-          </conditions>
-          <actions>
-            <do_if value="$Faction.representative.exists">
-              <debug_text text="'Removing representative %s for faction %s'.[$Faction.representative, $Faction]" chance="0" />
-              <set_value name="this.$rep" exact="$Faction.representative" />
-              <remove_representative faction="$Faction" />
-              <debug_text text="'After removing, representative %s for faction %s'.[$Faction.representative, $Faction]" chance="0" />
-              <do_if value="@this.$rep.room.iswalkable">
-                <signal_objects object="this.$rep" param="'npc_despawn'" />
-              </do_if>
-              <do_else>
-                <remove_actor_from_room actor="this.$rep" />
-              </do_else>
-            </do_if>
-            <do_if value="$Faction.headquarters.exists">
-              <debug_text text="'Removing HQ %s for faction %s'.[$Faction.headquarters, $Faction]" chance="0" />
-              <set_faction_headquarters faction="$Faction" station="$Faction.headquarters" headquarters="false" comment="Undo it being the HQ" />
-            </do_if>
-            <remove_value name="md.$FactionData.{$Faction}.$Headquarters" />
-            <remove_value name="md.$FactionData.{$Faction}.$Representative" comment="can't set it to null, just remove it" />
-            <reset_cue cue="Cleanup_Faction_Headquarters" />
-          </actions>
-        </cue>
-        <cue name="RelocateHQ">
-          <conditions>
-            <event_cue_signalled />
-          </conditions>
-          <actions>
-            <debug_text text="'Relocating HQ (preferredhqspace=%s preferedhqtypes=%s)'.[$PreferredHQSpaceMacro, $PreferredHQTypes]" chance="0" />
-            <signal_cue cue="Cleanup_Faction_Headquarters" />
-            <reset_cue cue="Find_Faction_Headquarters" />
-          </actions>
-        </cue>
-
-
-        <!-- faction rep cues -->
-        <!-- Create Faction Representative NPCs (at gamestart or when last representative was killed) -->
-        <cue name="CreateNewFactionRepresentative" instantiate="true">
-          <conditions>
-            <event_cue_signalled />
-          </conditions>
-          <actions>
-            <debug_text text="'Check if a new faction representative for ' + $Faction.name + ' is needed'" chance="$DebugChance" />
-            <do_if value="not $Faction.representative">
-              <debug_text text="'No faction representative exists for ' + $Faction.name" chance="$DebugChance" />
-              <do_if value="@md.$FactionData.{$Faction}.$Headquarters.isoperational">
-                <create_representative_actor name="$Representative" station="md.$FactionData.{$Faction}.$Headquarters" faction="$Faction" />
-                <do_if value="$Representative">
-                  <debug_text text="'Created ' + $Representative.name + ' ({' + $Representative + '}) as representive of ' + $Faction.name + ' on ' + md.$FactionData.{$Faction}.$Headquarters.knownname + ' ({' + md.$FactionData.{$Faction}.$Headquarters + '}) in ' + md.$FactionData.{$Faction}.$Headquarters.sector.knownname + ', ' + md.$FactionData.{$Faction}.$Headquarters.cluster.knownname" chance="$DebugChance" />
-                  <set_value name="md.$FactionData.{$Faction}.$Representative" exact="$Representative" />
-                  <do_if value="FactionRepresentativeKilled_Check.state" exact="cuestate.complete">
-                    <reset_cue cue="FactionRepresentativeKilled_Check" />
-                  </do_if>
-                  <signal_cue_instantly cue="md.NPC_FactionRepresentative.FactionRepresentativeCreated" param="$Representative" />
-                </do_if>
-                <do_else>
-                  <debug_text text="'Failed to create representative of ' + $Faction.name + ' on ' + md.$FactionData.{$Faction}.$Headquarters.knownname + ' ({' + md.$FactionData.{$Faction}.$Headquarters + '}) in ' + md.$FactionData.{$Faction}.$Headquarters.sector.knownname + ', ' + md.$FactionData.{$Faction}.$Headquarters.cluster.knownname" filter="error" />
-                </do_else>
-              </do_if>
-              <do_else>
-                <debug_text text="'There is no Faction HQ on which to generate the Faction Representative for ' + $Faction.name" filter="error" />
-              </do_else>
-            </do_if>
-          </actions>
-        </cue>
-        <cue name="FactionRepresentativeKilled_Check" checkinterval="1s" version="2">
-          <conditions>
-            <check_value value="md.$FactionData.{$Faction}.$Representative?" />
-            <check_value value="md.$FactionData.{$Faction}.$Representative" />
-          </conditions>
-          <patch sinceversion="2" state="waiting">
-            <!-- patch missing factionrep definition in characters.xml in 3.10HF1, cue is waiting because it failed to create it previously" -->
-            <!-- We need to specifically patch faction.court, but can't directly access that, so use a different way to narrow it down to 'relevant' factions -->
-            <do_if value="(md.$FactionData.{$Faction}.$Headquarters?) and (md.$FactionData.{$Faction}.$Headquarters.isoperational) and (not md.$FactionData.{$Faction}.$Representative?)">
-              <signal_cue cue="CreateNewFactionRepresentative" />
-            </do_if>
-          </patch>
-          <cues>
-            <cue name="FactionRepresentativeKilled">
-              <conditions>
-                <event_object_destroyed object="md.$FactionData.{$Faction}.$Representative" />
-              </conditions>
-              <actions>
-                <debug_text text="'Representative for ' + $Faction.name + ', ' + event.object.name + ' ({' + event.object + '}), has been killed'" chance="$DebugChance" />
-                <set_value name="md.$FactionData.{$Faction}.$Representative" exact="null" />
-              </actions>
-            </cue>
-
-            <cue name="CheckRepresentativeStatus" checkinterval="3min">
-              <conditions>
-                <check_value value="(md.$FactionData.{$Faction}.$Headquarters.isoperational) and (not md.$FactionData.{$Faction}.$Representative.exists)" />
-              </conditions>
-              <actions>
-                <signal_cue cue="CreateNewFactionRepresentative" />
-              </actions>
-            </cue>
-
-          </cues>
-        </cue>
-
-
-        <!-- misc cues -->
-        <cue name="Trigger_Report" instantiate="true" comment="Cue added here for convenience. Signal for faction report.">
-          <conditions>
-            <event_cue_signalled />
-          </conditions>
-          <actions>
-            <signal_cue_instantly cue="md.FactionLogic.FactionSignalled" param="[$Faction, 'Generate Report']" />
-          </actions>
-        </cue>
-        <cue name="PeriodicCallback_Check" checkinterval="5min" instantiate="true">
-          <actions>
-            <do_if value="@$PeriodicCallback">
-              <set_value name="$Table" exact="table[$caller = this, $hqnecessary = $HQNecessary, $hq = $HQ, $PreferredHQSpaceMacro = $PreferredHQSpaceMacro, $preferredhqtypes = $PreferredHQTypes]" />
-              <signal_cue_instantly cue="$PeriodicCallback" param="$Table" />
-            </do_if>
-            <!--do_if value="this.$hqrelocate?">
-              <signal_cue cue="RelocateHQ"/>
-              <remove_value name="this.$hqrelocate"/>
-            </do_if-->
-          </actions>
-        </cue>
-
-
-        <!-- patches -->
-        <cue name="PATCH_ReregisterForPatrolCoordination" onfail="cancel">
-          <conditions>
-            <check_value value="@$DoPatchPatrolCoordination" />
-          </conditions>
-          <delay exact="1s" />
-          <actions>
-            <!--Patching out invalid distress calls may have removed this faction from the patrol coordination master list. Attempt to re-add-->
-            <signal_cue_instantly cue="md.FactionGoal_PatrolCoordinationService.Register_Factions" param="namespace" comment="'namespace' is the manager-cue" />
-            <remove_value name="$DoPatchPatrolCoordination" />
-          </actions>
-        </cue>
         <cue name="Patch__MaintainRiggedAsteroids_ExcessiveFields" onfail="cancel" namespace="this">
           <conditions>
             <check_value value="md.$Patch_RiggedAsteroidLists?" />
@@ -1755,9 +2059,351 @@
             </cue>
           </cues>
         </cue>
-
       </cues>
     </library>
 
+    <!--Deprecated.
+    Param: [$ResultCue, $Object or Group/List, $ShipClassStrengthTable(unused), $SubordinateClassStrengthTable(unused), $ResultTable(optional)]
+    Result saved to $ResultCue.$EFS_Result-->
+    <cue name="EvaluateForceStrength" instantiate="true" namespace="static">
+      <conditions>
+        <event_cue_signalled />
+      </conditions>
+      <actions>
+        <run_actions ref="EvaluateForceStrengthLib" result="event.param.{1}.$EFS_Result">
+          <param name="Ships" value="event.param.{2}" />
+          <param name="ResultTable" value="@event.param.{5}" />
+        </run_actions>
+      </actions>
+    </cue>
+
+    <library name="EvaluateForceStrengthLib" purpose="run_actions">
+      <params>
+        <param name="Ships" comment="Ship or list/group of ships" />
+        <param name="SubordinateThreatFactor" default="0.8" />
+        <param name="ResultTable" default="null" />
+      </params>
+      <actions>
+        <set_value name="$Result" exact="0" />
+        <do_for_each name="$Ship" in="if typeof $Ships == datatype.component then [$Ships] else $Ships">
+          <run_actions ref="Estimated_Ship_Strength_Lib" result="$ShipThreat">
+            <param name="Ship" value="$Ship" />
+            <param name="SubordinateThreatFactor" value="$SubordinateThreatFactor" />
+          </run_actions>
+          <do_if value="$ResultTable">
+            <set_value name="$ResultTable.{$Ship}" exact="$ShipThreat" />
+          </do_if>
+          <set_value name="$Result" exact="$ShipThreat" operation="add" />
+        </do_for_each>
+        <return value="$Result" />
+      </actions>
+    </library>
+
+    <!--Deprecated.
+    Strength of ship $ESS_Ship
+    Result written to $ESS_Result-->
+    <library name="Estimated_Ship_Strength">
+      <actions>
+        <run_actions ref="Estimated_Ship_Strength_Lib" result="$ESS_Result">
+          <param name="Ship" value="$ESS_Ship" />
+        </run_actions>
+      </actions>
+    </library>
+
+    <library name="Estimated_Ship_Strength_Lib" purpose="run_actions">
+      <params>
+        <param name="Ship" />
+        <param name="SubordinateThreatFactor" default="0.8" />
+      </params>
+      <actions>
+        <set_value name="$Result" exact="$Ship.threatscore" />
+
+        <do_if value="$Ship and $SubordinateThreatFactor gt 0.0">
+          <!--Potentially less strength as we have less control over them-->
+          <do_for_each name="$Subordinate" in="$Ship.allsubordinates">
+            <set_value name="$Result" operation="add" exact="$Subordinate.threatscore * $SubordinateThreatFactor" />
+          </do_for_each>
+          <!--<debug_text text="$DebugText + 'Ship ' + $Ship + ' ' + $Ship.knownname + ' has ' + $Ship.allsubordinates.count + ' subordinates and a total strength of ' + $Result" context="false"/>-->
+        </do_if>
+        <return value="$Result" />
+      </actions>
+    </library>
+
+
+    <!--signal_cue_instantly
+    param: [$ResultCue, $Points, $Faction, $Commandeerable, $AdditionalJobTags]
+    Result saved to $ResultCue.$Suitable_Jobs-->
+    <cue name="Get_Military_Jobs" instantiate="true" namespace="static">
+      <conditions>
+        <event_cue_signalled />
+      </conditions>
+      <actions>
+        <get_threat_score result="$Ship_XL_Threat" class="class.ship_xl" purpose="purpose.fight" />
+        <get_threat_score result="$Ship_L_Threat" class="class.ship_l" purpose="purpose.fight" />
+        <get_threat_score result="$Ship_M_Threat" class="class.ship_m" purpose="purpose.fight" />
+        <get_threat_score result="$Ship_S_Threat" class="class.ship_s" purpose="purpose.fight" />
+        <set_value name="$MilitaryTags" exact="[tag.military, tag.factionlogic]" />
+        <!--Preferably order list in decending points value-->
+        <set_value name="$MilitaryJobDefinitions" exact="[
+                     table[$Points = $Ship_XL_Threat, $Class = class.ship_xl, $Tags = $MilitaryTags],
+                     table[$Points = $Ship_L_Threat,  $Class = class.ship_l,  $Tags = $MilitaryTags],
+                     table[$Points = $Ship_M_Threat,  $Class = class.ship_m,  $Tags = $MilitaryTags],
+                     table[$Points = $Ship_S_Threat,  $Class = class.ship_s,  $Tags = $MilitaryTags]]" />
+        <run_actions ref="Get_Suitable_Jobs_Lib" result="event.param.{1}.$Suitable_Jobs">
+          <param name="JobDefinitions" value="$MilitaryJobDefinitions" />
+          <param name="Points" value="event.param.{2}" />
+          <param name="Faction" value="event.param.{3}" />
+          <param name="Commandeerable" value="@event.param.{4}" />
+          <param name="AdditionalTags" value="@event.param.{5}" />
+        </run_actions>
+      </actions>
+      <!--To patch, clear value $MilitaryJobDefinitions-->
+    </cue>
+
+    <!--signal_cue_instantly
+    param: [$ResultCue, $Points, $Faction, $Commandeerable, $AdditionalJobTags]
+    Result saved to $ResultCue.$Suitable_Jobs-->
+    <cue name="Get_Scout_Jobs" instantiate="true" namespace="static">
+      <conditions>
+        <event_cue_signalled />
+      </conditions>
+      <actions>
+        <get_threat_score result="$Ship_XL_Threat" class="class.ship_xl" purpose="purpose.fight" />
+        <get_threat_score result="$Ship_L_Threat" class="class.ship_l" purpose="purpose.fight" />
+        <get_threat_score result="$Ship_M_Threat" class="class.ship_m" purpose="purpose.fight" />
+        <get_threat_score result="$Ship_S_Threat" class="class.ship_s" purpose="purpose.fight" />
+        <set_value name="$ScoutTags" exact="[tag.scout, tag.factionlogic]" />
+        <!--Preferably order list in decending points value-->
+        <set_value name="$ScoutJobDefinitions" exact="[
+                     table[$Points = $Ship_XL_Threat, $Class = class.ship_xl, $Tags = $ScoutTags],
+                     table[$Points = $Ship_L_Threat,  $Class = class.ship_l,  $Tags = $ScoutTags],
+                     table[$Points = $Ship_M_Threat,  $Class = class.ship_m,  $Tags = $ScoutTags],
+                     table[$Points = $Ship_S_Threat,  $Class = class.ship_s,  $Tags = $ScoutTags]]" />
+        <run_actions ref="Get_Suitable_Jobs_Lib" result="event.param.{1}.$Suitable_Jobs">
+          <param name="JobDefinitions" value="$ScoutJobDefinitions" />
+          <param name="Points" value="event.param.{2}" />
+          <param name="Faction" value="event.param.{3}" />
+          <param name="Commandeerable" value="@event.param.{4}" />
+          <param name="AdditionalTags" value="@event.param.{5}" />
+        </run_actions>
+      </actions>
+      <!--To patch, clear value $ScoutJobDefinitions-->
+    </cue>
+
+    <!--Internal use-->
+    <library name="Get_Suitable_Jobs_Lib" purpose="run_actions">
+      <params>
+        <param name="JobDefinitions" />
+        <param name="Points" />
+        <param name="Faction" />
+        <param name="Commandeerable" default="false" />
+        <param name="AdditionalTags" default="null" comment="Tag or list of tags used in addition to the tags of the JobsTable" />
+        <param name="DebugChance" default="0" />
+      </params>
+      <actions>
+        <assert value="typeof $JobDefinitions == datatype.list" />
+        <assert value="$Points gt 0" />
+        <assert value="typeof $Faction == datatype.faction" />
+
+        <create_list name="$JobListIndexes" exact="$JobDefinitions.count" />
+        <do_all exact="$JobDefinitions.count" counter="$i">
+          <set_value name="$JobListIndexes.{$i}" exact="$i" />
+        </do_all>
+
+        <set_value name="$Suitable_Jobs" exact="[]" />
+        <debug_text text="'Attempting to get suitable job ships for ' + $Faction + '. Points: ' + $Points" chance="$DebugChance" />
+
+        <set_value name="$MatchingJobsTable" exact="table[]" />
+        <set_value name="$AffordableDefinitions" exact="[]" />
+
+        <do_if value="$AdditionalTags">
+          <set_value name="$CombinedTagList" exact="[]" />
+        </do_if>
+
+        <set_value name="$Tries" exact="0" />
+        <set_value name="$PointsOverflow" exact="0" />
+        <do_while value="$Points gt 0 and $JobListIndexes.count">
+          <set_value name="$Tries" operation="add" />
+          <set_value name="$Definition" exact="null" />
+          <set_value name="$Cost" exact="0" />
+          <clear_list list="$AffordableDefinitions" />
+
+          <do_all exact="$JobListIndexes.count" counter="$i">
+            <do_if value="$AffordableDefinitions.count or $JobDefinitions.{$JobListIndexes.{$i}}.$Points le $Points">
+              <append_to_list name="$AffordableDefinitions" exact="$JobListIndexes.{$i}" />
+            </do_if>
+          </do_all>
+
+          <do_if value="$AffordableDefinitions.count">
+            <!--Hardcoded scale as it can't be an expression-->
+            <do_if value="$Tries" exact="1">
+              <set_value name="$Index" min="1" max="$AffordableDefinitions.count" profile="decreasing" scale="4" />
+            </do_if>
+            <do_elseif value="$Tries" exact="2">
+              <set_value name="$Index" min="1" max="$AffordableDefinitions.count" profile="decreasing" scale="3" />
+            </do_elseif>
+            <do_elseif value="$Tries" exact="3">
+              <set_value name="$Index" min="1" max="$AffordableDefinitions.count" profile="decreasing" scale="2" />
+            </do_elseif>
+            <do_elseif value="$Tries" min="4">
+              <set_value name="$Index" min="1" max="$AffordableDefinitions.count" profile="decreasing" />
+            </do_elseif>
+            <set_value name="$SelectedJobIndex" exact="$AffordableDefinitions.{$Index}" />
+            <set_value name="$Definition" exact="$JobDefinitions.{$SelectedJobIndex}" />
+            <set_value name="$Cost" exact="$Definition.$Points" />
+
+            <do_if value="$MatchingJobsTable.{$SelectedJobIndex}?">
+              <set_value name="$JobsList" exact="$MatchingJobsTable.{$SelectedJobIndex}" />
+              <debug_text text="'Has already found suitable jobs for cost ' + $Cost + ' Jobs: ' + $JobsList" chance="$DebugChance" />
+            </do_if>
+            <do_else>
+              <do_if value="$CombinedTagList?">
+                <clear_list list="$CombinedTagList" />
+                <append_list_elements name="$CombinedTagList" other="$Definition.$Tags" />
+                <do_if value="typeof $AdditionalTags == datatype.list">
+                  <append_list_elements name="$CombinedTagList" other="$AdditionalTags" />
+                </do_if>
+                <do_else>
+                  <append_to_list name="$CombinedTagList" exact="$AdditionalTags" />
+                </do_else>
+                <get_suitable_job result="$JobsList" multiple="true" faction="$Faction" size="$Definition.$Class" tags="$CombinedTagList" onlycommandeerable="$Commandeerable" />
+              </do_if>
+              <do_else>
+                <get_suitable_job result="$JobsList" multiple="true" faction="$Faction" size="$Definition.$Class" tags="$Definition.$Tags" onlycommandeerable="$Commandeerable" />
+              </do_else>
+              <set_value name="$MatchingJobsTable.{$SelectedJobIndex}" exact="$JobsList" />
+            </do_else>
+
+            <do_if value="$JobsList.count">
+              <set_value name="$Tries" exact="0" />
+              <append_to_list name="$Suitable_Jobs" exact="$JobsList.random" />
+              <set_value name="$Points" operation="subtract" exact="$Cost" />
+              <debug_text text="'Selected job ' + $Suitable_Jobs.{$Suitable_Jobs.count} + ' for cost: ' + $Cost + '; points now ' + $Points" chance="$DebugChance" />
+              <do_if value="$PointsOverflow gt 0">
+                <debug_text text="'Attempted to add $PointsOverflow back to $Points. $PointsOverflow: ' + $PointsOverflow + '; $Points now: ' + ($Points + $PointsOverflow)" chance="$DebugChance" />
+                <set_value name="$Points" operation="add" exact="$PointsOverflow" />
+                <set_value name="$PointsOverflow" exact="0" />
+              </do_if>
+            </do_if>
+            <do_else>
+              <!--No matching jobs. Remove entry in $JobListIndexes-->
+              <debug_text text="'No suitable job for class ' + $Definition.$Class + ' at cost ' + $Cost" chance="$DebugChance" />
+              <remove_from_list name="$JobListIndexes" exact="$SelectedJobIndex" multiple="false" />
+            </do_else>
+          </do_if>
+          <do_if value="$Tries gt 0">
+            <do_if value="$Cost">
+              <set_value name="$PointDiff" exact="$Points - $Cost" />
+            </do_if>
+            <do_elseif value="$Tries gt 4">
+              <do_if value="$Points gt 1">
+                <!--$Points may be a float. Use 2 as a minimum for safety-->
+                <set_value name="$PointDiff" min="1" max="[$Points - 1, 2].max" />
+              </do_if>
+            </do_elseif>
+            <do_else>
+              <set_value name="$Points" exact="0" />
+              <set_value name="$PointDiff" exact="0" />
+            </do_else>
+
+            <do_if value="$PointDiff">
+              <set_value name="$Tries" exact="0" />
+              <set_value name="$Points" operation="subtract" exact="$PointDiff" />
+              <set_value name="$PointsOverflow" operation="add" exact="$PointDiff" />
+              <debug_text text="'Attempting another tier by reducing $Points to ' + $Points + '. Points overflow is now ' + $PointsOverflow" chance="$DebugChance" />
+            </do_if>
+          </do_if>
+        </do_while>
+
+        <return value="$Suitable_Jobs" />
+      </actions>
+    </library>
+
+    <!--returns a suitable situation ID for the faction in the sector.
+    Primarily used to help in the display of notifications when a faction subgoal has performed an activity
+    
+    potential results (ordered by priority):
+    'faction_is_war_host'     - Player is subscribed to a war and the faction is the host
+    'faction_is_war_enemy'    - Player is subscribed to a war and the faction is the enemy
+    'enemy_to_local_friend'   - Faction is an enemy to a local faction who is friendly to the player
+    'neutral_to_local_friend' - Faction is neutral to a local faction who is friendly to the player-->
+    <library name="Get_Faction_Situation_By_Sector" purpose="run_actions">
+      <params>
+        <param name="Faction" />
+        <param name="Sector" />
+      </params>
+      <actions>
+        <!--TODO @Owen check if active war subscriptions involve this space, regardless of sector ownership-->
+
+        <set_value name="$DisplayNotification" exact="false" />
+        <set_value name="$SectorOwner" exact="$Sector.owner" />
+        <set_value name="$IsEnemyToLocation" exact="false" />
+        <do_if value="$Sector.iscontested">
+          <set_value name="$ContestingFactions" exact="$Sector.contestingfactions" />
+          <set_value name="$SectorOwner" exact="null" />
+        </do_if>
+
+        <!--Check if the player is part of a subscription related to the owner-->
+        <run_actions ref="md.X4Ep1_War_Subscriptions.Get_Active_War_Subscriptions" result="$ActiveAlliedSubscriptions">
+          <param name="HostFactions" value="[$Faction]" />
+          <param name="EnemyFactions" value="if $ContestingFactions? then $ContestingFactions else [$SectorOwner]" />
+        </run_actions>
+        <set_value name="$ActiveEnemySubscriptions" exact="[]" />
+        <do_if value="not $ActiveAlliedSubscriptions">
+          <run_actions ref="md.X4Ep1_War_Subscriptions.Get_Active_War_Subscriptions" result="$ActiveEnemySubscriptions">
+            <param name="HostFactions" value="if $ContestingFactions? then $ContestingFactions else [$SectorOwner]" />
+            <param name="EnemyFactions" value="[$Faction]" />
+          </run_actions>
+        </do_if>
+
+        <do_if value="$ActiveAlliedSubscriptions.count">
+          <set_value name="$DisplayNotification" exact="true" />
+        </do_if>
+        <do_elseif value="$ActiveEnemySubscriptions.count">
+          <set_value name="$DisplayNotification" exact="true" />
+          <set_value name="$IsEnemyToLocation" exact="true" />
+        </do_elseif>
+        <!--If not part of a subscription, check if the player is close by and has a friendly faction who will broadcast the news-->
+        <do_elseif value="$Sector.isknown">
+          <set_value name="$SectorDist" exact="player.entity.gatedistance.{$Sector}" />
+          <do_if value="$SectorDist ge 0 and $SectorDist le 1">
+            <do_if value="$ContestingFactions?">
+              <do_for_each in="$ContestingFactions">
+                <do_if value="not loop.element.hasrelation.enemy.{faction.player}">
+                  <set_value name="$DisplayNotification" exact="true" />
+                  <!--Don't break. We want to flag if someone conciders the faction hostile-->
+                  <do_if value="loop.element.hasrelation.enemy.{$Faction}">
+                    <set_value name="$IsEnemyToLocation" exact="true" />
+                  </do_if>
+                </do_if>
+              </do_for_each>
+            </do_if>
+            <do_elseif value="$SectorOwner">
+              <set_value name="$DisplayNotification" exact="not $SectorOwner.hasrelation.enemy.{faction.player}" />
+            </do_elseif>
+          </do_if>
+        </do_elseif>
+
+        <do_if value="$DisplayNotification">
+          <do_if value="$ActiveAlliedSubscriptions.count">
+            <!--Faction is a war subscription host performing an activity in enemy space-->
+            <return value="'faction_is_war_host'" />
+          </do_if>
+          <do_elseif value="$ActiveEnemySubscriptions.count">
+            <!--Faction is a war subscription enemy performing an activity in host space-->
+            <return value="'faction_is_war_enemy'" />
+          </do_elseif>
+          <do_elseif value="$IsEnemyToLocation">
+            <!--Faction is an enemy to a local faction friendly to the player-->
+            <return value="'enemy_to_local_friend'" />
+          </do_elseif>
+          <do_else>
+            <!--Faction is not enemy to a local faction friendly to the player-->
+            <return value="'neutral_to_local_friend'" />
+          </do_else>
+        </do_if>
+        <return value="null" />
+      </actions>
+    </library>
   </cues>
 </mdscript>
