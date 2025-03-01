@@ -1,0 +1,264 @@
+<?xml version="1.0" encoding="utf-8"?>
+<aiscript name="build.buildstorage" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd" version="3">
+  <!--
+  
+  Script to handle build orders on build storages
+   
+  Author: Owen
+  
+  -->
+  <interrupts>
+    <handler>
+      <conditions>
+        <event_build_added object="this.object" />
+      </conditions>
+      <actions>
+        <set_value name="$build" exact="event.param" />
+        <do_if value="@this.object.base.isoperational and $build.exists and $build.isexpansion and $build.constructionsequence == null">
+          <set_value name="$dismantlestationbuild" exact="$build" />
+          <!--Do not allow the processor to work on the build immediately as we may need to add trades before-->
+          <set_value name="this.{param.buildprocessor.dismantling_station_processing_endtime_varname}" exact="player.age + 30s" />
+          <process_build build="$build" object="this.object" buildmodule="$buildmodule" allowimmediate="false" />
+        </do_if>
+        <do_else>
+          <remove_value name="$dismantlestationbuild" />
+          <!--Attempt to process the build regardless whether the build module is building or not-->
+          <process_build build="$build" object="this.object" buildmodule="$buildmodule" />
+        </do_else>
+        <abort_called_scripts resume="loop" />
+      </actions>
+    </handler>
+    <handler>
+      <conditions>
+        <event_object_built_station object="this.object" />
+      </conditions>
+      <actions>
+        <set_value name="$baseowner" exact="this.object.base.owner" />
+        <do_if value="$baseowner and $baseowner != faction.ownerless and $baseowner != faction.player">
+          <assert value="not this.object.base.tradenpc" text="'newly constructed station ' + this.object.base + ' ' + this.object.base.knownname + ' already has a trade NPC [Owen]'" />
+          <debug_text text="'Initialise newly constructed station: ' + this.object.base.knownname + ' ' + this.object.base" chance="$debugchance" />
+          <signal_objects object="player.galaxy" param="'init station'" param2="this.object.base" param3="false" />
+        </do_if>
+        <remove_value name="$baseowner" />
+      </actions>
+    </handler>
+    <!--#Hack handler to resume after patch to find and process a dismantle build-->
+    <handler>
+      <conditions>
+        <event_object_signalled object="this" param="'patch_dismantle_station'" />
+      </conditions>
+      <actions>
+        <abort_called_scripts resume="loop" />
+      </actions>
+    </handler>
+  </interrupts>
+  <init>
+    <set_value name="$debugchance" exact="0" />
+    <set_value name="$buildmodule" exact="this.object.buildmodule" />
+    <!-- enhanced factionlogic -->
+    <add_to_group groupname="global.$Enhanced_FactionLogic.$AllBuildstorages" />
+  </init>
+  <patch sinceversion="3">
+    <do_if value="this.object.isscheduledfordeconstruction">
+      <find_object_component name="$patch_processor" class="class.buildprocessor" object="this.object" />
+      <do_if value="$patch_processor">
+        <set_value name="$patch_queuedbuild" exact="$patch_processor.queuedbuild" />
+        <do_if value="$patch_queuedbuild and $patch_queuedbuild.exists and $patch_queuedbuild.isexpansion and not $patch_queuedbuild.constructionsequence">
+          <set_value name="$dismantlestationbuild" exact="$patch_queuedbuild" />
+        </do_if>
+      </do_if>
+      <remove_value name="$patch_processor" />
+      <remove_value name="$patch_queuedbuild" />
+      <do_if value="$dismantlestationbuild?">
+        <debug_text text="'%s in %s has build %s to dismantle itself'.[this.object.base.debugname, @this.sector.knownname, $dismantlestationbuild]" filter="savegame" />
+        <signal_objects object="this" param="'patch_dismantle_station'" />
+      </do_if>
+    </do_if>
+  </patch>
+  <attention min="unknown">
+    <actions>
+      <do_if value="not this.object.isclass.buildstorage">
+        <debug_text text="'attempting to run buildstorage script on non-buildstorage! object %1 (on zone %2). Wrong Shipyard setup?'.[this.object.knownname, this.object.zone.knownname]" />
+        <return />
+      </do_if>
+      <do_if value="this.object.buildmodules.count != 1">
+        <debug_text text="'invalid number of buildmodules on buildstorage! object %1 (on zone %2).'.[this.object.knownname, this.object.zone.knownname]" />
+        <return />
+      </do_if>
+
+      <label name="loop" />
+
+      <do_if value="@$dismantlestationbuild.exists">
+        <debug_text text="'expansion sequence is empty, we are dismantling this station. Transfer all cargo to build storage'" chance="$debugchance" />
+        <set_value name="$station" exact="this.object.base" />
+        <do_if value="$station.isoperational">
+          <!-- for this special case we will try to make sure the station has a decent amount of transport units to ship cargo with -->
+          <!-- TOOD: should we remove any non-transport units first? -->
+          <do_if value="$station.units.free gt 0">
+            <add_units object="$station" category="unitcategory.transport" mk="unitcategory.transport.maxmk" exact="$station.units.free" />
+          </do_if>
+          <do_if value="$station.availableunits.{unitcategory.transport}.count" min="1">
+            <set_value name="$cargotable" exact="$station.cargo.table" />
+            <do_if value="$cargotable.keys.count">
+              <debug_text text="'got %s different wares in storage and %s available transport units'.[$cargotable.keys.count, $station.availableunits.{unitcategory.transport}.count]" chance="$debugchance" />
+
+              <!-- sort by totalvolume per ware, ascending -->
+              <set_value name="$transferwares" exact="$cargotable.keys.list" />
+              <debug_text text="'$transferwares before sorting: ' + $transferwares" chance="$debugchance" />
+              <sort_list list="$transferwares" sortbyvalue="$cargotable.{loop.element} * loop.element.volume" sortdescending="false" />
+              <debug_text text="'$transferwares after sorting: ' + $transferwares" chance="$debugchance" />
+
+              <!-- simplification: determine minimum unit cargo transport capacity of all available unit types -->
+              <set_value name="$minunitcapacity" exact="4000" comment="default value defined for macro.storage_gen_xs_universal_01_macro which is used for mass traffic transport" />
+              <do_for_each name="$unitmacro" in="$station.availableunits.{unitcategory.transport}.list">
+                <set_value name="$minunitcapacity" exact="[$minunitcapacity, $unitmacro.transportunitcapacity.cargo].min" />
+              </do_for_each>
+
+              <!-- distribute the available units over the wares that need transferring and -->
+              <do_if value="$minunitcapacity gt 0">
+                <set_value name="$transfertable" exact="table[]" />
+                <set_value name="$remainingunits" exact="$station.availableunits.{unitcategory.transport}.count" />
+                <do_for_each name="$ware" in="$transferwares" counter="$i">
+                  <do_if value="(this.object.cargo.{$ware}.max gt 0) and not $ware.isprocessed">
+                    <set_value name="$amount" exact="$cargotable.{$ware}" />
+                    <set_value name="$maxamountperunit" exact="$minunitcapacity / $ware.volume" />
+                    <do_if value="$maxamountperunit gt 0">
+                      <do_if value="$i lt $transferwares.count">
+                        <set_value name="$unitsperware" exact="[($remainingunits / ($transferwares.count - ($i - 1)))i, 1].max" />
+                      </do_if>
+                      <do_else>
+                        <!-- processing the last ware which will have the highest total volume due to the sorting above, use whatever units may be left -->
+                        <set_value name="$unitsperware" exact="$remainingunits" />
+                      </do_else>
+
+                      <set_value name="$neededunits" exact="[($amount / $maxamountperunit) + 1, $unitsperware].min" />
+                      <set_value name="$transfertable.{$ware}" exact="[$amount, $neededunits * $maxamountperunit].min" />
+                      <debug_text text="'planning to transfer %s %s using %s/%s units (up to %s allowed per ware)'.[$transfertable.{$ware}, $ware, $neededunits, $remainingunits, $unitsperware]" chance="$debugchance" />
+                      <set_value name="$remainingunits" operation="subtract" exact="$neededunits" />
+                      <do_if value="$remainingunits le 0">
+                        <break />
+                      </do_if>
+                    </do_if>
+                  </do_if>
+                </do_for_each>
+                <remove_value name="$amount" />
+                <remove_value name="$neededunits" />
+                <remove_value name="$unitsperware" />
+                <remove_value name="$maxamountperunit" />
+                <remove_value name="$remainingunits" />
+                <remove_value name="$minunitcapacity" />
+
+                <!-- start the transfer of the chosen wares and amounts -->
+                <do_for_each name="$ware" valuename="$amount" in="$transfertable">
+                  <set_value name="this.{param.buildprocessor.dismantling_station_processing_endtime_varname}" exact="player.age + 30s" />
+                  <debug_text text="'transfer %s/%s %s from %s (%s, %s) to buildstorage %s'.[$amount, $cargotable.{$ware}, $ware, $station.knownname, $station.idcode, $station, this.object]" chance="$debugchance" />
+                  <execute_custom_trade seller="$station" buyer="this.object" ware="$ware" amount="[$station.cargo.{$ware}.count, $amount].min" sinceversion="2">
+                    <interrupt_after_time time="[29s/$transfertable.keys.count, 2s].min" comment="interrupt immediately so that we can schedule the next transfer right away, make sure there is time to process all wares before the process_build timeout" />
+                  </execute_custom_trade>
+                  <do_if value="not $station.isoperational">
+                    <break />
+                  </do_if>
+                </do_for_each>
+                <remove_value name="$cargotable" />
+                <remove_value name="$transfertable" />
+                <remove_value name="this.{param.buildprocessor.dismantling_station_processing_endtime_varname}" />
+              </do_if>
+              <remove_value name="$transferwares" />
+            </do_if>
+          </do_if>
+          <!-- teleport remaining cargo over to the build storage, if there is anything left in the station it will immediately become unavailable when <process_build /> is called so no need to remove it manually -->
+          <!-- TODO: maybe only teleport a certain percentage instead of everything? -->
+          <do_if value="$station.isoperational">
+            <do_for_each name="$ware" valuename="$amount" in="$station.cargo.table">
+              <debug_text text="'teleporting %s %s from %s (%s, %s) to buildstorage %s'.[$amount, $ware, $station.knownname, $station.idcode, $station, this.object]" chance="$debugchance" />
+              <add_cargo object="this.object" ware="$ware" exact="$amount" />
+            </do_for_each>
+          </do_if>
+        </do_if>
+        <remove_value name="$station" />
+        <do_if value="$dismantlestationbuild.isprocessing">
+          <!--build is processing so we can forget about it-->
+          <remove_value name="$dismantlestationbuild" />
+        </do_if>
+        <do_elseif value="not @this.{param.buildprocessor.dismantling_station_processing_endtime_varname} or player.age gt this.{param.buildprocessor.dismantling_station_processing_endtime_varname}">
+          <!--attempt to process the dismantle station build and then forget about it-->
+          <process_build build="$dismantlestationbuild" object="this.object" buildmodule="$buildmodule" allowimmediate="true" />
+          <remove_value name="$dismantlestationbuild" />
+        </do_elseif>
+      </do_if>
+      <do_else>
+        <remove_value name="$dismantlestationbuild" />
+      </do_else>
+
+      <!--If the current build is waiting for a construction vessel, request one, but only for non-player builds-->
+      <do_if value="not $buildmodule.isplayerowned and $buildmodule.iswaitingforconstructionvessel and not $buildmodule.constructionvessel">
+        <!--TODO @Owen Better identification for construction vessels. Would need the connection defined in the ship, not defaults.xml-->
+        <debug_text text="'attempting to find construction vessel'" chance="$debugchance" />
+        <set_value name="$constructionvessel" exact="null" />
+        <set_value name="this.$construction_vessel_response" exact="false" />
+        <set_value name="$searchspace" exact="this.sector" />
+        <set_value name="$clusterindex" exact="0" />
+        <do_while value="$searchspace">
+          <find_ship name="$constructionvessels" primarypurpose="purpose.build" class="class.ship_xl" space="$searchspace" multiple="true">
+            <match_relation_to object="this.object" relation="dock" />
+          </find_ship>
+          <do_all exact="$constructionvessels.count" counter="$i">
+            <do_if value="not $constructionvessels.{$i}.constructionmodule">
+              <signal_objects object="$constructionvessels.{$i}" param="'request construction vessel'" param2="$buildmodule" />
+              <debug_text text="'sending request to construction vessel ' + $constructionvessels.{$i}" chance="$debugchance" />
+              <do_if value="this.$construction_vessel_response">
+                <debug_text text="'request successful'" chance="$debugchance" />
+                <break />
+              </do_if>
+            </do_if>
+          </do_all>
+          <do_if value="this.$construction_vessel_response">
+            <remove_value name="this.$construction_vessel_response" />
+            <break />
+          </do_if>
+          <do_else>
+            <do_if value="not $nearclusters?">
+              <find_cluster_in_range distances="$clusterstable" multiple="true" object="this" maxdistance="5" />
+              <set_value name="$nearclusters" exact="$clusterstable.keys.sorted" />
+            </do_if>
+            <set_value name="$clusterindex" operation="add" />
+            <do_if value="$clusterindex gt $nearclusters.count">
+              <set_value name="$searchspace" exact="null" />
+            </do_if>
+            <do_else>
+              <set_value name="$searchspace" exact="$nearclusters.{$clusterindex}" />
+            </do_else>
+          </do_else>
+        </do_while>
+      </do_if>
+      <remove_value name="$nearclusters" />
+      <remove_value name="$clusterstable" />
+
+      <do_if value="not $buildmodule.isplayerowned and $buildmodule.requiresconstructionvessel and not $buildmodule.constructionvessel">
+        <!--interrupt after a short while to check if the buildmodule is currently waiting for a construction vessel.
+        $buildmodule.requiresconstructionvessel means that the build will need one to begin. However, we don't want to take a CV until all the resources are present.
+        When $buildmodule.iswaitingforconstructionvessel is true, we will then search for a CV-->
+        <wait min="1min" max="2min" />
+      </do_if>
+      <do_else>
+        <wait min="30min" max="40min">
+          <interrupt>
+            <conditions>
+              <event_build_finished object="this.object" />
+            </conditions>
+          </interrupt>
+        </wait>
+
+        <!--Wait a little longer so the next build can initialise-->
+        <wait min="4s" max="10s" />
+      </do_else>
+
+      <!-- Return to process orders -->
+      <resume label="loop" />
+
+      <label name="finish" />
+      <debug_text text="' End script. Unreachable under normal circumstances [Owen]'" />
+
+    </actions>
+  </attention>
+</aiscript>
