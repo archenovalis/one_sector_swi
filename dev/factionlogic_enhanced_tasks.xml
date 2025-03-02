@@ -90,6 +90,74 @@
       </actions>
     </cue>
 
+    <library name="Handle_Borders">
+      <!-- notes:
+        prime sectors are handled by process stations
+
+        remember to handle contested sectors
+      -->
+      <actions>
+        <!-- from vanilla md.FactionLogic.UpdateData -->
+        <!--Find gates in owned sectors which lead to unowned sectors and list those sectors as adjacent. Flag owned sectors bordering enemies as border.-->
+        <do_for_each name="$OwnSector" in="$Sectors">
+          <find_gate name="$JumpGates" space="$OwnSector" active="true" multiple="true" />
+          <find_highway_entry_gate name="$JumpGates" space="$OwnSector" superhighwaygate="true" append="true" multiple="true" />
+          <set_value name="this.$BorderingEnemy" exact="false" />
+          <do_for_each name="$JumpGate" in="$JumpGates">
+            <debug_text text="'gate ' + $OwnSector.knownname + ' dest ' + $JumpGate.destination.sector + ' ' + $JumpGate.destination.sector.knownname" chance="$DebugChance" />
+            <set_value name="this.$GateDestination" exact="@$JumpGate.destination.sector" />
+            <do_if value="this.$GateDestination and this.$ExcludedSectors.indexof.{this.$GateDestination} == 0">
+              <debug_text text="$Faction + ' is checking ' + this.$GateDestination.knownname + ' ' + this.$GateDestination + ' from ' + $OwnSector.knownname" chance="$DebugChance" />
+              <do_if value="$AdjacentSectors.indexof.{this.$GateDestination} == 0 and this.$GateDestination.owner != $Faction">
+                <append_to_list name="$AdjacentSectors" exact="this.$GateDestination" />
+              </do_if>
+
+              <do_if value="not this.$BorderingEnemy">
+                <!--Check if the sector of our jumpgate is fully in our control but the gate destination leads to a sector owned or contested by an enemy-->
+                <do_if value="this.$GateDestination.iscontested">
+                  <do_for_each name="$ContestingFaction" in="this.$GateDestination.contestingfactions">
+                    <do_if value="$Faction.hasrelation.enemy.{$ContestingFaction}">
+                      <set_value name="this.$BorderingEnemy" exact="true" />
+                      <break />
+                    </do_if>
+                  </do_for_each>
+                </do_if>
+                <do_elseif value="$Faction.hasrelation.enemy.{this.$GateDestination.owner}">
+                  <set_value name="this.$BorderingEnemy" exact="true" />
+                </do_elseif>
+              </do_if>
+            </do_if>
+          </do_for_each>
+          <do_if value="this.$BorderingEnemy">
+            <do_if value="not $OwnSector.haslocationtag.border">
+              <debug_text text="'Faction ' + $Faction + ' will flag sector ' + $OwnSector + ' ' + $OwnSector.knownname + ' as a border sector'" chance="$DebugChance" />
+              <add_space_location_tag space="$OwnSector" tag="tag.border" />
+            </do_if>
+          </do_if>
+          <do_else>
+            <!--Attempt to clear the border tag-->
+            <set_value name="this.$Sector" exact="$OwnSector" />
+            <include_actions ref="SectorNoLongerBorder" />
+          </do_else>
+        </do_for_each>
+
+        <!-- get adjacent sectors -->
+        <!-- if ownerless found tag ownerless as neutral zones and tag sector as border -->
+        <!-- if other faction found tag then ensure both are tagged as border -->
+        <!-- if tagged border and no ownerless or enemy faction adjacent then change tag to core -->
+
+        <!-- update strategic value; if changing from border to core, or core to border, subtract and add -->
+        <set_value name="$value" exact="if $sector.haslocationtag.border then $Enhanced_SectorWeights.$border else $Enhanced_SectorWeights.$core" />
+        <set_value name="$Enhanced_Sectors.{$sector}.$Values.$strategic" operation="add" exact="$value" />
+
+        <add_to_group groupname="global.$EnhancedLogic.$NeutralZones" object="$sector" />
+        <remove_from_group group="global.$EnhancedLogic.$NeutralZones" object="$sector" />
+
+        <add_space_location_tag space="$sector" tag="tag.neutralzone" />
+        <remove_space_location_tag space="$sector" tag="tag.neutralzone" />
+      </actions>
+    </library>
+
     <cue name="Handle_Stations" instantiate="true">
       <conditions>
         <check_any>
@@ -159,73 +227,5 @@
         <cancel_cue cue="this" />
       </actions>
     </cue>
-
-    <library name="Handle_Borders">
-      <!-- notes:
-        prime sectors are handled by process stations
-
-        remember to handle contested sectors
-      -->
-      <actions>
-        <!-- from vanilla md.FactionLogic.UpdateData -->
-        <!--Find gates in owned sectors which lead to unowned sectors and list those sectors as adjacent. Flag owned sectors bordering enemies as border.-->
-        <do_for_each name="$OwnSector" in="$Sectors">
-          <find_gate name="$JumpGates" space="$OwnSector" active="true" multiple="true" />
-          <find_highway_entry_gate name="$JumpGates" space="$OwnSector" superhighwaygate="true" append="true" multiple="true" />
-          <set_value name="this.$BorderingEnemy" exact="false" />
-          <do_for_each name="$JumpGate" in="$JumpGates">
-            <debug_text text="'gate ' + $OwnSector.knownname + ' dest ' + $JumpGate.destination.sector + ' ' + $JumpGate.destination.sector.knownname" chance="$DebugChance" />
-            <set_value name="this.$GateDestination" exact="@$JumpGate.destination.sector" />
-            <do_if value="this.$GateDestination and this.$ExcludedSectors.indexof.{this.$GateDestination} == 0">
-              <debug_text text="$Faction + ' is checking ' + this.$GateDestination.knownname + ' ' + this.$GateDestination + ' from ' + $OwnSector.knownname" chance="$DebugChance" />
-              <do_if value="$AdjacentSectors.indexof.{this.$GateDestination} == 0 and this.$GateDestination.owner != $Faction">
-                <append_to_list name="$AdjacentSectors" exact="this.$GateDestination" />
-              </do_if>
-
-              <do_if value="not this.$BorderingEnemy">
-                <!--Check if the sector of our jumpgate is fully in our control but the gate destination leads to a sector owned or contested by an enemy-->
-                <do_if value="this.$GateDestination.iscontested">
-                  <do_for_each name="$ContestingFaction" in="this.$GateDestination.contestingfactions">
-                    <do_if value="$Faction.hasrelation.enemy.{$ContestingFaction}">
-                      <set_value name="this.$BorderingEnemy" exact="true" />
-                      <break />
-                    </do_if>
-                  </do_for_each>
-                </do_if>
-                <do_elseif value="$Faction.hasrelation.enemy.{this.$GateDestination.owner}">
-                  <set_value name="this.$BorderingEnemy" exact="true" />
-                </do_elseif>
-              </do_if>
-            </do_if>
-          </do_for_each>
-          <do_if value="this.$BorderingEnemy">
-            <do_if value="not $OwnSector.haslocationtag.border">
-              <debug_text text="'Faction ' + $Faction + ' will flag sector ' + $OwnSector + ' ' + $OwnSector.knownname + ' as a border sector'" chance="$DebugChance" />
-              <add_space_location_tag space="$OwnSector" tag="tag.border" />
-            </do_if>
-          </do_if>
-          <do_else>
-            <!--Attempt to clear the border tag-->
-            <set_value name="this.$Sector" exact="$OwnSector" />
-            <include_actions ref="SectorNoLongerBorder" />
-          </do_else>
-        </do_for_each>
-
-        <!-- get adjacent sectors -->
-        <!-- if ownerless found tag ownerless as neutral zones and tag sector as border -->
-        <!-- if other faction found tag then ensure both are tagged as border -->
-        <!-- if tagged border and no ownerless or enemy faction adjacent then change tag to core -->
-
-        <!-- update strategic value; if changing from border to core, or core to border, subtract and add -->
-        <set_value name="$value" exact="if $sector.haslocationtag.border then $Enhanced_SectorWeights.$border else $Enhanced_SectorWeights.$core" />
-        <set_value name="$Enhanced_Sectors.{$sector}.$Values.$strategic" operation="add" exact="$value" />
-
-        <add_to_group groupname="global.$EnhancedLogic.$NeutralZones" object="$sector" />
-        <remove_from_group group="global.$EnhancedLogic.$NeutralZones" object="$sector" />
-
-        <add_space_location_tag space="$sector" tag="tag.neutralzone" />
-        <remove_space_location_tag space="$sector" tag="tag.neutralzone" />
-      </actions>
-    </library>
   </cues>
 </mdscript>
