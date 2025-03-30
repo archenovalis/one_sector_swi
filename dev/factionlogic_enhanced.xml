@@ -22,8 +22,8 @@
 
       enhanced todo: global.$EnhancedLogic.$NeutralZones = group[sector] (ownerless sectors adjacent to owned sectors)
       
-      $Enhanced_State = string ('EXPANSION', 'CONSOLIDATE', 'DEFENSE', 'WAR_INVADE', 'WAR_DEFENSE', 'WAR_CONSOLIDATE')
-      $Enhanced_PreviousState = string ('EXPANSION', 'CONSOLIDATE', 'DEFENSE', 'WAR_INVADE', 'WAR_DEFENSE', 'WAR_CONSOLIDATE')
+      $Enhanced_State = string ('EXPANSION', 'CONSOLIDATE', 'DEFENSE')
+      $Enhanced_PreviousState = string ('EXPANSION', 'CONSOLIDATE', 'DEFENSE')
       $Enhanced_Scores = table[
         $economy = float
         $military = float
@@ -79,7 +79,7 @@
           $Values = table[
             $economic = int (dynamic)
             $resource = int (static)
-            $stategic = int (dynamic)
+            $strategic = int (dynamic)
           ]
           $Resources = table[
             $sunlight = float (static)
@@ -259,7 +259,7 @@
               * $Values = table[
                 $economic = int (dynamic)
                 * $resource = int (static)
-                $stategic = int (dynamic)
+                $strategic = int (dynamic)
               ]
               * $Resources = table[
                 $sunlight = float (static)
@@ -329,6 +329,7 @@
                 <set_value name="$resourceSum" operation="add" exact="$Enhanced_Resources.{$resource}.$available" />
               </do_for_each>
               <do_for_each name="$resource" in="$list">
+                <!-- enhanced todo: factor in distance? -->
                 <set_value name="$Enhanced_Resources.{$resource}.$efficiencyRatio" exact="$Enhanced_Resources.{$resource}.$available / $resourceSum" />
               </do_for_each>
             </do_for_each>
@@ -491,7 +492,7 @@
               $Values = table[
                 $economic = int (dynamic)
                 $resource = int (static)
-                $stategic = int (dynamic)
+                $strategic = int (dynamic)
               ]
               * $NumProductionModules = table[
                 {$moduletype} = int (static)
@@ -741,6 +742,7 @@
               <set_value name="$sum" operation="add" exact="$Enhanced_Resources.{$resource}.$demand" />
             </do_for_each>
             <do_for_each name="$resource" in="$products">
+              <!-- enhanced todo: add distance factor? -->
               <set_value name="$Enhanced_Resources.{$resource}.$efficiencyRatio" exact="$Enhanced_Resources.{$resource}.$demand / $sum" />
             </do_for_each>
           </actions>
@@ -762,6 +764,7 @@
             <include_actions ref="Check_Emergencies" />
             <!-- <include_actions ref="Check_State_Change" /> -->
             <include_actions ref="Set_Build_Order_Priority" />
+            <signal_cue_instantly cue="PeriodicProductionCheck" />
           </actions>
         </library>
         <library name="Calculate_Raw_Scores">
@@ -798,7 +801,7 @@
               * $Values = table[
                 * $economic = int (dynamic)
                 $resource = int (static)
-                * $stategic = int (dynamic)
+                * $strategic = int (dynamic)
               ]
               $NumProductionModules = table[
                 {$moduletype} = int (static)
@@ -1144,6 +1147,103 @@
             <do_if value="Start_FactionLogic_Enhanced_Waitlist.state == cuestate.waiting">
               <signal_cue_instantly cue="Start_FactionLogic_Enhanced_Waitlist" />
             </do_if>
+          </actions>
+        </library>
+
+        <library name="PeriodicProductionCheck">
+          <actions>
+            <set_value name="$BaseExpansionThreshold" exact="3600" /> <!-- 1 hour of unmet demand -->
+            <set_value name="$BaseNewFactoryThreshold" exact="14400" /> <!-- 4 hours of unmet demand -->
+
+            <!-- Process resource shortages faction-wide -->
+            <do_for_each name="$Resource" in="$Enhanced_Resources">
+              <do_if value="not $Resource.hastag.minable">
+                <!-- Calculate effective demand -->
+                <set_value name="$ResourceData" exact="$Enhanced_Resources.{$Resource}" />
+                <set_value name="$Demand" exact="$ResourceData.$demand + $ResourceData.$secondaryDemand" />
+                <set_value name="$Production" exact="$ResourceData.$production * $ResourceData.$efficiency" />
+                <set_value name="$OnHand" exact="$ResourceData.$on_hand" />
+                <set_value name="$Saturation" exact="$ResourceData.$saturation" />
+                <set_value name="$UnmetDemand" exact="[$Demand - $Production, 0].max * (1 - $Saturation)" />
+
+                <!-- Find sectors with production capability -->
+                <set_value name="$ProductionSectors" exact="[]" />
+                <do_for_each name="$Sector" in="$Enhanced_Sectors">
+                  <find_station_by_true_owner name="$Stations" faction="$Faction" space="$Sector" multiple="true" checkoperational="false">
+                    <match_products wares="$Resource" />
+                  </find_station_by_true_owner>
+                  <do_if value="$Stations.count gt 0">
+                    <append_to_list name="$ProductionSectors" exact="$Sector" />
+                  </do_if>
+                  <remove_value name="$Stations" />
+                </do_for_each>
+
+                <!-- Determine total factory count -->
+                <set_value name="$TotalFactoryCount" exact="0" />
+                <do_for_each name="$Sector" in="$ProductionSectors">
+                  <find_station_by_true_owner name="$Stations" faction="$Faction" space="$Sector" multiple="true" checkoperational="false">
+                    <match_products wares="$Resource" />
+                  </find_station_by_true_owner>
+                  <set_value name="$TotalFactoryCount" operation="add" exact="$Stations.count" />
+                  <remove_value name="$Stations" />
+                </do_for_each>
+
+                <!-- Adjust thresholds based on faction state -->
+                <set_value name="$StateModifier" exact="$Enhanced_StateWeights.{$Enhanced_State.$state}.$economy" />
+                <set_value name="$PriorityModifier" exact="$Enhanced_BuildPriority.$Productionmodules.$economy" />
+                <set_value name="$ExpansionThreshold" exact="$BaseExpansionThreshold * (1 + $StateModifier + $PriorityModifier)" />
+                <set_value name="$NewFactoryThreshold" exact="$BaseNewFactoryThreshold * (1 + $StateModifier + $PriorityModifier)" />
+
+                <!-- Decide production action and add to waitlist -->
+                <do_if value="$UnmetDemand gt $ExpansionThreshold and $TotalFactoryCount lt $MaxFactoriesPerWare">
+                  <do_if value="$TotalFactoryCount ge $MinFactoriesPerWare and $ProductionSectors.count gt 0">
+                    <!-- Expand production in an existing sector -->
+                    <set_value name="$TargetSector" exact="$ProductionSectors.random" />
+                    <set_value name="$WaitlistEntry" exact="table[
+                      $type = 'production_expansion',
+                      $resource = $Resource,
+                      $sector = $TargetSector,
+                      $priority = $UnmetDemand * (1 + $StateModifier + $PriorityModifier)
+                    ]" />
+                    <append_to_list name="$Enhanced_Waitlists.$Stations.$Economy" exact="$WaitlistEntry" />
+                    <debug_text text="'Added production expansion for ' + $Resource + ' in sector ' + $TargetSector.knownname + ' to waitlist'" chance="$DebugChance" />
+                  </do_if>
+                  <do_elseif value="$UnmetDemand gt $NewFactoryThreshold">
+                    <!-- Select a sector for a new factory -->
+                    <set_value name="$TargetSector" exact="null" />
+                    <do_if value="$Enhanced_PrimeSectors.count gt 0">
+                      <set_value name="$TargetSector" exact="$Enhanced_PrimeSectors.random" />
+                    </do_if>
+                    <do_elseif value="$Enhanced_Sectors.keys.count gt 0">
+                      <set_value name="$TargetSector" exact="$Enhanced_Sectors.keys.random" />
+                    </do_elseif>
+
+                    <do_if value="$TargetSector">
+                      <set_value name="$WaitlistEntry" exact="table[
+                        $type = 'factory',
+                        $resource = $Resource,
+                        $sector = $TargetSector,
+                        $priority = $UnmetDemand * (1 + $StateModifier + $PriorityModifier)
+                      ]" />
+                      <append_to_list name="$Enhanced_Waitlists.$Stations.$Economy" exact="$WaitlistEntry" />
+                      <debug_text text="'Added new factory for ' + $Resource + ' in sector ' + $TargetSector.knownname + ' to waitlist'" chance="$DebugChance" />
+                    </do_if>
+                  </do_elseif>
+                </do_if>
+
+                <remove_value name="$ProductionSectors" />
+              </do_if>
+            </do_for_each>
+
+            <!-- Signal waitlist processing if not already running -->
+            <do_if value="Start_FactionLogic_Enhanced_Waitlist.state == cuestate.waiting">
+              <signal_cue_instantly cue="Start_FactionLogic_Enhanced_Waitlist" />
+            </do_if>
+
+            <!-- Clean up -->
+            <remove_value name="$ResourceData" />
+            <remove_value name="$TargetSector" />
+            <reset_cue cue="PeriodicProductionCheck" />
           </actions>
         </library>
 

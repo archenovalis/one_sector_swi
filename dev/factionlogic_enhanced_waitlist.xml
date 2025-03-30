@@ -33,9 +33,9 @@
       $Enhanced_BuildPriority = table[
         $Buildmodules = table[
           $wharf = float
-          $l = float
-          $xl = float
-          $xxl = float
+          $l = float (shipyard buildmodule size large)
+          $xl = float (shipyard buildmodule size ex-large)
+          $xxl = float (shipyard buildmodule size ex-ex-large)
         ]
         $Productionmodules = table[
           {$product} = float
@@ -222,19 +222,19 @@
             ]
           -->
         <!-- enhanced todo: change mining and trade scores to use specific scores in build priority -->
-        <set_value name="$chanceMilitary" exact="(1 - $Enhanced_Scores.$military) * (1 + $Enhanced_Scores.$militaryModifier)" />
-        <set_value name="$chanceIndustry" exact="(1 - $Enhanced_Scores.$industry) * (1 + $Enhanced_Scores.$industryModifier)" />
-        <set_value name="$chanceEconomy" exact="(1 - $Enhanced_Scores.$economy) * (1 + $Enhanced_Scores.$economyModifier)" />
+        <set_value name="$chanceMilitary" exact="((1 - $Enhanced_Scores.$military + $Enhanced_Scores.$militaryModifier)*100.0)i" />
+        <set_value name="$chanceIndustry" exact="((1 - $Enhanced_Scores.$industry + $Enhanced_Scores.$industryModifier)*100.0)i" />
+        <set_value name="$chanceEconomy" exact="((1 - $Enhanced_Scores.$economy + $Enhanced_Scores.$economyModifier)*100.0)i" />
 
         <!-- military -->
-        <set_value name="$chanceFight" exact="(1 - $Enhanced_Scores.$military)" />
+        <set_value name="$chanceFight" exact="1" /> <!-- (1 - $Enhanced_Scores.$military) -->
         <!-- industry -->
-        <set_value name="$chanceBuild" exact="(1 - $Enhanced_Scores.$industry)" />
+        <set_value name="$chanceBuild" exact="1" /> <!-- (1 - $Enhanced_Scores.$industry) -->
         <!-- economy -->
-        <set_value name="$chanceTrade" exact="(1 - $Enhanced_BuildPriority.$Trade.$score)" />
-        <set_value name="$chanceMine" exact="(1 - $Enhanced_BuildPriority.$Mine.$score)" />
-        <set_value name="$chanceSolid" exact="(1 - $Enhanced_BuildPriority.$Mine.$Solid.$score)" />
-        <set_value name="$chanceGas" exact="(1 - $Enhanced_BuildPriority.$Mine.$Gas.$score)" />
+        <set_value name="$chanceTrade" exact="((1 - $Enhanced_BuildPriority.$Trade.$score)*100.0)i" />
+        <set_value name="$chanceMine" exact="((1 - $Enhanced_BuildPriority.$Mine.$score)*100.0)i" />
+        <set_value name="$chanceSolid" exact="((1 - $Enhanced_BuildPriority.$Mine.$Solid.$score)*100.0)i" />
+        <set_value name="$chanceGas" exact="((1 - $Enhanced_BuildPriority.$Mine.$Gas.$score)*100.0)i" />
 
         <!-- Check for Empty Waitlists and Adjust Chances -->
         <!-- Initialize flags -->
@@ -277,6 +277,25 @@
             </do_else>
           </do_for_each>
         </do_for_each>
+
+        <!-- Set chances based on presence of ships -->
+        <do_for_each name="$category" in="$Categories">
+          <do_if value="$category == 'Mine'">
+            <set_value name="$tempMine" exact="if (not $hasGas) and (not $hasSolid) then 0 else $chanceMine" />
+            <do_if value="$chanceMine gt 0">
+              <set_value name="$tempGas" exact="if (not $hasGas) then 0 else $chanceGas" />
+              <set_value name="$tempSolid" exact="if (not $hasSolid) then 0 else $chanceSolid" />
+            </do_if>
+          </do_if>
+          <do_else>
+            <set_value name="this.{'$temp' + {$category}}" exact="if (not $hasShips) then 0 else {'$chance' + {$category}}" />
+          </do_else>
+        </do_for_each>
+
+        <!-- Dependent chance adjustments -->
+        <set_value name="$tempMilitary" exact="if $tempFight == 0 then 0 else $chanceMilitary" />
+        <set_value name="$tempIndustry" exact="if $tempBuild == 0 then 0 else $chanceIndustry" />
+        <set_value name="$tempEconomy" exact="if $tempMine == 0 and $tempTrade == 0 then 0 else $chanceEconomy" />
       </actions>
     </library>
     <library name="ShipLists_ProcessBuildStations">      <!-- Phase 1 -->
@@ -342,25 +361,6 @@
           </do_else>
         </do_for_each>
         <set_value name="$RemainingSlots" exact="$BeginningSlots.clone" />
-
-        <!-- Set chances based on presence of ships -->
-        <do_for_each name="$category" in="$Categories">
-          <do_if value="$category == 'Mine'">
-            <set_value name="$tempMine" exact="if (not $hasGas) and (not $hasSolid) then 0 else $chanceMine" />
-            <do_if value="$chanceMine gt 0">
-              <set_value name="$tempGas" exact="if (not $hasGas) then 0 else $chanceGas" />
-              <set_value name="$tempSolid" exact="if (not $hasSolid) then 0 else $chanceSolid" />
-            </do_if>
-          </do_if>
-          <do_else>
-            <set_value name="this.{'$temp' + {$category}}" exact="if (not $hasShips) then 0 else {'$chance' + {$category}}" />
-          </do_else>
-        </do_for_each>
-
-        <!-- Dependent chance adjustments -->
-        <set_value name="$tempMilitary" exact="if $tempFight == 0 then 0 else $chanceMilitary" />
-        <set_value name="$tempIndustry" exact="if $tempBuild == 0 then 0 else $chanceIndustry" />
-        <set_value name="$tempEconomy" exact="if $tempMine == 0 and $tempTrade == 0 then 0 else $chanceEconomy" />
       </actions>
     </library>
     <library name="ShipLists_Build">      <!-- Phase 2 -->
@@ -582,88 +582,211 @@
       </actions>
     </library>
 
-    <cue name="Station_Waitlist" instantiate="true">
-      <conditions>
-        <event_cue_signalled />
-      </conditions>
-      <actions>
-      </actions>
-    </cue>
     <library name="Process_StationLists">
       <!-- 
-      $Enhanced_PendingStations = table[
-        $shipyards = int
-        $wharfs = int
-        $equipment = int
-        $trade = int
-        $defense = int $trade= int
-        $pirate = int
-      ]
-      $Enhanced_StationWaitlists = [
-        table[
-          $type = 'god'
-          $godEntryID = string                      // God station ID
-          $sector = sector                          // Chosen sector
-          $StationEntry = table[
-            $Station = station object
-            $WasShipyard = bool
-            $WasWharf = bool
-            $WasEquipmentDock = bool
-            $WasDefenceStation = bool
-            $WasTradeStation = bool
-            $WasPirateBase = bool
+      $Enhanced_Waitlists.$Stations = table[
+        $NumPlanned = table[
+          $shipyards = int
+          $wharfs = int
+          $equipment = int
+          $trade = int
+          $defense = int $trade= int
+          $pirate = int
+        ],
+        $Economy = []
+        $Industry = []
+        $Military = []
+
+        Each $Economy, $Industry, and $Military entry is one of:
+          table[
+            $type = 'god'
+            $godEntryID = string                      // God station ID
+            $sector = sector                          // Chosen sector
+            $StationEntry = table[
+              $Station = station object
+              $WasShipyard = bool
+              $WasWharf = bool
+              $WasEquipmentDock = bool
+              $WasDefenceStation = bool
+              $WasTradeStation = bool
+              $WasPirateBase = bool
+            ]
           ]
-        ]
-        table[
-          $type = 'macro'
-          $macro = macro                            // Station macro definition
-          $sector = sector                          // Chosen sector
-          $zone = zone                              // Optional spawn zone
-          $position = position                      // Spawn position
-          $StationEntry = table[
-            $Station = station object
-            $WasShipyard = bool
-            $WasWharf = bool
-            $WasEquipmentDock = bool
-            $WasDefenceStation = bool
-            $WasTradeStation = bool
-            $WasPirateBase = bool
+          table[
+            $type = 'macro'
+            $macro = macro                            // Station macro definition
+            $sector = sector                          // Chosen sector
+            $zone = zone                              // Optional spawn zone
+            $position = position                      // Spawn position
+            $StationEntry = table[
+              $Station = station object
+            ]
           ]
-        ]
-        table[
-          $type = 'plan'
-          $constructionPlan = constructionsequence  // Construction plan
-          $moduleSetMacro = macro                   // Module set macro
-          $rawName = string                         // Station name
-          $sector = sector                          // Chosen sector
-          $zone = zone                              // Optional spawn zone
-          $position = position                      // Spawn position
-          $loadoutLevel = float                     // Loadout level for generation
-          $StationEntry = table[
-            $Station = station object
-            $WasShipyard = bool
-            $WasWharf = bool
-            $WasEquipmentDock = bool
-            $WasDefenceStation = bool
-            $WasTradeStation = bool
-            $WasPirateBase = bool
+          table[
+            $type = 'plan'
+            $constructionPlan = constructionsequence  // Construction plan
+            $moduleSetMacro = macro                   // Module set macro
+            $rawName = string                         // Station name
+            $sector = sector                          // Chosen sector
+            $zone = zone                              // Optional spawn zone
+            $position = position                      // Spawn position
+            $loadoutLevel = float                     // Loadout level for generation
+            $StationEntry = table[
+              $Station = station object
+            ]
           ]
         ]
       ]
       -->
       <actions>
-        <do_if value="$IsConstructionPlanStation">
-          <generate_loadout sequence="$SelectedDefinition.{1}" level="$LoadoutLevel" result="$Loadouts" faction="$Faction" />
-          <do_all exact="$Loadouts.count" counter="$l">
-            <apply_loadout sequence="$SelectedDefinition.{1}" index="$l" loadout="$Loadouts.{$l}" />
-          </do_all>
-          <add_build_to_expand_station object="$NewStation.buildstorage" buildobject="$NewStation" constructionplan="$SelectedDefinition.{1}" result="$BuildID" />
-          <debug_text text="$DebugText + 'Started construction of station ' + $NewStation.knownname + ' ' + $NewStation + ' - Build ID: ' + $BuildID + ' in ' + $ChosenSector + ' ' + $ChosenSector.knownname" context="false" chance="$DebugChance" />
-        </do_if>
+        <!-- Initialize -->
+        <set_value name="$DebugChance" exact="0" />
+        <set_value name="$isPirate" exact="if $Faction.hastag.pirate then true else false" />
+        <set_value name="$StationCategories" exact="[shipyards, wharfs, equipment, trade, defense, pirate, factory, production_expansion]" />
+        <set_value name="$PendingCVs" exact="$Enhanced_Industry.$BuildSlots.$cv - $Enhanced_Industry.$BuildShortage.$station" />
+        <set_value name="$StationPriorityScores" exact="table[]" />
 
-        <!-- stations -->
-        <!-- waitlist chance -->
-        <!-- use weighted scores to assign build chance (chance = score / totalscores)
+        <!-- Calculate priority scores for station categories -->
+        <set_value name="$chanceMilitary" exact="((1 - $Enhanced_Scores.$military + $Enhanced_Scores.$militaryModifier)*100.0)i" />
+        <set_value name="$chanceIndustry" exact="((1 - $Enhanced_Scores.$industry + $Enhanced_Scores.$industryModifier)*100.0)i" />
+        <set_value name="$chanceEconomy" exact="((1 - $Enhanced_Scores.$economy + $Enhanced_Scores.$economyModifier)*100.0)i" />
+
+        <!-- analyze faction to determine -->
+        <!-- military -->
+        <!-- industry -->
+        <!-- economy -->
+
+        <!-- military -->
+        <set_value name="$StationPriorityScores.$defense" exact="((1 - )*100.0)i" comment="based on sector desired threatscore? minimum per type of claimed sector or if we are invading a sector?" />
+        <set_value name="$StationPriorityScores.$pirate" exact="if $isPirate then ((1 - )*100.0)i else 0" comment="factions with pirate tag, but when build more?" />
+
+        <!-- industry -->
+        <set_value name="$StationPriorityScores.$Shipyards.$xxl" exact="((1 - )*100.0)i" comment="when industry shortages hit a threshhold" />
+        <set_value name="$StationPriorityScores.$Shipyards.$xl" exact="((1 - )*100.0)i" comment="when industry shortages hit a threshhold" />
+        <set_value name="$StationPriorityScores.$Shipyards.$l" exact="((1 - )*100.0)i" comment="when industry shortages hit a threshhold" />
+        <set_value name="$StationPriorityScores.$wharfs" exact="((1 - )*100.0)i" comment="when industry shortages hit a threshhold" />
+        <set_value name="$StationPriorityScores.$equipment" exact="((1 - )*100.0)i" comment="per sectors owned?" />
+        <!-- economy -->
+        <set_value name="$StationPriorityScores.$trade" exact="((1 - )*100.0)i" comment="per sectors owned?" />
+        <set_value name="$StationPriorityScores.$factory" exact="((1 - )*100.0)i" comment="transportation bottleneck?" />
+        <set_value name="$StationPriorityScores.$production_expansion" exact="((1 - )*100.0)i" comment="when resource shortages hit a threshhold and no transportation bottleneck" />
+
+        <!-- check for zeros -->
+        <set_value name="$tempMilitary" exact="if 0 == (if $isPirate then $StationPriorityScores.$pirate else 0) + $StationPriorityScores.$defense then 0 else $chanceMilitary" />
+        <set_value name="$tempIndustry" exact="if 0 == $StationPriorityScores.$Shipyards.$xxl + $StationPriorityScores.$Shipyards.$xl + $StationPriorityScores.$Shipyards.$l then 0 else $chanceIndustry" />
+        <set_value name="$tempEconomy" exact="if 0 == () then 0 else $chanceEconomy" />
+
+        <!-- Create stations -->
+        <set_value name="$TotalChance" exact="$tempMilitary+$tempIndustry+$tempEconomy" />
+        <set_value name="$Sanity" exact="0" />
+        <do_while value="$PendingCVs gt 0 and $Enhanced_StationWaitlists.count gt 0 and $TotalChance gt 0">
+          <!-- Select category based on weighted chance -->
+          <do_any>
+            <set_value name="$Category" exact="'shipyards'" weight="$StationPriorityScores.$Shipyards.$xxl" />
+            <set_value name="$Category" exact="'shipyards'" weight="$StationPriorityScores.$Shipyards.$xl" />
+            <set_value name="$Category" exact="'shipyards'" weight="$StationPriorityScores.$Shipyards.$l" />
+            <set_value name="$Category" exact="'wharfs'" weight="$StationPriorityScores.$wharfs" />
+            <set_value name="$Category" exact="'equipment'" weight="$StationPriorityScores.$equipment" />
+            <set_value name="$Category" exact="'trade'" weight="$StationPriorityScores.$trade" />
+            <set_value name="$Category" exact="'defense'" weight="$StationPriorityScores.$defense" />
+            <set_value name="$Category" exact="'pirate'" weight="$StationPriorityScores.$pirate" />
+            <set_value name="$Category" exact="'factory'" weight="$StationPriorityScores.$factory" />
+            <set_value name="$Category" exact="'production_expansion'" weight="$StationPriorityScores.$production_expansion" />
+          </do_any>
+
+          <!-- Find matching waitlist entry -->
+          <set_value name="$SelectedEntry" exact="null" />
+          <set_value name="$HighestPriority" exact="0" />
+          <do_for_each name="$Entry" in="$Enhanced_StationWaitlists">
+            <do_if value="$Entry.$type == $Category">
+              <do_if value="$Entry.$priority gt $HighestPriority">
+                <set_value name="$SelectedEntry" exact="$Entry" />
+                <set_value name="$HighestPriority" exact="$Entry.$priority" />
+              </do_if>
+            </do_if>
+          </do_for_each>
+
+          <do_if value="$SelectedEntry">
+            <!-- Process the build -->
+            <set_value name="$Sector" exact="$SelectedEntry.$sector" />
+            <do_if value="$Category == 'production_expansion'">
+              <set_value name="$Resource" exact="$SelectedEntry.$resource" />
+              <set_value name="$ActionDef" exact="table[$Type = '$request_production']" />
+              <signal_cue_instantly cue="Request_Production_Module" param="[$ActionDef, $Sector, $Resource, $SectorNeighbourTable, null]" />
+              <do_if value="$ActionDef.$Station?">
+                <debug_text text="'Expanded production for ' + $Resource + ' in sector ' + $Sector.knownname" chance="$DebugChance" />
+                <set_value name="$PendingCVs" operation="subtract" exact="1" />
+                <remove_from_list name="$Enhanced_StationWaitlists" exact="$SelectedEntry" />
+              </do_if>
+            </do_if>
+            <do_elseif value="$Category == 'factory'">
+              <set_value name="$Resource" exact="$SelectedEntry.$resource" />
+              <set_value name="$ActionDef" exact="table[$Type = '$request_factory']" />
+              <signal_cue_instantly cue="Request_Factory" param="[$ActionDef, $Sector, $Resource, $SectorNeighbourTable, null]" />
+              <do_if value="$ActionDef.$Station?">
+                <debug_text text="'Built new factory for ' + $Resource + ' in sector ' + $Sector.knownname" chance="$DebugChance" />
+                <set_value name="$PendingCVs" operation="subtract" exact="1" />
+                <remove_from_list name="$Enhanced_StationWaitlists" exact="$SelectedEntry" />
+              </do_if>
+            </do_elseif>
+            <do_elseif value="$Category in ['shipyards', 'wharfs', 'equipment', 'trade', 'defense', 'pirate']">
+              <!-- Placeholder for other station types -->
+              <set_value name="$Macro" exact="'macro_for_' + $Category" /> <!-- Replace with actual macro logic -->
+              <set_value name="$ActionDef" exact="table[$Type = 'macro', $macro = $Macro, $sector = $Sector]" />
+              <signal_cue_instantly cue="Build_Station" param="[$ActionDef]" />
+              <do_if value="$ActionDef.$Station?">
+                <debug_text text="'Built ' + $Category + ' station in sector ' + $Sector.knownname" chance="$DebugChance" />
+                <set_value name="$PendingCVs" operation="subtract" exact="1" />
+                <remove_from_list name="$Enhanced_StationWaitlists" exact="$SelectedEntry" />
+              </do_if>
+            </do_elseif>
+
+            <!-- Update shortages if build fails -->
+            <do_if value="not $ActionDef.$Station?">
+              <set_value name="$Enhanced_IndustryBuildShortage.$station" operation="add" exact="1" />
+              <remove_from_list name="$Enhanced_StationWaitlists" exact="$SelectedEntry" />
+              <debug_text text="'Failed to build ' + $Category + ' in sector ' + $Sector.knownname + ' due to insufficient resources or capacity'" chance="$DebugChance" />
+            </do_if>
+          </do_if>
+
+          <!-- Recalculate total chance -->
+          <set_value name="$TotalChance" exact="0" />
+          <do_for_each name="$Cat" in="$StationCategories">
+            <set_value name="$Count" exact="$Enhanced_StationWaitlists.count_where.{entry => entry.$type == $Cat}" />
+            <set_value name="$StationPriorityScores.{$Cat}" exact="if $Count gt 0 then $StationPriorityScores.{$Cat} else 0" />
+            <set_value name="$TotalChance" operation="add" exact="$StationPriorityScores.{$Cat}" />
+          </do_for_each>
+
+          <!-- Sanity check -->
+          <set_value name="$Sanity" operation="add" exact="1" />
+          <do_if value="$Sanity ge 500">
+            <debug_text text="'Sanity limit reached in station waitlist processing'" chance="$DebugChance" />
+            <break />
+          </do_if>
+        </do_while>
+
+        <!-- Update pending counts -->
+        <set_value name="$Enhanced_PendingStations" exact="table[]" />
+        <do_for_each name="$Cat" in="$StationCategories">
+          <set_value name="$Enhanced_PendingStations.{$Cat}" exact="$Enhanced_StationWaitlists.count_where.{entry => entry.$type == $Cat}" />
+        </do_for_each>
+      </actions>
+    </library>
+  </cues>
+</mdscript>
+
+<do_if value="$IsConstructionPlanStation">
+  <generate_loadout sequence="$SelectedDefinition.{1}" level="$LoadoutLevel" result="$Loadouts" faction="$Faction" />
+  <do_all exact="$Loadouts.count" counter="$l">
+    <apply_loadout sequence="$SelectedDefinition.{1}" index="$l" loadout="$Loadouts.{$l}" />
+  </do_all>
+  <add_build_to_expand_station object="$NewStation.buildstorage" buildobject="$NewStation" constructionplan="$SelectedDefinition.{1}" result="$BuildID" />
+  <debug_text text="$DebugText + 'Started construction of station ' + $NewStation.knownname + ' ' + $NewStation + ' - Build ID: ' + $BuildID + ' in ' + $ChosenSector + ' ' + $ChosenSector.knownname" context="false" chance="$DebugChance" />
+</do_if>
+
+<!-- stations -->
+<!-- waitlist chance -->
+<!-- use weighted scores to assign build chance (chance = score / totalscores)
           Type:
             production: (resource based?) (economy)
             defense: desired threatscores? (military)
@@ -672,10 +795,10 @@
             claim/contest sector (state = EXPANSION)
           
           empire resources on-hand, not at buildstations -->
-      </actions>
-    </library>
+</actions>
+</library>
 
-    <!--     
+<!--     
     <library name="Request" purpose="run_actions">
       <params>
         <param name="Manager" />
@@ -735,5 +858,5 @@
       <append_to_list name="$Waitlist.{'$'+$type}" exact="$shipData" />
     </actions>
     </library> -->
-  </cues>
+</cues>
 </mdscript>
