@@ -10,10 +10,11 @@
 
     == Manager Variables ==
       $Enhanced_State = table[
-        $state = 'CONSOLIDATE',
+        $current = 'CONSOLIDATE'
+        $last = ''
         $atWar = false
       ]
-      $Enhanced_StateWeights = table[
+      $Enhanced_Params.$StateWeights = table[
         $EXPANSION = table[    $economy = 0,    $military = 0,    $industry = 0.2  ],
         $CONSOLIDATE = table[  $economy = 0.2,  $military = 0,    $industry = 0    ],
         $DEFENSE = table[      $economy = 0,    $military = 0.2,  $industry = 0    ],
@@ -38,7 +39,7 @@
       ]
 
       (set by process station; static)
-      $Enhanced_IndustryBuildSlots = table[
+      $Enhanced_Industry.$BuildSlots = table[
         $s = int
         $m = int
         $l = int
@@ -49,7 +50,7 @@
       ]
 
       (when build queue has resources available to initiate a waiting build but not build slots available; dynamic)
-      $Enhanced_IndustryBuildShortage = table[
+      $Enhanced_Industry.$BuildShortage = table[
         $s = int
         $m = int
         $l = int
@@ -63,15 +64,22 @@
       
       $Enhanced_Resources = table[
         {$resource} = table[
-          $available = largeint (faction-wide availability)
-          $production = int (faction-wide productionmodule products)
+          $available = largeint (minables: faction-wide availability)
+          $production = int (products: faction-wide production)
           $on_hand = int (faction-wide resources stored in stations)
           $demand = int (faction-wide productionmodule demand, not secondary)
           $secondaryDemand = int (faction-wide productionmodule secondary demand)
           $saturation = float ($on_hand / $demand)
           $efficiencyRatio = float (transport/mining efficiency ratio, demand/totalDemand or typeAvailability/totalAvailability)
-          * $efficiency = float (enhanced_ships.{$resource} * $efficiencyRatio)
+          $efficiency = float (enhanced_ships.{$resource} * $efficiencyRatio)
+          $shortage = int
         ]
+      ]
+
+      $Enhanced_Industry = table[
+        $BuildSlots = table[{$size}]
+        $ResourceShortage = table[{$size}]
+        $BuildShortage = table[{$size}]
       ]
 
       $Enhanced_Sectors = table[
@@ -91,6 +99,7 @@
           $NumBuildModules = table[
             {$moduletype} = int (static)
           ]
+          $threatscore = int (dynamic)
           $desiredThreatscore = int (dynamic)
           enhanced todo: $Enhanced_PirateActivity = float (0 through 1) (when ships are destroyed by pirate faction within the sector; dynamic)
         ]
@@ -104,24 +113,37 @@
           {$ware} = int (static)
         ]
         $Construction = int (number of construction vessels; static)
+        $Waitlists
       ]
 
       $Enhanced_Stations = table[
-        {$station} = table[
-          $isPlanetaryTradestation = bool (static)
-          $Demands = table[
-            {$resource} = int (per hour) (static)
+        $Number = table[
+          $trade = int
+          $pirate = int
+          $defence = int
+          $factory = int
+          $shipyard = int
+          $wharf = int
+          $equipment = int
+        ]
+        $Stations = table[
+          {$station} = table[
+            $type = string (pirate, defence, trade, factory, shipyard, wharf)
+            $Demands = table[
+              {$resource} = int (per hour) (static)
+            ]
+            $Products = table[
+              {$product} = int (per hour) (static)
+            ]
+            $Secondary = table[
+              {$resource} = int (per hour) (static)
+            ]
+            $On_hand = table[
+              {$resource} = int (resource stored in station) (dynamic)
+            $workforceBonus = float (dynamic)
           ]
-          $Products = table[
-            {$product} = int (per hour) (static)
-          ]
-          $Secondary = table[
-            {$resource} = int (per hour) (static)
-          ]
-          $On_hand = table[
-            {$resource} = int (resource stored in station) (dynamic)
-          $workforceBonus = float (dynamic)
-        ] 
+        ]
+        $Constructing = table[]
       ]
       -->
     <cue name="Init">
@@ -230,9 +252,7 @@
             <set_value name="$Manager" exact="global.$FactionManagers.{$Faction}" />
             <set_value name="$Enhanced_Sectors" exact="$Manager.$Enhanced_Sectors" />
             <set_value name="$Enhanced_Resources" exact="$Manager.$Enhanced_Resources" />
-            <set_value name="$Enhanced_SectorWeights" exact="$Manager.$Enhanced_SectorWeights" />
             <set_value name="$Enhanced_PrimeSectors" exact="$Manager.$Enhanced_PrimeSectors" />
-            <set_value name="$Enhanced_Values" exact="$Manager.$Enhanced_Values" />
             <do_if value="not @$Enhanced_Sectors.{$sector}">
               <set_value name="$Enhanced_Sectors.{$sector}" exact="table[
                   $Values = table[],
@@ -241,11 +261,15 @@
                   $NumBuildModules = table[]
                 ]" />
             </do_if>
+            <set_value name="$Enhanced_Params" exact="$Manager.$Enhanced_Params" />
+            <set_value name="$SectorWeights" exact="$Enhanced_Params.$SectorWeights" />
+            <set_value name="$sectorValuePerThreatscore" exact="$Enhanced_Params.$sectorValuePerThreatscore" />
+            <set_value name="$extraction_rate" exact="$Enhanced_Params.$extraction_rate" />
             <set_value name="$SectorData" exact="$Enhanced_Sectors.{$sector}" />
             <set_value name="$SectorData.$desiredThreatscore" exact="0" />
 
             <find_gate name="$gates" space="$sector" multiple="true" />
-            <set_value name="$value" exact="$Enhanced_SectorWeights.$Gates.{[$gates.count,4].min}" />
+            <set_value name="$value" exact="$Enhanced_Params.$SectorWeights.$Gates.{[$gates.count,4].min}" />
             <set_value name="$SectorData.$Values.$strategic" operation="add" exact="$value" />
 
             <include_actions ref="Process_Resource_Value" />
@@ -551,7 +575,7 @@
           <actions>
             <!-- enhanced todo: optimize instead of resetting all values each update -->
             <set_value name="$Manager" exact="global.$FactionManagers.{$Faction}" />
-            <set_value name="$Slots" exact="$Manager.$Enhanced_IndustryBuildSlots" />
+            <set_value name="$Slots" exact="$Manager.$Enhanced_Industry.$BuildSlots" />
             <set_value name="$Enhanced_Sectors" exact="$Manager.$Enhanced_Sectors" />
             <set_value name="$sector" exact="$station.sector" />
 
@@ -593,7 +617,7 @@
                   <!-- prime sector check -->
                   <find_object name="$station" space="$sector" trueowner="$Faction" class="class.station" canbuildships="true" />
                   <do_if value="not $station">
-                    <set_value name="$SectorData.$Values.$strategic" operation="subtract" exact="$Enhanced_SectorWeights.$prime" />
+                    <set_value name="$SectorData.$Values.$strategic" operation="subtract" exact="$Enhanced_Params.$SectorWeights.$prime" />
                     <remove_from_group group="$Enhanced_PrimeSectors" object="$sector" />
                   </do_if>
                   <do_for_each name="$macro" in="$StationData.$Buildmodules">
@@ -638,7 +662,7 @@
                 <!-- enhanced todo: move to colony handler?
                 when colonized increase sector desired threatscore -->
                 <!-- <do_if value="@$ColonySectors.indexof.{$sector}">
-                  <set_value name="$value" operation="add" exact="$Enhanced_SectorWeights.$colony" />
+                  <set_value name="$value" operation="add" exact="$Enhanced_Params.$SectorWeights.$colony" />
                 </do_if>
                 <do_if value="@md.OneSector_PlanetaryAid.Init.exists and @md.OneSector_PlanetaryAid.Init.$PlanetaryTradestation.{$station}">
                   <set_value name="$StationData.$isPlanetaryTradestation" exact="true" />
@@ -691,7 +715,7 @@
                   </do_if>
                   <do_if value="not @$Enhanced_PrimeSectors.{$station.sector}">
                     <add_to_group groupname="$Enhanced_PrimeSectors" object="$sector" />
-                    <set_value name="$Enhanced_Sectors.{$sector}.$Values.$strategic" operation="add" exact="$Enhanced_SectorWeights.$prime" />
+                    <set_value name="$Enhanced_Sectors.{$sector}.$Values.$strategic" operation="add" exact="$Enhanced_Params.$SectorWeights.$prime" />
                   </do_if>
                   <do_if value="not @global.$EnhancedLogic.$AllBuildmodules.indexof.{$buildModule} or $remove">
                     <do_if value="$remove">
@@ -753,7 +777,7 @@
         <library name="Run_Scoring_and_State_Check">
           <actions>
             <!-- clear variables -->
-            <set_value name="$Enhanced_IndustryBuildShortage" exact="table[]" />
+            <set_value name="$Enhanced_Industry.$BuildShortage" exact="table[]" />
 
             <do_if value="$Enhanced_runInit">
               <!-- process everything on first run -->
@@ -834,7 +858,7 @@
                   pirate_activity = sector.pirate_activity # Number of ships destroyed by pirates / total number of non-military ships assigned to sector
                   self.pirate_activity = (self.pirate_activity + pirate_activity) / 2 if self.pirate_activity > 0 else pirate_activity -->
             <set_value name="$Enhanced_Sectors.{$sector}.$desiredThreatscore" exact="
-              $Enhanced_Sectors.{$sector}.$Values.$economic / $Enhanced_Values.$sectorValuePerThreatscore + 
+              $Enhanced_Sectors.{$sector}.$Values.$economic / $sectorValuePerThreatscore + 
               $Enhanced_Sectors.{$sector}.$Values.$strategic + 
               $Enhanced_Sectors.{$sector}.$Values.$resource
             " />
@@ -938,7 +962,7 @@
               <do_else>
                 <!-- minables saturation  -->
                 <set_value name="$Enhanced_Resources.{$resource}.$saturation" exact="[$Enhanced_Resources.{$resource}.$on_hand / 
-                    [$Enhanced_Resources.{$resource}.$demand - ($Enhanced_Resources.{$resource}.$efficiency * $Enhanced_Values.$extraction_rate), 1].max
+                    [$Enhanced_Resources.{$resource}.$demand - ($Enhanced_Resources.{$resource}.$efficiency * $extraction_rate), 1].max
                     , 1].min" />
               </do_else>
               <set_value name="$sum" operation="add" exact="$Enhanced_Resources.{$resource}.$saturation" />
@@ -977,32 +1001,32 @@
           <!--
                   -->
           <actions>
-            <do_if value="$Enhanced_IndustryBuildShortage.$s gt 0">
-              <set_value name="$sShortage" exact="[$Enhanced_IndustryBuildSlots.$s / $Enhanced_IndustryBuildShortage.$s, 1].min" />
+            <do_if value="$Enhanced_Industry.$BuildShortage.$s gt 0">
+              <set_value name="$sShortage" exact="[$Enhanced_Industry.$BuildSlots.$s / $Enhanced_Industry.$BuildShortage.$s, 1].min" />
             </do_if>
             <do_else>
               <set_value name="$sShortage" exact="1" />
             </do_else>
-            <do_if value="$Enhanced_IndustryBuildShortage.$m gt 0">
-              <set_value name="$mShortage" exact="[$Enhanced_IndustryBuildSlots.$m / $Enhanced_IndustryBuildShortage.$m, 1].min" />
+            <do_if value="$Enhanced_Industry.$BuildShortage.$m gt 0">
+              <set_value name="$mShortage" exact="[$Enhanced_Industry.$BuildSlots.$m / $Enhanced_Industry.$BuildShortage.$m, 1].min" />
             </do_if>
             <do_else>
               <set_value name="$mShortage" exact="1" />
             </do_else>
-            <do_if value="$Enhanced_IndustryBuildShortage.$l gt 0">
-              <set_value name="$lShortage" exact="[$Enhanced_IndustryBuildSlots.$l / $Enhanced_IndustryBuildShortage.$l, 1].min" />
+            <do_if value="$Enhanced_Industry.$BuildShortage.$l gt 0">
+              <set_value name="$lShortage" exact="[$Enhanced_Industry.$BuildSlots.$l / $Enhanced_Industry.$BuildShortage.$l, 1].min" />
             </do_if>
             <do_else>
               <set_value name="$lShortage" exact="1" />
             </do_else>
-            <do_if value="$Enhanced_IndustryBuildShortage.$xl gt 0">
-              <set_value name="$xlShortage" exact="[$Enhanced_IndustryBuildSlots.$xl / $Enhanced_IndustryBuildShortage.$xl, 1].min" />
+            <do_if value="$Enhanced_Industry.$BuildShortage.$xl gt 0">
+              <set_value name="$xlShortage" exact="[$Enhanced_Industry.$BuildSlots.$xl / $Enhanced_Industry.$BuildShortage.$xl, 1].min" />
             </do_if>
             <do_else>
               <set_value name="$xlShortage" exact="1" />
             </do_else>
-            <do_if value="$Enhanced_IndustryBuildShortage.$xxl gt 0">
-              <set_value name="$xxlShortage" exact="[$Enhanced_IndustryBuildSlots.$xxl / $Enhanced_IndustryBuildShortage.$xxl, 1].min" />
+            <do_if value="$Enhanced_Industry.$BuildShortage.$xxl gt 0">
+              <set_value name="$xxlShortage" exact="[$Enhanced_Industry.$BuildSlots.$xxl / $Enhanced_Industry.$BuildShortage.$xxl, 1].min" />
             </do_if>
             <do_else>
               <set_value name="$xxlShortage" exact="1" />
@@ -1020,8 +1044,8 @@
           <!--
                   -->
           <actions>
-            <do_if value="$Enhanced_IndustryBuildShortage.$station gt 0">
-              <set_value name="$stationBuildScore" exact="[$Enhanced_Ships.$Construction / $Enhanced_IndustryBuildShortage.$station, 1].min" />
+            <do_if value="$Enhanced_Industry.$BuildShortage.$station gt 0">
+              <set_value name="$stationBuildScore" exact="[$Enhanced_Ships.$Construction / $Enhanced_Industry.$BuildShortage.$station, 1].min" />
             </do_if>
             <do_else>
               <set_value name="$stationBuildScore" exact="1" />
@@ -1044,20 +1068,20 @@
           ]" />
           -->
           <actions>
-            <do_if value="$Enhanced_Scores.$economy le $Enhanced_EmergencyThreshholds.$economy">
-              <set_value name="$Enhanced_Scores.$economyModifier" exact="$Enhanced_Scores.$economy * $Enhanced_EmergencyWeights.$economy" />
+            <do_if value="$Enhanced_Scores.$economy le $Enhanced_Params.$EmergencyThreshholds.$economy">
+              <set_value name="$Enhanced_Scores.$economyModifier" exact="$Enhanced_Scores.$economy * $Enhanced_Params.$EmergencyWeights.$economy" />
             </do_if>
             <do_else>
               <set_value name="$Enhanced_Scores.$economyModifier" exact="$Enhanced_Scores.$economy" />
             </do_else>
-            <do_if value="$Enhanced_Scores.$industry le $Enhanced_EmergencyThreshholds.$industry">
-              <set_value name="$Enhanced_Scores.$industryModifier" exact="$Enhanced_Scores.$industry * $Enhanced_EmergencyWeights.$industry" />
+            <do_if value="$Enhanced_Scores.$industry le $Enhanced_Params.$EmergencyThreshholds.$industry">
+              <set_value name="$Enhanced_Scores.$industryModifier" exact="$Enhanced_Scores.$industry * $Enhanced_Params.$EmergencyWeights.$industry" />
             </do_if>
             <do_else>
               <set_value name="$Enhanced_Scores.$industryModifier" exact="$Enhanced_Scores.$industry" />
             </do_else>
-            <do_if value="$Enhanced_Scores.$military le $Enhanced_EmergencyThreshholds.$military">
-              <set_value name="$Enhanced_Scores.$militaryModifier" exact="$Enhanced_Scores.$military * $Enhanced_EmergencyWeights.$military" />
+            <do_if value="$Enhanced_Scores.$military le $Enhanced_Params.$EmergencyThreshholds.$military">
+              <set_value name="$Enhanced_Scores.$militaryModifier" exact="$Enhanced_Scores.$military * $Enhanced_Params.$EmergencyWeights.$military" />
             </do_if>
             <do_else>
               <set_value name="$Enhanced_Scores.$militaryModifier" exact="$Enhanced_Scores.$military" />
@@ -1090,7 +1114,7 @@
               $state = 'CONSOLIDATE',
               $atWar = false
             ]
-            $Enhanced_StateWeights = table[
+            $Enhanced_Params.$StateWeights = table[
               $EXPANSION = table[    $economy = 0,    $military = 0,    $industry = 0.2  ],
               $CONSOLIDATE = table[  $economy = 0.2,  $military = 0,    $industry = 0    ],
               $DEFENSE = table[      $economy = 0,    $military = 0.2,  $industry = 0    ],
@@ -1100,7 +1124,7 @@
           <actions>
             <!-- enhanced todo: convert from weights to modifiers -->
             <!-- Retrieve current scores and state -->
-            <set_value name="$currentState" exact="$Enhanced_State.$state" />
+            <set_value name="$currentState" exact="$Enhanced_State.$current" />
             <set_value name="$economyScore" exact="$Enhanced_Scores.$economy" />
             <set_value name="$militaryScore" exact="$Enhanced_Scores.$military" />
             <set_value name="$industryScore" exact="$Enhanced_Scores.$industry" />
@@ -1108,39 +1132,45 @@
             <!-- State Transitions -->
             <do_if value="$currentState == 'EXPANSION'">
               <!-- Check if military is too weak, switch to DEFENSE -->
-              <do_if value="$militaryScore lt $Enhanced_StateThreshholds.$mil_defense">
-                <set_value name="$Enhanced_State.$state" exact="'DEFENSE'" />
+              <do_if value="$militaryScore lt $Enhanced_Params.$StateThreshholds.$mil_defense">
+                <set_value name="$Enhanced_State.$last" exact="$currentState" />
+                <set_value name="$Enhanced_State.$current" exact="'DEFENSE'" />
               </do_if>
               <!-- Check if economy or industry is struggling, switch to CONSOLIDATE -->
-              <do_elseif value="$economyScore lt $Enhanced_StateThreshholds.$eco_consolidation or $industryScore lt $Enhanced_StateThreshholds.$ind_consolidation">
-                <set_value name="$Enhanced_State.$state" exact="'CONSOLIDATE'" />
+              <do_elseif value="$economyScore lt $Enhanced_Params.$StateThreshholds.$eco_consolidation or $industryScore lt $Enhanced_Params.$StateThreshholds.$ind_consolidation">
+                <set_value name="$Enhanced_State.$last" exact="$currentState" />
+                <set_value name="$Enhanced_State.$current" exact="'CONSOLIDATE'" />
               </do_elseif>
             </do_if>
 
             <do_elseif value="$currentState == 'CONSOLIDATE'">
               <!-- Check if military is too weak, switch to DEFENSE -->
-              <do_if value="$militaryScore lt $Enhanced_StateThreshholds.$mil_defense">
-                <set_value name="$Enhanced_State.$state" exact="'DEFENSE'" />
+              <do_if value="$militaryScore lt $Enhanced_Params.$StateThreshholds.$mil_defense">
+                <set_value name="$Enhanced_State.$last" exact="$currentState" />
+                <set_value name="$Enhanced_State.$current" exact="'DEFENSE'" />
               </do_if>
               <!-- Check if all scores are strong enough for EXPANSION -->
-              <do_elseif value="$economyScore gt $Enhanced_StateThreshholds.$eco_expansion and $industryScore gt $Enhanced_StateThreshholds.$ind_expansion and $militaryScore gt $Enhanced_StateThreshholds.$mil_expansion">
-                <set_value name="$Enhanced_State.$state" exact="'EXPANSION'" />
+              <do_elseif value="$economyScore gt $Enhanced_Params.$StateThreshholds.$eco_expansion and $industryScore gt $Enhanced_Params.$StateThreshholds.$ind_expansion and $militaryScore gt $Enhanced_Params.$StateThreshholds.$mil_expansion">
+                <set_value name="$Enhanced_State.$last" exact="$currentState" />
+                <set_value name="$Enhanced_State.$current" exact="'EXPANSION'" />
               </do_elseif>
             </do_elseif>
 
             <do_elseif value="$currentState == 'DEFENSE'">
               <!-- Check if all scores are strong enough for EXPANSION -->
-              <do_if value="$economyScore gt $Enhanced_StateThreshholds.$eco_expansion and $industryScore gt $Enhanced_StateThreshholds.$ind_expansion and $militaryScore gt $Enhanced_StateThreshholds.$mil_expansion">
-                <set_value name="$Enhanced_State.$state" exact="'EXPANSION'" />
+              <do_if value="$economyScore gt $Enhanced_Params.$StateThreshholds.$eco_expansion and $industryScore gt $Enhanced_Params.$StateThreshholds.$ind_expansion and $militaryScore gt $Enhanced_Params.$StateThreshholds.$mil_expansion">
+                <set_value name="$Enhanced_State.$last" exact="$currentState" />
+                <set_value name="$Enhanced_State.$current" exact="'EXPANSION'" />
               </do_if>
               <!-- Check if military is stable enough for CONSOLIDATE -->
-              <do_elseif value="$militaryScore gt $Enhanced_StateThreshholds.$mil_consolidation">
-                <set_value name="$Enhanced_State.$state" exact="'CONSOLIDATE'" />
+              <do_elseif value="$militaryScore gt $Enhanced_Params.$StateThreshholds.$mil_consolidation">
+                <set_value name="$Enhanced_State.$last" exact="$currentState" />
+                <set_value name="$Enhanced_State.$current" exact="'CONSOLIDATE'" />
               </do_elseif>
             </do_elseif>
 
             <!-- Apply State Weights to Build Priorities -->
-            <set_value name="$stateWeights" exact="$Enhanced_StateWeights.{$Enhanced_State.$state}" />
+            <set_value name="$stateWeights" exact="$Enhanced_Params.$StateWeights.{$Enhanced_State.$state}" />
             <set_value name="$Enhanced_BuildPriority.$Productionmodules.$economy" exact="$stateWeights.$economy" />
             <set_value name="$Enhanced_BuildPriority.$Ships.$fight" operation="add" exact="$stateWeights.$military" />
             <set_value name="$Enhanced_BuildPriority.$Buildmodules.$industry" exact="$stateWeights.$industry" />
@@ -1189,7 +1219,7 @@
                 </do_for_each>
 
                 <!-- Adjust thresholds based on faction state -->
-                <set_value name="$StateModifier" exact="$Enhanced_StateWeights.{$Enhanced_State.$state}.$economy" />
+                <set_value name="$StateModifier" exact="$Enhanced_Params.$StateWeights.{$Enhanced_State.$state}.$economy" />
                 <set_value name="$PriorityModifier" exact="$Enhanced_BuildPriority.$Productionmodules.$economy" />
                 <set_value name="$ExpansionThreshold" exact="$BaseExpansionThreshold * (1 + $StateModifier + $PriorityModifier)" />
                 <set_value name="$NewFactoryThreshold" exact="$BaseNewFactoryThreshold * (1 + $StateModifier + $PriorityModifier)" />
@@ -1200,7 +1230,7 @@
                     <!-- Expand production in an existing sector -->
                     <set_value name="$TargetSector" exact="$ProductionSectors.random" />
                     <set_value name="$WaitlistEntry" exact="table[
-                      $type = 'production_expansion',
+                      $type = 'expansion',
                       $resource = $Resource,
                       $sector = $TargetSector,
                       $priority = $UnmetDemand * (1 + $StateModifier + $PriorityModifier)
