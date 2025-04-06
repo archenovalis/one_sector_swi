@@ -660,7 +660,7 @@
           ],
           $wharfs = ((($Enhanced_Industry.$BuildShortage.$s + $Enhanced_Industry.$BuildShortage.$m) / [$Enhanced_Industry.$BuildSlots.$s + $Enhanced_Industry.$BuildSlots.$m, 1].max) * 100.0)i,
           $equipment = if $Enhanced_Sectors.count / $Enhanced_Params.$SectorsPerStation.$equipmentDock gt $Enhanced_Stations.$Number.$equipment then 100 else 0,
-          $trade = if $Enhanced_Diplomacy.$numTradePartners gt $Enhanced_Stations.$Number.$trade then $Enhanced_Params.$tradeStationPriority else 0,
+          $tradeStation = if $Enhanced_Diplomacy.$TradePartners gt $Enhanced_Stations.$Number.$trade then $Enhanced_Params.$tradeStationPriority else 0,
           $Resources = table[],
           $expand = if $Enhanced_States.$state == 'EXPANSION' then $Enhanced_Params.$Personality.$expansionist else 0
         ]" />
@@ -703,7 +703,7 @@
         <!-- Check for zeros and calculate temp chances -->
         <set_value name="$tempMilitary" exact="if 0 == 0 + (if $Faction.hastag.pirate then $StationPriorityScores.$pirate else 0) + @$StationPriorityScores.$defence then 0 else $chanceMilitary" />
         <set_value name="$tempIndustry" exact="if 0 == 0 + $StationPriorityScores.$xxl + $StationPriorityScores.$xl + $StationPriorityScores.$l + $StationPriorityScores.$wharfs + $StationPriorityScores.$equipment then 0 else $chanceIndustry" />
-        <set_value name="$tempEconomy" exact="if 0 == 0 + $StationPriorityScores.$trade + $numExpansions + $numFactories then 0 else $chanceEconomy" />
+        <set_value name="$tempEconomy" exact="if 0 == 0 + $StationPriorityScores.$tradeStation + $numExpansions + $numFactories then 0 else $chanceEconomy" />
 
         <!-- Create stations -->
         <set_value name="$totalChance" exact="$tempMilitary + $tempIndustry + $tempEconomy" />
@@ -763,32 +763,37 @@
           <do_else> <!-- economy -->
             <!-- generate average resource score -->
             <do_if value="$averageResourceScore == null">
-              <do_for_each valuename="$SectorData" in="$StationPriorityScores.$Resources">
-                <set_value name="$total" operation="add" exact="@$SectorData.$factory + @$SectorData.$expansion" />
+              <do_for_each valuename="$ResourceData" in="$StationPriorityScores.$Resources">
+                <set_value name="$total" operation="add" exact="@$ResourceData.$factory + @$ResourceData.$expansion" />
               </do_for_each>
               <set_value name="$averageResourceScore" exact="$total / $StationPriorityScores.$Resources.count" />
             </do_if>
 
             <do_any>
-              <set_value name="$type" exact="'trade'" weight="$StationPriorityScores.$trade" />
+              <set_value name="$type" exact="'trade'" weight="$StationPriorityScores.$tradeStation" />
               <set_value name="$type" exact="'factory'" weight="$averageResourceScore" />
             </do_any>
             <do_if value="$type == 'trade'">
-              <!-- sector scoring: more gates, distance from from other tradestations (if any), near $Enhanced_Diplomacy.$TradePartnersWithoutTS (table) -->
-              <include_actions ref="Find_Sector" />
+              <!-- sector scoring: strategic value and distance from $tradeFaction, near $Enhanced_Diplomacy.$TradePartners.{$tradeFaction}.$hasTradeStation == false/null -->
+              <include_actions ref="Find_Sector" /> <!-- returns $tradeFaction -->
               <!-- build trade station / expansion -->
               <do_if value="$built">
-                <set_value name="$StationPriorityScores.$trade" exact="0" />
+                <set_value name="$StationPriorityScores.$tradeStation" exact="0" />
+                <set_value name="$Enhanced_Diplomacy.$TradePartners.{$tradeFaction}.$hasTradeStation" exact="$built" />
               </do_if>
             </do_if>
 
             <do_elseif value="$type == 'factory'">
               <!-- prepare tableofweights for dynamic weighted choice -->
               <set_value name="$TableOfWeights" exact="table[]" />
+              <set_value name="$Constructing" exact="$Enhanced_Stations.$Constructing" />
               <do_for_each name="$resource" valuename="$ResourceData" in="$StationPriorityScores.$Resources">
+                <do_if value="$Constructing.$Expansion.{$resource} or $Constructing.$Factory.{$resource}">
+                  <continue />
+                </do_if>
                 <set_value name="$TableOfWeights.{$resource}" exact="@$ResourceData.$factory + @$ResourceData.$expansion" />
               </do_for_each>
-              <do_while value="$TableOfWeights.count > 0">
+              <do_while value="$TableOfWeights.count > 0 and not $built">
                 <run_actions ref="md.FactionLogic_Enhanced_Tasks.DynamicDoAny" result="$resource">
                   <param name="TableOfWeights" value="$TableOfWeights" />
                 </run_actions>
@@ -797,30 +802,21 @@
                   <!-- find sectors demanding resource and sectors providing supply -->
                   <include_actions ref="Find_Sector" />
                   <!-- library: build factory in sector -->
-                  <set_value name="$numFactories" operation="subtract" />
-                  <set_value name="$SectorData" exact="$StationPriorityScores.$Resources.{$resource}.$factory" />
+                  <do_if value="$built">
+                    <set_value name="$numFactories" operation="subtract" />
+                  </do_if>
                 </do_if>
                 <do_else> <!-- <do_elseif value="@$StationPriorityScores.$Resources.{$resource}.$expansion"> -->
                   <set_value name="$type" exact="'expansion'" />
                   <!-- find sectors demanding resource and sectors providing supply, add to sector with highest demand/supply; needs sector scoring -->
                   <include_actions ref="Find_Sector" />
                   <!-- library: build factory in sector -->
-                  <set_value name="$numExpansions" operation="subtract" />
-                  <set_value name="$SectorData" exact="$StationPriorityScores.$Resources.{$resource}.$expansion" />
-                </do_else>
-                <do_if value="$built">
-                  <do_if value="$StationPriorityScores.$Resources.count == 1">
-                    <set_value name="$averageResourceScore" exact="0" />
+                  <do_if value="$built">
+                    <set_value name="$numExpansions" operation="subtract" />
                   </do_if>
-                  <do_else>
-                    <set_value name="$averageResourceScore" operation="subtract" exact="$SectorData / $StationPriorityScores.$Resources.count" />
-                  </do_else>
-                  <remove_value name="$StationPriorityScores.$Resources.{$resource}" />
-                  <break />
-                </do_if>
-                <do_else>
-                  <remove_value name="$TableOfWeights.{$resource}" />
                 </do_else>
+                <remove_value name="$TableOfWeights.{$resource}" />
+                <remove_value name="$StationPriorityScores.$Resources.{$resource}" />
               </do_while>
             </do_elseif>
           </do_else>
@@ -829,8 +825,13 @@
           </do_if>
           <do_elseif value="$noCV">
             <!-- add cv to ship waitlist -->
+            <break />
+          </do_elseif>
+          <do_elseif value="$noResources">
+            <break />
           </do_elseif>
           <!-- Recalculate chances -->
+          <set_value name="$tempEconomy" exact="if 0 == 0 + $StationPriorityScores.$tradeStation + $numExpansions + $numFactories then 0 else $tempEconomy" />
           <set_value name="$totalChance" exact="$tempMilitary + $tempIndustry + $tempEconomy" />
         </do_while>
       </actions>
@@ -882,24 +883,21 @@
           </do_for_each>
         </do_elseif>
         <do_elseif value="$type == 'trade'">
-          <set_value name="$TradeSectors" exact="[]" />
-          <do_for_each name="$station" in="$Enhanced_Stations.$Constructing.$Trade">
-            <append_to_list name="$TradeSectors" exact="$station.sector" unique="true" />
-          </do_for_each>
-          <do_for_each name="$station" in="$Enhanced_Stations.$Built.$Trade">
-            <append_to_list name="$TradeSectors" exact="$station.sector" unique="true" />
+          <!-- non-enemy factions that don't have a tradestation assigned to them -->
+          <set_value name="$TradeFactions" exact="[]" />
+          <do_for_each name="$tradeFaction" valuename="$FactionData" in="$Enhanced_Diplomacy.$TradePartners">
+            <do_if value="not @$FactionData.$hasTradestation">
+              <append_to_list name="$TradeFactions" exact="$tradeFaction" />
+            </do_if>
           </do_for_each>
         </do_elseif>
-        <do_elseif value="$type in ['factory', 'expansion'] and $resource">
+        <do_elseif value="['factory', 'expansion'].indexof.$type and $resource">
           <set_value name="$FactorySectors" exact="[]" />
           <do_for_each name="$station" valuename="$StationData" in="$Enhanced_Stations">
             <do_if value="$StationData.$Products.{$resource} gt 0">
               <append_to_list name="$FactorySectors" exact="$station.sector" unique="true" />
             </do_if>
           </do_for_each>
-          <do_if value="$Enhanced_Stations.$Constructing.$Factory.{$resource}">
-            <append_to_list name="$FactorySectors" exact="$Enhanced_Stations.$Constructing.$Factory.{$resource}.sector" unique="true" />
-          </do_if>
         </do_elseif>
 
         <!-- Main sector loop -->
@@ -920,31 +918,42 @@
             <set_value name="$defenceRatio" exact="[$SectorData.$defenceStations / [$SectorData.$gates, 1].max, 1].min" />
             <set_value name="$score" exact="((1 + (1 - $threatRatio) + (1 - $defenceRatio)) * $strategicValue)i" />
           </do_if>
-          <!breaktime>
-          <!-- Expand: Contested or adjacent ownerless -->
+
+          <!-- Expand: Enemy or adjacent ownerless -->
           <do_elseif value="$type == 'expand'">
-            <do_if value="$Enhanced_State.$atWar">
-              <do_if value="$Enhanced_War.$Enemies.indexof.$sector.owner >= 0 or $SectorData.$AdjacentTo.values.any.{f => $Enhanced_War.$Enemies.indexof.f >= 0} and not $SectorData.haslocationtag.neutralzone">
-                <set_value name="$score" exact="($strategicValue + $resourceValue)i" />
-              </do_if>
+            <do_if value="$sector.owner == $Faction">
+              <continue />
             </do_if>
             <do_elseif value="$sector.owner == faction.ownerless and not $sector.haslocationtag.neutralzone">
               <set_value name="$score" exact="($strategicValue + $resourceValue)i" />
             </do_elseif>
+            <do_elseif value="$Enhanced_State.$atWar">
+              <!-- loop through AdjacentTo sectors and see if any are not enemies -->
+              <set_value name="$canExpand" exact="true" />
+              <do_for_each name="$adjacentSector" in="$SectorData.$AdjacentTo">
+                <do_if value="$adjacentSector.owner != faction.ownerless and not $Enhanced_War.$Enemies.indexof.$adjacentSector.owner">
+                  <set_value name="$canExpand" exact="false" />
+                  <break />
+                </do_if>
+              </do_for_each>
+              <do_if value="$canExpand">
+                <set_value name="$score" exact="($strategicValue + $resourceValue)i" />
+              </do_if>
+            </do_elseif>
           </do_elseif>
 
           <!-- Shipyards: Cluster in prime sectors -->
-          <do_elseif value="$type in ['xxl', 'xl', 'l']">
+          <do_elseif value="['xxl', 'xl', 'l'].indexof.$type">
             <set_value name="$primeBonus" exact="if $Enhanced_PrimeSectors.indexof.$sector >= 0 then 200 else 0" />
             <set_value name="$score" exact="($strategicValue + $primeBonus)i" />
           </do_elseif>
 
           <!-- Wharf: Penalize proximity to wharfs -->
           <do_elseif value="$type == 'wharf'">
-            <set_value name="$distance" exact="20" />
+            <set_value name="$distance" exact="5" />
             <find_sector_in_range owner="$Faction" distances="$DistanceTable" object="$sector" multiple="true" />
             <do_for_each name="$wharfSector" in="$WharfSectors">
-              <do_if value="$DistanceTable.{$wharfSector} < $distance">
+              <do_if value="$DistanceTable.{$wharfSector} lt $distance">
                 <set_value name="$distance" exact="$DistanceTable.{$wharfSector}" />
               </do_if>
             </do_for_each>
@@ -953,76 +962,113 @@
 
           <!-- Equipment: Spread out with distance penalty -->
           <do_elseif value="$type == 'equipment'">
-            <set_value name="$distance" exact="20" />
+            <set_value name="$distanceParam" exact="$Enhanced_Params.$SectorsPerStation.$equipmentDock" />
+            <set_value name="$distance" exact="$distanceParam" />
             <find_sector_in_range owner="$Faction" distances="$DistanceTable" object="$sector" multiple="true" />
             <do_for_each name="$equipSector" in="$EquipmentSectors">
-              <do_if value="$DistanceTable.{$equipSector} < $distance">
+              <do_if value="$DistanceTable.{$equipSector} lt $distance">
                 <set_value name="$distance" exact="$DistanceTable.{$equipSector}" />
               </do_if>
             </do_for_each>
-            <set_value name="$score" exact="($strategicValue + $SectorData.$economic - (100 - 20 * $distance))i" />
+            <set_value name="$score" exact="($strategicValue - ($distanceParam * 20 - 20 * $distance))i" />
           </do_elseif>
 
           <!-- Trade: Gates, partners, spread out -->
           <do_elseif value="$type == 'trade'">
-            <set_value name="$distance" exact="20" />
-            <find_sector_in_range owner="$Faction" distances="$DistanceTable" object="$sector" multiple="true" />
-            <do_for_each name="$tradeSector" in="$TradeSectors">
-              <do_if value="$DistanceTable.{$tradeSector} < $distance">
-                <set_value name="$distance" exact="$DistanceTable.{$tradeSector}" />
+            <!-- one per friendly faction? -->
+            <set_value name="$maxDistance" exact="3" />
+            <set_value name="$tradeFaction" exact="$TradeFactions.random" />
+            <find_sector_in_range owner="$tradeFaction" distances="$DistanceTable" object="$sector" multiple="true" />
+            <set_value name="$SortedDistanceTable" exact="$DistanceTable.keys.sorted" />
+            <do_for_each name="$tradeSector" valuename="$tradeDistance" in="$SortedDistanceTable" reverse="true">
+              <do_if value="$SortedDistanceTable.{$tradeSector} gt $maxDistance">
+                <break />
               </do_if>
+              <do_elseif value="$distance == null or $tradeDistance lt $distance">
+                <set_value name="$distance" exact="$tradeDistance" />
+              </do_elseif>
             </do_for_each>
-            <set_value name="$partnerBonus" exact="0" />
-            <do_for_each name="$partner" in="$Enhanced_Diplomacy.$TradePartnersWithoutTS">
-              <do_if value="$sector.isadjacentto.{$partner.sector}">
-                <set_value name="$partnerBonus" operation="add" exact="20" />
-              </do_if>
-            </do_for_each>
-            <set_value name="$score" exact="($strategicValue + $partnerBonus - (100 - 20 * $distance))i" />
+            <do_if value="@$distance">
+              <set_value name="$score" exact="($strategicValue + (300 - 100 * $distance))i" />
+            </do_if>
           </do_elseif>
 
           <!-- Factory: High demand/supply -->
           <do_elseif value="$type == 'factory' and $resource">
+            <!-- get demand data -->
             <set_value name="$demandScore" exact="0" />
-            <set_value name="$supplyScore" exact="0" />
-            <do_for_each name="$station" in="$Enhanced_Stations">
-              <do_if value="$station.sector == $sector">
-                <set_value name="$demandScore" operation="add" exact="$station.$Demands.{$resource} ? $station.$Demands.{$resource} : 0" />
-                <set_value name="$supplyScore" operation="add" exact="$station.$Products.{$resource} ? $station.$Products.{$resource} : 0" />
+            <set_value name="$productionScore" exact="0" />
+            <do_for_each name="$station" in="$SectorData.$Stations">
+              <set_value name="$StationData" exact="$Enhanced_Stations.{$station}" />
+              <set_value name="$demandScore" operation="add" exact="@$StationData.$Demands.{$resource}" />
+              <set_value name="$secondaryScore" operation="add" exact="@$StationData.$Secondary.{$resource}" />
+              <set_value name="$productionScore" operation="add" exact="@$StationData.$Products.{$resource}" /> <!-- enhanced todo: how to handle $resource.hastag.mineable -->
+            </do_for_each>
+            <!-- get supply data -->
+            <do_for_each valuename="$ModuleData" in="global.$EnhancedLogic.$ProductionDemandOutput.{$module.macro}">
+              <do_if value="$ModuleData.$Products.{$resource}">
+                <do_for_each valuename="$demand" in="$ModuleData.$Demands">
+                  <!-- loop through sector stations that produce this demand -->
+                  <do_for_each name="$station" in="$SectorData.$Stations">
+                    <set_value name="$supplyDemScore" operation="add" exact="@$Enhanced_Stations.{$station}.$Products.{$demand}" />
+                  </do_for_each>
+                </do_for_each>
+                <do_for_each name="$secondary" in="$ModuleData.$Secondary">
+                  <!-- loop through sector stations that produce this secondary -->
+                  <do_for_each name="$station" in="$SectorData.$Stations">
+                    <set_value name="$supplySecScore" operation="add" exact="@$Enhanced_Stations.{$station}.$Products.{$secondary}" />
+                  </do_for_each>
+                </do_for_each>
               </do_if>
             </do_for_each>
-            <set_value name="$countPenalty" exact="if $FactorySectors.indexof.$sector >= 0 then 50 else 0" />
-            <set_value name="$score" exact="($strategicValue + $demandScore + $supplyScore * 0.5 - $countPenalty)i" />
+            <set_value name="$score" exact="(-$productionScore + $supplyDemScore + supplySecScore * $Enhanced_Params.$Misc.$secondaryDemandImportance + $demandScore + $secondaryScore * $Enhanced_Params.$Misc.$secondaryDemandImportance)i" />
           </do_elseif>
 
           <!-- Expansion: Benefit factories -->
           <do_elseif value="$type == 'expansion' and $resource">
-            <do_if value="$FactorySectors.indexof.$sector >= 0">
-              <set_value name="$demandScore" exact="0" />
-              <set_value name="$supplyScore" exact="0" />
-              <do_for_each name="$res" in="$Enhanced_Resources.{$resource}.$expansionDemands">
-                <do_for_each name="$station" in="$Enhanced_Stations">
-                  <do_if value="$station.sector == $sector">
-                    <set_value name="$demandScore" operation="add" exact="$station.$Demands.{$res} ? $station.$Demands.{$res} : 0" />
-                    <set_value name="$supplyScore" operation="add" exact="$station.$Products.{$res} ? $station.$Products.{$res} : 0" />
-                  </do_if>
-                </do_for_each>
-              </do_for_each>
-              <set_value name="$countPenalty" exact="if $Enhanced_Stations.$Constructing.$Expansion.{$resource} and $Enhanced_Stations.$Constructing.$Expansion.{$resource}.sector == $SectorData then 50 else 0" />
-              <set_value name="$score" exact="($strategicValue + $demandScore * 0.5 + $supplyScore - $countPenalty)i" />
+            <do_if value="not $FactorySectors.indexof.$sector">
+              <continue />
             </do_if>
+            <set_value name="$demandScore" exact="0" />
+            <set_value name="$productionScore" exact="0" />
+            <do_for_each name="$station" in="$SectorData.$Stations">
+              <set_value name="$StationData" exact="$Enhanced_Stations.{$station}" />
+              <set_value name="$demandScore" operation="add" exact="@$StationData.$Demands.{$resource}" />
+              <set_value name="$secondaryScore" operation="add" exact="@$StationData.$Secondary.{$resource}" />
+            </do_for_each>
+            <!-- get supply data -->
+            <do_for_each valuename="$ModuleData" in="global.$EnhancedLogic.$ProductionDemandOutput.{$module.macro}">
+              <do_if value="$ModuleData.$Products.{$resource}">
+                <do_for_each valuename="$demand" in="$ModuleData.$Demands">
+                  <!-- loop through sector stations that produce this demand -->
+                  <do_for_each name="$station" in="$SectorData.$Stations">
+                    <set_value name="$supplyDemScore" operation="add" exact="@$Enhanced_Stations.{$station}.$Products.{$demand}" />
+                  </do_for_each>
+                </do_for_each>
+                <do_for_each name="$secondary" in="$ModuleData.$Secondary">
+                  <!-- loop through sector stations that produce this secondary -->
+                  <do_for_each name="$station" in="$SectorData.$Stations">
+                    <set_value name="$supplySecScore" operation="add" exact="@$Enhanced_Stations.{$station}.$Products.{$secondary}" />
+                  </do_for_each>
+                </do_for_each>
+              </do_if>
+            </do_for_each>
+            <set_value name="$score" exact="($supplyDemScore + supplySecScore * $Enhanced_Params.$Misc.$secondaryDemandImportance + $demandScore + $secondaryScore * $Enhanced_Params.$Misc.$secondaryDemandImportance)i" />
           </do_elseif>
 
-          <do_if value="$score > 0">
+          <do_if value="$score gt 0">
             <set_value name="$PotentialSectors.{$sector}" exact="$score" />
           </do_if>
         </do_for_each>
 
         <do_if value="$PotentialSectors.count">
-          <set_value name="$sector" exact="$PotentialSectors.keys.sort_by.{s => $PotentialSectors.{s}}.reverse.first" />
+          <set_value name="$list" exact="$PotentialSectors.keys.list" />
+          <shuffle_list list="$list" />
+          <sort_list list="$list" sortbyvalue="$PotentialSectors.{loop.element}" sortdescending="true" />
+          <set_value name="$sector" exact="$list.{1}" />
         </do_if>
         <do_else>
-          <set_value name="$sector" exact="$Enhanced_Sectors.keys.random" />
+          <remove_value name="$sector" />
         </do_else>
       </actions>
     </library>
